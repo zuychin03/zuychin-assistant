@@ -1,4 +1,4 @@
-import { geminiModel } from "@/lib/gemini";
+import { Type } from "@google/genai";
 
 
 
@@ -170,17 +170,24 @@ async function executeGetRecentConversations(
 
 /** Convert MCP tools to Gemini function declaration format. */
 export function buildGeminiFunctionDeclarations() {
+    const typeMap: Record<string, Type> = {
+        string: Type.STRING,
+        number: Type.NUMBER,
+        integer: Type.INTEGER,
+        boolean: Type.BOOLEAN,
+    };
+
     return MCP_TOOLS.map((tool) => ({
         name: tool.name,
         description: tool.description,
         parameters: {
-            type: "object" as const,
+            type: Type.OBJECT as const,
             properties: Object.fromEntries(
                 Object.entries(tool.parameters).map(([key, val]) => [
                     key,
-                    { type: val.type, description: val.description },
+                    { type: typeMap[val.type] ?? Type.STRING, description: val.description },
                 ])
-            ),
+            ) as Record<string, { type: Type; description: string }>,
             required: Object.entries(tool.parameters)
                 .filter(([, val]) => val.required)
                 .map(([key]) => key),
@@ -188,7 +195,7 @@ export function buildGeminiFunctionDeclarations() {
     }));
 }
 
-/** Build a system prompt section listing available tools. */
+/** Build a system prompt section listing available tools (for non-function-calling fallback). */
 export function buildToolSystemPrompt(): string {
     const toolList = MCP_TOOLS.map(
         (t) => `- **${t.name}**: ${t.description}`
@@ -196,9 +203,7 @@ export function buildToolSystemPrompt(): string {
 
     return `
 ## Available Tools
-You have access to the following tools. Use them when relevant to help the user:
+You have access to the following tools:
 ${toolList}
-
-To use a tool, mention its name and I'll execute it for you.
 `.trim();
 }

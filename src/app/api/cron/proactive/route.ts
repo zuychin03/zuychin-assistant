@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { geminiModel } from "@/lib/gemini";
+import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
 import { sendMessengerReply, sendWhatsAppReply } from "@/lib/messaging/meta-service";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
@@ -78,8 +78,11 @@ Be friendly and concise.`;
         }
 
         // Generate via Gemini
-        const result = await geminiModel.generateContent(proactivePrompt);
-        const proactiveMessage = result.response.text();
+        const result = await ai.models.generateContent({
+            model: MODEL,
+            contents: proactivePrompt,
+        });
+        const proactiveMessage = result.text ?? "";
 
         // Route to last-used channel
         const lastChannel = recentMessages[0]?.channel ?? "web";

@@ -1,11 +1,11 @@
-import { generateEmbedding, generateWithThinking } from "@/lib/gemini";
+import { generateEmbedding, ai, MODEL } from "@/lib/gemini";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, updateConversationTitle } from "@/lib/db";
-import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
+import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
 import type { MessageChannel, FileAttachment } from "@/lib/types";
 
 
 
-/** Main RAG pipeline: embed → search → augment → generate → store */
+/** Main RAG pipeline: embed → search → augment → generate (with tool loop) → store */
 export async function ragChat(params: {
     message: string;
     channel: MessageChannel;
@@ -67,10 +67,10 @@ export async function ragChat(params: {
         .join("\n");
 
     // Assemble prompt parts
-    const parts: (string | { inlineData: { mimeType: string; data: string } })[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parts: any[] = [];
 
-
-    let fullPrompt = `${sysPrompt}\n\n${buildToolSystemPrompt()}\n\n`;
+    let fullPrompt = `${sysPrompt}\n\n`;
 
     if (relevantContext) {
         fullPrompt += `## Relevant Memories\n${relevantContext}\n\n`;
@@ -81,7 +81,7 @@ export async function ragChat(params: {
     }
 
     fullPrompt += `## Current Message\nUser: ${message}`;
-    parts.push(fullPrompt);
+    parts.push({ text: fullPrompt });
 
     // Attach image (legacy)
     if (imageBase64) {
@@ -103,9 +103,56 @@ export async function ragChat(params: {
         });
     }
 
-    // Generate
-    const result = await generateWithThinking(parts, thinking);
-    const reply = result.response.text();
+    // Generate with function calling loop (max 5 tool rounds)
+    const toolDeclarations = buildGeminiFunctionDeclarations();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const contents: any[] = [{ role: "user", parts }];
+
+    const config = {
+        tools: [{ functionDeclarations: toolDeclarations }],
+        ...(thinking && { thinkingConfig: { thinkingBudget: 8192 } }),
+    };
+
+    let response = await ai.models.generateContent({
+        model: MODEL,
+        contents,
+        config,
+    });
+
+    const MAX_TOOL_ROUNDS = 5;
+
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        const fc = response.functionCalls?.[0];
+        if (!fc?.name) break; // No tool call → done
+
+        const toolName = fc.name;
+        console.log(`[MCP] Tool call: ${toolName}(${JSON.stringify(fc.args)})`);
+
+        // Execute the tool
+        const toolResult = await executeTool(toolName, (fc.args ?? {}) as Record<string, unknown>);
+        console.log(`[MCP] Tool result: ${toolResult.substring(0, 100)}...`);
+
+        // Append model response + function result to contents
+        contents.push(response.candidates![0].content);
+        contents.push({
+            role: "user",
+            parts: [{
+                functionResponse: {
+                    name: toolName,
+                    response: { result: toolResult },
+                },
+            }],
+        });
+
+        // Re-generate with full conversation history
+        response = await ai.models.generateContent({
+            model: MODEL,
+            contents,
+            config,
+        });
+    }
+
+    const reply = response.text ?? "";
 
     // Persist reply
     await saveMessage({

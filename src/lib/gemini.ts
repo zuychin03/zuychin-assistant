@@ -1,45 +1,18 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 const apiKey = process.env.GEMINI_API_KEY!;
 
-const genAI = new GoogleGenerativeAI(apiKey);
+export const ai = new GoogleGenAI({ apiKey });
 
-// Chat model
-export const geminiModel = genAI.getGenerativeModel({
-    model: "gemini-3-flash-preview",
-});
-
-// Embedding model
-export const embeddingModel = genAI.getGenerativeModel({
-    model: "gemini-embedding-001",
-});
+export const MODEL = "gemini-3-flash-preview";
+export const EMBEDDING_MODEL = "gemini-embedding-001";
 
 /** Generate a 768-dim embedding vector for text. */
 export async function generateEmbedding(text: string): Promise<number[]> {
-    const result = await embeddingModel.embedContent(text);
-    const values = result.embedding.values;
-    // Truncate from 3072 to 768 dims to match our DB column
-    return values.length > 768 ? values.slice(0, 768) : values;
-}
-
-/** Generate content with optional deep thinking mode. */
-export async function generateWithThinking(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    parts: any[],
-    thinking: boolean = false
-) {
-    const model = genAI.getGenerativeModel({
-        model: "gemini-3-flash-preview",
-        // thinkingConfig for Gemini 3
-        ...(thinking && {
-            generationConfig: {
-                // @ts-expect-error — thinkingConfig not yet in SDK types
-                thinkingConfig: { thinkingLevel: "HIGH" },
-            },
-        }),
+    const result = await ai.models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents: text,
+        config: { outputDimensionality: 768 },
     });
-
-    return model.generateContent(parts);
+    return result.embeddings?.[0]?.values ?? [];
 }
-
-export { genAI };
