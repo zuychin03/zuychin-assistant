@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: var(--font-geist), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), "SF Mono", "Fira Code", "Consolas", monospace;
+}
+
 /* ============================================================
    Zuychin Assistant — Monochromatic Design System
    ============================================================ */
@@ -14,7 +19,8 @@
   --color-border: #d1d1d6;
   --color-success: #34c759;
 
-  --font-family: var(--font-inter), system-ui, sans-serif;
+  --font-family: var(--font-geist), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), "SF Mono", "Fira Code", "Consolas", monospace;
 
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -57,45 +63,88 @@ body {
 
 /* ---- Animations ---- */
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes pulse-dot {
+@keyframes fadeInScale {
+  from { opacity: 0; transform: scale(0.95) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
 
-  0%,
-  100% {
-    opacity: 1;
-  }
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: translateX(0); }
+}
 
-  50% {
-    opacity: 0.4;
-  }
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(14px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bounceDot {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-5px); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.2); }
+  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.1); }
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .animate-fade-in {
   animation: fadeIn 0.3s ease-out forwards;
 }
 
-.animate-pulse-dot {
-  animation: pulse-dot 1.4s ease-in-out infinite;
+.animate-fade-in-scale {
+  animation: fadeInScale 0.45s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.animate-slide-left {
+  animation: slideInLeft 0.35s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.animate-slide-right {
+  animation: slideInRight 0.35s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-overlay-in {
+  animation: overlayIn 0.2s ease-out both;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.animate-bounce-dot {
+  animation: bounceDot 1.2s ease-in-out infinite;
+}
+
+.animate-bounce-dot-2 {
+  animation: bounceDot 1.2s 0.15s ease-in-out infinite;
+}
+
+.animate-bounce-dot-3 {
+  animation: bounceDot 1.2s 0.3s ease-in-out infinite;
 }
 
 /* ---- Markdown Body (Assistant messages) ---- */
@@ -153,7 +202,7 @@ body {
   background: rgba(0, 0, 0, 0.06);
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-family: var(--font-mono);
   font-size: 0.88em;
 }
 

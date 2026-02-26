@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Loader2, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut } from "lucide-react";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -29,9 +29,17 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const check = () => setIsDesktop(window.innerWidth >= 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -70,6 +78,14 @@ export default function Home() {
       localStorage.setItem("zuychin-think-mode", String(next));
       return next;
     });
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth", { method: "DELETE" });
+    } finally {
+      window.location.href = "/login";
+    }
   };
 
   // Load messages for a conversation
@@ -275,16 +291,24 @@ export default function Home() {
 
   return (
     <div style={styles.wrapper}>
-      {/* Sidebar overlay (mobile) */}
-      {sidebarOpen && (
-        <div style={styles.overlay} onClick={() => setSidebarOpen(false)} />
+      {/* Sidebar overlay (mobile only) */}
+      {!isDesktop && sidebarOpen && (
+        <div
+          style={styles.overlay}
+          className="animate-overlay-in"
+          onClick={() => setSidebarOpen(false)}
+        />
       )}
 
       {/* Sidebar */}
       <aside
         style={{
-          ...styles.sidebar,
-          transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)",
+          ...(isDesktop ? {
+            ...styles.sidebarDesktop,
+            width: sidebarOpen ? 300 : 0,
+            minWidth: sidebarOpen ? 300 : 0,
+          } : styles.sidebar),
+          ...(!isDesktop && { transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)" }),
         }}
       >
         <div style={styles.sidebarHeader}>
@@ -338,10 +362,15 @@ export default function Home() {
             </div>
           ))}
         </div>
+
+        <button onClick={handleLogout} style={styles.logoutBtn}>
+          <LogOut size={15} />
+          <span>Log out</span>
+        </button>
       </aside>
 
       {/* Main Chat */}
-      <div style={styles.container}>
+      <div style={isDesktop ? styles.containerDesktop : styles.container}>
         {/* Header */}
         <header style={styles.header}>
           <div style={styles.headerContent}>
@@ -359,7 +388,7 @@ export default function Home() {
               <div>
                 <h1 style={styles.title}>Zuychin</h1>
                 <div style={styles.statusRow}>
-                  <span style={styles.statusDot} />
+                  <span style={styles.statusDot} className="animate-pulse-glow" />
                   <span style={styles.statusText}>Online</span>
                 </div>
               </div>
@@ -373,8 +402,8 @@ export default function Home() {
         {/* Messages */}
         <main style={styles.messages}>
           {messages.length === 0 && (
-            <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>
+            <div style={styles.emptyState} className="animate-fade-in-scale">
+              <div style={styles.emptyIcon} className="animate-float">
                 <Bot size={32} color="var(--color-text-muted)" />
               </div>
               <p style={styles.emptyTitle}>Hi, I&apos;m Zuychin</p>
@@ -391,7 +420,7 @@ export default function Home() {
                 ...styles.messageBubbleWrapper,
                 justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
               }}
-              className="animate-fade-in"
+              className={msg.role === "user" ? "animate-slide-right" : "animate-slide-left"}
             >
               {msg.role === "assistant" && (
                 <div style={styles.msgAvatar}>
@@ -432,14 +461,12 @@ export default function Home() {
                 <Bot size={14} color="#fff" />
               </div>
               <div style={{ ...styles.bubble, ...styles.aiBubble }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <Loader2
-                    size={16}
-                    color="var(--color-text-muted)"
-                    style={{ animation: "spin 1s linear infinite" }}
-                  />
+                <div style={styles.typingRow}>
+                  <span style={styles.typingDot} className="animate-bounce-dot" />
+                  <span style={styles.typingDot} className="animate-bounce-dot-2" />
+                  <span style={styles.typingDot} className="animate-bounce-dot-3" />
                   {thinkingEnabled && (
-                    <span style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Thinking deeply...</span>
+                    <span style={styles.typingLabel}>Thinking deeply...</span>
                   )}
                 </div>
               </div>
@@ -451,9 +478,8 @@ export default function Home() {
 
         {/* Input */}
         <footer style={styles.footer}>
-          {/* File preview strip */}
           {pendingFile && (
-            <div style={styles.filePreview}>
+            <div style={styles.filePreview} className="animate-fade-in">
               <div style={styles.filePreviewInfo}>
                 {getFileIcon(pendingFile.mimeType)}
                 <span style={styles.filePreviewName}>{pendingFile.name}</span>
@@ -472,7 +498,6 @@ export default function Home() {
           )}
 
           <form onSubmit={handleSubmit} style={styles.inputRow}>
-            {/* Hidden file input */}
             <input
               ref={fileInputRef}
               type="file"
@@ -540,11 +565,13 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0, 0, 0, 0.5)",
+    background: "rgba(0, 0, 0, 0.4)",
+    backdropFilter: "blur(2px)",
+    WebkitBackdropFilter: "blur(2px)",
     zIndex: 20,
   },
 
-  // Sidebar
+  // Sidebar (mobile — fixed overlay)
   sidebar: {
     position: "fixed",
     top: 0,
@@ -556,7 +583,18 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 30,
     display: "flex",
     flexDirection: "column",
-    transition: "transform 0.2s ease",
+    transition: "transform 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
+  },
+
+  // Sidebar (desktop — static in-flow, collapsible)
+  sidebarDesktop: {
+    background: "var(--color-surface)",
+    borderRight: "1px solid var(--color-border)",
+    display: "flex",
+    flexDirection: "column",
+    height: "100dvh",
+    overflow: "hidden",
+    transition: "width 0.25s cubic-bezier(0.23, 1, 0.32, 1), min-width 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   sidebarHeader: {
     display: "flex",
@@ -650,8 +688,24 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     display: "flex",
   },
+  logoutBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    margin: "8px 12px 16px",
+    padding: "10px 14px",
+    background: "none",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-md)",
+    cursor: "pointer",
+    fontSize: 13,
+    fontWeight: 500,
+    fontFamily: "var(--font-family)",
+    color: "var(--color-text-muted)",
+    transition: "background 0.15s ease, color 0.15s ease",
+  },
 
-  // Main container
+  // Main container (mobile)
   container: {
     display: "flex",
     flexDirection: "column",
@@ -659,6 +713,16 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     maxWidth: 720,
     margin: "0 auto",
+    background: "var(--color-background)",
+    width: "100%",
+  },
+
+  // Main container (desktop — fills remaining space)
+  containerDesktop: {
+    display: "flex",
+    flexDirection: "column",
+    height: "100dvh",
+    flex: 1,
     background: "var(--color-background)",
     width: "100%",
   },
@@ -731,10 +795,13 @@ const styles: Record<string, React.CSSProperties> = {
   messages: {
     flex: 1,
     overflowY: "auto",
-    padding: "16px 16px 8px",
+    padding: "20px 24px 8px",
     display: "flex",
     flexDirection: "column",
     gap: 6,
+    maxWidth: 900,
+    width: "100%",
+    margin: "0 auto",
   },
 
   // Empty state
@@ -798,7 +865,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottomRightRadius: 4,
   },
   aiBubble: {
-    background: "var(--color-surface)",
+    background: "#f0f0f5",
     color: "var(--color-text-primary)",
     borderBottomLeftRadius: 4,
   },
@@ -808,13 +875,35 @@ const styles: Record<string, React.CSSProperties> = {
     wordBreak: "break-word",
   },
 
+  // Typing indicator
+  typingRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "4px 2px",
+  },
+  typingDot: {
+    width: 7,
+    height: 7,
+    borderRadius: "50%",
+    background: "var(--color-text-muted)",
+  },
+  typingLabel: {
+    fontSize: 12,
+    color: "var(--color-text-muted)",
+    marginLeft: 6,
+  },
+
   // Footer / Input
   footer: {
     position: "sticky",
     bottom: 0,
     background: "var(--color-background)",
     borderTop: "1px solid var(--color-border)",
-    padding: "10px 16px calc(env(safe-area-inset-bottom, 0px) + 10px)",
+    padding: "10px 24px calc(env(safe-area-inset-bottom, 0px) + 10px)",
+    maxWidth: 900,
+    width: "100%",
+    margin: "0 auto",
   },
 
   // File preview strip
@@ -877,11 +966,11 @@ const styles: Record<string, React.CSSProperties> = {
 
   inputRow: {
     display: "flex",
-    alignItems: "flex-end",
+    alignItems: "center",
     gap: 8,
     background: "var(--color-surface)",
-    borderRadius: "var(--radius-md)",
-    padding: "6px 6px 6px 10px",
+    borderRadius: 24,
+    padding: "8px 8px 8px 16px",
   },
   attachBtn: {
     background: "none",
