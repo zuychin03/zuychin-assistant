@@ -120,6 +120,7 @@ export async function searchEmbeddings(params: {
         id: row.id,
         content: row.content,
         metadata: row.metadata,
+        similarity: row.similarity,
         createdAt: "",
     }));
 }

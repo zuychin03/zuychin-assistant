@@ -57,5 +57,6 @@ export interface KnowledgeItem {
     content: string;
     embedding?: number[];
     metadata?: Record<string, string>;
+    similarity?: number;
     createdAt: string;
 }
