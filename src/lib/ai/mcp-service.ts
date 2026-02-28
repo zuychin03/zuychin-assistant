@@ -2,7 +2,7 @@ import { Type } from "@google/genai";
 
 
 
-/** Available MCP tools that Gemini can invoke via function calling. */
+/** MCP tool definitions for Gemini function calling. */
 
 export interface McpTool {
     name: string;
@@ -10,7 +10,7 @@ export interface McpTool {
     parameters: Record<string, { type: string; description: string; required?: boolean }>;
 }
 
-// Tool definitions
+// Tool registry
 export const MCP_TOOLS: McpTool[] = [
     {
         name: "get_current_time",
@@ -63,13 +63,13 @@ export const MCP_TOOLS: McpTool[] = [
     },
 ];
 
-// --- Tool Execution ---
+// Tool executors
 
 
 import { searchEmbeddings, storeEmbedding, getRecentMessages } from "@/lib/db";
 import { generateEmbedding } from "@/lib/gemini";
 
-/** Execute an MCP tool by name. */
+/** Dispatch and execute a tool by name. */
 export async function executeTool(
     toolName: string,
     args: Record<string, unknown>
@@ -165,10 +165,10 @@ async function executeGetRecentConversations(
     }
 }
 
-// --- Gemini Integration ---
+// Gemini SDK integration
 
 
-/** Convert MCP tools to Gemini function declaration format. */
+/** Convert MCP tool definitions to Gemini function declaration format. */
 export function buildGeminiFunctionDeclarations() {
     const typeMap: Record<string, Type> = {
         string: Type.STRING,
@@ -195,7 +195,7 @@ export function buildGeminiFunctionDeclarations() {
     }));
 }
 
-/** Build a system prompt section listing available tools (for non-function-calling fallback). */
+/** Generate a system prompt section listing available tools (text fallback). */
 export function buildToolSystemPrompt(): string {
     const toolList = MCP_TOOLS.map(
         (t) => `- **${t.name}**: ${t.description}`
@@ -203,7 +203,7 @@ export function buildToolSystemPrompt(): string {
 
     return `
 ## Available Tools
-You have access to the following tools:
+You have access to these tools:
 ${toolList}
 `.trim();
 }

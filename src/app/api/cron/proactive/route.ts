@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
-import { sendMessengerReply, sendWhatsAppReply } from "@/lib/messaging/meta-service";
+import { sendDiscordMessage } from "@/lib/messaging/discord-service";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
 
 
 
 const CRON_SECRET = process.env.CRON_SECRET;
+const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 
 /**
  * POST /api/cron/proactive
- * Called by external cron. Generates proactive messages (briefings, reminders, check-ins).
+ * External cron endpoint. Generates proactive messages (briefings, reminders, check-ins).
  */
 export async function POST(req: NextRequest) {
     try {
-        // Auth check
+        // Bearer token auth
         const authHeader = req.headers.get("authorization");
         if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -23,13 +24,13 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { type = "daily_check" } = body;
 
-        // Load profile
+        // Profile lookup
         const profile = await getDefaultProfile();
         if (!profile) {
             return NextResponse.json({ message: "No user profile found." });
         }
 
-        // Check recent activity
+        // Recent activity check
         const recentMessages = await getRecentMessages(5);
         const hasRecentActivity = recentMessages.some((m) => {
             const msgTime = new Date(m.createdAt).getTime();
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
             return msgTime > hourAgo;
         });
 
-        // Build prompt based on type
+        // Prompt construction
         let proactivePrompt = "";
 
         switch (type) {
@@ -77,30 +78,25 @@ Be friendly and concise.`;
                 return NextResponse.json({ error: "Unknown proactive type." }, { status: 400 });
         }
 
-        // Generate via Gemini
+        // Gemini generation
         const result = await ai.models.generateContent({
             model: MODEL,
             contents: proactivePrompt,
         });
         const proactiveMessage = result.text ?? "";
 
-        // Route to last-used channel
-        const lastChannel = recentMessages[0]?.channel ?? "web";
-        const lastSenderId = body.senderId;
-
+        // Discord delivery
         let delivered = false;
+        const targetChannel = body.channelId ?? DISCORD_CHANNEL_ID;
 
-        if (lastSenderId && lastChannel === "messenger") {
-            delivered = await sendMessengerReply(lastSenderId, proactiveMessage);
-        } else if (lastSenderId && lastChannel === "whatsapp") {
-            const phoneNumberId = body.phoneNumberId ?? "";
-            delivered = await sendWhatsAppReply(phoneNumberId, lastSenderId, proactiveMessage);
+        if (targetChannel) {
+            delivered = await sendDiscordMessage(targetChannel, proactiveMessage);
         }
 
         return NextResponse.json({
             message: proactiveMessage,
             delivered,
-            channel: lastChannel,
+            channel: "discord",
             type,
         });
     } catch (error) {

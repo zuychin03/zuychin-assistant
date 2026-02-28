@@ -4,7 +4,7 @@ import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from 
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
 
-const VALID_CHANNELS: MessageChannel[] = ["web", "whatsapp", "messenger", "instagram"];
+const VALID_CHANNELS: MessageChannel[] = ["web", "discord"];
 
 export async function POST(req: NextRequest) {
     try {
