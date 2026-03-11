@@ -3,7 +3,7 @@ const { Client, GatewayIntentBits, Events } = require("discord.js");
 
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const API_URL = process.env.ZUYCHIN_API_URL || "http://localhost:3000";
-const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID; // Optional: restrict to one channel
+const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 
 if (!BOT_TOKEN) {
     console.error("DISCORD_BOT_TOKEN is required");
@@ -81,8 +81,6 @@ function splitMessage(text, maxLen) {
     return chunks;
 }
 
-// Health-check HTTP server (required for Render free Web Service).
-// External cron pinger hits this every 14 min to prevent spin-down.
 const http = require("http");
 const PORT = process.env.PORT || 3001;
 http.createServer((_, res) => {
