@@ -1,5 +1,7 @@
 # dependencies
 /node_modules
+/discord-bot/node_modules
+/discord-bot/.env
 /.pnp
 .pnp.*
 .yarn/*
