@@ -81,4 +81,13 @@ function splitMessage(text, maxLen) {
     return chunks;
 }
 
+// Health-check HTTP server (required for Render free Web Service).
+// External cron pinger hits this every 14 min to prevent spin-down.
+const http = require("http");
+const PORT = process.env.PORT || 3001;
+http.createServer((_, res) => {
+    res.writeHead(200);
+    res.end("OK");
+}).listen(PORT, () => console.log(`[Health] Listening on port ${PORT}`));
+
 client.login(BOT_TOKEN);
