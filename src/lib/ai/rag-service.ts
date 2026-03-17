@@ -221,40 +221,56 @@ export async function ragChat(params: {
         });
     }
 
-    // Generation: Google Search grounding + MCP function calling.
-    // gemini-3-flash-preview does not support combining googleSearch
-    // with functionDeclarations. Primary: googleSearch config.
-    // Fallback: functionDeclarations config on INVALID_ARGUMENT.
+    // Gemini API does not support combining googleSearch and functionDeclarations.
+    // Strategy: try function calling first (MCP tools like Calendar, Gmail).
+    // If the model doesn't call any tool, retry with Google Search grounding.
     const toolDeclarations = buildGeminiFunctionDeclarations();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const contents: any[] = [{ role: "user", parts }];
 
     const thinkingOpts = thinking ? { thinkingConfig: { thinkingBudget: 8192 } } : {};
 
-    // Google Search grounding config
-    const searchConfig = {
-        tools: [{ googleSearch: {} }],
-        ...thinkingOpts,
-    };
-
-    // MCP function calling config
     const toolConfig = {
         tools: [{ functionDeclarations: toolDeclarations }],
         ...thinkingOpts,
     };
 
-    // Primary attempt: googleSearch; fallback: functionDeclarations
-    let response;
-    let usedSearch = true;
-    try {
-        response = await ai.models.generateContent({
-            model: MODEL,
-            contents,
-            config: searchConfig,
+    const searchConfig = {
+        tools: [{ googleSearch: {} }],
+        ...thinkingOpts,
+    };
+
+    // First pass: function calling (MCP tools)
+    let response = await ai.models.generateContent({
+        model: MODEL,
+        contents,
+        config: toolConfig,
+    });
+
+    // MCP tool-call loop
+    let usedTool = false;
+    for (let round = 0; round < RAG_CONFIG.maxToolRounds; round++) {
+        const fc = response.functionCalls?.[0];
+        if (!fc?.name) break;
+
+        usedTool = true;
+        const toolName = fc.name;
+        console.log(`[MCP] Tool call: ${toolName}(${JSON.stringify(fc.args)})`);
+
+        const toolResult = await executeTool(toolName, (fc.args ?? {}) as Record<string, unknown>);
+        console.log(`[MCP] Tool result: ${toolResult.substring(0, 100)}...`);
+
+        contents.push(response.candidates![0].content);
+        contents.push({
+            role: "user",
+            parts: [{
+                functionResponse: {
+                    name: toolName,
+                    response: { result: toolResult },
+                },
+            }],
         });
-    } catch (searchErr) {
-        console.warn("[RAG] Google Search grounding failed, falling back to function calling:", searchErr);
-        usedSearch = false;
+
         response = await ai.models.generateContent({
             model: MODEL,
             contents,
@@ -262,34 +278,21 @@ export async function ragChat(params: {
         });
     }
 
-    // MCP tool-call loop (only when function calling config is active)
-    if (!usedSearch) {
-        for (let round = 0; round < RAG_CONFIG.maxToolRounds; round++) {
-            const fc = response.functionCalls?.[0];
-            if (!fc?.name) break;
-
-            const toolName = fc.name;
-            console.log(`[MCP] Tool call: ${toolName}(${JSON.stringify(fc.args)})`);
-
-            const toolResult = await executeTool(toolName, (fc.args ?? {}) as Record<string, unknown>);
-            console.log(`[MCP] Tool result: ${toolResult.substring(0, 100)}...`);
-
-            contents.push(response.candidates![0].content);
-            contents.push({
-                role: "user",
-                parts: [{
-                    functionResponse: {
-                        name: toolName,
-                        response: { result: toolResult },
-                    },
-                }],
-            });
-
-            response = await ai.models.generateContent({
+    // If no tool was used, retry with Google Search grounding for web answers
+    if (!usedTool) {
+        try {
+            const searchResponse = await ai.models.generateContent({
                 model: MODEL,
-                contents,
-                config: toolConfig,
+                contents: [{ role: "user", parts }],
+                config: searchConfig,
             });
+            // Use search response if it has content
+            if (searchResponse.text && searchResponse.text.length > 0) {
+                response = searchResponse;
+            }
+        } catch (searchErr) {
+            console.warn("[RAG] Google Search grounding failed, using tool response:", searchErr);
+            // Keep the original function-calling response
         }
     }
 
