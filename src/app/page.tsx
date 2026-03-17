@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut, Download } from "lucide-react";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -289,6 +289,32 @@ export default function Home() {
     return <FileText size={14} />;
   };
 
+  const handleExport = async (content: string, format: "docx" | "pdf") => {
+    try {
+      const title = content.substring(0, 40).replace(/[^a-zA-Z0-9\s]/g, "").trim() || "Document";
+      const res = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, format, title }),
+      });
+
+      if (!res.ok) throw new Error("Export failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Export error:", err);
+      alert("Failed to export document.");
+    }
+  };
+
   return (
     <div style={styles.wrapper}>
       {/* Sidebar overlay (mobile only) */}
@@ -445,6 +471,26 @@ export default function Home() {
                   </div>
                 ) : (
                   <p style={styles.bubbleText}>{msg.content}</p>
+                )}
+                {msg.role === "assistant" && msg.content.length > 80 && (
+                  <div style={styles.exportRow}>
+                    <button
+                      onClick={() => handleExport(msg.content, "docx")}
+                      style={styles.exportBtn}
+                      title="Download as DOCX"
+                    >
+                      <Download size={12} />
+                      <span>DOCX</span>
+                    </button>
+                    <button
+                      onClick={() => handleExport(msg.content, "pdf")}
+                      style={styles.exportBtn}
+                      title="Download as PDF"
+                    >
+                      <Download size={12} />
+                      <span>PDF</span>
+                    </button>
+                  </div>
                 )}
               </div>
               {msg.role === "user" && (
@@ -1006,5 +1052,29 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     transition: "opacity 0.15s ease",
     flexShrink: 0,
+  },
+
+  // Export buttons
+  exportRow: {
+    display: "flex",
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
+  exportBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 500,
+    fontFamily: "var(--font-family)",
+    color: "var(--color-text-muted)",
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 6,
+    cursor: "pointer",
+    transition: "background 0.15s ease, color 0.15s ease",
   },
 };
