@@ -24,21 +24,47 @@ client.once(Events.ClientReady, (c) => {
 
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
-    if (!message.content.trim()) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
 
-    console.log(`[Bot] ${message.author.tag}: ${message.content.substring(0, 50)}`);
+    const hasText = message.content.trim().length > 0;
+    const attachment = message.attachments.first();
+    if (!hasText && !attachment) return;
+
+    console.log(`[Bot] ${message.author.tag}: ${message.content.substring(0, 50)}${attachment ? ` [+${attachment.name}]` : ""}`);
 
     try {
         await message.channel.sendTyping();
 
+        // Build request body
+        const body = {
+            message: message.content.trim() || (attachment ? `[Sent ${attachment.name}]` : ""),
+            channel: "discord",
+        };
+
+        // Download attachment if present (max 20MB)
+        if (attachment && attachment.size <= 20 * 1024 * 1024) {
+            try {
+                const fileRes = await fetch(attachment.url);
+                const arrayBuf = await fileRes.arrayBuffer();
+                const base64 = Buffer.from(arrayBuf).toString("base64");
+                body.file = {
+                    name: attachment.name,
+                    mimeType: attachment.contentType || "application/octet-stream",
+                    base64,
+                    size: attachment.size,
+                };
+                console.log(`[Bot] Attachment: ${attachment.name} (${(attachment.size / 1024).toFixed(0)} KB)`);
+            } catch (dlErr) {
+                console.error("[Bot] Failed to download attachment:", dlErr.message);
+            }
+        } else if (attachment) {
+            console.warn(`[Bot] Attachment too large: ${(attachment.size / 1024 / 1024).toFixed(1)} MB`);
+        }
+
         const res = await fetch(`${API_URL}/api/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                message: message.content,
-                channel: "discord",
-            }),
+            body: JSON.stringify(body),
         });
 
         if (!res.ok) {
