@@ -1,7 +1,5 @@
 import { google } from "googleapis";
 
-// Google OAuth2 client — reused across Calendar and Gmail services.
-// Requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN in env.
 const SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.readonly",

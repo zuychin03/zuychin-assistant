@@ -2,15 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { SCOPES } from "@/lib/google-auth";
 
-// GET /api/auth/google/callback?code=xxx
-// Exchanges the OAuth authorization code for tokens.
-// Used once during setup to obtain the refresh token.
-
+// OAuth callback — exchanges auth code for tokens (one-time setup)
 export async function GET(req: NextRequest) {
     const code = req.nextUrl.searchParams.get("code");
 
     if (!code) {
-        // No code — redirect to Google consent screen
         const clientId = process.env.GOOGLE_CLIENT_ID;
         const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -36,7 +32,6 @@ export async function GET(req: NextRequest) {
         return NextResponse.redirect(authUrl);
     }
 
-    // Exchange code for tokens
     try {
         const clientId = process.env.GOOGLE_CLIENT_ID!;
         const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
@@ -49,7 +44,6 @@ export async function GET(req: NextRequest) {
 
         const { tokens } = await oauth2.getToken(code);
 
-        // Display the refresh token for the user to copy to .env.local
         const html = `
 <!DOCTYPE html>
 <html>
@@ -63,11 +57,11 @@ export async function GET(req: NextRequest) {
 </head>
 <body>
     <h1>✅ Google OAuth Complete</h1>
-    <p>Copy the refresh token below and add it to your <strong>.env.local</strong> file:</p>
+    <p>Copy the refresh token below and add it to <strong>.env.local</strong>:</p>
     <p class="label">GOOGLE_REFRESH_TOKEN</p>
     <code>${tokens.refresh_token || "⚠️ No refresh token returned. Revoke access at myaccount.google.com/permissions and try again."}</code>
-    ${tokens.access_token ? `<p class="label">Access Token (temporary, for reference only)</p><code>${tokens.access_token}</code>` : ""}
-    <p style="margin-top: 30px; color: #888;">After adding the token to .env.local, restart the dev server. You can close this page.</p>
+    ${tokens.access_token ? `<p class="label">Access Token (temporary)</p><code>${tokens.access_token}</code>` : ""}
+    <p style="margin-top: 30px; color: #888;">After adding the token to .env.local, restart the dev server.</p>
 </body>
 </html>`;
 

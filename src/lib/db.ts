@@ -2,8 +2,6 @@ import { supabase } from "./supabase";
 import type { Message, MessageChannel, KnowledgeItem } from "./types";
 
 
-
-/** Save a message and return its ID. */
 export async function saveMessage(params: {
     role: "user" | "assistant" | "system";
     content: string;
@@ -33,7 +31,6 @@ export async function saveMessage(params: {
     return data.id;
 }
 
-/** Fetch last N messages, optionally scoped by channel or conversation. */
 export async function getRecentMessages(
     limit: number = 20,
     channel?: MessageChannel,
@@ -68,10 +65,6 @@ export async function getRecentMessages(
     }));
 }
 
-// --- Embeddings ---
-
-
-/** Store a content embedding in the vector store. */
 export async function storeEmbedding(params: {
     content: string;
     embedding: number[];
@@ -97,7 +90,6 @@ export async function storeEmbedding(params: {
     return data.id;
 }
 
-/** Cosine similarity search via the match_embeddings RPC. */
 export async function searchEmbeddings(params: {
     queryEmbedding: number[];
     matchThreshold?: number;
@@ -125,10 +117,6 @@ export async function searchEmbeddings(params: {
     }));
 }
 
-// --- User Profiles ---
-
-
-/** Get the first user profile. */
 export async function getDefaultProfile() {
     const { data, error } = await supabase
         .from("user_profiles")
@@ -149,7 +137,6 @@ export async function getDefaultProfile() {
     };
 }
 
-/** Update a profile's system prompt. */
 export async function updateSystemPrompt(
     profileId: string,
     systemPrompt: string
@@ -165,10 +152,6 @@ export async function updateSystemPrompt(
     }
 }
 
-// --- Conversations ---
-
-
-/** Create a new conversation. */
 export async function createConversation(params: {
     title?: string;
     userProfileId?: string;
@@ -190,7 +173,6 @@ export async function createConversation(params: {
     return { id: data.id, title: data.title };
 }
 
-/** List conversations, newest first. */
 export async function listConversations(
     limit: number = 20
 ): Promise<{ id: string; title: string; updatedAt: string; createdAt: string }[]> {
@@ -213,7 +195,6 @@ export async function listConversations(
     }));
 }
 
-/** Delete a conversation (cascades to messages). */
 export async function deleteConversation(id: string): Promise<void> {
     const { error } = await supabase
         .from("conversations")
@@ -226,7 +207,6 @@ export async function deleteConversation(id: string): Promise<void> {
     }
 }
 
-/** Get all messages for a conversation. */
 export async function getConversationMessages(
     conversationId: string
 ): Promise<Message[]> {
@@ -251,7 +231,6 @@ export async function getConversationMessages(
     }));
 }
 
-/** Update conversation title. */
 export async function updateConversationTitle(
     id: string,
     title: string
@@ -264,4 +243,103 @@ export async function updateConversationTitle(
     if (error) {
         console.error("[DB] Failed to update conversation title:", error.message);
     }
+}
+
+
+export interface Todo {
+    id: string;
+    title: string;
+    description: string;
+    status: "pending" | "in_progress" | "done";
+    priority: "low" | "medium" | "high";
+    dueDate: string | null;
+    createdAt: string;
+}
+
+export async function addTodo(params: {
+    title: string;
+    description?: string;
+    priority?: "low" | "medium" | "high";
+    dueDate?: string;
+    userProfileId?: string;
+}): Promise<string> {
+    const { data, error } = await supabase
+        .from("todos")
+        .insert({
+            title: params.title,
+            description: params.description ?? "",
+            priority: params.priority ?? "medium",
+            due_date: params.dueDate ?? null,
+            user_profile_id: params.userProfileId ?? null,
+        })
+        .select("id")
+        .single();
+
+    if (error) {
+        console.error("[DB] Failed to add todo:", error.message);
+        throw new Error("Failed to add todo.");
+    }
+
+    return data.id;
+}
+
+export async function listTodos(
+    status?: "pending" | "in_progress" | "done" | "all",
+    limit: number = 20
+): Promise<Todo[]> {
+    let query = supabase
+        .from("todos")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+    if (status && status !== "all") {
+        query = query.eq("status", status);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+        console.error("[DB] Failed to list todos:", error.message);
+        return [];
+    }
+
+    return (data ?? []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        description: row.description,
+        status: row.status,
+        priority: row.priority,
+        dueDate: row.due_date,
+        createdAt: row.created_at,
+    }));
+}
+
+export async function updateTodoStatus(
+    id: string,
+    status: "pending" | "in_progress" | "done"
+): Promise<boolean> {
+    const { error } = await supabase
+        .from("todos")
+        .update({ status })
+        .eq("id", id);
+
+    if (error) {
+        console.error("[DB] Failed to update todo:", error.message);
+        return false;
+    }
+    return true;
+}
+
+export async function deleteTodo(id: string): Promise<boolean> {
+    const { error } = await supabase
+        .from("todos")
+        .delete()
+        .eq("id", id);
+
+    if (error) {
+        console.error("[DB] Failed to delete todo:", error.message);
+        return false;
+    }
+    return true;
 }

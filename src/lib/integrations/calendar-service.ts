@@ -1,9 +1,6 @@
 import { google } from "googleapis";
 import { getOAuth2Client } from "@/lib/google-auth";
 
-// Google Calendar API wrapper.
-// Uses the shared OAuth2 client from google-auth.ts.
-
 function getCalendar() {
     return google.calendar({ version: "v3", auth: getOAuth2Client() });
 }
@@ -12,12 +9,11 @@ export interface CalendarEvent {
     id?: string;
     summary: string;
     description?: string;
-    start: string; // ISO 8601 datetime or date
+    start: string;
     end?: string;
     location?: string;
 }
 
-/** List upcoming events within a given time window. */
 export async function listUpcomingEvents(
     hoursAhead: number = 24,
     maxResults: number = 10
@@ -45,7 +41,6 @@ export async function listUpcomingEvents(
     }));
 }
 
-/** Create a new calendar event. */
 export async function createCalendarEvent(event: CalendarEvent): Promise<CalendarEvent> {
     const cal = getCalendar();
 
@@ -83,7 +78,6 @@ export async function createCalendarEvent(event: CalendarEvent): Promise<Calenda
     };
 }
 
-/** Delete a calendar event by ID. */
 export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
     const cal = getCalendar();
     try {
@@ -95,7 +89,6 @@ export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
     }
 }
 
-/** Format events into a human-readable summary. */
 export function formatEventsSummary(events: CalendarEvent[]): string {
     if (events.length === 0) return "No upcoming events.";
 
@@ -116,6 +109,6 @@ export function formatEventsSummary(events: CalendarEvent[]): string {
                 day: "numeric",
             }) + " (all day)";
 
-        return `• **${e.summary}** — ${time}${e.location ? ` 📍 ${e.location}` : ""}`;
+        return `• **${e.summary}** — ${time}${e.location ? ` 📍 ${e.location}` : ""}\n  _Event ID: ${e.id}_`;
     }).join("\n");
 }

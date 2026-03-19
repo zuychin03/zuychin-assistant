@@ -3,8 +3,11 @@ import {
     listUpcomingEvents, createCalendarEvent, deleteCalendarEvent,
     formatEventsSummary,
 } from "@/lib/integrations/calendar-service";
+import {
+    listUnreadEmails, getEmailContent, createDraftReply, sendEmail,
+    formatEmailSummary,
+} from "@/lib/integrations/gmail-service";
 
-/** MCP tool definitions for Gemini function calling. */
 
 export interface McpTool {
     name: string;
@@ -12,7 +15,6 @@ export interface McpTool {
     parameters: Record<string, { type: string; description: string; required?: boolean }>;
 }
 
-// Tool registry
 export const MCP_TOOLS: McpTool[] = [
     {
         name: "get_current_time",
@@ -106,7 +108,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "list_calendar_events",
-        description: "List upcoming Google Calendar events. Returns events within the next N hours.",
+        description: "List upcoming Google Calendar events. Returns events within the next N hours. Each event includes its Event ID, which you can use with manage_calendar_event action='delete' to delete it.",
         parameters: {
             hours_ahead: {
                 type: "number",
@@ -115,15 +117,120 @@ export const MCP_TOOLS: McpTool[] = [
             },
         },
     },
+    {
+        name: "list_unread_emails",
+        description: "List unread emails in the user's Gmail inbox. Supports Gmail search filters to narrow results by label, sender, category, subject, etc.",
+        parameters: {
+            max_results: {
+                type: "number",
+                description: "Maximum number of emails to return (default: 10).",
+                required: false,
+            },
+            query: {
+                type: "string",
+                description: "Optional Gmail search query to filter emails. Examples: 'from:john@example.com', 'label:work', 'category:promotions', 'subject:invoice', 'from:company.com'. Multiple filters can be combined.",
+                required: false,
+            },
+        },
+    },
+    {
+        name: "read_email",
+        description: "Read the full content of an email by its message ID. Use after list_unread_emails to get the body.",
+        parameters: {
+            message_id: {
+                type: "string",
+                description: "The email message ID to read.",
+                required: true,
+            },
+        },
+    },
+    {
+        name: "draft_gmail_reply",
+        description: "Create a draft reply to an email in the user's Gmail. The draft can be reviewed and sent by the user.",
+        parameters: {
+            message_id: {
+                type: "string",
+                description: "The original email message ID to reply to.",
+                required: true,
+            },
+            reply_body: {
+                type: "string",
+                description: "The text content of the reply.",
+                required: true,
+            },
+        },
+    },
+    {
+        name: "send_email",
+        description: "Compose and send a new email from the user's Gmail account. Use this when the user asks to send, write, or email someone.",
+        parameters: {
+            to: {
+                type: "string",
+                description: "Recipient email address.",
+                required: true,
+            },
+            subject: {
+                type: "string",
+                description: "Email subject line.",
+                required: true,
+            },
+            body: {
+                type: "string",
+                description: "Email body text.",
+                required: true,
+            },
+            cc: {
+                type: "string",
+                description: "Optional CC recipient email address.",
+                required: false,
+            },
+        },
+    },
+    {
+        name: "manage_todo_list",
+        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task).",
+        parameters: {
+            action: {
+                type: "string",
+                description: "Action: 'add', 'list', 'complete', or 'delete'.",
+                required: true,
+            },
+            title: {
+                type: "string",
+                description: "Task title (required for add).",
+                required: false,
+            },
+            description: {
+                type: "string",
+                description: "Optional task description (for add).",
+                required: false,
+            },
+            priority: {
+                type: "string",
+                description: "Priority: 'low', 'medium', or 'high' (for add, default: medium).",
+                required: false,
+            },
+            due_date: {
+                type: "string",
+                description: "Optional due date in ISO 8601 format (for add).",
+                required: false,
+            },
+            todo_id: {
+                type: "string",
+                description: "To-do item ID (required for complete/delete).",
+                required: false,
+            },
+            status_filter: {
+                type: "string",
+                description: "Filter for list: 'pending', 'in_progress', 'done', or 'all' (default: pending).",
+                required: false,
+            },
+        },
+    },
 ];
 
-// Tool executors
-
-
-import { searchEmbeddings, storeEmbedding, getRecentMessages } from "@/lib/db";
+import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
 import { generateEmbedding } from "@/lib/gemini";
-
-/** Dispatch and execute a tool by name. */
 export async function executeTool(
     toolName: string,
     args: Record<string, unknown>
@@ -149,6 +256,21 @@ export async function executeTool(
 
         case "list_calendar_events":
             return executeListCalendarEvents(args.hours_ahead as number | undefined);
+
+        case "list_unread_emails":
+            return executeListUnreadEmails(args.max_results as number | undefined, args.query as string | undefined);
+
+        case "read_email":
+            return executeReadEmail(args.message_id as string);
+
+        case "draft_gmail_reply":
+            return executeDraftGmailReply(args);
+
+        case "send_email":
+            return executeSendEmail(args);
+
+        case "manage_todo_list":
+            return executeManageTodoList(args);
 
         default:
             return `Unknown tool: ${toolName}`;
@@ -238,7 +360,7 @@ async function executeManageCalendarEvent(
             return success ? "Event deleted successfully." : "Failed to delete event.";
         }
 
-        // Create
+
         const summary = args.summary as string;
         const start = args.start as string;
         if (!summary || !start) return "Error: summary and start are required to create an event.";
@@ -275,10 +397,159 @@ async function executeListCalendarEvents(
     }
 }
 
-// Gemini SDK integration
+async function executeListUnreadEmails(
+    maxResults?: number,
+    query?: string
+): Promise<string> {
+    try {
+        const emails = await listUnreadEmails(maxResults ?? 10, query);
+        if (emails.length === 0) {
+            const filterNote = query ? ` matching "${query}"` : "";
+            return `No unread emails${filterNote} in the inbox.`;
+        }
+        const filterNote = query ? ` (filter: ${query})` : "";
+        return `Found ${emails.length} unread email(s)${filterNote}:\n\n` + formatEmailSummary(emails);
+    } catch (error) {
+        console.error("[MCP] List unread emails failed:", error);
+        return "Failed to list emails. Check Google API credentials.";
+    }
+}
+
+async function executeReadEmail(messageId: string): Promise<string> {
+    if (!messageId) return "Error: message_id is required.";
+    try {
+        const email = await getEmailContent(messageId);
+        if (!email) return "Email not found.";
+        return [
+            `**Subject:** ${email.subject}`,
+            `**From:** ${email.from}`,
+            `**To:** ${email.to}`,
+            `**Date:** ${email.date}`,
+            "",
+            email.body,
+        ].join("\n");
+    } catch (error) {
+        console.error("[MCP] Read email failed:", error);
+        return "Failed to read email.";
+    }
+}
+
+async function executeDraftGmailReply(
+    args: Record<string, unknown>
+): Promise<string> {
+    const messageId = args.message_id as string;
+    const replyBody = args.reply_body as string;
+    if (!messageId || !replyBody) return "Error: message_id and reply_body are required.";
+
+    try {
+
+        const original = await getEmailContent(messageId);
+        if (!original) return "Error: original email not found.";
+
+        const draftId = await createDraftReply({
+            messageId,
+            threadId: original.threadId,
+            to: original.from,
+            subject: original.subject,
+            body: replyBody,
+        });
+
+        if (draftId) {
+            return `✅ Draft reply created! Draft ID: ${draftId}. You can review and send it from your Gmail drafts.`;
+        }
+        return "Failed to create draft reply.";
+    } catch (error) {
+        console.error("[MCP] Draft Gmail reply failed:", error);
+        return "Failed to create draft reply. Check Google API credentials.";
+    }
+}
+
+async function executeSendEmail(
+    args: Record<string, unknown>
+): Promise<string> {
+    const to = args.to as string;
+    const subject = args.subject as string;
+    const body = args.body as string;
+    const cc = args.cc as string | undefined;
+
+    if (!to || !subject || !body) {
+        return "Error: to, subject, and body are required to send an email.";
+    }
+
+    try {
+        const result = await sendEmail({ to, subject, body, cc });
+        if (result.success) {
+            return `✅ Email sent to ${to}!\nSubject: "${subject}"${cc ? `\nCC: ${cc}` : ""}`;
+        }
+        return "Failed to send email.";
+    } catch (error) {
+        console.error("[MCP] Send email failed:", error);
+        return "Failed to send email. Check Google API credentials.";
+    }
+}
+
+async function executeManageTodoList(
+    args: Record<string, unknown>
+): Promise<string> {
+    const action = (args.action as string) ?? "list";
+
+    try {
+        switch (action) {
+            case "add": {
+                const title = args.title as string;
+                if (!title) return "Error: title is required to add a task.";
+                const id = await addTodo({
+                    title,
+                    description: args.description as string | undefined,
+                    priority: args.priority as "low" | "medium" | "high" | undefined,
+                    dueDate: args.due_date as string | undefined,
+                });
+                return `✅ Task added: "${title}" (ID: ${id})`;
+            }
+
+            case "list": {
+                const filter = (args.status_filter as string) ?? "pending";
+                const todos = await listTodos(
+                    filter as "pending" | "in_progress" | "done" | "all"
+                );
+                if (todos.length === 0) return `No ${filter} tasks found.`;
+
+                const formatted = todos.map((t, i) => {
+                    const priority = t.priority === "high" ? "🔴" : t.priority === "medium" ? "🟡" : "🟢";
+                    const status = t.status === "done" ? "✅" : t.status === "in_progress" ? "🔄" : "⬜";
+                    const due = t.dueDate
+                        ? ` (due: ${new Date(t.dueDate).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })})`
+                        : "";
+                    return `${i + 1}. ${status} ${priority} **${t.title}**${due}\n   _ID: ${t.id}_`;
+                }).join("\n");
+
+                return `To-do list (${filter}):\n\n${formatted}`;
+            }
+
+            case "complete": {
+                const todoId = args.todo_id as string;
+                if (!todoId) return "Error: todo_id is required to complete a task.";
+                const success = await updateTodoStatus(todoId, "done");
+                return success ? "✅ Task marked as done!" : "Failed to update task.";
+            }
+
+            case "delete": {
+                const todoId = args.todo_id as string;
+                if (!todoId) return "Error: todo_id is required to delete a task.";
+                const success = await deleteTodo(todoId);
+                return success ? "🗑️ Task deleted." : "Failed to delete task.";
+            }
+
+            default:
+                return `Unknown action: ${action}. Use 'add', 'list', 'complete', or 'delete'.`;
+        }
+    } catch (error) {
+        console.error("[MCP] Todo list failed:", error);
+        return "Failed to manage to-do list.";
+    }
+}
 
 
-/** Convert MCP tool definitions to Gemini function declaration format. */
 export function buildGeminiFunctionDeclarations() {
     const typeMap: Record<string, Type> = {
         string: Type.STRING,
@@ -305,7 +576,7 @@ export function buildGeminiFunctionDeclarations() {
     }));
 }
 
-/** Generate a system prompt section listing available tools (text fallback). */
+
 export function buildToolSystemPrompt(): string {
     const toolList = MCP_TOOLS.map(
         (t) => `- **${t.name}**: ${t.description}`
