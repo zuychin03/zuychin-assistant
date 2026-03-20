@@ -9,7 +9,15 @@ const VALID_CHANNELS: MessageChannel[] = ["web", "discord"];
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
-        const { message, channel = "web", imageBase64, conversationId, file, thinking = false } = body;
+        const {
+            message,
+            channel = "web",
+            imageBase64,
+            conversationId,
+            file,
+            thinking = false,
+            searchGrounding = false,
+        } = body;
 
         // Validate input
         if (!message || typeof message !== "string") {
@@ -59,6 +67,7 @@ export async function POST(req: NextRequest) {
             file: validatedFile,
             conversationId,
             thinking,
+            searchGrounding,
         });
 
         return NextResponse.json({ reply, messageId });

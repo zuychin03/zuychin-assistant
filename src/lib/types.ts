@@ -17,6 +17,7 @@ export interface ChatRequest {
     channel: MessageChannel;
     conversationId?: string;
     file?: FileAttachment;
+    searchGrounding?: boolean;
 }
 
 export interface FileAttachment {

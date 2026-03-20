@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut, Download } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut, Download, Search } from "lucide-react";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -29,6 +29,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [searchGroundingEnabled, setSearchGroundingEnabled] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -70,12 +71,23 @@ export default function Home() {
   useEffect(() => {
     const saved = localStorage.getItem("zuychin-think-mode");
     if (saved === "true") setThinkingEnabled(true);
+
+    const savedSearch = localStorage.getItem("zuychin-search-mode");
+    if (savedSearch === "true") setSearchGroundingEnabled(true);
   }, []);
 
   const toggleThinking = () => {
     setThinkingEnabled((prev) => {
       const next = !prev;
       localStorage.setItem("zuychin-think-mode", String(next));
+      return next;
+    });
+  };
+
+  const toggleSearchGrounding = () => {
+    setSearchGroundingEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem("zuychin-search-mode", String(next));
       return next;
     });
   };
@@ -182,6 +194,7 @@ export default function Home() {
           message: userMessage.content,
           conversationId: convId,
           thinking: thinkingEnabled,
+          searchGrounding: searchGroundingEnabled,
           ...(fileToSend && {
             file: {
               name: fileToSend.name,
@@ -511,6 +524,9 @@ export default function Home() {
                   <span style={styles.typingDot} className="animate-bounce-dot" />
                   <span style={styles.typingDot} className="animate-bounce-dot-2" />
                   <span style={styles.typingDot} className="animate-bounce-dot-3" />
+                  {searchGroundingEnabled && (
+                    <span style={styles.typingLabel}>Searching web...</span>
+                  )}
                   {thinkingEnabled && (
                     <span style={styles.typingLabel}>Thinking deeply...</span>
                   )}
@@ -571,6 +587,19 @@ export default function Home() {
               title={thinkingEnabled ? "Think mode ON" : "Think mode OFF"}
             >
               <Brain size={18} color={thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
+            </button>
+            <button
+              type="button"
+              onClick={toggleSearchGrounding}
+              style={{
+                ...styles.attachBtn,
+                color: searchGroundingEnabled ? "var(--color-primary)" : "var(--color-text-muted)",
+                opacity: searchGroundingEnabled ? 1 : 0.5,
+              }}
+              aria-label={searchGroundingEnabled ? "Disable web grounding" : "Enable web grounding"}
+              title={searchGroundingEnabled ? "Web grounding ON (MCP tools OFF)" : "Web grounding OFF"}
+            >
+              <Search size={18} color={searchGroundingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
             </button>
             <textarea
               ref={inputRef}

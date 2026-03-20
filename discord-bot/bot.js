@@ -26,19 +26,26 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
 
-    const hasText = message.content.trim().length > 0;
+    const rawText = message.content.trim();
+    const isSearchCommand = rawText.toLowerCase().startsWith("/search");
+    const normalizedText = isSearchCommand
+        ? rawText.replace(/^\/search\s*/i, "").trim()
+        : rawText;
+
+    const hasText = normalizedText.length > 0;
     const attachment = message.attachments.first();
     if (!hasText && !attachment) return;
 
-    console.log(`[Bot] ${message.author.tag}: ${message.content.substring(0, 50)}${attachment ? ` [+${attachment.name}]` : ""}`);
+    console.log(`[Bot] ${message.author.tag}: ${normalizedText.substring(0, 50)}${attachment ? ` [+${attachment.name}]` : ""}${isSearchCommand ? " [search]" : ""}`);
 
     try {
         await message.channel.sendTyping();
 
         // Build request body
         const body = {
-            message: message.content.trim() || (attachment ? `[Sent ${attachment.name}]` : ""),
+            message: normalizedText || (attachment ? `[Sent ${attachment.name}]` : ""),
             channel: "discord",
+            searchGrounding: isSearchCommand,
         };
 
         // Download attachment if present (max 20MB)
