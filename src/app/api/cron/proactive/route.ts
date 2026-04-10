@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
 import { sendDiscordMessage } from "@/lib/messaging/discord-service";
+import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
 
 
 
 const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 /**
  * POST /api/cron/proactive
@@ -85,18 +87,25 @@ Be friendly and concise.`;
         });
         const proactiveMessage = result.text ?? "";
 
-        // Discord delivery
+        // Deliver to all configured channels
         let delivered = false;
-        const targetChannel = body.channelId ?? DISCORD_CHANNEL_ID;
+        const sends: Promise<boolean>[] = [];
 
-        if (targetChannel) {
-            delivered = await sendDiscordMessage(targetChannel, proactiveMessage);
-        }
+        const targetDiscordChannel = body.channelId ?? DISCORD_CHANNEL_ID;
+        if (targetDiscordChannel) sends.push(sendDiscordMessage(targetDiscordChannel, proactiveMessage));
+        if (TELEGRAM_CHAT_ID) sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, proactiveMessage));
+
+        const results = await Promise.all(sends);
+        delivered = results.some((r) => r);
+
+        const channels: string[] = [];
+        if (targetDiscordChannel) channels.push("discord");
+        if (TELEGRAM_CHAT_ID) channels.push("telegram");
 
         return NextResponse.json({
             message: proactiveMessage,
             delivered,
-            channel: "discord",
+            channels,
             type,
         });
     } catch (error) {

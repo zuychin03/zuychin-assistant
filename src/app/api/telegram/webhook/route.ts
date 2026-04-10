@@ -17,9 +17,6 @@ const MIME_MAP: Record<string, string> = {
     webp: "image/webp",
     gif: "image/gif",
     pdf: "application/pdf",
-    mp3: "audio/mpeg",
-    ogg: "audio/ogg",
-    wav: "audio/wav",
     mp4: "video/mp4",
     csv: "text/csv",
     txt: "text/plain",
@@ -60,12 +57,17 @@ export async function POST(req: NextRequest) {
             text = commandMatch[2].trim();
         }
 
+        // Politely decline voice/audio messages (not supported)
+        if (message.voice || message.audio) {
+            await sendTelegramMessage(chatId, "🎙️ Voice messages aren't supported yet. Please type your message instead!");
+            return NextResponse.json({ ok: true });
+        }
+
         // Skip empty messages without attachments
         const photo = message.photo;
         const document = message.document;
-        const audio = message.audio || message.voice;
         const video = message.video;
-        const hasAttachment = photo || document || audio || video;
+        const hasAttachment = photo || document || video;
 
         if (!text && !hasAttachment) {
             return NextResponse.json({ ok: true });
@@ -94,10 +96,6 @@ export async function POST(req: NextRequest) {
                     fileId = document.file_id;
                     fileName = document.file_name || "document";
                     fileSize = document.file_size || 0;
-                } else if (audio) {
-                    fileId = audio.file_id;
-                    fileName = audio.file_name || "audio.ogg";
-                    fileSize = audio.file_size || 0;
                 } else if (video) {
                     fileId = video.file_id;
                     fileName = video.file_name || "video.mp4";
