@@ -6,6 +6,9 @@ import type { FileAttachment } from "@/lib/types";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
+// Vercel Pro: up to 60s
+export const maxDuration = 60;
+
 // Telegram file_id -> mime type mapping
 const MIME_MAP: Record<string, string> = {
     jpg: "image/jpeg",
