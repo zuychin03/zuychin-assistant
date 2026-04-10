@@ -6,6 +6,7 @@ const PUBLIC_PATHS = [
   "/api/webhooks",
   "/api/cron",
   "/api/chat",
+  "/api/telegram",
 ];
 
 function isPublicPath(pathname: string): boolean {
