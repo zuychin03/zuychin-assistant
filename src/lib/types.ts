@@ -9,7 +9,7 @@ export interface Message {
     createdAt: string;
 }
 
-export type MessageChannel = "web" | "discord";
+export type MessageChannel = "web" | "discord" | "telegram";
 
 export interface ChatRequest {
     message: string;
