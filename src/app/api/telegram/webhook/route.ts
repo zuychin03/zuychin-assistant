@@ -31,10 +31,15 @@ function getMimeType(filePath: string): string {
 async function processUpdate(update: Record<string, unknown>) {
     // Telegram channels send `channel_post`, not `message`
     const message = (update.message ?? update.channel_post) as Record<string, unknown> | undefined;
-    if (!message) return;
+    if (!message) {
+        console.log("[Telegram] No message/channel_post in update:", JSON.stringify(update).substring(0, 200));
+        return;
+    }
 
     const chatId = (message.chat as Record<string, unknown>).id as number;
     let text = ((message.text as string | undefined)?.trim() ?? (message.caption as string | undefined)?.trim() ?? "");
+
+    console.log(`[Telegram] Processing from chat ${chatId}, type=${update.message ? "message" : "channel_post"}`);
 
     // Command prefixes: /search, /think
     let useSearch = false;
@@ -59,9 +64,12 @@ async function processUpdate(update: Record<string, unknown>) {
     const video = message.video as Record<string, unknown> | undefined;
     const hasAttachment = photo || document || video;
 
-    if (!text && !hasAttachment) return;
+    if (!text && !hasAttachment) {
+        console.log(`[Telegram] Skipping chat ${chatId} — empty message`);
+        return;
+    }
 
-    console.log(`[Telegram] Chat ${chatId}: ${text.substring(0, 50)}${hasAttachment ? " [+attachment]" : ""}`);
+    console.log(`[Telegram] Chat ${chatId}: "${text.substring(0, 80)}"${hasAttachment ? " [+attachment]" : ""}`);
 
     // Send typing indicator
     await sendTelegramChatAction(chatId);
@@ -110,6 +118,7 @@ async function processUpdate(update: Record<string, unknown>) {
     }
 
     // Call the RAG pipeline
+    console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
     const { reply } = await ragChat({
         message: text || (file ? `[Sent ${file.name}]` : ""),
         channel: "telegram",
@@ -118,7 +127,9 @@ async function processUpdate(update: Record<string, unknown>) {
         search: useSearch,
     });
 
+    console.log(`[Telegram] ragChat done. Reply length: ${reply?.length ?? 0}`);
     await sendTelegramMessage(chatId, reply || "No response.");
+    console.log(`[Telegram] Reply sent to chat ${chatId}.`);
 }
 
 // POST /api/telegram/webhook
@@ -135,18 +146,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
     }
 
-    // Respond immediately to prevent Telegram from retrying (which causes duplicate responses)
-    const response = NextResponse.json({ ok: true });
+    console.log("[Telegram Webhook] Received update:", JSON.stringify(update).substring(0, 300));
 
-    // Process in background after response is sent
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ctx = (req as any)[Symbol.for("next.request.context")]?.waitUntil;
-    if (typeof ctx === "function") {
-        ctx(processUpdate(update).catch((err: unknown) => console.error("[Telegram Webhook] Error:", err)));
-    } else {
-        // Fallback: fire-and-forget
-        processUpdate(update).catch((err) => console.error("[Telegram Webhook] Error:", err));
+    // Process SYNCHRONOUSLY before returning.
+    // Vercel freezes the serverless function the moment a response is sent,
+    // so fire-and-forget / background processing is NOT reliable on Vercel.
+    try {
+        await processUpdate(update);
+    } catch (err) {
+        console.error("[Telegram Webhook] processUpdate failed:", err);
+        // Return 200 anyway so Telegram doesn't keep retrying
     }
 
-    return response;
+    return NextResponse.json({ ok: true });
 }
