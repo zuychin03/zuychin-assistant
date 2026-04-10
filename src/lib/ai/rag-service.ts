@@ -243,8 +243,19 @@ export async function ragChat(params: {
     };
 
     const groundingConfig = {
-        tools: [{ googleSearch: {} }, { urlContext: {} }, { googleMaps: {} }],
+        tools: [{ googleSearch: {} }, { urlContext: {} }],
         ...thinkingOpts,
+    };
+
+    const mapsConfig = {
+        tools: [{ googleMaps: {} }],
+        ...thinkingOpts,
+    };
+
+    // Detect location-based queries to route to Google Maps instead of Search
+    const isLocationQuery = (q: string) => {
+        const loc = /\b(near me|nearby|restaurant|cafe|coffee|hotel|hospital|pharmacy|cinema|gym|airport|station|directions?|map|address|open now|hours|rating|review|how far|distance|km|miles?|street|suburb|postcode|zip code|where is|located|location)\b/i;
+        return loc.test(q);
     };
 
     // Explicit /search: skip MCP tools, use grounding only
@@ -312,20 +323,22 @@ export async function ragChat(params: {
         });
     }
 
-    // Grounding fallback: if no MCP tool was used, try Google Search
+    // Grounding fallback: route to Maps or Search based on query type
     if (!usedTool) {
+        const fallbackConfig = isLocationQuery(message) ? mapsConfig : groundingConfig;
+        const label = isLocationQuery(message) ? "Maps" : "Search";
         try {
             const groundingResponse = await ai.models.generateContent({
                 model: MODEL,
                 contents,
-                config: groundingConfig,
+                config: fallbackConfig,
             });
             if (groundingResponse.text) {
-                console.log("[RAG] Grounding fallback triggered.");
+                console.log(`[RAG] Grounding fallback triggered (${label}).`);
                 response = groundingResponse;
             }
         } catch (err) {
-            console.warn("[RAG] Grounding fallback failed:", err);
+            console.warn(`[RAG] Grounding fallback failed (${label}):`, err);
         }
     }
 
