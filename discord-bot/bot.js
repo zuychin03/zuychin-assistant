@@ -35,10 +35,25 @@ client.on(Events.MessageCreate, async (message) => {
     try {
         await message.channel.sendTyping();
 
+        // /search and /think command prefixes
+        let text = message.content.trim();
+        let useSearch = false;
+        let useThinking = false;
+        if (text.startsWith("/search")) {
+            useSearch = true;
+            text = text.slice(7).trim();
+        }
+        if (text.startsWith("/think")) {
+            useThinking = true;
+            text = text.slice(6).trim();
+        }
+
         // Build request body
         const body = {
-            message: message.content.trim() || (attachment ? `[Sent ${attachment.name}]` : ""),
+            message: text || (attachment ? `[Sent ${attachment.name}]` : ""),
             channel: "discord",
+            search: useSearch,
+            thinking: useThinking,
         };
 
         // Download attachment if present (max 20MB)

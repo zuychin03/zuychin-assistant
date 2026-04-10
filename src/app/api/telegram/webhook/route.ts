@@ -47,7 +47,19 @@ export async function POST(req: NextRequest) {
         }
 
         const chatId = message.chat.id;
-        const text = message.text?.trim() || message.caption?.trim() || "";
+        let text = message.text?.trim() || message.caption?.trim() || "";
+
+        // /search and /think command prefixes
+        let useSearch = false;
+        let useThinking = false;
+        if (text.startsWith("/search")) {
+            useSearch = true;
+            text = text.slice(7).trim();
+        }
+        if (text.startsWith("/think")) {
+            useThinking = true;
+            text = text.slice(6).trim();
+        }
 
         // Skip empty messages without attachments
         const photo = message.photo;
@@ -118,7 +130,8 @@ export async function POST(req: NextRequest) {
             message: text || (file ? `[Sent ${file.name}]` : ""),
             channel: "telegram",
             file,
-            thinking: false,
+            thinking: useThinking,
+            search: useSearch,
         });
 
         // Send reply
