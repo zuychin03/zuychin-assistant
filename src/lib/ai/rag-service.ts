@@ -237,29 +237,22 @@ export async function ragChat(params: {
 
     const thinkingOpts = { thinkingConfig: { thinkingLevel: thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW } };
 
-    const combinedConfig = {
-        tools: [
-            { functionDeclarations: toolDeclarations },
-            { googleSearch: {} },
-            { urlContext: {} },
-            { googleMaps: {} },
-        ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        toolConfig: { includeServerSideToolInvocations: true } as any,
+    const mcpConfig = {
+        tools: [{ functionDeclarations: toolDeclarations }],
         ...thinkingOpts,
     };
 
-    const searchOnlyConfig = {
+    const groundingConfig = {
         tools: [{ googleSearch: {} }, { urlContext: {} }, { googleMaps: {} }],
         ...thinkingOpts,
     };
 
-    // Explicit /search: skip MCP tools, use Google Search + URL Context + Maps
+    // Explicit /search: skip MCP tools, use grounding only
     if (search) {
         const response = await ai.models.generateContent({
             model: MODEL,
             contents,
-            config: searchOnlyConfig,
+            config: groundingConfig,
         });
 
         const reply = addCitations(response);
@@ -275,16 +268,19 @@ export async function ragChat(params: {
         return { reply, messageId: userMsgId };
     }
 
-    // Single-pass: built-in tools + MCP function calling
+    // MCP function calling pass
     let response = await ai.models.generateContent({
         model: MODEL,
         contents,
-        config: combinedConfig,
+        config: mcpConfig,
     });
 
+    let usedTool = false;
     for (let round = 0; round < RAG_CONFIG.maxToolRounds; round++) {
         const calls = response.functionCalls;
         if (!calls || calls.length === 0) break;
+
+        usedTool = true;
 
         // Execute all function calls in parallel
         const results = await Promise.all(
@@ -312,8 +308,25 @@ export async function ragChat(params: {
         response = await ai.models.generateContent({
             model: MODEL,
             contents,
-            config: combinedConfig,
+            config: mcpConfig,
         });
+    }
+
+    // Grounding fallback: if no MCP tool was used, try Google Search
+    if (!usedTool) {
+        try {
+            const groundingResponse = await ai.models.generateContent({
+                model: MODEL,
+                contents,
+                config: groundingConfig,
+            });
+            if (groundingResponse.text) {
+                console.log("[RAG] Grounding fallback triggered.");
+                response = groundingResponse;
+            }
+        } catch (err) {
+            console.warn("[RAG] Grounding fallback failed:", err);
+        }
     }
 
     const reply = addCitations(response);
