@@ -11,7 +11,7 @@ function stripMarkdown(text: string): string {
         .replace(/__([^_]+)__/g, "$1")            // __underline__
         .replace(/_([^_]+)_/g, "$1")              // _italic_
         .replace(/~~([^~]+)~~/g, "$1")            // ~~strikethrough~~
-        .replace(/`{3}[\s\S]*?`{3}/g, "")         // ```code blocks```
+        .replace(/`{3}(?:\w+)?\n?([\s\S]*?)`{3}/g, "$1") // ```code blocks``` → content only
         .replace(/`([^`]+)`/g, "$1")              // `inline code`
         .replace(/^>\s?/gm, "")                   // > blockquotes
         .replace(/^[-*]{3,}$/gm, "")              // --- horizontal rules

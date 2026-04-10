@@ -29,7 +29,8 @@ function getMimeType(filePath: string): string {
 }
 
 async function processUpdate(update: Record<string, unknown>) {
-    const message = update.message as Record<string, unknown> | undefined;
+    // Telegram channels send `channel_post`, not `message`
+    const message = (update.message ?? update.channel_post) as Record<string, unknown> | undefined;
     if (!message) return;
 
     const chatId = (message.chat as Record<string, unknown>).id as number;
