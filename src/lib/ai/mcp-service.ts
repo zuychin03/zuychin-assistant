@@ -12,7 +12,7 @@ import {
 export interface McpTool {
     name: string;
     description: string;
-    parameters: Record<string, { type: string; description: string; required?: boolean }>;
+    parameters: Record<string, { type: string; description: string; required?: boolean; enum?: string[] }>;
 }
 
 export const MCP_TOOLS: McpTool[] = [
@@ -73,6 +73,7 @@ export const MCP_TOOLS: McpTool[] = [
                 type: "string",
                 description: "Action to perform: 'create' or 'delete'.",
                 required: true,
+                enum: ["create", "delete"],
             },
             summary: {
                 type: "string",
@@ -194,6 +195,7 @@ export const MCP_TOOLS: McpTool[] = [
                 type: "string",
                 description: "Action: 'add', 'list', 'complete', or 'delete'.",
                 required: true,
+                enum: ["add", "list", "complete", "delete"],
             },
             title: {
                 type: "string",
@@ -209,6 +211,7 @@ export const MCP_TOOLS: McpTool[] = [
                 type: "string",
                 description: "Priority: 'low', 'medium', or 'high' (for add, default: medium).",
                 required: false,
+                enum: ["low", "medium", "high"],
             },
             due_date: {
                 type: "string",
@@ -224,6 +227,7 @@ export const MCP_TOOLS: McpTool[] = [
                 type: "string",
                 description: "Filter for list: 'pending', 'in_progress', 'done', or 'all' (default: pending).",
                 required: false,
+                enum: ["pending", "in_progress", "done", "all"],
             },
         },
     },
@@ -566,9 +570,13 @@ export function buildGeminiFunctionDeclarations() {
             properties: Object.fromEntries(
                 Object.entries(tool.parameters).map(([key, val]) => [
                     key,
-                    { type: typeMap[val.type] ?? Type.STRING, description: val.description },
+                    {
+                        type: typeMap[val.type] ?? Type.STRING,
+                        description: val.description,
+                        ...(val.enum ? { enum: val.enum } : {}),
+                    },
                 ])
-            ) as Record<string, { type: Type; description: string }>,
+            ),
             required: Object.entries(tool.parameters)
                 .filter(([, val]) => val.required)
                 .map(([key]) => key),

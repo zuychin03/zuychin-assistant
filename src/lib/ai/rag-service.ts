@@ -3,6 +3,7 @@ import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, updateConversationTitle } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
 import type { MessageChannel, FileAttachment, Message } from "@/lib/types";
+import type { GenerateContentResponse } from "@google/genai";
 
 
 const RAG_CONFIG = {
@@ -16,6 +17,42 @@ const RAG_CONFIG = {
     maxToolRounds: 5,
 };
 
+
+// Extract inline citations from Google Search grounding metadata
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addCitations(response: GenerateContentResponse): string {
+    let text = response.text ?? "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const candidate = response.candidates?.[0] as any;
+    const supports = candidate?.groundingMetadata?.groundingSupports;
+    const chunks = candidate?.groundingMetadata?.groundingChunks;
+
+    if (!supports?.length || !chunks?.length) return text;
+
+    // Sort by endIndex descending to insert from end (avoids index shifting)
+    const sorted = [...supports].sort(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (a: any, b: any) => (b.segment?.endIndex ?? 0) - (a.segment?.endIndex ?? 0)
+    );
+
+    for (const support of sorted) {
+        const endIndex = support.segment?.endIndex;
+        if (endIndex === undefined || !support.groundingChunkIndices?.length) continue;
+
+        const links = support.groundingChunkIndices
+            .map((i: number) => {
+                const uri = chunks[i]?.web?.uri;
+                return uri ? `[${i + 1}](${uri})` : null;
+            })
+            .filter(Boolean);
+
+        if (links.length > 0) {
+            text = text.slice(0, endIndex) + " " + links.join(", ") + text.slice(endIndex);
+        }
+    }
+
+    return text;
+}
 
 async function summarizeHistory(messages: Message[]): Promise<string> {
     if (messages.length === 0) return "";
@@ -193,32 +230,39 @@ export async function ragChat(params: {
         });
     }
 
-    // Gemini can't combine googleSearch + functionDeclarations
+    // Gemini 3 tool combination: built-in + custom in one pass
     const toolDeclarations = buildGeminiFunctionDeclarations();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const contents: any[] = [{ role: "user", parts }];
 
-    const thinkingOpts = thinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH } } : {};
+    const thinkingOpts = { thinkingConfig: { thinkingLevel: thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW } };
 
-    const toolConfig = {
-        tools: [{ functionDeclarations: toolDeclarations }],
+    const combinedConfig = {
+        tools: [
+            { functionDeclarations: toolDeclarations },
+            { googleSearch: {} },
+            { urlContext: {} },
+            { googleMaps: {} },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        toolConfig: { includeServerSideToolInvocations: true } as any,
         ...thinkingOpts,
     };
 
-    const searchConfig = {
-        tools: [{ googleSearch: {} }],
+    const searchOnlyConfig = {
+        tools: [{ googleSearch: {} }, { urlContext: {} }, { googleMaps: {} }],
         ...thinkingOpts,
     };
 
-    // Explicit /search: skip MCP tools, use Google Search
+    // Explicit /search: skip MCP tools, use Google Search + URL Context + Maps
     if (search) {
         const response = await ai.models.generateContent({
             model: MODEL,
             contents,
-            config: searchConfig,
+            config: searchOnlyConfig,
         });
 
-        const reply = response.text ?? "";
+        const reply = addCitations(response);
 
         await saveMessage({
             role: "assistant",
@@ -231,62 +275,48 @@ export async function ragChat(params: {
         return { reply, messageId: userMsgId };
     }
 
-    // Function-calling pass
+    // Single-pass: built-in tools + MCP function calling
     let response = await ai.models.generateContent({
         model: MODEL,
         contents,
-        config: toolConfig,
+        config: combinedConfig,
     });
 
-    let usedTool = false;
     for (let round = 0; round < RAG_CONFIG.maxToolRounds; round++) {
-        const fc = response.functionCalls?.[0];
-        if (!fc?.name) break;
+        const calls = response.functionCalls;
+        if (!calls || calls.length === 0) break;
 
-        usedTool = true;
-        const toolName = fc.name;
-        console.log(`[MCP] Tool call: ${toolName}(${JSON.stringify(fc.args)})`);
+        // Execute all function calls in parallel
+        const results = await Promise.all(
+            calls.map(async (fc) => {
+                console.log(`[MCP] Tool call: ${fc.name}(${JSON.stringify(fc.args)})`);
+                const result = await executeTool(fc.name!, (fc.args ?? {}) as Record<string, unknown>);
+                console.log(`[MCP] Tool result (${fc.name}): ${result.substring(0, 100)}...`);
+                return { name: fc.name!, result, id: (fc as any).id }; // eslint-disable-line @typescript-eslint/no-explicit-any
+            })
+        );
 
-        const toolResult = await executeTool(toolName, (fc.args ?? {}) as Record<string, unknown>);
-        console.log(`[MCP] Tool result: ${toolResult.substring(0, 100)}...`);
-
+        // Preserve full model response (toolCall, toolResponse, thoughtSignature)
         contents.push(response.candidates![0].content);
         contents.push({
             role: "user",
-            parts: [{
+            parts: results.map((r) => ({
                 functionResponse: {
-                    name: toolName,
-                    response: { result: toolResult },
+                    name: r.name,
+                    response: { result: r.result },
+                    id: r.id,
                 },
-            }],
+            })),
         });
 
         response = await ai.models.generateContent({
             model: MODEL,
             contents,
-            config: toolConfig,
+            config: combinedConfig,
         });
     }
 
-    // Fallback: try Google Search grounding if no tool was invoked
-    if (!usedTool) {
-        try {
-            console.log("[RAG] No tool used, trying Google Search grounding...");
-            const searchResponse = await ai.models.generateContent({
-                model: MODEL,
-                contents,
-                config: searchConfig,
-            });
-            if (searchResponse.text && searchResponse.text.length > 0) {
-                console.log("[RAG] Google Search grounding returned results.");
-                response = searchResponse;
-            }
-        } catch (searchErr) {
-            console.warn("[RAG] Google Search grounding failed:", searchErr);
-        }
-    }
-
-    const reply = response.text ?? "";
+    const reply = addCitations(response);
 
     await saveMessage({
         role: "assistant",
