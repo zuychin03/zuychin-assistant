@@ -5,7 +5,7 @@ const apiKey = process.env.GEMINI_API_KEY!;
 export const ai = new GoogleGenAI({ apiKey });
 
 export const MODEL = "gemini-3-flash-preview";
-export const EMBEDDING_MODEL = "gemini-embedding-001";
+export const EMBEDDING_MODEL = "gemini-embedding-2-preview";
 
 /** Returns a 768-dim embedding vector for the given text. */
 export async function generateEmbedding(text: string): Promise<number[]> {
