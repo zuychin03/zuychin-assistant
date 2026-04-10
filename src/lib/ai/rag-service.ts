@@ -98,8 +98,9 @@ export async function ragChat(params: {
     file?: FileAttachment;
     conversationId?: string;
     thinking?: boolean;
+    search?: boolean;
 }): Promise<{ reply: string; messageId: string }> {
-    const { message, channel, imageBase64, file, conversationId, thinking = false } = params;
+    const { message, channel, imageBase64, file, conversationId, thinking = false, search = false } = params;
 
     const profile = await getDefaultProfile();
     const sysPrompt = profile?.systemPrompt ??
@@ -209,6 +210,27 @@ export async function ragChat(params: {
         ...thinkingOpts,
     };
 
+    // If search is explicitly requested, skip MCP tools and use Google Search directly
+    if (search) {
+        const response = await ai.models.generateContent({
+            model: MODEL,
+            contents,
+            config: searchConfig,
+        });
+
+        const reply = response.text ?? "";
+
+        await saveMessage({
+            role: "assistant",
+            content: reply,
+            channel,
+            userProfileId: profile?.id,
+            conversationId,
+        });
+
+        return { reply, messageId: userMsgId };
+    }
+
     // Function calling pass
     let response = await ai.models.generateContent({
         model: MODEL,
@@ -246,19 +268,22 @@ export async function ragChat(params: {
         });
     }
 
-    // No tool used — retry with Google Search grounding
+    // No MCP tool used — automatically try Google Search grounding
+    // This gives the model access to current/real-time information
     if (!usedTool) {
         try {
+            console.log("[RAG] No tool used, trying Google Search grounding...");
             const searchResponse = await ai.models.generateContent({
                 model: MODEL,
-                contents: [{ role: "user", parts }],
+                contents,
                 config: searchConfig,
             });
             if (searchResponse.text && searchResponse.text.length > 0) {
+                console.log("[RAG] Google Search grounding returned results.");
                 response = searchResponse;
             }
         } catch (searchErr) {
-            console.warn("[RAG] Google Search grounding failed, using tool response:", searchErr);
+            console.warn("[RAG] Google Search grounding failed:", searchErr);
         }
     }
 
