@@ -18,6 +18,9 @@ const client = new Client({
     ],
 });
 
+// Deduplication guard: both bot instances receive the same gateway event
+const processedIds = new Set();
+
 client.once(Events.ClientReady, (c) => {
     console.log(`[Bot] Online as ${c.user.tag}`);
 });
@@ -25,6 +28,14 @@ client.once(Events.ClientReady, (c) => {
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
+
+    // Skip if already handled by another instance
+    if (processedIds.has(message.id)) return;
+    processedIds.add(message.id);
+    if (processedIds.size > 1000) {
+        const first = processedIds.values().next().value;
+        processedIds.delete(first);
+    }
 
     const hasText = message.content.trim().length > 0;
     const attachment = message.attachments.first();

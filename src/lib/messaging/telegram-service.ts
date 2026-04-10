@@ -1,6 +1,24 @@
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
+// Strip markdown and links for clean plain-text Telegram messages
+function stripMarkdown(text: string): string {
+    return text
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")  // [text](url) → text
+        .replace(/^#{1,6}\s+/gm, "")              // ## headings
+        .replace(/\*\*([^*]+)\*\*/g, "$1")        // **bold**
+        .replace(/\*([^*]+)\*/g, "$1")            // *italic*
+        .replace(/__([^_]+)__/g, "$1")            // __underline__
+        .replace(/_([^_]+)_/g, "$1")              // _italic_
+        .replace(/~~([^~]+)~~/g, "$1")            // ~~strikethrough~~
+        .replace(/`{3}[\s\S]*?`{3}/g, "")         // ```code blocks```
+        .replace(/`([^`]+)`/g, "$1")              // `inline code`
+        .replace(/^>\s?/gm, "")                   // > blockquotes
+        .replace(/^[-*]{3,}$/gm, "")              // --- horizontal rules
+        .replace(/\n{3,}/g, "\n\n")               // collapse excess newlines
+        .trim();
+}
+
 export async function sendTelegramMessage(
     chatId: string | number,
     text: string
@@ -10,31 +28,19 @@ export async function sendTelegramMessage(
         return false;
     }
 
-    try {
-        const chunks = text.length > 4096 ? splitMessage(text, 4096) : [text];
+    const plain = stripMarkdown(text);
+    const chunks = plain.length > 4096 ? splitMessage(plain, 4096) : [plain];
 
+    try {
         for (const chunk of chunks) {
-            let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+            const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     chat_id: chatId,
                     text: chunk,
-                    parse_mode: "Markdown",
                 }),
             });
-
-            // Markdown parse failure — retry as plain text
-            if (res.status === 400) {
-                res = await fetch(`${TELEGRAM_API}/sendMessage`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        chat_id: chatId,
-                        text: chunk,
-                    }),
-                });
-            }
 
             if (!res.ok) {
                 const err = await res.text();
