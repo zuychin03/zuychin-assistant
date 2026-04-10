@@ -14,7 +14,7 @@ export async function sendTelegramMessage(
         const chunks = text.length > 4096 ? splitMessage(text, 4096) : [text];
 
         for (const chunk of chunks) {
-            const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+            let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -23,6 +23,18 @@ export async function sendTelegramMessage(
                     parse_mode: "Markdown",
                 }),
             });
+
+            // Markdown parse failure — retry as plain text
+            if (res.status === 400) {
+                res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        chat_id: chatId,
+                        text: chunk,
+                    }),
+                });
+            }
 
             if (!res.ok) {
                 const err = await res.text();

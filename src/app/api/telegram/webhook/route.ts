@@ -50,15 +50,14 @@ export async function POST(req: NextRequest) {
         let text = message.text?.trim() || message.caption?.trim() || "";
 
         // /search and /think command prefixes
+        // Telegram may append bot username: /search@botname query
         let useSearch = false;
         let useThinking = false;
-        if (text.startsWith("/search")) {
-            useSearch = true;
-            text = text.slice(7).trim();
-        }
-        if (text.startsWith("/think")) {
-            useThinking = true;
-            text = text.slice(6).trim();
+        const commandMatch = text.match(/^\/(search|think)(?:@\S+)?\s*([\s\S]*)/);
+        if (commandMatch) {
+            if (commandMatch[1] === "search") useSearch = true;
+            if (commandMatch[1] === "think") useThinking = true;
+            text = commandMatch[2].trim();
         }
 
         // Skip empty messages without attachments
