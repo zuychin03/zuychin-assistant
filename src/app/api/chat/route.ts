@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false } = body;
 
-        // Validate input
+
         if (!message || typeof message !== "string") {
             return NextResponse.json(
                 { error: "Message is required." },
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // Validate file
+
         let validatedFile: FileAttachment | undefined;
         if (file) {
             if (!ALL_SUPPORTED_MIME_TYPES.includes(file.mimeType)) {
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
             validatedFile = file;
         }
 
-        // Run RAG pipeline
+
         const { reply, messageId } = await ragChat({
             message: message.trim(),
             channel,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateSystemPrompt, getDefaultProfile } from "@/lib/db";
 
-/** PUT /api/admin/personality — Update bot personality */
+// PUT /api/admin/personality
 
 export async function PUT(req: NextRequest) {
     try {

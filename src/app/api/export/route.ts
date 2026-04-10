@@ -6,17 +6,17 @@ import {
 } from "docx";
 import PDFDocument from "pdfkit";
 
-// Markdown block types
+
 type BlockType = "h1" | "h2" | "h3" | "bullet" | "numbered" | "code" | "paragraph" | "hr" | "table";
 
 interface Block {
     type: BlockType;
     text: string;
-    items?: string[];       // code blocks (multi-line)
-    tableRows?: string[][]; // table rows (header + data), each row is array of cells
+    items?: string[];
+    tableRows?: string[][];
 }
 
-/** Parse markdown text into structured blocks. */
+
 function parseMarkdown(content: string): Block[] {
     const lines = content.split("\n");
     const blocks: Block[] = [];
@@ -28,7 +28,7 @@ function parseMarkdown(content: string): Block[] {
         if (tableBuffer.length === 0) return;
         const rows: string[][] = [];
         for (const tLine of tableBuffer) {
-            // Skip separator rows (|---|---|)
+            // Skip separator rows
             if (/^\|[\s\-:|]+\|$/.test(tLine.trim())) continue;
             const cells = tLine
                 .trim()
@@ -45,7 +45,7 @@ function parseMarkdown(content: string): Block[] {
     };
 
     for (const line of lines) {
-        // Code fence
+
         if (line.trimStart().startsWith("```")) {
             flushTable();
             if (inCodeBlock) {
@@ -65,7 +65,7 @@ function parseMarkdown(content: string): Block[] {
 
         const trimmed = line.trim();
 
-        // Table row detection: starts and ends with |
+
         if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
             tableBuffer.push(trimmed);
             continue;
@@ -75,7 +75,7 @@ function parseMarkdown(content: string): Block[] {
 
         if (!trimmed) continue;
 
-        // Headings
+
         if (trimmed.startsWith("### ")) {
             blocks.push({ type: "h3", text: trimmed.slice(4) });
         } else if (trimmed.startsWith("## ")) {
@@ -83,25 +83,25 @@ function parseMarkdown(content: string): Block[] {
         } else if (trimmed.startsWith("# ")) {
             blocks.push({ type: "h1", text: trimmed.slice(2) });
         }
-        // Horizontal rule
+
         else if (/^[-*_]{3,}$/.test(trimmed)) {
             blocks.push({ type: "hr", text: "" });
         }
-        // Bullet list
+
         else if (/^[-*+]\s/.test(trimmed)) {
             blocks.push({ type: "bullet", text: trimmed.replace(/^[-*+]\s/, "") });
         }
-        // Numbered list
+
         else if (/^\d+\.\s/.test(trimmed)) {
             blocks.push({ type: "numbered", text: trimmed.replace(/^\d+\.\s/, "") });
         }
-        // Regular paragraph
+
         else {
             blocks.push({ type: "paragraph", text: trimmed });
         }
     }
 
-    // Flush remaining
+
     flushTable();
     if (inCodeBlock && codeLines.length > 0) {
         blocks.push({ type: "code", text: "", items: codeLines });
@@ -110,7 +110,7 @@ function parseMarkdown(content: string): Block[] {
     return blocks;
 }
 
-/** Strip basic markdown formatting (**bold**, *italic*, `code`). */
+
 function stripInlineMarkdown(text: string): string {
     return text
         .replace(/\*\*(.+?)\*\*/g, "$1")
@@ -119,7 +119,7 @@ function stripInlineMarkdown(text: string): string {
         .replace(/\[(.+?)\]\(.+?\)/g, "$1");
 }
 
-/** Build inline TextRuns with bold/italic/code formatting from markdown. */
+
 function buildTextRuns(text: string, baseBold = false): TextRun[] {
     const runs: TextRun[] = [];
     const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[(.+?)\]\(.+?\))/g;
@@ -153,7 +153,7 @@ function buildTextRuns(text: string, baseBold = false): TextRun[] {
     return runs;
 }
 
-// ── DOCX Table Builder ──
+
 
 function buildDocxTable(rows: string[][]): Table {
     const colCount = Math.max(...rows.map(r => r.length));
@@ -187,14 +187,14 @@ function buildDocxTable(rows: string[][]): Table {
     });
 }
 
-// ── DOCX Generation ──
+
 
 async function generateDocx(content: string, title: string): Promise<Buffer> {
     const blocks = parseMarkdown(content);
-    // Table and Paragraph are both valid section children
+
     const children: (Paragraph | Table)[] = [];
 
-    // Title
+
     children.push(
         new Paragraph({
             children: [new TextRun({ text: title, bold: true, size: 32, font: "Calibri" })],
@@ -297,7 +297,7 @@ async function generateDocx(content: string, title: string): Promise<Buffer> {
     return Buffer.from(await Packer.toBuffer(doc));
 }
 
-// ── PDF Table Builder ──
+
 
 function drawPdfTable(doc: PDFKit.PDFDocument, rows: string[][]) {
     const colCount = Math.max(...rows.map(r => r.length));
@@ -311,7 +311,7 @@ function drawPdfTable(doc: PDFKit.PDFDocument, rows: string[][]) {
         const row = rows[rowIdx];
         const isHeader = rowIdx === 0;
 
-        // Measure row height based on text wrapping
+    
         let maxHeight = 20;
         for (let colIdx = 0; colIdx < colCount; colIdx++) {
             const cellText = stripInlineMarkdown(row[colIdx] ?? "");
@@ -321,27 +321,27 @@ function drawPdfTable(doc: PDFKit.PDFDocument, rows: string[][]) {
             if (textHeight > maxHeight) maxHeight = textHeight;
         }
 
-        // Check page break
+    
         if (doc.y + maxHeight > 760) {
             doc.addPage();
         }
 
         const rowY = doc.y;
 
-        // Draw header background
+    
         if (isHeader) {
             doc.rect(startX, rowY, pageWidth, maxHeight).fill("#E8E8E8").fillColor("black");
         }
 
-        // Draw cells
+    
         for (let colIdx = 0; colIdx < colCount; colIdx++) {
             const cellText = stripInlineMarkdown(row[colIdx] ?? "");
             const cellX = startX + colIdx * colWidth;
 
-            // Cell border
+
             doc.rect(cellX, rowY, colWidth, maxHeight).strokeColor("#CCCCCC").stroke();
 
-            // Cell text
+
             doc.fontSize(fontSize)
                 .font(isHeader ? "Helvetica-Bold" : "Helvetica")
                 .fillColor("black")
@@ -351,7 +351,7 @@ function drawPdfTable(doc: PDFKit.PDFDocument, rows: string[][]) {
                 });
         }
 
-        // Move cursor below row
+
         doc.y = rowY + maxHeight;
         doc.x = startX;
     }
@@ -359,7 +359,7 @@ function drawPdfTable(doc: PDFKit.PDFDocument, rows: string[][]) {
     doc.moveDown(0.5);
 }
 
-// ── PDF Generation ──
+
 
 async function generatePdf(content: string, title: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
@@ -375,7 +375,7 @@ async function generatePdf(content: string, title: string): Promise<Buffer> {
 
         const blocks = parseMarkdown(content);
 
-        // Title
+
         doc.fontSize(20).font("Helvetica-Bold").text(title, { align: "left" });
         doc.moveDown(0.5);
         doc.moveTo(60, doc.y).lineTo(535, doc.y).strokeColor("#cccccc").stroke();
@@ -436,7 +436,7 @@ async function generatePdf(content: string, title: string): Promise<Buffer> {
     });
 }
 
-// ── Route Handler ──
+// POST /api/export
 
 export async function POST(req: NextRequest) {
     try {

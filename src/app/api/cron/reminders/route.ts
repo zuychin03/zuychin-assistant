@@ -8,7 +8,7 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const LOOKAHEAD_MINUTES = 15;
 
-// POST /api/cron/reminders — sends Discord reminders for imminent calendar events
+// POST /api/cron/reminders
 export async function POST(req: NextRequest) {
     try {
         const authHeader = req.headers.get("authorization");

@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getDefaultProfile } from "@/lib/db";
 
-/** GET /api/admin/status — Bot health & stats */
+// GET /api/admin/status
 
 export async function GET() {
     try {
         const profile = await getDefaultProfile();
 
-        // Get message counts
+
         const { count: totalMessages } = await supabase
             .from("messages")
             .select("*", { count: "exact", head: true });
@@ -17,7 +17,7 @@ export async function GET() {
             .from("embeddings")
             .select("*", { count: "exact", head: true });
 
-        // Get last activity
+
         const { data: lastMsg } = await supabase
             .from("messages")
             .select("created_at, channel")
@@ -25,7 +25,7 @@ export async function GET() {
             .limit(1)
             .single();
 
-        // Channel breakdown
+
         const { data: channelStats } = await supabase
             .from("messages")
             .select("channel");

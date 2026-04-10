@@ -1,10 +1,9 @@
-// Discord REST API — no Gateway dependency.
-// Sends messages via the Discord bot token without a persistent connection.
+
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_API = "https://discord.com/api/v10";
 
-/** Send a text message to a Discord channel via REST API. */
+
 export async function sendDiscordMessage(
     channelId: string,
     text: string
@@ -41,7 +40,7 @@ export async function sendDiscordMessage(
     }
 }
 
-/** Split text into chunks at newline/space boundaries. */
+
 function splitMessage(text: string, maxLength: number): string[] {
     const chunks: string[] = [];
     let remaining = text;

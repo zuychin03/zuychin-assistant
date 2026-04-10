@@ -8,7 +8,7 @@ const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// POST /api/cron/daily-briefing — morning summary of emails + calendar to Discord
+// POST /api/cron/daily-briefing
 export async function POST(req: NextRequest) {
     try {
         const authHeader = req.headers.get("authorization");

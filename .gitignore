@@ -47,7 +47,6 @@ next-env.d.ts
 # docs (local dev docs)
 docs/
 CHANGELOG.md
-README.md
 
 # supabase (migrations run manually)
 supabase/

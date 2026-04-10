@@ -9,7 +9,7 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 // Vercel Pro: up to 60s
 export const maxDuration = 60;
 
-// Telegram file_id -> mime type mapping
+// File extension to MIME type mapping
 const MIME_MAP: Record<string, string> = {
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
@@ -28,9 +28,9 @@ function getMimeType(filePath: string): string {
     return MIME_MAP[ext] || "application/octet-stream";
 }
 
-// POST /api/telegram/webhook — receives updates from Telegram
+// POST /api/telegram/webhook
 export async function POST(req: NextRequest) {
-    // Validate webhook secret
+
     const secretHeader = req.headers.get("x-telegram-bot-api-secret-token");
     if (WEBHOOK_SECRET && secretHeader !== WEBHOOK_SECRET) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -46,8 +46,7 @@ export async function POST(req: NextRequest) {
         const chatId = message.chat.id;
         let text = message.text?.trim() || message.caption?.trim() || "";
 
-        // /search and /think command prefixes
-        // Telegram may append bot username: /search@botname query
+        // Command prefixes: /search, /think
         let useSearch = false;
         let useThinking = false;
         const commandMatch = text.match(/^\/(search|think)(?:@\S+)?\s*([\s\S]*)/);
@@ -57,7 +56,7 @@ export async function POST(req: NextRequest) {
             text = commandMatch[2].trim();
         }
 
-        // Politely decline voice/audio messages (not supported)
+        // Decline voice/audio (unsupported)
         if (message.voice || message.audio) {
             await sendTelegramMessage(chatId, "🎙️ Voice messages aren't supported yet. Please type your message instead!");
             return NextResponse.json({ ok: true });
@@ -87,7 +86,7 @@ export async function POST(req: NextRequest) {
                 let fileSize = 0;
 
                 if (photo) {
-                    // Photos come as array of sizes, pick the largest
+                    // Pick the largest photo size
                     const largest = photo[photo.length - 1];
                     fileId = largest.file_id;
                     fileName = "photo.jpg";

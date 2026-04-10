@@ -43,7 +43,6 @@ export async function middleware(req: NextRequest) {
 
   const accessPassword = process.env.ACCESS_PASSWORD;
 
-  // If no password is configured, allow all requests (dev convenience)
   if (!accessPassword) {
     return NextResponse.next();
   }

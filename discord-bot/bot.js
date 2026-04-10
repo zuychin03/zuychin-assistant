@@ -35,7 +35,7 @@ client.on(Events.MessageCreate, async (message) => {
     try {
         await message.channel.sendTyping();
 
-        // /search and /think command prefixes
+
         let text = message.content.trim();
         let useSearch = false;
         let useThinking = false;
@@ -48,7 +48,7 @@ client.on(Events.MessageCreate, async (message) => {
             text = text.slice(6).trim();
         }
 
-        // Build request body
+
         const body = {
             message: text || (attachment ? `[Sent ${attachment.name}]` : ""),
             channel: "discord",
@@ -56,7 +56,7 @@ client.on(Events.MessageCreate, async (message) => {
             thinking: useThinking,
         };
 
-        // Download attachment if present (max 20MB)
+        // Download attachment (max 20MB)
         if (attachment && attachment.size <= 20 * 1024 * 1024) {
             try {
                 const fileRes = await fetch(attachment.url);
@@ -92,7 +92,7 @@ client.on(Events.MessageCreate, async (message) => {
         const data = await res.json();
         const reply = data.reply || "No response.";
 
-        // Discord 2000 char limit
+        // Discord 2000-char limit
         if (reply.length <= 2000) {
             await message.reply(reply);
         } else {
@@ -107,7 +107,7 @@ client.on(Events.MessageCreate, async (message) => {
     }
 });
 
-// Split text at newline/space boundaries
+
 function splitMessage(text, maxLen) {
     const chunks = [];
     let remaining = text;

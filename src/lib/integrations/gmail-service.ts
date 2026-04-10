@@ -24,7 +24,7 @@ export interface EmailMessage {
     date: string;
 }
 
-// Supports Gmail search filters: "from:john", "label:work", "category:promotions", etc.
+
 export async function listUnreadEmails(
     maxResults: number = 10,
     query?: string

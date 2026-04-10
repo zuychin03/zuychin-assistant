@@ -44,7 +44,7 @@ export async function listUpcomingEvents(
 export async function createCalendarEvent(event: CalendarEvent): Promise<CalendarEvent> {
     const cal = getCalendar();
 
-    const isAllDay = event.start.length === 10; // "2026-03-20" = all-day
+    const isAllDay = event.start.length === 10;
 
     const requestBody: Record<string, unknown> = {
         summary: event.summary,

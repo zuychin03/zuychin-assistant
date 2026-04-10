@@ -22,11 +22,11 @@ export interface ChatRequest {
 export interface FileAttachment {
     name: string;
     mimeType: string;
-    base64: string;       // base64-encoded file data
-    size: number;         // bytes
+    base64: string;
+    size: number;
 }
 
-// Supported MIME types for Gemini multimodal
+
 export const SUPPORTED_MIME_TYPES: Record<string, string[]> = {
     images: ["image/jpeg", "image/png", "image/webp", "image/heic"],
     audio: ["audio/mp3", "audio/mpeg", "audio/wav", "audio/flac", "audio/ogg", "audio/m4a", "audio/x-aac"],

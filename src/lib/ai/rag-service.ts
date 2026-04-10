@@ -1,4 +1,5 @@
 import { generateEmbedding, ai, MODEL } from "@/lib/gemini";
+import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, updateConversationTitle } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
 import type { MessageChannel, FileAttachment, Message } from "@/lib/types";
@@ -86,7 +87,7 @@ async function isDuplicateEmbedding(
         });
         return dupes.length > 0;
     } catch {
-        return false; // Default: allow storage on error
+        return false;
     }
 }
 
@@ -192,13 +193,12 @@ export async function ragChat(params: {
         });
     }
 
-    // Gemini API can't combine googleSearch + functionDeclarations.
-    // Try function calling first; fall back to Google Search if no tool was used.
+    // Gemini can't combine googleSearch + functionDeclarations
     const toolDeclarations = buildGeminiFunctionDeclarations();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const contents: any[] = [{ role: "user", parts }];
 
-    const thinkingOpts = thinking ? { thinkingConfig: { thinkingBudget: 8192 } } : {};
+    const thinkingOpts = thinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH } } : {};
 
     const toolConfig = {
         tools: [{ functionDeclarations: toolDeclarations }],
@@ -210,7 +210,7 @@ export async function ragChat(params: {
         ...thinkingOpts,
     };
 
-    // If search is explicitly requested, skip MCP tools and use Google Search directly
+    // Explicit /search: skip MCP tools, use Google Search
     if (search) {
         const response = await ai.models.generateContent({
             model: MODEL,
@@ -231,7 +231,7 @@ export async function ragChat(params: {
         return { reply, messageId: userMsgId };
     }
 
-    // Function calling pass
+    // Function-calling pass
     let response = await ai.models.generateContent({
         model: MODEL,
         contents,
@@ -268,8 +268,7 @@ export async function ragChat(params: {
         });
     }
 
-    // No MCP tool used — automatically try Google Search grounding
-    // This gives the model access to current/real-time information
+    // Fallback: try Google Search grounding if no tool was invoked
     if (!usedTool) {
         try {
             console.log("[RAG] No tool used, trying Google Search grounding...");

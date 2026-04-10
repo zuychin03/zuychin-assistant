@@ -11,13 +11,10 @@ const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-/**
- * POST /api/cron/proactive
- * External cron endpoint. Generates proactive messages (briefings, reminders, check-ins).
- */
+// POST /api/cron/proactive
 export async function POST(req: NextRequest) {
     try {
-        // Bearer token auth
+
         const authHeader = req.headers.get("authorization");
         if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -26,13 +23,13 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { type = "daily_check" } = body;
 
-        // Profile lookup
+
         const profile = await getDefaultProfile();
         if (!profile) {
             return NextResponse.json({ message: "No user profile found." });
         }
 
-        // Recent activity check
+
         const recentMessages = await getRecentMessages(5);
         const hasRecentActivity = recentMessages.some((m) => {
             const msgTime = new Date(m.createdAt).getTime();
@@ -40,7 +37,7 @@ export async function POST(req: NextRequest) {
             return msgTime > hourAgo;
         });
 
-        // Prompt construction
+
         let proactivePrompt = "";
 
         switch (type) {
@@ -80,7 +77,7 @@ Be friendly and concise.`;
                 return NextResponse.json({ error: "Unknown proactive type." }, { status: 400 });
         }
 
-        // Gemini generation
+
         const result = await ai.models.generateContent({
             model: MODEL,
             contents: proactivePrompt,
