@@ -270,7 +270,7 @@ export async function ragChat(params: {
             config: groundingConfig,
         });
 
-        const reply = addCitations(response);
+        const reply = channel === "telegram" ? (response.text ?? "") : addCitations(response);
 
         try {
             await saveMessage({
@@ -350,7 +350,7 @@ export async function ragChat(params: {
         }
     }
 
-    const reply = addCitations(response);
+    const reply = channel === "telegram" ? (response.text ?? "") : addCitations(response);
 
     try {
         await saveMessage({
