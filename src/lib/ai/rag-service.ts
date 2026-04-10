@@ -235,7 +235,6 @@ export async function ragChat(params: {
         });
     }
 
-    // Gemini 3 tool combination: built-in + custom in one pass
     const toolDeclarations = buildGeminiFunctionDeclarations();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const contents: any[] = [{ role: "user", parts }];
