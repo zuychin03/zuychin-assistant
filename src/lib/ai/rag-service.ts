@@ -144,13 +144,18 @@ export async function ragChat(params: {
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 
-    const userMsgId = await saveMessage({
-        role: "user",
-        content: message,
-        channel,
-        userProfileId: profile?.id,
-        conversationId,
-    });
+    let userMsgId = "";
+    try {
+        userMsgId = await saveMessage({
+            role: "user",
+            content: message,
+            channel,
+            userProfileId: profile?.id,
+            conversationId,
+        });
+    } catch (err) {
+        console.error("[RAG] Failed to save user message:", err);
+    }
 
     const queryEmbedding = await generateEmbedding(message);
 
@@ -268,13 +273,17 @@ export async function ragChat(params: {
 
         const reply = addCitations(response);
 
-        await saveMessage({
-            role: "assistant",
-            content: reply,
-            channel,
-            userProfileId: profile?.id,
-            conversationId,
-        });
+        try {
+            await saveMessage({
+                role: "assistant",
+                content: reply,
+                channel,
+                userProfileId: profile?.id,
+                conversationId,
+            });
+        } catch (err) {
+            console.error("[RAG] Failed to save assistant message:", err);
+        }
 
         return { reply, messageId: userMsgId };
     }
@@ -344,13 +353,17 @@ export async function ragChat(params: {
 
     const reply = addCitations(response);
 
-    await saveMessage({
-        role: "assistant",
-        content: reply,
-        channel,
-        userProfileId: profile?.id,
-        conversationId,
-    });
+    try {
+        await saveMessage({
+            role: "assistant",
+            content: reply,
+            channel,
+            userProfileId: profile?.id,
+            conversationId,
+        });
+    } catch (err) {
+        console.error("[RAG] Failed to save assistant message:", err);
+    }
 
     if (conversationId) {
         try {
