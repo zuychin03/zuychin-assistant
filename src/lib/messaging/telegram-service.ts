@@ -1,22 +1,21 @@
+import { convert } from "telegram-markdown-v2";
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
-// Strip markdown and links for clean plain-text Telegram messages
-function stripMarkdown(text: string): string {
-    return text
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")  // [text](url) → text
-        .replace(/^#{1,6}\s+/gm, "")              // ## headings
-        .replace(/\*\*([^*]+)\*\*/g, "$1")        // **bold**
-        .replace(/\*([^*]+)\*/g, "$1")            // *italic*
-        .replace(/__([^_]+)__/g, "$1")            // __underline__
-        .replace(/_([^_]+)_/g, "$1")              // _italic_
-        .replace(/~~([^~]+)~~/g, "$1")            // ~~strikethrough~~
-        .replace(/`{3}(?:\w+)?\n?([\s\S]*?)`{3}/g, "$1") // ```code blocks``` → content only
-        .replace(/`([^`]+)`/g, "$1")              // `inline code`
-        .replace(/^>\s?/gm, "")                   // > blockquotes
-        .replace(/^[-*]{3,}$/gm, "")              // --- horizontal rules
-        .replace(/\n{3,}/g, "\n\n")               // collapse excess newlines
-        .trim();
+// Convert standard markdown to Telegram MarkdownV2 format
+function toTelegramMarkdown(text: string): string {
+    try {
+        return convert(text);
+    } catch {
+        console.warn("[Telegram] MarkdownV2 conversion failed, escaping as plain text.");
+        return escapeTelegramPlain(text);
+    }
+}
+
+// Escape special chars for MarkdownV2 plain-text fallback
+function escapeTelegramPlain(text: string): string {
+    return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
 }
 
 export async function sendTelegramMessage(
@@ -28,19 +27,34 @@ export async function sendTelegramMessage(
         return false;
     }
 
-    const plain = stripMarkdown(text);
-    const chunks = plain.length > 4096 ? splitMessage(plain, 4096) : [plain];
+    const formatted = toTelegramMarkdown(text);
+    const chunks = formatted.length > 4096 ? splitMessage(formatted, 4096) : [formatted];
 
     try {
         for (const chunk of chunks) {
-            const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+            // Try sending with MarkdownV2 first
+            let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     chat_id: chatId,
                     text: chunk,
+                    parse_mode: "MarkdownV2",
                 }),
             });
+
+            // Fallback to plain text if MarkdownV2 is rejected
+            if (!res.ok) {
+                console.warn("[Telegram] MarkdownV2 rejected, falling back to plain text.");
+                res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        chat_id: chatId,
+                        text: text.length > 4096 ? text.substring(0, 4096) : text,
+                    }),
+                });
+            }
 
             if (!res.ok) {
                 const err = await res.text();
