@@ -1,6 +1,6 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
-import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, updateConversationTitle } from "@/lib/db";
+import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
 import { resolveChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
@@ -77,6 +77,32 @@ ${transcript}`,
         return response.text?.trim() ?? "";
     } catch {
         return transcript.slice(-500);
+    }
+}
+
+// Ask the model for a short topic title from the first exchange. Always uses
+// Gemini Flash (cheap) regardless of the chat model the user picked. Falls back to
+// a trimmed version of the first message if the call fails.
+async function generateConversationTitle(userMessage: string, reply: string): Promise<string> {
+    const fallback = userMessage.length > 40 ? userMessage.slice(0, 40).trim() + "..." : userMessage;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL,
+            contents: `Write a short, specific topic title (3-6 words, Title Case) for this conversation.
+Return ONLY the title - no quotes, no trailing punctuation, no "Title:" prefix.
+
+User: ${userMessage}
+Assistant: ${reply}`,
+        });
+
+        let title = (response.text ?? "").trim();
+        // strip wrapping quotes and any trailing punctuation the model adds
+        title = title.replace(/^["'`]+|["'`]+$/g, "").replace(/[.!?,;:]+$/, "").trim();
+        if (!title) return fallback;
+        return title.length > 60 ? title.slice(0, 60).trim() : title;
+    } catch {
+        return fallback;
     }
 }
 
@@ -266,10 +292,16 @@ export async function ragChat(params: {
         console.error("[RAG] Failed to save assistant message:", err);
     }
 
+    // Title the conversation once, on the first message, then leave it alone. We
+    // only (re)generate while it's still the default "New Chat" so a failed first
+    // attempt can recover, but an existing title is never overwritten.
     if (conversationId) {
         try {
-            const title = message.length > 40 ? message.slice(0, 40) + "..." : message;
-            await updateConversationTitle(conversationId, title);
+            const convo = await getConversation(conversationId);
+            if (!convo?.title || convo.title === "New Chat") {
+                const title = await generateConversationTitle(message, reply);
+                await updateConversationTitle(conversationId, title);
+            }
         } catch { /* non-critical */ }
     }
 

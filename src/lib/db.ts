@@ -201,6 +201,23 @@ export async function listConversations(
     }));
 }
 
+export async function getConversation(
+    id: string
+): Promise<{ id: string; title: string } | null> {
+    const { data, error } = await supabase
+        .from("conversations")
+        .select("id, title")
+        .eq("id", id)
+        .single();
+
+    if (error) {
+        console.error("[DB] Failed to fetch conversation:", error.message);
+        return null;
+    }
+
+    return { id: data.id, title: data.title };
+}
+
 export async function deleteConversation(id: string): Promise<void> {
     const { error } = await supabase
         .from("conversations")
