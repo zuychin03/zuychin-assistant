@@ -5,6 +5,7 @@ import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-servi
 import { resolveChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
+import { currentDateTimeContext } from "@/lib/datetime";
 import type { MessageChannel, FileAttachment, Message } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
@@ -226,8 +227,9 @@ export async function ragChat(params: {
         }).catch((err) => console.warn("[RAG] Failed to store embedding:", err));
     }
 
-    // build the context block: system prompt + memories + history
+    // build the context block: system prompt + current date/time + memories + history
     let contextBlock = sysPrompt + "\n\n";
+    contextBlock += currentDateTimeContext() + "\n\n";
     if (relevantContext) contextBlock += `## Relevant Memories\n${relevantContext}\n\n`;
     if (historySection) contextBlock += `${historySection}\n\n`;
 

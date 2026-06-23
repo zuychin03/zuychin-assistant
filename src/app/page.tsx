@@ -44,7 +44,7 @@ interface GenParamsState {
 
 // Custom dropdown with provider-grouped options (replaces native <select>).
 function SelectMenu({
-  icon, groups, value, onChange, ariaLabel, align = "left",
+  icon, groups, value, onChange, ariaLabel, align = "left", compact = false,
 }: {
   icon: React.ReactNode;
   groups: { label: string; options: { value: string; label: string }[] }[];
@@ -52,6 +52,7 @@ function SelectMenu({
   onChange: (v: string) => void;
   ariaLabel: string;
   align?: "left" | "right";
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -68,11 +69,11 @@ function SelectMenu({
   const current = groups.flatMap((g) => g.options).find((o) => o.value === value);
 
   return (
-    <div ref={ref} style={dropdown.wrap}>
+    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}) }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        style={{ ...dropdown.trigger, ...(open ? dropdown.triggerOpen : {}) }}
+        style={{ ...dropdown.trigger, ...(compact ? { width: "100%" } : {}), ...(open ? dropdown.triggerOpen : {}) }}
         aria-label={ariaLabel}
         title={current?.label}
       >
@@ -546,6 +547,39 @@ export default function Home() {
     }
   };
 
+  const renderModelSelectors = (compact: boolean) =>
+    providers.length > 0 ? (
+      <>
+        <SelectMenu
+          compact={compact}
+          ariaLabel="Chat model"
+          icon={<Cpu size={14} color="var(--color-primary)" />}
+          value={chatSel}
+          onChange={handleChatSelChange}
+          groups={providers.map((p) => ({
+            label: p.label,
+            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
+          }))}
+        />
+        {providers.some((p) => p.embeddingModels.length > 0) && (
+          <SelectMenu
+            compact={compact}
+            align="right"
+            ariaLabel="Embedding model"
+            icon={<Database size={14} color="var(--color-text-muted)" />}
+            value={embedSel}
+            onChange={handleEmbedSelChange}
+            groups={providers
+              .filter((p) => p.embeddingModels.length > 0)
+              .map((p) => ({
+                label: p.label,
+                options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
+              }))}
+          />
+        )}
+      </>
+    ) : null;
+
   return (
     <div style={styles.wrapper}>
       {/* Sidebar overlay (mobile only) */}
@@ -645,32 +679,9 @@ export default function Home() {
                 </div>
               )}
 
-              {providers.length > 0 && (
+              {isDesktop && (
                 <div style={styles.headerCenter}>
-                  <SelectMenu
-                    ariaLabel="Chat model"
-                    icon={<Cpu size={14} color="var(--color-primary)" />}
-                    value={chatSel}
-                    onChange={handleChatSelChange}
-                    groups={providers.map((p) => ({
-                      label: p.label,
-                      options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
-                    }))}
-                  />
-                  {providers.some((p) => p.embeddingModels.length > 0) && (
-                    <SelectMenu
-                      ariaLabel="Embedding model"
-                      icon={<Database size={14} color="var(--color-text-muted)" />}
-                      value={embedSel}
-                      onChange={handleEmbedSelChange}
-                      groups={providers
-                        .filter((p) => p.embeddingModels.length > 0)
-                        .map((p) => ({
-                          label: p.label,
-                          options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
-                        }))}
-                    />
-                  )}
+                  {renderModelSelectors(false)}
                 </div>
               )}
             </div>
@@ -694,10 +705,16 @@ export default function Home() {
               </button>
             </div>
           </div>
+
+          {!isDesktop && providers.length > 0 && (
+            <div style={styles.headerSelectorsRow}>
+              {renderModelSelectors(true)}
+            </div>
+          )}
         </header>
 
         {/* Messages */}
-        <main style={styles.messages}>
+        <main style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}>
           {messages.length === 0 && (
             <div style={styles.emptyState} className="animate-fade-in-scale">
               <div style={styles.emptyIcon} className="animate-float">
@@ -794,7 +811,7 @@ export default function Home() {
         </main>
 
         {/* Input */}
-        <footer style={styles.footer}>
+        <footer style={isDesktop ? styles.footer : { ...styles.footer, padding: "10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px)" }}>
           {settingsOpen && (
             <div style={styles.settingsPanel} className="animate-fade-in-scale">
               <div style={styles.settingsHeader}>
@@ -1122,6 +1139,12 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 2,
     flexShrink: 0,
   },
+  headerSelectorsRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 12px 10px",
+  },
   brandText: {
     display: "flex",
     flexDirection: "column",
@@ -1448,12 +1471,14 @@ const dropdown: Record<string, React.CSSProperties> = {
     position: "relative",
     minWidth: 0,
     flexShrink: 1,
+    maxWidth: 220,
   },
   trigger: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    maxWidth: 220,
+    minWidth: 0,
+    maxWidth: "100%",
     padding: "7px 10px",
     background: "var(--color-surface)",
     border: "1px solid var(--color-border)",
@@ -1482,8 +1507,8 @@ const dropdown: Record<string, React.CSSProperties> = {
     position: "absolute",
     top: "calc(100% + 6px)",
     zIndex: 50,
-    minWidth: 220,
-    maxWidth: 280,
+    minWidth: 200,
+    maxWidth: "min(280px, calc(100vw - 20px))",
     maxHeight: 360,
     overflowY: "auto",
     background: "var(--color-background)",

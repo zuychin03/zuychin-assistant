@@ -18,6 +18,7 @@ grounding.
   current time and recent conversations
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
+- Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
 - Think mode: a deep-reasoning toggle (`/think`), tunable per model
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
@@ -96,6 +97,7 @@ Optional auth, integrations, channels and cron:
 | Variable | Description |
 |----------|-------------|
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key for server writes (falls back to the anon key) |
+| `APP_TIMEZONE` | Timezone for the date/time the model is given each request (default `Australia/Sydney`) |
 | `ACCESS_PASSWORD` | Password for web UI access (leave empty to disable auth) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord channel |
@@ -287,6 +289,7 @@ src/
 │   ├── supabase.ts                     # Supabase client
 │   ├── db.ts                           # Database layer (messages, embeddings, todos, convos)
 │   ├── types.ts                        # Shared types + MIME/size constants
+│   ├── datetime.ts                     # Current date/time context injected on every request
 │   ├── google-auth.ts                  # Google OAuth2 client
 │   ├── ai/
 │   │   ├── providers.ts                # Provider + chat/embedding model registry

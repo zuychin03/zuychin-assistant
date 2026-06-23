@@ -251,6 +251,7 @@ export const MCP_TOOLS: McpTool[] = [
 import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { webSearch } from "@/lib/ai/web-search";
+import { APP_TIMEZONE } from "@/lib/datetime";
 
 export async function executeTool(
     toolName: string,
@@ -304,7 +305,7 @@ export async function executeTool(
 }
 
 async function executeGetCurrentTime(timezone?: string): Promise<string> {
-    const tz = timezone ?? "Australia/Sydney";
+    const tz = timezone ?? APP_TIMEZONE;
     const now = new Date().toLocaleString("en-AU", { timeZone: tz });
     return `Current time (${tz}): ${now}`;
 }
