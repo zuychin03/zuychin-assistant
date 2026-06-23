@@ -70,6 +70,7 @@ export async function openaiCompatChat(params: {
     file?: FileAttachment;
     embRef: ResolvedEmbedding;
     thinking?: boolean;
+    search?: boolean;
     genParams?: GenParams;
 }): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef } = params;
@@ -114,10 +115,16 @@ export async function openaiCompatChat(params: {
 
     const tools = model.supportsTools ? buildOpenAIToolDeclarations() : undefined;
 
+    // on an explicit /search, make the model run the web search first. Otherwise
+    // it can still call search_web on its own when it decides it needs to.
+    const forceSearch = !!params.search && !!tools
+        ? { type: "function" as const, function: { name: "search_web" } }
+        : undefined;
+
     // first request with tools + reasoning; if it fails, retry without them
     let data: ChatCompletion;
     try {
-        data = await postChat(provider, apiKey, model.id, messages, tools, opts);
+        data = await postChat(provider, apiKey, model.id, messages, tools, opts, forceSearch);
     } catch (err) {
         if (tools || opts.thinking) {
             console.warn(`[${provider.id}] request failed, retrying without tools/reasoning:`, err);
@@ -192,13 +199,16 @@ function extractReply(data: ChatCompletion): string {
     return "";
 }
 
+type ToolChoice = "auto" | { type: "function"; function: { name: string } };
+
 async function postChat(
     provider: ProviderConfig,
     apiKey: string,
     model: string,
     messages: ChatMessage[],
     tools: OpenAITool[] | undefined,
-    opts: RequestOpts
+    opts: RequestOpts,
+    toolChoice: ToolChoice = "auto"
 ): Promise<ChatCompletion> {
     const { thinking, genParams } = opts;
 
@@ -208,7 +218,7 @@ async function postChat(
     const body: Record<string, any> = {
         model,
         messages,
-        ...(tools ? { tools, tool_choice: "auto" } : {}),
+        ...(tools ? { tools, tool_choice: toolChoice } : {}),
         stream: true,
     };
 

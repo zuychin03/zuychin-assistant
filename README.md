@@ -16,7 +16,7 @@ grounding.
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
 - MCP tools: 11 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   current time and recent conversations
-- Web grounding: real-time Google Search with inline citations, plus URL context
+- Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
 - Think mode: a deep-reasoning toggle (`/think`), tunable per model
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
@@ -89,6 +89,7 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`), MiniMax M3 / DeepSeek V4 |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
+| `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
 
 Optional auth, integrations, channels and cron:
 
@@ -179,8 +180,13 @@ How it works:
   without them.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
-  can't use. Google Search/Maps grounding is Gemini-only. Reasoning (`/think`) maps to Gemini
-  `thinkingConfig`, OpenRouter `reasoning` and NIM `chat_template_kwargs.enable_thinking`.
+  can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning` and
+  NIM `chat_template_kwargs.enable_thinking`.
+- Web search works two ways depending on the model. Gemini uses native Google Search/Maps
+  grounding. The OpenAI-compatible models can't reach the internet, so they get a `search_web`
+  tool (backed by Tavily, see `TAVILY_API_KEY`): they call it on their own when an answer needs
+  current info, and `/search` forces it. The `search_web` tool is intentionally not given to
+  Gemini.
 - Hyperparameters (temperature, top_p, max tokens) are optional, sanitized on the server and
   mapped per provider. NIM requests backfill NVIDIA's recommended defaults so models like
   MiniMax M3 always get a token budget.
@@ -196,6 +202,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | Tool | Purpose |
 |------|---------|
 | `get_current_time` | Current date/time in a given timezone |
+| `search_web` | Real-time internet search (OpenAI-compatible models only; Gemini grounds natively) |
 | `search_knowledge` | Semantic search over the pgvector knowledge base |
 | `save_note` | Persist a note as an embedding for later recall |
 | `get_recent_conversations` | Summary of recent messages across channels |
@@ -286,6 +293,7 @@ src/
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
 │   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
+│   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
 │   │   └── mcp-service.ts              # MCP tool definitions + executors
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram services

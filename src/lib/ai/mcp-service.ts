@@ -15,6 +15,21 @@ export interface McpTool {
     parameters: Record<string, { type: string; description: string; required?: boolean; enum?: string[] }>;
 }
 
+// Web search tool. This is only handed to the OpenAI-compatible models since they
+// can't reach the internet on their own. Gemini is left out of this list because
+// it uses its own Google Search grounding instead.
+export const WEB_SEARCH_TOOL: McpTool = {
+    name: "search_web",
+    description: "Search the internet for current, real-time or recent information - news, prices, weather, sports, events, or any fact that may have changed or happened after your training data. Returns a short list of results with their source URLs. Call this whenever the question needs up-to-date info or you aren't sure of the latest answer.",
+    parameters: {
+        query: {
+            type: "string",
+            description: "What to search for.",
+            required: true,
+        },
+    },
+};
+
 export const MCP_TOOLS: McpTool[] = [
     {
         name: "get_current_time",
@@ -235,6 +250,7 @@ export const MCP_TOOLS: McpTool[] = [
 
 import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { webSearch } from "@/lib/ai/web-search";
 
 export async function executeTool(
     toolName: string,
@@ -244,6 +260,9 @@ export async function executeTool(
     switch (toolName) {
         case "get_current_time":
             return executeGetCurrentTime(args.timezone as string | undefined);
+
+        case "search_web":
+            return webSearch(args.query as string);
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef);
@@ -606,7 +625,9 @@ export interface OpenAITool {
 }
 
 export function buildOpenAIToolDeclarations(): OpenAITool[] {
-    return MCP_TOOLS.map((tool) => ({
+    // OpenAI-compatible models get the web search tool too (Gemini doesn't, it
+    // grounds with Google Search instead).
+    return [...MCP_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.name,

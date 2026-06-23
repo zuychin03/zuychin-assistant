@@ -247,6 +247,7 @@ export async function ragChat(params: {
             file,
             embRef,
             thinking: allowThinking,
+            search: allowSearch,
             genParams,
         });
     }

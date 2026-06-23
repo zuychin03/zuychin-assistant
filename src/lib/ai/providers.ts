@@ -15,7 +15,8 @@ export interface ChatModel {
     supportsVision: boolean;
     // does /think actually change anything on this model
     supportsThinking: boolean;
-    // does /search (web grounding) work on this model
+    // can this model do web search - Gemini grounds natively, the OpenAI-compatible
+    // models call the search_web tool (so they need tool support)
     supportsSearch: boolean;
 }
 
@@ -63,7 +64,7 @@ export const PROVIDERS: ProviderConfig[] = [
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
         chatModels: [
-            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false },
+            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [
             { id: "nvidia/llama-nemotron-embed-vl-1b-v2:free", label: "Nemotron Embed VL 1B v2 (free, 2048d)", dimension: 2048 },
@@ -76,10 +77,10 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
         chatModels: [
-            { id: "minimaxai/minimax-m3", label: "MiniMax M3 (free)", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: false },
-            { id: "deepseek-ai/deepseek-v4-pro", label: "DeepSeek V4 Pro (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false },
-            { id: "deepseek-ai/deepseek-v4-flash", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false },
-            { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false },
+            { id: "minimaxai/minimax-m3", label: "MiniMax M3 (free)", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { id: "deepseek-ai/deepseek-v4-pro", label: "DeepSeek V4 Pro (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "deepseek-ai/deepseek-v4-flash", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [],
     },
@@ -90,9 +91,9 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://opencode.ai/zen/v1",
         apiKeyEnv: "OPENCODE_ZEN_API_KEY",
         chatModels: [
-            { id: "mimo-v2.5-free", label: "MiMo V2.5 (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: false },
-            { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: false },
-            { id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: false },
+            { id: "mimo-v2.5-free", label: "MiMo V2.5 (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
+            { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
+            { id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
         ],
         embeddingModels: [],
     },
