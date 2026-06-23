@@ -2,7 +2,7 @@ import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveAlias, availableAliases, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveAlias, availableModelChoices, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext } from "@/lib/datetime";
@@ -186,11 +186,15 @@ function resolveChatForRequest(
 // Handle "/model" on the messaging channels: list options or switch + persist.
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
     const arg = message.trim().replace(/^\/model(?:@\S+)?\s*/i, "").trim();
-    const optionsLine = `Available models: ${availableAliases().join(", ")}.`;
+    const optionsLine =
+        "Available models:\n" +
+        availableModelChoices()
+            .map((c) => `• ${c.aliases.join(" / ")} — ${c.label} (${c.provider})`)
+            .join("\n");
     const current = resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
 
     if (!arg || arg.toLowerCase() === "list") {
-        return `Current model on ${channel}: ${current.model.label}.\n${optionsLine}\nSwitch with "/model <name>".`;
+        return `Current model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${optionsLine}\n\nSwitch with "/model <name>".`;
     }
 
     const resolved = resolveAlias(arg);
@@ -248,7 +252,13 @@ export async function ragChat(params: {
     // Resolve which chat model to use. Web sends provider/model from its dropdown;
     // the messaging channels fall back to their saved choice, then the free chain.
     const chat = resolveChatForRequest(channel, provider, model, profile);
-    const embRef = getEmbeddingRef(embeddingModel);
+    // Web sends its embedding choice; messaging channels default to the free chain
+    // (Nemotron Embed if OpenRouter is configured, else Gemini).
+    const embRef = embeddingModel
+        ? getEmbeddingRef(embeddingModel)
+        : channel !== "web"
+            ? resolveMessagingEmbedding()
+            : getEmbeddingRef();
 
     // check this on the server so it works on every channel, not just the web UI
     const allowThinking = thinking && chat.model.supportsThinking;

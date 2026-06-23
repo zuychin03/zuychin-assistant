@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,13 +20,24 @@ interface Conversation {
   updatedAt: string;
 }
 
+interface ModelMeta {
+  developer: string;
+  description: string;
+  inputs: string[];
+  context?: string;
+  maxOutput?: string;
+  params?: string;
+  strengths: string[];
+}
 interface ProviderModel {
   id: string;
   label: string;
+  dimension?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
   supportsThinking?: boolean;
   supportsSearch?: boolean;
+  meta?: ModelMeta | null;
 }
 interface ProviderInfo {
   id: string;
@@ -155,6 +166,108 @@ function ParamRow({
   );
 }
 
+// Colors for the "Excels at" strength tags.
+const STRENGTH_COLORS: Record<string, string> = {
+  Coding: "#8b5cf6", Code: "#8b5cf6", Reasoning: "#3b82f6", Agentic: "#ec4899",
+  Math: "#f59e0b", Science: "#10b981", Multimodal: "#a855f7", Vision: "#06b6d4",
+  Multilingual: "#14b8a6", "Long context": "#6366f1", "Tool use": "#0ea5e9",
+  Fast: "#22c55e", Video: "#f43f5e", Knowledge: "#eab308", Research: "#d946ef",
+  "Document RAG": "#f97316", Retrieval: "#0ea5e9", "High throughput": "#84cc16",
+  "Visual documents": "#f97316",
+};
+const strengthColor = (s: string) => STRENGTH_COLORS[s] ?? "#94a3b8";
+
+// Info modal for the currently selected chat model.
+function ModelInfoModal({
+  model, providerLabel, onClose,
+}: {
+  model: ProviderModel;
+  providerLabel: string;
+  onClose: () => void;
+}) {
+  const meta = model.meta;
+  const specs: { label: string; value: string }[] = [];
+  if (meta?.context) specs.push({ label: "Context", value: meta.context });
+  if (meta?.maxOutput) specs.push({ label: "Max output", value: meta.maxOutput });
+  if (meta?.params) specs.push({ label: "Parameters", value: meta.params });
+  if (model.dimension) specs.push({ label: "Dimensions", value: String(model.dimension) });
+
+  const caps: string[] = [];
+  if (model.supportsTools) caps.push("Tools");
+  if (model.supportsVision) caps.push("Vision");
+  if (model.supportsThinking) caps.push("Reasoning toggle");
+  if (model.supportsSearch) caps.push("Web search");
+
+  return (
+    <div style={modal.overlay} className="animate-overlay-in" onClick={onClose}>
+      <div style={modal.card} className="animate-fade-in-scale" onClick={(e) => e.stopPropagation()}>
+        <div style={modal.header}>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={modal.title}>{model.label}</h2>
+            <p style={modal.subtitle}>
+              {providerLabel}{meta?.developer ? ` · ${meta.developer}` : ""}
+            </p>
+          </div>
+          <button onClick={onClose} style={styles.iconBtn} aria-label="Close">
+            <X size={18} color="var(--color-text-muted)" />
+          </button>
+        </div>
+
+        {meta?.description && <p style={modal.desc}>{meta.description}</p>}
+
+        {!meta && <p style={modal.desc}>No details available for this model yet.</p>}
+
+        {specs.length > 0 && (
+          <div style={modal.specGrid}>
+            {specs.map((s) => (
+              <div key={s.label} style={modal.spec}>
+                <span style={modal.specLabel}>{s.label}</span>
+                <span style={modal.specValue}>{s.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {meta?.inputs && meta.inputs.length > 0 && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Inputs</span>
+            <div style={modal.tagRow}>
+              {meta.inputs.map((i) => (
+                <span key={i} style={modal.plainTag}>{i}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {caps.length > 0 && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Capabilities</span>
+            <div style={modal.tagRow}>
+              {caps.map((c) => (
+                <span key={c} style={modal.plainTag}>{c}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {meta?.strengths && meta.strengths.length > 0 && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Excels at</span>
+            <div style={modal.tagRow}>
+              {meta.strengths.map((s) => (
+                <span key={s} style={modal.strengthTag}>
+                  <span style={{ ...modal.dot, background: strengthColor(s) }} />
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -172,6 +285,7 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [modelInfoOpen, setModelInfoOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -285,14 +399,24 @@ export default function Home() {
   };
 
   // Capabilities of the currently selected chat model
+  const currentChatProvider = (() => {
+    const sep = chatSel.indexOf("::");
+    if (sep === -1) return undefined;
+    return providers.find((p) => p.id === chatSel.slice(0, sep));
+  })();
   const currentChatModel = (() => {
     const sep = chatSel.indexOf("::");
     if (sep === -1) return undefined;
-    const pid = chatSel.slice(0, sep);
     const mid = chatSel.slice(sep + 2);
-    return providers.find((p) => p.id === pid)?.chatModels.find((m) => m.id === mid);
+    return currentChatProvider?.chatModels.find((m) => m.id === mid);
   })();
   const canThink = !!currentChatModel?.supportsThinking;
+
+  // If the selected model doesn't support deep thinking, force it off so a /think
+  // toggle from a previous model doesn't carry over to one that can't use it.
+  useEffect(() => {
+    if (!canThink && thinkingEnabled) setThinkingEnabled(false);
+  }, [canThink, thinkingEnabled]);
 
   const toggleThinking = () => {
     setThinkingEnabled((prev) => {
@@ -550,21 +674,9 @@ export default function Home() {
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
       <>
-        <SelectMenu
-          compact={compact}
-          ariaLabel="Chat model"
-          icon={<Cpu size={14} color="var(--color-primary)" />}
-          value={chatSel}
-          onChange={handleChatSelChange}
-          groups={providers.map((p) => ({
-            label: p.label,
-            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
-          }))}
-        />
         {providers.some((p) => p.embeddingModels.length > 0) && (
           <SelectMenu
             compact={compact}
-            align="right"
             ariaLabel="Embedding model"
             icon={<Database size={14} color="var(--color-text-muted)" />}
             value={embedSel}
@@ -577,6 +689,28 @@ export default function Home() {
               }))}
           />
         )}
+        <SelectMenu
+          compact={compact}
+          align="right"
+          ariaLabel="Chat model"
+          icon={<Cpu size={14} color="var(--color-primary)" />}
+          value={chatSel}
+          onChange={handleChatSelChange}
+          groups={providers.map((p) => ({
+            label: p.label,
+            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
+          }))}
+        />
+        <button
+          type="button"
+          onClick={() => setModelInfoOpen(true)}
+          style={styles.infoBtn}
+          aria-label="Model details"
+          title="Model details"
+          disabled={!currentChatModel}
+        >
+          <Info size={17} color="var(--color-text-muted)" />
+        </button>
       </>
     ) : null;
 
@@ -588,6 +722,15 @@ export default function Home() {
           style={styles.overlay}
           className="animate-overlay-in"
           onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Model info modal */}
+      {modelInfoOpen && currentChatModel && (
+        <ModelInfoModal
+          model={currentChatModel}
+          providerLabel={currentChatProvider?.label ?? ""}
+          onClose={() => setModelInfoOpen(false)}
         />
       )}
 
@@ -666,18 +809,10 @@ export default function Home() {
         <header style={styles.header}>
           <div style={styles.headerContent}>
             <div style={styles.headerLeft}>
-              <div style={styles.avatar} title="Zuychin">
-                <Bot size={18} color="#fff" />
+              <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
+                <h1 style={styles.title}>Zuychin</h1>
+                <span style={isDesktop ? styles.subtitle : styles.subtitleMobile}>Assistant</span>
               </div>
-              {isDesktop && (
-                <div style={styles.brandText}>
-                  <h1 style={styles.title}>Zuychin</h1>
-                  <div style={styles.statusRow}>
-                    <span style={styles.statusDot} className="animate-pulse-glow" />
-                    <span style={styles.statusText}>Online</span>
-                  </div>
-                </div>
-              )}
 
               {isDesktop && (
                 <div style={styles.headerCenter}>
@@ -718,7 +853,7 @@ export default function Home() {
           {messages.length === 0 && (
             <div style={styles.emptyState} className="animate-fade-in-scale">
               <div style={styles.emptyIcon} className="animate-float">
-                <Bot size={32} color="var(--color-text-muted)" />
+                <Bot size={32} color="#fff" />
               </div>
               <p style={styles.emptyTitle}>Hi, I&apos;m Zuychin</p>
               <p style={styles.emptySubtitle}>
@@ -1117,7 +1252,9 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    padding: "12px 16px",
+    // Left padding (26) matches the title-to-divider distance (flex gap 10 +
+    // headerCenter marginLeft 16), so the title is evenly inset on both sides.
+    padding: "12px 16px 12px 26px",
   },
   headerLeft: {
     display: "flex",
@@ -1132,6 +1269,11 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     minWidth: 0,
     flexShrink: 1,
+    // Keep the divider centered between the two groups: left of it = flex gap (10)
+    // + this margin (16) = 26, matching the 26px paddingLeft on the right.
+    marginLeft: 16,
+    paddingLeft: 26,
+    borderLeft: "1px solid var(--color-border)",
   },
   headerRight: {
     display: "flex",
@@ -1148,8 +1290,15 @@ const styles: Record<string, React.CSSProperties> = {
   brandText: {
     display: "flex",
     flexDirection: "column",
-    marginRight: 4,
+    alignItems: "center",
     flexShrink: 0,
+  },
+  brandTextMobile: {
+    display: "flex",
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 6,
+    minWidth: 0,
   },
   iconBtn: {
     background: "none",
@@ -1163,36 +1312,37 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     transition: "background 0.15s ease",
   },
-  avatar: {
-    width: 34,
-    height: 34,
-    borderRadius: "50%",
-    background: "var(--color-primary)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
   title: {
     fontSize: 17,
     fontWeight: 600,
     letterSpacing: "-0.3px",
     color: "var(--color-text-primary)",
+    lineHeight: 1.1,
   },
-  statusRow: {
+  subtitle: {
+    fontSize: 12,
+    fontWeight: 500,
+    color: "var(--color-text-muted)",
+    letterSpacing: "0.2px",
+  },
+  // On mobile the brand is inline, so "Assistant" matches the title's size.
+  subtitleMobile: {
+    fontSize: 17,
+    fontWeight: 500,
+    color: "var(--color-text-muted)",
+    letterSpacing: "-0.2px",
+  },
+  infoBtn: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: 6,
     display: "flex",
     alignItems: "center",
-    gap: 5,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: "50%",
-    background: "var(--color-success)",
-  },
-  statusText: {
-    fontSize: 12,
-    color: "var(--color-text-muted)",
+    justifyContent: "center",
+    borderRadius: 8,
+    flexShrink: 0,
+    transition: "background 0.15s ease",
   },
 
   // Messages
@@ -1222,7 +1372,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 56,
     height: 56,
     borderRadius: "50%",
-    background: "var(--color-surface)",
+    background: "var(--color-primary)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -1607,5 +1757,129 @@ const paramRow: Record<string, React.CSSProperties> = {
     width: "100%",
     accentColor: "var(--color-primary)",
     cursor: "pointer",
+  },
+};
+
+// Model info modal styling
+const modal: Record<string, React.CSSProperties> = {
+  overlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 60,
+    background: "rgba(0, 0, 0, 0.45)",
+    backdropFilter: "blur(3px)",
+    WebkitBackdropFilter: "blur(3px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 460,
+    maxHeight: "85dvh",
+    overflowY: "auto",
+    background: "var(--color-background)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 18,
+    padding: 22,
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.30)",
+  },
+  header: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: 700,
+    color: "var(--color-text-primary)",
+    letterSpacing: "-0.2px",
+  },
+  subtitle: {
+    fontSize: 12.5,
+    color: "var(--color-text-muted)",
+    marginTop: 2,
+  },
+  desc: {
+    fontSize: 13.5,
+    lineHeight: 1.55,
+    color: "var(--color-text-primary)",
+    opacity: 0.9,
+  },
+  specGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+    gap: 8,
+  },
+  spec: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    padding: "10px 12px",
+    background: "var(--color-surface)",
+    borderRadius: 10,
+  },
+  specLabel: {
+    fontSize: 10.5,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: "var(--color-text-muted)",
+  },
+  specValue: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--color-text-primary)",
+  },
+  section: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  sectionLabel: {
+    fontSize: 10.5,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: "var(--color-text-muted)",
+  },
+  tagRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  plainTag: {
+    display: "inline-flex",
+    alignItems: "center",
+    fontSize: 12,
+    fontWeight: 500,
+    color: "var(--color-text-primary)",
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 999,
+    padding: "4px 11px",
+  },
+  strengthTag: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    fontSize: 12,
+    fontWeight: 500,
+    color: "var(--color-text-primary)",
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 999,
+    padding: "4px 11px 4px 9px",
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    flexShrink: 0,
   },
 };

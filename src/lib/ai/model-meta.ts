@@ -1,0 +1,156 @@
+// Reference info shown in the model info modal: modalities, size, and the fields
+// each model is strongest at. Several registry entries point at the same underlying
+// model (e.g. Nemotron on OpenRouter and NIM), so metas are shared by id below.
+
+export interface ModelMeta {
+    developer: string;
+    description: string;
+    inputs: string[];          // input modalities
+    context?: string;          // context window, human-readable (e.g. "1M")
+    maxOutput?: string;        // max output tokens (e.g. "64K")
+    params?: string;           // parameter count summary
+    strengths: string[];       // fields the model excels at (shown as tags)
+}
+
+const GEMINI_35_FLASH: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "Google's fastest frontier thinking model. Optimized for coding and parallel agentic loops, with leading multimodal understanding and explicit thinking levels that trade quality for latency.",
+    inputs: ["Text", "Image", "Audio", "Video", "PDF"],
+    context: "1M",
+    maxOutput: "64K",
+    strengths: ["Coding", "Agentic", "Multimodal", "Reasoning", "Tool use", "Fast"],
+};
+
+const GEMINI_3_FLASH: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "High-speed thinking model for agentic workflows, multi-turn chat and coding, delivering near-Pro reasoning and tool use at much lower latency.",
+    inputs: ["Text", "Image", "Audio", "Video", "PDF"],
+    context: "1M",
+    maxOutput: "64K",
+    strengths: ["Agentic", "Coding", "Reasoning", "Multimodal", "Fast"],
+};
+
+const NEMOTRON_3_ULTRA: ModelMeta = {
+    developer: "NVIDIA",
+    description:
+        "NVIDIA's flagship open MoE with a hybrid Mamba-Attention design. Built for long-running agents — orchestration, coding agents, deep research — with reasoning-budget control over code, math and science.",
+    inputs: ["Text"],
+    context: "1M",
+    maxOutput: "64K",
+    params: "550B total · 55B active (MoE)",
+    strengths: ["Reasoning", "Agentic", "Coding", "Math", "Science", "Long context"],
+};
+
+const LAGUNA_M1: ModelMeta = {
+    developer: "Poolside",
+    description:
+        "Poolside's flagship coding-agent model, trained from scratch on 30T tokens. Reaches 72.5% on SWE-bench Verified and is tuned for real software-engineering and tool-driven workflows.",
+    inputs: ["Text"],
+    context: "256K",
+    maxOutput: "32K",
+    params: "225B total · 23B active (MoE)",
+    strengths: ["Coding", "Agentic", "Tool use", "Reasoning"],
+};
+
+const GEMMA_4_31B: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "Compact multimodal model that handles text, image and video and runs on consumer GPUs. 140+ languages, native function calling, and a 256K context — strong coding for its size (~68% SWE-bench Verified).",
+    inputs: ["Text", "Image", "Video"],
+    context: "256K",
+    params: "30.7B (dense)",
+    strengths: ["Multimodal", "Vision", "Coding", "Reasoning", "Multilingual", "Tool use"],
+};
+
+const MINIMAX_M3: ModelMeta = {
+    developer: "MiniMax",
+    description:
+        "Multimodal MoE vision-language model for long-horizon agentic work — multi-hour coding, up-to-30-minute video understanding and strong tool use over a 1M-token context.",
+    inputs: ["Text", "Image", "Video"],
+    context: "1M",
+    params: "428B total · 22B active (MoE)",
+    strengths: ["Coding", "Agentic", "Multimodal", "Video", "Long context", "Tool use"],
+};
+
+const DEEPSEEK_V4_PRO: ModelMeta = {
+    developer: "DeepSeek",
+    description:
+        "DeepSeek's flagship for advanced reasoning, coding and long-running agents, with a 1M-token context built for agentic workloads. Strong on knowledge, math and software-engineering benchmarks.",
+    inputs: ["Text"],
+    context: "1M",
+    params: "1.6T total · 49B active (MoE)",
+    strengths: ["Reasoning", "Coding", "Math", "Agentic", "Knowledge", "Long context"],
+};
+
+const DEEPSEEK_V4_FLASH: ModelMeta = {
+    developer: "DeepSeek",
+    description:
+        "Fast, cost-efficient sibling of V4 Pro. Tuned for high-throughput inference while holding up on reasoning and coding, and matching Pro-level reasoning when given a larger thinking budget.",
+    inputs: ["Text"],
+    context: "1M",
+    params: "284B total · 13B active (MoE)",
+    strengths: ["Coding", "Reasoning", "Fast", "High throughput", "Long context"],
+};
+
+const MIMO_V25: ModelMeta = {
+    developer: "Xiaomi",
+    description:
+        "Xiaomi's sparse MoE with hybrid sliding-window attention for efficient long context. Strong on everyday coding and agentic tasks via large-scale agentic RL post-training.",
+    inputs: ["Text"],
+    context: "1M",
+    params: "310B total · 15B active (MoE)",
+    strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Long context"],
+};
+
+const GEMINI_EMBED_2: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "Google's first natively multimodal embedding model — text, images, video, audio and docs in one space. Leads the MTEB English (68.32) and Code (74.66) benchmarks. Used here at 768 dimensions.",
+    inputs: ["Text", "Image", "Video", "Audio", "PDF"],
+    strengths: ["Multimodal", "Multilingual", "Retrieval", "Code"],
+};
+
+const NEMOTRON_EMBED_1B: ModelMeta = {
+    developer: "NVIDIA",
+    description:
+        "Lightweight text retriever (fine-tuned Llama 3.2 1B) for multilingual and cross-lingual question-answering, with long-document support up to 8192 tokens across 26 languages. Outputs 2048-dimensional vectors.",
+    inputs: ["Text"],
+    strengths: ["Retrieval", "Multilingual", "Long context", "Fast"],
+};
+
+const LLAMA_EMBED_8B: ModelMeta = {
+    developer: "NVIDIA",
+    description:
+        "NVIDIA's universal text embedding model (7.5B), ranked #1 on the multilingual MTEB leaderboard. Instruction-aware, tuned for retrieval, reranking, semantic similarity and classification. Outputs 4096-dimensional vectors.",
+    inputs: ["Text"],
+    strengths: ["Retrieval", "Multilingual", "Reranking", "Classification"],
+};
+
+// Every model id used in the registry maps to one of the metas above.
+export const MODEL_META: Record<string, ModelMeta> = {
+    // Gemini
+    "gemini-3.5-flash": GEMINI_35_FLASH,
+    "gemini-3-flash-preview": GEMINI_3_FLASH,
+    "gemini-embedding-2-preview": GEMINI_EMBED_2,
+    // OpenRouter
+    "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
+    "poolside/laguna-m.1:free": LAGUNA_M1,
+    "google/gemma-4-31b-it:free": GEMMA_4_31B,
+    // NVIDIA NIM
+    "minimaxai/minimax-m3": MINIMAX_M3,
+    "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,
+    "deepseek-ai/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
+    "nvidia/nemotron-3-ultra-550b-a55b": NEMOTRON_3_ULTRA,
+    "google/gemma-4-31b-it": GEMMA_4_31B,
+    "nvidia/llama-nemotron-embed-1b-v2": NEMOTRON_EMBED_1B,
+    "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
+    // OpenCode Zen
+    "mimo-v2.5-free": MIMO_V25,
+    "deepseek-v4-flash-free": DEEPSEEK_V4_FLASH,
+};
+
+export function getModelMeta(id: string): ModelMeta | null {
+    return MODEL_META[id] ?? null;
+}

@@ -66,6 +66,9 @@ body {
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Stop mobile browsers from auto-inflating block text (e.g. the header title). */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 /* ---- Scrollbar ---- */
@@ -118,11 +121,6 @@ body {
   40% { transform: translateY(-5px); }
 }
 
-@keyframes pulseGlow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.2); }
-  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.1); }
-}
-
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -150,10 +148,6 @@ body {
 
 .animate-overlay-in {
   animation: overlayIn 0.2s ease-out both;
-}
-
-.animate-pulse-glow {
-  animation: pulseGlow 2s ease-in-out infinite;
 }
 
 .animate-bounce-dot {

@@ -331,7 +331,7 @@ async function executeGetCurrentTime(timezone?: string): Promise<string> {
 
 async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding): Promise<string> {
     try {
-        const embedding = await embedText(embRef, query);
+        const embedding = await embedText(embRef, query, "query");
         const results = await searchEmbeddings({
             queryEmbedding: embedding,
             matchThreshold: 0.6,

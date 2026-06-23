@@ -6,6 +6,8 @@
 // the vector store because vectors from different models aren't comparable and can
 // be different sizes.
 
+import { getModelMeta } from "@/lib/ai/model-meta";
+
 export type ProviderKind = "gemini" | "openai-compatible";
 
 export interface ChatModel {
@@ -66,10 +68,10 @@ export const PROVIDERS: ProviderConfig[] = [
         },
         chatModels: [
             { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "poolside/laguna-m.1:free", label: "Laguna M.1 (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
         ],
-        embeddingModels: [
-            { id: "nvidia/llama-nemotron-embed-vl-1b-v2:free", label: "Nemotron Embed VL 1B v2 (free, 2048d)", dimension: 2048 },
-        ],
+        embeddingModels: [],
     },
     {
         id: "nvidia-nim",
@@ -82,8 +84,12 @@ export const PROVIDERS: ProviderConfig[] = [
             { id: "deepseek-ai/deepseek-v4-pro", label: "DeepSeek V4 Pro (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "deepseek-ai/deepseek-v4-flash", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true },
         ],
-        embeddingModels: [],
+        embeddingModels: [
+            { id: "nvidia/llama-nemotron-embed-1b-v2", label: "Llama Nemotron Embed 1B v2 (free, 2048d)", dimension: 2048 },
+            { id: "nvidia/llama-embed-nemotron-8b", label: "Llama Embed Nemotron 8B (free, 4096d)", dimension: 4096 },
+        ],
     },
     {
         id: "opencode-zen",
@@ -94,7 +100,6 @@ export const PROVIDERS: ProviderConfig[] = [
         chatModels: [
             { id: "mimo-v2.5-free", label: "MiMo V2.5 (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
             { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
-            { id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
         ],
         embeddingModels: [],
     },
@@ -168,8 +173,7 @@ function resolveAvailable(providerId: string, modelId: string): ResolvedChat | n
 // final fallback since it's always configured.
 export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
     { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
-    { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
-    { providerId: "opencode-zen", modelId: "mimo-v2.5-free" },
+    { providerId: "nvidia-nim", modelId: "google/gemma-4-31b-it" },
     { providerId: "gemini", modelId: "gemini-3.5-flash" },
 ];
 
@@ -200,7 +204,8 @@ export const MODEL_ALIASES: Record<string, { providerId: string; modelId: string
         { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
         { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
     ],
-    mimo: [{ providerId: "opencode-zen", modelId: "mimo-v2.5-free" }],
+    gemma: [{ providerId: "nvidia-nim", modelId: "google/gemma-4-31b-it" }],
+    gemma4: [{ providerId: "nvidia-nim", modelId: "google/gemma-4-31b-it" }],
     gemini: [{ providerId: "gemini", modelId: "gemini-3.5-flash" }],
     flash: [{ providerId: "gemini", modelId: "gemini-3.5-flash" }],
 };
@@ -216,9 +221,22 @@ export function resolveAlias(alias: string): ResolvedChat | null {
     return null;
 }
 
-// Aliases that map to at least one model whose provider key is configured.
-export function availableAliases(): string[] {
-    return Object.keys(MODEL_ALIASES).filter((a) => resolveAlias(a) !== null);
+// Available models for the /model command, grouped by the model they resolve to so
+// synonyms (e.g. "gemini" / "flash") show on one line with the real model name.
+export function availableModelChoices(): { aliases: string[]; label: string; provider: string }[] {
+    const groups = new Map<string, { aliases: string[]; label: string; provider: string }>();
+    for (const alias of Object.keys(MODEL_ALIASES)) {
+        const resolved = resolveAlias(alias);
+        if (!resolved) continue;
+        const key = `${resolved.provider.id}::${resolved.model.id}`;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.aliases.push(alias);
+        } else {
+            groups.set(key, { aliases: [alias], label: resolved.model.label, provider: resolved.provider.label });
+        }
+    }
+    return [...groups.values()];
 }
 
 export interface ResolvedEmbedding {
@@ -236,6 +254,24 @@ export function resolveEmbedding(modelId?: string): ResolvedEmbedding {
     return { provider: g, model: g.embeddingModels[0]! };
 }
 
+// Embedding model the external channels (Discord/Telegram) default to, in order
+// of preference. First one whose provider key is set wins; Gemini is the fallback.
+export const MESSAGING_EMBEDDING_CHAIN: { providerId: string; modelId: string }[] = [
+    { providerId: "nvidia-nim", modelId: "nvidia/llama-nemotron-embed-1b-v2" },
+    { providerId: "gemini", modelId: "gemini-embedding-2-preview" },
+];
+
+// First available embedding model in the messaging chain (defaults to Gemini).
+export function resolveMessagingEmbedding(): ResolvedEmbedding {
+    for (const c of MESSAGING_EMBEDDING_CHAIN) {
+        const provider = getProvider(c.providerId);
+        if (!provider || !isProviderAvailable(provider)) continue;
+        const model = provider.embeddingModels.find((m) => m.id === c.modelId);
+        if (model) return { provider, model };
+    }
+    return resolveEmbedding();
+}
+
 // provider list safe to send to the browser (no keys, just availability flags)
 export function listProvidersPublic() {
     return PROVIDERS.map((p) => ({
@@ -249,7 +285,13 @@ export function listProvidersPublic() {
             supportsVision: m.supportsVision,
             supportsThinking: m.supportsThinking,
             supportsSearch: m.supportsSearch,
+            meta: getModelMeta(m.id),
         })),
-        embeddingModels: p.embeddingModels.map((m) => ({ id: m.id, label: m.label })),
+        embeddingModels: p.embeddingModels.map((m) => ({
+            id: m.id,
+            label: m.label,
+            dimension: m.dimension,
+            meta: getModelMeta(m.id),
+        })),
     }));
 }

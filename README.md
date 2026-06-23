@@ -8,8 +8,9 @@ grounding.
 
 ## Features
 
-- Multi-provider chat: switch the model per message between Gemini, OpenRouter (Nemotron),
-  NVIDIA NIM (MiniMax M3, DeepSeek V4) and OpenCode Zen (MiMo), straight from the chat header
+- Multi-provider chat: switch the model per message between Gemini, OpenRouter (Nemotron,
+  Laguna M.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Gemma 4) and OpenCode Zen (MiMo),
+  straight from the chat header
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -33,8 +34,8 @@ grounding.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.5 / 3 Flash, OpenRouter (Nemotron), NVIDIA NIM (MiniMax M3, DeepSeek V4), OpenCode Zen (MiMo, Nemotron) |
-| Embeddings | Gemini Embedding 2 (768d), OpenRouter Nemotron Embed VL 1B v2 (2048d) |
+| Chat models | Gemini 3.5 / 3 Flash, OpenRouter (Nemotron, Laguna M.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Gemma 4), OpenCode Zen (MiMo, DeepSeek) |
+| Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | Integrations | Google Calendar API, Gmail API |
@@ -52,7 +53,7 @@ unlocks the matching feature.
 | Node.js 20+ and npm | Required |
 | Supabase project (URL + anon key) | Required, for chat history and RAG memory |
 | Google AI Studio key ([aistudio.google.com](https://aistudio.google.com/apikey)) | Required, the default chat + embedding provider |
-| OpenRouter / NVIDIA NIM / OpenCode Zen keys | Optional, extra chat models (and the free embedding model on OpenRouter) |
+| OpenRouter / NVIDIA NIM / OpenCode Zen keys | Optional, extra chat models (and the free NVIDIA NIM embedding models) |
 | Google Cloud OAuth client | Optional, Calendar + Gmail tools |
 | Discord bot token | Optional, Discord channel |
 | Telegram bot token | Optional, Telegram channel |
@@ -85,10 +86,10 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 
 | Variable | Description |
 |----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter key (Nemotron chat + Nemotron embeddings) |
+| `OPENROUTER_API_KEY` | OpenRouter key (Nemotron / Laguna / Gemma 4 chat) |
 | `OPENROUTER_SITE_URL` | Optional `HTTP-Referer` for OpenRouter rankings |
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
-| `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`), MiniMax M3 / DeepSeek V4 |
+| `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + the non-Gemini embedding models |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
 | `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
 
@@ -169,15 +170,15 @@ so add models or providers there.
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
 | Google Gemini | native | `gemini-3.5-flash`, `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free` | Chat plus the only non-Gemini embedding model (`nvidia/llama-nemotron-embed-vl-1b-v2:free`) |
-| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b` | Free preview inference; MiniMax M3 is multimodal |
-| OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `nemotron-3-ultra-free` | Chat only |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free` | Chat only |
+| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
+| OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free` | Chat only |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
-  OpenRouter, NVIDIA NIM and OpenCode Zen with streamed responses. Gemini keeps its own
-  native path.
+  OpenRouter, NVIDIA NIM and OpenCode Zen with streamed responses. Gemini keeps
+  its own native path.
 - MCP tool-calling works on all providers. If a model rejects tools, the request retries
   without them.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
@@ -325,4 +326,4 @@ supabase-setup.sql                      # One-shot database setup script
 
 ## License
 
-Private, for personal use only.
+[MIT](LICENSE) © Duy Nguyen
