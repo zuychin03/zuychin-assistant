@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, Menu, X, Paperclip, FileText, Image, Music, Video, File, Brain, LogOut, Download } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon } from "lucide-react";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,6 +20,140 @@ interface Conversation {
   updatedAt: string;
 }
 
+interface ProviderModel {
+  id: string;
+  label: string;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  supportsThinking?: boolean;
+  supportsSearch?: boolean;
+}
+interface ProviderInfo {
+  id: string;
+  label: string;
+  available: boolean;
+  chatModels: ProviderModel[];
+  embeddingModels: ProviderModel[];
+}
+
+interface GenParamsState {
+  temperature: number | null;
+  topP: number | null;
+  maxTokens: number | null;
+}
+
+// Custom dropdown with provider-grouped options (replaces native <select>).
+function SelectMenu({
+  icon, groups, value, onChange, ariaLabel, align = "left",
+}: {
+  icon: React.ReactNode;
+  groups: { label: string; options: { value: string; label: string }[] }[];
+  value: string;
+  onChange: (v: string) => void;
+  ariaLabel: string;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const current = groups.flatMap((g) => g.options).find((o) => o.value === value);
+
+  return (
+    <div ref={ref} style={dropdown.wrap}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{ ...dropdown.trigger, ...(open ? dropdown.triggerOpen : {}) }}
+        aria-label={ariaLabel}
+        title={current?.label}
+      >
+        <span style={dropdown.triggerIcon}>{icon}</span>
+        <span style={dropdown.triggerLabel}>{current?.label ?? "Select"}</span>
+        <ChevronDown
+          size={14}
+          style={{ flexShrink: 0, opacity: 0.5, transform: open ? "rotate(180deg)" : "none", transition: "transform .18s ease" }}
+        />
+      </button>
+      {open && (
+        <div
+          style={{ ...dropdown.menu, ...(align === "right" ? { right: 0 } : { left: 0 }) }}
+          className="animate-fade-in-scale"
+        >
+          {groups.map((g) => (
+            <div key={g.label} style={dropdown.group}>
+              <div style={dropdown.groupLabel}>{g.label}</div>
+              {g.options.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => { onChange(o.value); setOpen(false); }}
+                  style={{ ...dropdown.item, ...(o.value === value ? dropdown.itemActive : {}) }}
+                >
+                  <span style={dropdown.itemLabel}>{o.label}</span>
+                  {o.value === value && <Check size={14} style={{ flexShrink: 0 }} />}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A single hyperparameter row: checkbox enables a custom value, else "Auto".
+function ParamRow({
+  label, value, min, max, step, def, onChange,
+}: {
+  label: string;
+  value: number | null;
+  min: number;
+  max: number;
+  step: number;
+  def: number;
+  onChange: (v: number | null) => void;
+}) {
+  const active = value !== null;
+  return (
+    <div style={paramRow.wrap}>
+      <div style={paramRow.top}>
+        <span style={paramRow.label}>{label}</span>
+        <div style={paramRow.right}>
+          <span style={{ ...paramRow.value, opacity: active ? 1 : 0.5 }}>
+            {active ? value : "Auto"}
+          </span>
+          <button
+            type="button"
+            onClick={() => onChange(active ? null : def)}
+            style={{ ...paramRow.toggle, ...(active ? paramRow.toggleOn : {}) }}
+          >
+            {active ? "Custom" : "Auto"}
+          </button>
+        </div>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={active ? value : def}
+        disabled={!active}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ ...paramRow.slider, opacity: active ? 1 : 0.4 }}
+      />
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -30,6 +164,13 @@ export default function Home() {
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  // "providerId::modelId" for chat; embedding model id for embeddings.
+  const [chatSel, setChatSel] = useState("");
+  const [embedSel, setEmbedSel] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -71,6 +212,86 @@ export default function Home() {
     const saved = localStorage.getItem("zuychin-think-mode");
     if (saved === "true") setThinkingEnabled(true);
   }, []);
+
+  // Sync theme state with the attribute set by the no-flash init script
+  useEffect(() => {
+    const current = document.documentElement.getAttribute("data-theme");
+    setTheme(current === "dark" ? "dark" : "light");
+  }, []);
+
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("zuychin-theme", next);
+      return next;
+    });
+  };
+
+  // Load available providers/models + restore saved selection
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/providers");
+        const data = await res.json();
+        const avail: ProviderInfo[] = (data.providers ?? []).filter((p: ProviderInfo) => p.available);
+        setProviders(avail);
+
+        const savedChat = localStorage.getItem("zuychin-chat-model");
+        const validChat = avail.some((p) =>
+          savedChat?.startsWith(p.id + "::") && p.chatModels.some((m) => `${p.id}::${m.id}` === savedChat)
+        );
+        if (validChat && savedChat) {
+          setChatSel(savedChat);
+        } else if (data.defaults?.chat) {
+          setChatSel(`${data.defaults.chat.providerId}::${data.defaults.chat.modelId}`);
+        }
+
+        const embedProviders = avail.filter((p) => p.embeddingModels.length > 0);
+        const savedEmbed = localStorage.getItem("zuychin-embed-model");
+        const validEmbed = embedProviders.some((p) => p.embeddingModels.some((m) => m.id === savedEmbed));
+        if (validEmbed && savedEmbed) {
+          setEmbedSel(savedEmbed);
+        } else if (data.defaults?.embedding) {
+          setEmbedSel(data.defaults.embedding.modelId);
+        }
+      } catch (err) {
+        console.error("Failed to load providers:", err);
+      }
+    })();
+  }, []);
+
+  const handleChatSelChange = (val: string) => {
+    setChatSel(val);
+    localStorage.setItem("zuychin-chat-model", val);
+  };
+  const handleEmbedSelChange = (val: string) => {
+    setEmbedSel(val);
+    localStorage.setItem("zuychin-embed-model", val);
+  };
+
+  // Restore generation hyperparameters
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("zuychin-gen-params");
+      if (saved) setGenParams({ temperature: null, topP: null, maxTokens: null, ...JSON.parse(saved) });
+    } catch { /* ignore */ }
+  }, []);
+
+  const updateGenParams = (next: GenParamsState) => {
+    setGenParams(next);
+    localStorage.setItem("zuychin-gen-params", JSON.stringify(next));
+  };
+
+  // Capabilities of the currently selected chat model
+  const currentChatModel = (() => {
+    const sep = chatSel.indexOf("::");
+    if (sep === -1) return undefined;
+    const pid = chatSel.slice(0, sep);
+    const mid = chatSel.slice(sep + 2);
+    return providers.find((p) => p.id === pid)?.chatModels.find((m) => m.id === mid);
+  })();
+  const canThink = !!currentChatModel?.supportsThinking;
 
   const toggleThinking = () => {
     setThinkingEnabled((prev) => {
@@ -181,7 +402,17 @@ export default function Home() {
         body: JSON.stringify({
           message: userMessage.content,
           conversationId: convId,
-          thinking: thinkingEnabled,
+          thinking: thinkingEnabled && canThink,
+          genParams: {
+            ...(genParams.temperature !== null && { temperature: genParams.temperature }),
+            ...(genParams.topP !== null && { topP: genParams.topP }),
+            ...(genParams.maxTokens !== null && { maxTokens: genParams.maxTokens }),
+          },
+          ...(chatSel.includes("::") && {
+            provider: chatSel.split("::")[0],
+            model: chatSel.split("::").slice(1).join("::"),
+          }),
+          ...(embedSel && { embeddingModel: embedSel }),
           ...(fileToSend && {
             file: {
               name: fileToSend.name,
@@ -282,7 +513,7 @@ export default function Home() {
 
   const getFileIcon = (mimeType?: string) => {
     if (!mimeType) return <File size={14} />;
-    if (mimeType.startsWith("image/")) return <Image size={14} />;
+    if (mimeType.startsWith("image/")) return <ImageIcon size={14} />;
     if (mimeType.startsWith("audio/")) return <Music size={14} />;
     if (mimeType.startsWith("video/")) return <Video size={14} />;
     if (mimeType === "application/pdf") return <FileText size={14} />;
@@ -334,7 +565,7 @@ export default function Home() {
             width: sidebarOpen ? 300 : 0,
             minWidth: sidebarOpen ? 300 : 0,
           } : styles.sidebar),
-          ...(!isDesktop && { transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)" }),
+          ...(!isDesktop && { transform: sidebarOpen ? "translateX(0)" : "translateX(100%)" }),
         }}
       >
         <div style={styles.sidebarHeader}>
@@ -401,27 +632,67 @@ export default function Home() {
         <header style={styles.header}>
           <div style={styles.headerContent}>
             <div style={styles.headerLeft}>
-              <button
-                onClick={() => setSidebarOpen(true)}
-                style={styles.menuBtn}
-                aria-label="Open sidebar"
-              >
-                <Menu size={20} color="var(--color-text-primary)" />
-              </button>
-              <div style={styles.avatar}>
-                <Bot size={20} color="#fff" />
+              <div style={styles.avatar} title="Zuychin">
+                <Bot size={18} color="#fff" />
               </div>
-              <div>
-                <h1 style={styles.title}>Zuychin</h1>
-                <div style={styles.statusRow}>
-                  <span style={styles.statusDot} className="animate-pulse-glow" />
-                  <span style={styles.statusText}>Online</span>
+              {isDesktop && (
+                <div style={styles.brandText}>
+                  <h1 style={styles.title}>Zuychin</h1>
+                  <div style={styles.statusRow}>
+                    <span style={styles.statusDot} className="animate-pulse-glow" />
+                    <span style={styles.statusText}>Online</span>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {providers.length > 0 && (
+                <div style={styles.headerCenter}>
+                  <SelectMenu
+                    ariaLabel="Chat model"
+                    icon={<Cpu size={14} color="var(--color-primary)" />}
+                    value={chatSel}
+                    onChange={handleChatSelChange}
+                    groups={providers.map((p) => ({
+                      label: p.label,
+                      options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
+                    }))}
+                  />
+                  {providers.some((p) => p.embeddingModels.length > 0) && (
+                    <SelectMenu
+                      ariaLabel="Embedding model"
+                      icon={<Database size={14} color="var(--color-text-muted)" />}
+                      value={embedSel}
+                      onChange={handleEmbedSelChange}
+                      groups={providers
+                        .filter((p) => p.embeddingModels.length > 0)
+                        .map((p) => ({
+                          label: p.label,
+                          options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
+                        }))}
+                    />
+                  )}
+                </div>
+              )}
             </div>
-            <button onClick={handleNewChat} style={styles.headerNewBtn} aria-label="New chat">
-              <Plus size={20} color="var(--color-text-primary)" />
-            </button>
+
+            <div style={styles.headerRight}>
+              <button
+                onClick={toggleTheme}
+                style={styles.iconBtn}
+                aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                title={theme === "dark" ? "Light mode" : "Dark mode"}
+              >
+                {theme === "dark"
+                  ? <Sun size={19} color="var(--color-text-primary)" />
+                  : <Moon size={19} color="var(--color-text-primary)" />}
+              </button>
+              <button onClick={handleNewChat} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
+                <Plus size={20} color="var(--color-text-primary)" />
+              </button>
+              <button onClick={() => setSidebarOpen(true)} style={styles.iconBtn} aria-label="Conversation history" title="History">
+                <History size={19} color="var(--color-text-primary)" />
+              </button>
+            </div>
           </div>
         </header>
 
@@ -524,6 +795,35 @@ export default function Home() {
 
         {/* Input */}
         <footer style={styles.footer}>
+          {settingsOpen && (
+            <div style={styles.settingsPanel} className="animate-fade-in-scale">
+              <div style={styles.settingsHeader}>
+                <span style={styles.settingsTitle}>Generation settings</span>
+                <button onClick={() => setSettingsOpen(false)} style={styles.filePreviewRemove} aria-label="Close settings">
+                  <X size={14} />
+                </button>
+              </div>
+              <ParamRow
+                label="Temperature" min={0} max={2} step={0.1} def={0.7}
+                value={genParams.temperature}
+                onChange={(v) => updateGenParams({ ...genParams, temperature: v })}
+              />
+              <ParamRow
+                label="Top P" min={0} max={1} step={0.05} def={0.9}
+                value={genParams.topP}
+                onChange={(v) => updateGenParams({ ...genParams, topP: v })}
+              />
+              <ParamRow
+                label="Max tokens" min={256} max={8192} step={256} def={2048}
+                value={genParams.maxTokens}
+                onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })}
+              />
+              <p style={styles.settingsNote}>
+                Unset = provider default. Applied to the selected model where supported.
+              </p>
+            </div>
+          )}
+
           {pendingFile && (
             <div style={styles.filePreview} className="animate-fade-in">
               <div style={styles.filePreviewInfo}>
@@ -559,18 +859,31 @@ export default function Home() {
             >
               <Paperclip size={18} color="var(--color-text-muted)" />
             </button>
+            {canThink && (
+              <button
+                type="button"
+                onClick={toggleThinking}
+                style={{
+                  ...styles.attachBtn,
+                  opacity: thinkingEnabled ? 1 : 0.5,
+                }}
+                aria-label={thinkingEnabled ? "Disable deep thinking" : "Enable deep thinking"}
+                title={thinkingEnabled ? "Think mode ON" : "Think mode OFF"}
+              >
+                <Brain size={18} color={thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
+              </button>
+            )}
             <button
               type="button"
-              onClick={toggleThinking}
+              onClick={() => setSettingsOpen((o) => !o)}
               style={{
                 ...styles.attachBtn,
-                color: thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)",
-                opacity: thinkingEnabled ? 1 : 0.5,
+                opacity: (genParams.temperature ?? genParams.topP ?? genParams.maxTokens) !== null ? 1 : 0.5,
               }}
-              aria-label={thinkingEnabled ? "Disable deep thinking" : "Enable deep thinking"}
-              title={thinkingEnabled ? "Think mode ON" : "Think mode OFF"}
+              aria-label="Generation settings"
+              title="Generation settings"
             >
-              <Brain size={18} color={thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
+              <SlidersHorizontal size={18} color={(genParams.temperature ?? genParams.topP ?? genParams.maxTokens) !== null ? "var(--color-primary)" : "var(--color-text-muted)"} />
             </button>
             <textarea
               ref={inputRef}
@@ -617,25 +930,26 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 20,
   },
 
-  // Sidebar (mobile — fixed overlay)
+  // Sidebar (mobile: fixed overlay, slides in from the right)
   sidebar: {
     position: "fixed",
     top: 0,
-    left: 0,
+    right: 0,
     bottom: 0,
     width: 280,
     background: "var(--color-surface)",
-    borderRight: "1px solid var(--color-border)",
+    borderLeft: "1px solid var(--color-border)",
     zIndex: 30,
     display: "flex",
     flexDirection: "column",
     transition: "transform 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
 
-  // Sidebar (desktop — static in-flow, collapsible)
+  // Sidebar (desktop: static in-flow on the right, collapsible)
   sidebarDesktop: {
+    order: 2,
     background: "var(--color-surface)",
-    borderRight: "1px solid var(--color-border)",
+    borderLeft: "1px solid var(--color-border)",
     display: "flex",
     flexDirection: "column",
     height: "100dvh",
@@ -763,7 +1077,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
   },
 
-  // Main container (desktop — fills remaining space)
+  // Main container (desktop: fills remaining space)
   containerDesktop: {
     display: "flex",
     flexDirection: "column",
@@ -785,35 +1099,56 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "14px 16px",
+    gap: 10,
+    padding: "12px 16px",
   },
   headerLeft: {
     display: "flex",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
   },
-  menuBtn: {
+  headerCenter: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 2,
+    flexShrink: 0,
+  },
+  brandText: {
+    display: "flex",
+    flexDirection: "column",
+    marginRight: 4,
+    flexShrink: 0,
+  },
+  iconBtn: {
     background: "none",
     border: "none",
     cursor: "pointer",
-    padding: 4,
+    padding: 8,
     display: "flex",
-  },
-  headerNewBtn: {
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    padding: 4,
-    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    flexShrink: 0,
+    transition: "background 0.15s ease",
   },
   avatar: {
-    width: 36,
-    height: 36,
+    width: 34,
+    height: 34,
     borderRadius: "50%",
     background: "var(--color-primary)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   title: {
     fontSize: 17,
@@ -911,7 +1246,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottomRightRadius: 4,
   },
   aiBubble: {
-    background: "#f0f0f5",
+    background: "var(--color-bubble-ai)",
     color: "var(--color-text-primary)",
     borderBottomLeftRadius: 4,
   },
@@ -1060,7 +1395,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
     marginTop: 8,
     paddingTop: 8,
-    borderTop: "1px solid rgba(255,255,255,0.08)",
+    borderTop: "1px solid var(--color-border)",
   },
   exportBtn: {
     display: "inline-flex",
@@ -1071,10 +1406,181 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     fontFamily: "var(--font-family)",
     color: "var(--color-text-muted)",
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.1)",
+    background: "var(--color-background)",
+    border: "1px solid var(--color-border)",
     borderRadius: 6,
     cursor: "pointer",
     transition: "background 0.15s ease, color 0.15s ease",
+  },
+
+  // Generation settings panel
+  settingsPanel: {
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 14,
+    padding: "14px 16px",
+    marginBottom: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+    boxShadow: "0 6px 24px rgba(0,0,0,0.10)",
+  },
+  settingsHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  settingsTitle: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--color-text-primary)",
+  },
+  settingsNote: {
+    fontSize: 11,
+    color: "var(--color-text-muted)",
+    lineHeight: 1.4,
+  },
+};
+
+// Custom dropdown styling
+const dropdown: Record<string, React.CSSProperties> = {
+  wrap: {
+    position: "relative",
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  trigger: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    maxWidth: 220,
+    padding: "7px 10px",
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 10,
+    cursor: "pointer",
+    color: "var(--color-text-primary)",
+    fontSize: 12.5,
+    fontWeight: 500,
+    fontFamily: "var(--font-family)",
+    transition: "border-color 0.15s ease, background 0.15s ease",
+  },
+  triggerOpen: {
+    border: "1px solid var(--color-primary)",
+  },
+  triggerIcon: {
+    display: "flex",
+    flexShrink: 0,
+  },
+  triggerLabel: {
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    minWidth: 0,
+  },
+  menu: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    zIndex: 50,
+    minWidth: 220,
+    maxWidth: 280,
+    maxHeight: 360,
+    overflowY: "auto",
+    background: "var(--color-background)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 12,
+    padding: 6,
+    boxShadow: "0 12px 32px rgba(0,0,0,0.16)",
+  },
+  group: {
+    marginBottom: 2,
+  },
+  groupLabel: {
+    fontSize: 10.5,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: "var(--color-text-muted)",
+    padding: "8px 10px 4px",
+  },
+  item: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    width: "100%",
+    padding: "8px 10px",
+    background: "transparent",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer",
+    color: "var(--color-text-primary)",
+    fontSize: 13,
+    fontFamily: "var(--font-family)",
+    textAlign: "left",
+    transition: "background 0.12s ease",
+  },
+  itemActive: {
+    background: "var(--color-surface)",
+    color: "var(--color-text-primary)",
+    fontWeight: 600,
+  },
+  itemLabel: {
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    minWidth: 0,
+  },
+};
+
+// Hyperparameter row styling
+const paramRow: Record<string, React.CSSProperties> = {
+  wrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  top: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  label: {
+    fontSize: 12.5,
+    fontWeight: 500,
+    color: "var(--color-text-primary)",
+  },
+  right: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  value: {
+    fontSize: 12,
+    fontVariantNumeric: "tabular-nums",
+    color: "var(--color-text-muted)",
+    minWidth: 36,
+    textAlign: "right",
+  },
+  toggle: {
+    fontSize: 11,
+    fontWeight: 500,
+    fontFamily: "var(--font-family)",
+    padding: "3px 9px",
+    borderRadius: 999,
+    border: "1px solid var(--color-border)",
+    background: "transparent",
+    color: "var(--color-text-muted)",
+    cursor: "pointer",
+  },
+  toggleOn: {
+    background: "var(--color-primary)",
+    border: "1px solid var(--color-primary)",
+    color: "#fff",
+  },
+  slider: {
+    width: "100%",
+    accentColor: "var(--color-primary)",
+    cursor: "pointer",
   },
 };

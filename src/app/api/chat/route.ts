@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
+import { sanitizeGenParams } from "@/lib/ai/providers";
 import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
@@ -9,7 +10,7 @@ const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
-        const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false } = body;
+        const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, provider, model, embeddingModel, genParams } = body;
 
 
         if (!message || typeof message !== "string") {
@@ -60,6 +61,10 @@ export async function POST(req: NextRequest) {
             conversationId,
             thinking,
             search,
+            provider,
+            model,
+            embeddingModel,
+            genParams: sanitizeGenParams(genParams),
         });
 
         return NextResponse.json({ reply, messageId });

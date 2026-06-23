@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 
-// GET /api/telegram/test — diagnostic endpoint
-// Tests: Supabase write, Telegram bot token, env vars
+// GET /api/telegram/test - quick health check for the telegram setup
+// (env vars, a supabase write, the bot token and the webhook registration)
 export async function GET() {
     const results: Record<string, string> = {};
 
@@ -11,7 +11,7 @@ export async function GET() {
     results.TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ? "✅ set" : "⚠️ not set (ok if intentional)";
     results.SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ? "✅ set" : "❌ missing";
     results.SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "✅ set" : "❌ missing";
-    results.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ set" : "❌ missing — DB writes will fail on server-side routes!";
+    results.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ set" : "❌ missing - DB writes will fail on server-side routes!";
     results.GEMINI_API_KEY = process.env.GEMINI_API_KEY ? "✅ set" : "❌ missing";
 
     // 2. Test Supabase write permission
@@ -20,7 +20,7 @@ export async function GET() {
             .from("messages")
             .insert({
                 role: "system",
-                content: "[diagnostic test — safe to delete]",
+                content: "[diagnostic test - safe to delete]",
                 channel: "telegram",
             })
             .select("id")

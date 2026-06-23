@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // standalone node scripts (CommonJS, not part of the next app)
+    "discord-bot/**",
+    "test-google-auth.js",
   ]),
 ]);
 

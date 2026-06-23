@@ -1,38 +1,32 @@
 # dependencies
 /node_modules
 /discord-bot/node_modules
-/discord-bot/.env
 /.pnp
 .pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
 
 # next.js
 /.next/
 /out/
-
-# production
 /build
+
+# testing
+/coverage
 
 # misc
 .DS_Store
 *.pem
 
-# debug
+# debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-test-google.js
 
-# env files
-.env*
+# env files (never commit secrets)
+.env
+.env.*
+!.env.example
+/discord-bot/.env
 
 # vercel
 .vercel
@@ -41,12 +35,10 @@ test-google.js
 *.tsbuildinfo
 next-env.d.ts
 
-# brain / session (local context, not for deploy)
+# local working notes (not part of the project)
 .brain/
-
-# docs (local dev docs)
 docs/
 CHANGELOG.md
 
-# supabase (migrations run manually)
-supabase/
+# local supabase project / migration history (use supabase-setup.sql instead)
+/supabase/

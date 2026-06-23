@@ -234,22 +234,25 @@ export const MCP_TOOLS: McpTool[] = [
 ];
 
 import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
-import { generateEmbedding } from "@/lib/gemini";
+import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+
 export async function executeTool(
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    embRef: ResolvedEmbedding = getEmbeddingRef()
 ): Promise<string> {
     switch (toolName) {
         case "get_current_time":
             return executeGetCurrentTime(args.timezone as string | undefined);
 
         case "search_knowledge":
-            return executeSearchKnowledge(args.query as string);
+            return executeSearchKnowledge(args.query as string, embRef);
 
         case "save_note":
             return executeSaveNote(
                 args.content as string,
-                args.category as string | undefined
+                args.category as string | undefined,
+                embRef
             );
 
         case "get_recent_conversations":
@@ -287,13 +290,14 @@ async function executeGetCurrentTime(timezone?: string): Promise<string> {
     return `Current time (${tz}): ${now}`;
 }
 
-async function executeSearchKnowledge(query: string): Promise<string> {
+async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding): Promise<string> {
     try {
-        const embedding = await generateEmbedding(query);
+        const embedding = await embedText(embRef, query);
         const results = await searchEmbeddings({
             queryEmbedding: embedding,
             matchThreshold: 0.6,
             matchCount: 5,
+            embeddingModel: embRef.model.id,
         });
 
         if (results.length === 0) {
@@ -311,13 +315,15 @@ async function executeSearchKnowledge(query: string): Promise<string> {
 
 async function executeSaveNote(
     content: string,
-    category?: string
+    category: string | undefined,
+    embRef: ResolvedEmbedding
 ): Promise<string> {
     try {
-        const embedding = await generateEmbedding(content);
+        const embedding = await embedText(embRef, content);
         await storeEmbedding({
             content,
             embedding,
+            embeddingModel: embRef.model.id,
             metadata: {
                 source: "mcp_save_note",
                 category: category ?? "general",
@@ -580,6 +586,47 @@ export function buildGeminiFunctionDeclarations() {
             required: Object.entries(tool.parameters)
                 .filter(([, val]) => val.required)
                 .map(([key]) => key),
+        },
+    }));
+}
+
+
+// OpenAI-compatible tool schema (OpenRouter, OpenCode Zen, NVIDIA NIM).
+export interface OpenAITool {
+    type: "function";
+    function: {
+        name: string;
+        description: string;
+        parameters: {
+            type: "object";
+            properties: Record<string, { type: string; description: string; enum?: string[] }>;
+            required: string[];
+        };
+    };
+}
+
+export function buildOpenAIToolDeclarations(): OpenAITool[] {
+    return MCP_TOOLS.map((tool) => ({
+        type: "function" as const,
+        function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: {
+                type: "object" as const,
+                properties: Object.fromEntries(
+                    Object.entries(tool.parameters).map(([key, val]) => [
+                        key,
+                        {
+                            type: val.type === "integer" ? "number" : val.type,
+                            description: val.description,
+                            ...(val.enum ? { enum: val.enum } : {}),
+                        },
+                    ])
+                ),
+                required: Object.entries(tool.parameters)
+                    .filter(([, val]) => val.required)
+                    .map(([key]) => key),
+            },
         },
     }));
 }

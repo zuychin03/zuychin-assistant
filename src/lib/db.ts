@@ -65,11 +65,14 @@ export async function getRecentMessages(
     }));
 }
 
+const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2-preview";
+
 export async function storeEmbedding(params: {
     content: string;
     embedding: number[];
     metadata?: Record<string, string>;
     userProfileId?: string;
+    embeddingModel?: string;
 }): Promise<string> {
     const { data, error } = await supabase
         .from("embeddings")
@@ -78,6 +81,7 @@ export async function storeEmbedding(params: {
             embedding: JSON.stringify(params.embedding),
             metadata: params.metadata ?? {},
             user_profile_id: params.userProfileId ?? null,
+            embedding_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
         })
         .select("id")
         .single();
@@ -95,12 +99,14 @@ export async function searchEmbeddings(params: {
     matchThreshold?: number;
     matchCount?: number;
     userId?: string;
+    embeddingModel?: string;
 }): Promise<KnowledgeItem[]> {
     const { data, error } = await supabase.rpc("match_embeddings", {
         query_embedding: JSON.stringify(params.queryEmbedding),
         match_threshold: params.matchThreshold ?? 0.7,
         match_count: params.matchCount ?? 5,
         filter_user_id: params.userId ?? null,
+        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
     });
 
     if (error) {

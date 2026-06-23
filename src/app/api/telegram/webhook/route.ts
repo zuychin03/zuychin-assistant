@@ -65,7 +65,7 @@ async function processUpdate(update: Record<string, unknown>) {
     const hasAttachment = photo || document || video;
 
     if (!text && !hasAttachment) {
-        console.log(`[Telegram] Skipping chat ${chatId} — empty message`);
+        console.log(`[Telegram] Skipping chat ${chatId} - empty message`);
         return;
     }
 

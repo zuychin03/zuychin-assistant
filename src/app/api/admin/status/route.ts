@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getDefaultProfile } from "@/lib/db";
+import { DEFAULT_CHAT } from "@/lib/ai/providers";
 
 // GET /api/admin/status
 
@@ -39,7 +40,7 @@ export async function GET() {
 
         return NextResponse.json({
             status: "online",
-            model: "gemini-3-flash-preview",
+            model: DEFAULT_CHAT.modelId,
             profile: profile
                 ? { id: profile.id, displayName: profile.displayName }
                 : null,
