@@ -84,6 +84,78 @@ const MINIMAX_M3: ModelMeta = {
     strengths: ["Coding", "Agentic", "Multimodal", "Video", "Long context", "Tool use"],
 };
 
+const DIFFUSIONGEMMA_26B: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "Google's first open text-diffusion model. Instead of decoding one token at a time, it refines a 256-token block in parallel for up to 4x faster generation (1000+ tok/s on an H100), and accepts interleaved text, image and video input across 140+ languages.",
+    inputs: ["Text", "Image", "Video"],
+    context: "256K",
+    params: "25.2B total · 3.8B active (MoE)",
+    strengths: ["Fast", "Multimodal", "Efficient", "Multilingual"],
+};
+
+const KIMI_K2_6: ModelMeta = {
+    developer: "Moonshot AI",
+    description:
+        "Trillion-parameter open MoE agent model with native INT4 quantization, tuned for agentic coding and tool use. Handles text, image and video in one architecture and ties frontier models on coding benchmarks.",
+    inputs: ["Text", "Image", "Video"],
+    context: "256K",
+    params: "1T total · 32B active (MoE)",
+    strengths: ["Coding", "Agentic", "Tool use", "Multimodal", "Long context"],
+};
+
+const STEP_37_FLASH: ModelMeta = {
+    developer: "StepFun",
+    description:
+        "Multimodal MoE vision-language model for agentic coding, tool orchestration and search-heavy workflows. Exposes selectable reasoning levels (high/medium/low) to trade depth for speed over a 256K context.",
+    inputs: ["Text", "Image", "Video"],
+    context: "256K",
+    maxOutput: "256K",
+    params: "198B total · 11B active (MoE)",
+    strengths: ["Coding", "Agentic", "Vision", "Tool use", "Reasoning", "Search"],
+};
+
+const GLM_5_1: ModelMeta = {
+    developer: "Z.ai",
+    description:
+        "Z.ai's flagship open MoE built for agentic engineering. Optimized for long-horizon coding in tools like Claude Code, with thinking mode, native function calling and MCP support — it can work autonomously on a single task for hours.",
+    inputs: ["Text"],
+    context: "200K",
+    maxOutput: "128K",
+    params: "744B total · 40B active (MoE)",
+    strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Long context"],
+};
+
+const MISTRAL_LARGE_3: ModelMeta = {
+    developer: "Mistral AI",
+    description:
+        "Mistral's general-purpose multimodal MoE with a built-in vision encoder. Trained from the ground up for production assistants, retrieval-augmented systems and complex enterprise workflows, accepting both text and images.",
+    inputs: ["Text", "Image"],
+    context: "256K",
+    params: "675B total · 41B active (MoE)",
+    strengths: ["Multimodal", "Vision", "Reasoning", "Agentic", "Multilingual", "Tool use"],
+};
+
+const MINIMAX_M2_7: ModelMeta = {
+    developer: "MiniMax",
+    description:
+        "Sparse MoE tuned for agentic coding and chat — long-horizon software engineering, live troubleshooting and document generation. A self-evolving training loop pushes its coding scores near frontier models.",
+    inputs: ["Text"],
+    context: "200K",
+    params: "230B total · 10B active (MoE)",
+    strengths: ["Coding", "Agentic", "Tool use", "Reasoning", "Long context"],
+};
+
+const QWEN_35: ModelMeta = {
+    developer: "Alibaba Qwen",
+    description:
+        "Qwen's first natively multimodal open MoE, unifying the text and vision model lines. Supports switchable reasoning/non-reasoning modes, image and video input, and 201 languages, with strong logic, math and code over a 256K context.",
+    inputs: ["Text", "Image", "Video"],
+    context: "256K",
+    params: "397B total · 17B active (MoE)",
+    strengths: ["Reasoning", "Coding", "Math", "Multimodal", "Multilingual", "Agentic"],
+};
+
 const DEEPSEEK_V4_PRO: ModelMeta = {
     developer: "DeepSeek",
     description:
@@ -155,6 +227,13 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "deepseek-ai/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
     "nvidia/nemotron-3-ultra-550b-a55b": NEMOTRON_3_ULTRA,
     "google/gemma-4-31b-it": GEMMA_4_31B,
+    "google/diffusiongemma-26b-a4b-it": DIFFUSIONGEMMA_26B,
+    "moonshotai/kimi-k2.6": KIMI_K2_6,
+    "stepfun-ai/step-3.7-flash": STEP_37_FLASH,
+    "z-ai/glm-5.1": GLM_5_1,
+    "mistralai/mistral-large-3-675b-instruct-2512": MISTRAL_LARGE_3,
+    "minimaxai/minimax-m2.7": MINIMAX_M2_7,
+    "qwen/qwen3.5-397b-a17b": QWEN_35,
     "nvidia/llama-nemotron-embed-1b-v2": NEMOTRON_EMBED_1B,
     "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
     // OpenCode Zen
