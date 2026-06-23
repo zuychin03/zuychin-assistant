@@ -25,51 +25,86 @@ export interface EmailMessage {
 }
 
 
-export async function listUnreadEmails(
-    maxResults: number = 10,
-    query?: string
-): Promise<EmailThread[]> {
+// Shared helper: run a Gmail search and return the matching threads with headers.
+async function fetchEmailThreads(query: string, maxResults: number): Promise<EmailThread[]> {
     const gmail = getGmail();
 
-    const baseQuery = "is:unread in:inbox";
-    const fullQuery = query ? `${baseQuery} ${query}` : baseQuery;
+    // Gmail only returns one page at a time, so we follow nextPageToken until we
+    // either run out of pages or hit maxResults. Without this we'd silently drop
+    // any email past the first page (default page size is small).
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+        const res = await gmail.users.messages.list({
+            userId: "me",
+            q: query,
+            maxResults: Math.min(maxResults - ids.length, 100),
+            pageToken,
+        });
+        for (const m of res.data.messages ?? []) {
+            if (m.id) ids.push(m.id);
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken && ids.length < maxResults);
 
-    const res = await gmail.users.messages.list({
-        userId: "me",
-        q: fullQuery,
-        maxResults,
-    });
-
-    const messages = res.data.messages ?? [];
+    // Pull the headers for each message in small batches - one at a time is slow
+    // when there are a lot of emails, and all at once can trip Gmail's rate limit.
     const threads: EmailThread[] = [];
+    const batchSize = 10;
+    for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        const details = await Promise.all(
+            batch.map((id) =>
+                gmail.users.messages
+                    .get({
+                        userId: "me",
+                        id,
+                        format: "metadata",
+                        metadataHeaders: ["Subject", "From", "Date"],
+                    })
+                    .catch((err) => {
+                        console.warn(`[Gmail] Failed to fetch message ${id}:`, err);
+                        return null;
+                    })
+            )
+        );
 
-    for (const msg of messages) {
-        try {
-            const detail = await gmail.users.messages.get({
-                userId: "me",
-                id: msg.id!,
-                format: "metadata",
-                metadataHeaders: ["Subject", "From", "Date"],
-            });
-
+        for (const detail of details) {
+            if (!detail) continue;
             const headers = detail.data.payload?.headers ?? [];
             const getHeader = (name: string) =>
                 headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
 
             threads.push({
-                id: msg.id!,
+                id: detail.data.id!,
                 subject: getHeader("Subject") || "(No subject)",
                 from: getHeader("From"),
                 snippet: detail.data.snippet ?? "",
                 date: getHeader("Date"),
-                unread: true,
+                unread: (detail.data.labelIds ?? []).includes("UNREAD"),
             });
-        } catch (err) {
-            console.warn(`[Gmail] Failed to fetch message ${msg.id}:`, err);
         }
     }
 
     return threads;
+}
+
+export async function listUnreadEmails(
+    maxResults: number = 50,
+    query?: string
+): Promise<EmailThread[]> {
+    const baseQuery = "is:unread in:inbox";
+    return fetchEmailThreads(query ? `${baseQuery} ${query}` : baseQuery, maxResults);
+}
+
+// Recent inbox emails, read or unread. Defaults to the last 7 days so "recent"
+// stays meaningful, but a custom query can widen or narrow that.
+export async function listRecentEmails(
+    maxResults: number = 25,
+    query?: string
+): Promise<EmailThread[]> {
+    const baseQuery = "in:inbox newer_than:7d";
+    return fetchEmailThreads(query ? `in:inbox ${query}` : baseQuery, maxResults);
 }
 
 export async function getEmailContent(messageId: string): Promise<EmailMessage | null> {
@@ -192,13 +227,14 @@ export async function sendEmail(params: {
     }
 }
 
-export function formatEmailSummary(emails: EmailThread[]): string {
-    if (emails.length === 0) return "No unread emails.";
+export function formatEmailSummary(emails: EmailThread[], showStatus: boolean = false): string {
+    if (emails.length === 0) return "No emails.";
 
     return emails.map((e, i) => {
         const sender = e.from.includes("<")
             ? e.from.split("<")[0].trim()
             : e.from;
-        return `${i + 1}. **${e.subject}** — from ${sender}\n   _${e.snippet}_`;
+        const status = showStatus && e.unread ? " (unread)" : "";
+        return `${i + 1}. **${e.subject}**${status} - from ${sender}\n   _${e.snippet}_`;
     }).join("\n\n");
 }

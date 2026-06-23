@@ -4,7 +4,7 @@ import {
     formatEventsSummary,
 } from "@/lib/integrations/calendar-service";
 import {
-    listUnreadEmails, getEmailContent, createDraftReply, sendEmail,
+    listUnreadEmails, listRecentEmails, getEmailContent, createDraftReply, sendEmail,
     formatEmailSummary,
 } from "@/lib/integrations/gmail-service";
 
@@ -139,12 +139,28 @@ export const MCP_TOOLS: McpTool[] = [
         parameters: {
             max_results: {
                 type: "number",
-                description: "Maximum number of emails to return (default: 10).",
+                description: "Maximum number of emails to return (default: 25). Use a higher number when the user wants a full summary of everything unread.",
                 required: false,
             },
             query: {
                 type: "string",
                 description: "Optional Gmail search query to filter emails. Examples: 'from:john@example.com', 'label:work', 'category:promotions', 'subject:invoice', 'from:company.com'. Multiple filters can be combined.",
+                required: false,
+            },
+        },
+    },
+    {
+        name: "list_recent_emails",
+        description: "List recent emails in the user's Gmail inbox, both read and unread. Defaults to the last 7 days. Use this when the user asks about recent or latest emails in general, not only unread ones. Supports Gmail search filters.",
+        parameters: {
+            max_results: {
+                type: "number",
+                description: "Maximum number of emails to return (default: 25).",
+                required: false,
+            },
+            query: {
+                type: "string",
+                description: "Optional Gmail search query to narrow or widen results. Examples: 'newer_than:2d', 'from:john@example.com', 'subject:invoice', 'category:primary'. When provided it replaces the default 7-day window, so include a time filter like 'newer_than:Xd' if you still want one.",
                 required: false,
             },
         },
@@ -286,6 +302,9 @@ export async function executeTool(
 
         case "list_unread_emails":
             return executeListUnreadEmails(args.max_results as number | undefined, args.query as string | undefined);
+
+        case "list_recent_emails":
+            return executeListRecentEmails(args.max_results as number | undefined, args.query as string | undefined);
 
         case "read_email":
             return executeReadEmail(args.message_id as string);
@@ -432,7 +451,7 @@ async function executeListUnreadEmails(
     query?: string
 ): Promise<string> {
     try {
-        const emails = await listUnreadEmails(maxResults ?? 10, query);
+        const emails = await listUnreadEmails(maxResults ?? 25, query);
         if (emails.length === 0) {
             const filterNote = query ? ` matching "${query}"` : "";
             return `No unread emails${filterNote} in the inbox.`;
@@ -441,6 +460,24 @@ async function executeListUnreadEmails(
         return `Found ${emails.length} unread email(s)${filterNote}:\n\n` + formatEmailSummary(emails);
     } catch (error) {
         console.error("[MCP] List unread emails failed:", error);
+        return "Failed to list emails. Check Google API credentials.";
+    }
+}
+
+async function executeListRecentEmails(
+    maxResults?: number,
+    query?: string
+): Promise<string> {
+    try {
+        const emails = await listRecentEmails(maxResults ?? 25, query);
+        if (emails.length === 0) {
+            const filterNote = query ? ` matching "${query}"` : "";
+            return `No recent emails${filterNote} in the inbox.`;
+        }
+        const filterNote = query ? ` (filter: ${query})` : " (last 7 days)";
+        return `Found ${emails.length} recent email(s)${filterNote}:\n\n` + formatEmailSummary(emails, true);
+    } catch (error) {
+        console.error("[MCP] List recent emails failed:", error);
         return "Failed to list emails. Check Google API credentials.";
     }
 }

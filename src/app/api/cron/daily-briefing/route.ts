@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
         }
 
         const [emails, events] = await Promise.all([
-            listUnreadEmails(10).catch((err) => {
+            listUnreadEmails(50).catch((err) => {
                 console.warn("[Briefing] Gmail fetch failed:", err);
                 return [];
             }),

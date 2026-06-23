@@ -14,7 +14,7 @@ grounding.
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 11 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+- MCP tools: 12 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   current time and recent conversations
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
@@ -211,6 +211,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `manage_calendar_event` | Create or delete a Google Calendar event |
 | `list_calendar_events` | List upcoming events within N hours |
 | `list_unread_emails` | List unread Gmail (supports search filters) |
+| `list_recent_emails` | List recent Gmail, read or unread (defaults to last 7 days) |
 | `read_email` | Read a full email body by message ID |
 | `draft_gmail_reply` | Create a draft reply in Gmail |
 | `send_email` | Compose and send a new email |
