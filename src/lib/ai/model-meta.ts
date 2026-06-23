@@ -64,6 +64,16 @@ const GEMMA_4_31B: ModelMeta = {
     strengths: ["Multimodal", "Vision", "Coding", "Reasoning", "Multilingual", "Tool use"],
 };
 
+const GPT_OSS_120B: ModelMeta = {
+    developer: "OpenAI",
+    description:
+        "OpenAI's open-weight MoE built for agentic tasks and configurable reasoning. Near-parity with o4-mini on reasoning benchmarks, with adjustable reasoning effort, native tool use and a 131K context.",
+    inputs: ["Text"],
+    context: "131K",
+    params: "117B total · 5.1B active (MoE)",
+    strengths: ["Reasoning", "Agentic", "Tool use", "Coding", "Math"],
+};
+
 const MINIMAX_M3: ModelMeta = {
     developer: "MiniMax",
     description:
@@ -138,6 +148,7 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
     "poolside/laguna-m.1:free": LAGUNA_M1,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
+    "openai/gpt-oss-120b:free": GPT_OSS_120B,
     // NVIDIA NIM
     "minimaxai/minimax-m3": MINIMAX_M3,
     "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,

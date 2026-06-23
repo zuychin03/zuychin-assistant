@@ -228,10 +228,14 @@ first one whose provider key is set, in this order:
 3. Gemini 3.5 Flash (always available)
 
 Switch the model from inside a chat with the `/model` command. The choice is saved per channel
-and reused until you change it again:
+and reused until you change it again. Every command also accepts a `!` prefix (e.g. `!model`)
+since Discord reserves `/` for its own slash-command UI:
 
-- `/model` (or `/model list`) shows the current model and the available options.
-- `/model deepseek` / `/model mimo` / `/model gemini` switches and remembers the choice.
+- `/model` (or `/model list`) shows the current model and every available provider + model.
+- `/model <provider> <model>` switches and remembers the choice, e.g.
+  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.5-flash`.
+- `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
+  memory partition the channel uses (memories are stored per embedding model).
 
 ## Discord Bot (optional)
 
@@ -246,8 +250,9 @@ node bot.js
 ```
 
 - Set `ZUYCHIN_API_URL` to your deployed web app (defaults to `http://localhost:3000`).
-- Honors `/search`, `/think` and `/model` prefixes, downloads attachments (up to 20 MB) and
-  chunks replies to Discord's 2000-char limit.
+- Honors `/search`, `/think`, `/model` and `/embed-model` prefixes (use the `!` variant so
+  Discord doesn't capture `/`), downloads attachments (up to 20 MB) and chunks replies to
+  Discord's 2000-char limit.
 - Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` for Render.
 
 ## Telegram Bot (optional)

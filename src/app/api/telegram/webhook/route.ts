@@ -41,12 +41,13 @@ async function processUpdate(update: Record<string, unknown>) {
 
     console.log(`[Telegram] Processing from chat ${chatId}, type=${update.message ? "message" : "channel_post"}`);
 
-    // Command prefixes: /search, /think
+    // Command prefixes: /search, /think (or "!" variants). Model switching
+    // (/model, /embed-model) is passed through to ragChat, which handles it.
     let useSearch = false;
     let useThinking = false;
-    const commandMatch = text.match(/^\/(?:search|think)(?:@\S+)?\s*([\s\S]*)/);
+    const commandMatch = text.match(/^[/!](?:search|think)(?:@\S+)?\s*([\s\S]*)/i);
     if (commandMatch) {
-        const cmd = text.split(/\s|@/)[0].slice(1);
+        const cmd = text.split(/[\s@]/)[0].slice(1).toLowerCase();
         if (cmd === "search") useSearch = true;
         if (cmd === "think") useThinking = true;
         text = commandMatch[1].trim();

@@ -43,14 +43,22 @@ interface ChatMessage {
 
 const MAX_TOOL_ROUNDS = 5;
 
-// Some models (e.g. MiniMax) put their reasoning inside <think>...</think> tags
-// in the content. Strip those out before showing the reply.
+// Reasoning models sometimes inline their chain-of-thought in the content, e.g.
+// <think>...</think>. Strip those (several tag variants) before showing the reply.
+const THINK_PAIR_RE = /<(think|thinking|thought|reason|reasoning)>[\s\S]*?<\/\1>/gi;
+const THINK_OPEN_RE = /<(think|thinking|thought|reason|reasoning)>/i;
+const THINK_CLOSE_RE = /<\/(think|thinking|thought|reason|reasoning)>/gi;
+
 function stripThink(text: string): string {
-    let t = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
-    // sometimes there's a closing tag with no opening one
-    const close = t.lastIndexOf("</think>");
-    if (close !== -1 && !/<think>/i.test(t)) {
-        t = t.slice(close + "</think>".length);
+    let t = text.replace(THINK_PAIR_RE, "");
+    // A stray closing tag with no opening one means the reasoning was streamed
+    // first; drop everything up to and including the last such tag.
+    if (!THINK_OPEN_RE.test(t)) {
+        let cut = -1;
+        let m: RegExpExecArray | null;
+        THINK_CLOSE_RE.lastIndex = 0;
+        while ((m = THINK_CLOSE_RE.exec(t)) !== null) cut = m.index + m[0].length;
+        if (cut !== -1) t = t.slice(cut);
     }
     return t.trim();
 }
@@ -162,25 +170,28 @@ export async function openaiCompatChat(params: {
         data = await postChat(provider, apiKey, model.id, messages, tools, opts);
     }
 
-    let reply = extractReply(data);
+    let reply = extractContent(data);
 
-    // sometimes the model returns empty content after tool use - try one more
-    // plain request to get an actual answer
+    // If the model only produced reasoning and no answer, retry once without
+    // thinking/tools so it returns a real answer instead of its chain of thought.
     if (!reply) {
         try {
-            const plain = await postChat(provider, apiKey, model.id, messages, undefined, opts);
-            reply = extractReply(plain);
+            const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false });
+            reply = extractContent(plain);
         } catch (err) {
-            console.error(`[${provider.id}] retry after empty response failed:`, err);
+            console.error(`[${provider.id}] retry after empty answer failed:`, err);
         }
     }
+
+    // last resort: show the reasoning rather than nothing
+    if (!reply) reply = extractReasoning(data);
 
     return reply || "(The model returned an empty response.)";
 }
 
-// get the reply text out of a completion (content can be a string, an array of
-// parts, or only in a reasoning field)
-function extractReply(data: ChatCompletion): string {
+// the final answer from a completion's content (thinking stripped). Content may
+// be a string or an array of parts.
+function extractContent(data: ChatCompletion): string {
     const msg = data.choices?.[0]?.message;
     if (!msg) return "";
 
@@ -190,13 +201,14 @@ function extractReply(data: ChatCompletion): string {
     } else if (Array.isArray(msg.content)) {
         raw = msg.content.map((p) => (typeof p === "string" ? p : p?.text ?? "")).join("");
     }
+    return stripThink(raw);
+}
 
-    const content = stripThink(raw);
-    if (content) return content;
-
-    const reasoning = msg.reasoning_content ?? msg.reasoning;
-    if (reasoning) return stripThink(String(reasoning));
-    return "";
+// the model's reasoning, used only as a last resort when there's no actual answer
+function extractReasoning(data: ChatCompletion): string {
+    const msg = data.choices?.[0]?.message;
+    const reasoning = msg?.reasoning_content ?? msg?.reasoning;
+    return reasoning ? stripThink(String(reasoning)) : "";
 }
 
 type ToolChoice = "auto" | { type: "function"; function: { name: string } };

@@ -47,18 +47,20 @@ client.on(Events.MessageCreate, async (message) => {
         await message.channel.sendTyping();
 
 
+        // Prefixes can start with "/" or "!" — Discord intercepts "/" as its own
+        // slash-command UI, so "!" is the reliable option in chat. Model switching
+        // ("/model", "/embed-model") is forwarded as-is and handled by the API.
         let text = message.content.trim();
         let useSearch = false;
         let useThinking = false;
-        if (text.startsWith("/search")) {
+        if (/^[/!]search\b/i.test(text)) {
             useSearch = true;
-            text = text.slice(7).trim();
+            text = text.replace(/^[/!]search\b/i, "").trim();
         }
-        if (text.startsWith("/think")) {
+        if (/^[/!]think\b/i.test(text)) {
             useThinking = true;
-            text = text.slice(6).trim();
+            text = text.replace(/^[/!]think\b/i, "").trim();
         }
-
 
         const body = {
             message: text || (attachment ? `[Sent ${attachment.name}]` : ""),

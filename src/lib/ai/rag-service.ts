@@ -2,7 +2,7 @@ import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveAlias, availableModelChoices, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext } from "@/lib/datetime";
@@ -168,6 +168,36 @@ function getStoredChannelModel(profile: Profile, channel: MessageChannel): strin
     return prefs?.channelModels?.[channel];
 }
 
+// Read the embedding model a channel was switched to (stored as "providerId::modelId").
+function getStoredChannelEmbedding(profile: Profile, channel: MessageChannel): string | undefined {
+    const prefs = profile?.preferences as { channelEmbeddings?: Record<string, string> } | null | undefined;
+    return prefs?.channelEmbeddings?.[channel];
+}
+
+// Persist a "providerId::modelId" choice under the given preferences key for a
+// channel. Returns false if it couldn't be saved.
+async function saveChannelChoice(
+    profile: Profile,
+    channel: MessageChannel,
+    key: "channelModels" | "channelEmbeddings",
+    value: string
+): Promise<boolean> {
+    if (!profile?.id) return false;
+    const prefs: Record<string, unknown> =
+        profile.preferences && typeof profile.preferences === "object"
+            ? { ...(profile.preferences as Record<string, unknown>) }
+            : {};
+    const map = { ...((prefs[key] as Record<string, string>) ?? {}) };
+    map[channel] = value;
+    prefs[key] = map;
+    try {
+        await updateProfilePreferences(profile.id, prefs);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Decide which chat model a request should use. Web sends provider/model from the
 // dropdown; the messaging channels use their saved choice, then the free chain.
 function resolveChatForRequest(
@@ -183,42 +213,70 @@ function resolveChatForRequest(
     return resolveChat();
 }
 
-// Handle "/model" on the messaging channels: list options or switch + persist.
+// Render the grouped model listing for a command's help text.
+function formatModelListing(
+    groups: { provider: string; providerId: string; models: { name: string; label: string }[] }[]
+): string {
+    return groups
+        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  • ${m.name} — ${m.label}`).join("\n"))
+        .join("\n");
+}
+
+// Handle "/model" (or "!model") on the messaging channels: list models or switch
+// to "<provider> <model>" and persist. Each model has one unique name per provider.
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
-    const arg = message.trim().replace(/^\/model(?:@\S+)?\s*/i, "").trim();
-    const optionsLine =
-        "Available models:\n" +
-        availableModelChoices()
-            .map((c) => `• ${c.aliases.join(" / ")} — ${c.label} (${c.provider})`)
-            .join("\n");
+    const arg = message.trim().replace(/^[/!]model(?:@\S+)?\s*/i, "").trim();
     const current = resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
+    const usage = `Usage: /model <provider> <model>\n\nAvailable models:\n${formatModelListing(availableChatModels())}`;
 
     if (!arg || arg.toLowerCase() === "list") {
-        return `Current model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${optionsLine}\n\nSwitch with "/model <name>".`;
+        return `Current model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${usage}`;
     }
 
-    const resolved = resolveAlias(arg);
+    const parts = arg.split(/\s+/);
+    if (parts.length < 2) {
+        return `Please specify both a provider and a model.\n\n${usage}`;
+    }
+
+    const resolved = resolveChatByName(parts[0], parts[1]);
     if (!resolved) {
-        return `Unknown or unavailable model "${arg}".\n${optionsLine}`;
-    }
-    if (!profile?.id) {
-        return "Couldn't save the model choice (no profile found). Please try again later.";
+        return `Unknown or unavailable model "${arg}".\n\n${usage}`;
     }
 
-    const prefs: Record<string, unknown> =
-        profile.preferences && typeof profile.preferences === "object"
-            ? { ...(profile.preferences as Record<string, unknown>) }
-            : {};
-    const channelModels = { ...((prefs.channelModels as Record<string, string>) ?? {}) };
-    channelModels[channel] = `${resolved.provider.id}::${resolved.model.id}`;
-    prefs.channelModels = channelModels;
-
-    try {
-        await updateProfilePreferences(profile.id, prefs);
-    } catch {
-        return "Failed to save the model choice. Please try again later.";
+    const saved = await saveChannelChoice(profile, channel, "channelModels", `${resolved.provider.id}::${resolved.model.id}`);
+    if (!saved) {
+        return "Couldn't save the model choice. Please try again later.";
     }
-    return `Model set to ${resolved.model.label} for ${channel}.`;
+    return `Model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}.`;
+}
+
+// Handle "/embed-model" (or "!embed-model"): list embedding models or switch to
+// "<provider> <model>" and persist. Switching changes which memory partition the
+// channel reads/writes (vectors from different models aren't comparable).
+async function handleEmbedModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
+    const arg = message.trim().replace(/^[/!]embed-model(?:@\S+)?\s*/i, "").trim();
+    const current = resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding();
+    const usage = `Usage: /embed-model <provider> <model>\n\nAvailable embedding models:\n${formatModelListing(availableEmbeddingModels())}`;
+
+    if (!arg || arg.toLowerCase() === "list") {
+        return `Current embedding model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${usage}`;
+    }
+
+    const parts = arg.split(/\s+/);
+    if (parts.length < 2) {
+        return `Please specify both a provider and a model.\n\n${usage}`;
+    }
+
+    const resolved = resolveEmbeddingByName(parts[0], parts[1]);
+    if (!resolved) {
+        return `Unknown or unavailable embedding model "${arg}".\n\n${usage}`;
+    }
+
+    const saved = await saveChannelChoice(profile, channel, "channelEmbeddings", `${resolved.provider.id}::${resolved.model.id}`);
+    if (!saved) {
+        return "Couldn't save the embedding choice. Please try again later.";
+    }
+    return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: memories are stored per embedding model, so switching starts a fresh memory partition for this channel.`;
 }
 
 export async function ragChat(params: {
@@ -242,22 +300,29 @@ export async function ragChat(params: {
 
     const profile = await getDefaultProfile();
 
-    // External channels can switch model with "/model" - handle it before anything
-    // else and reply with a confirmation (no history, no RAG).
-    if (channel !== "web" && /^\/model(?:@\S+)?(?:\s|$)/i.test(message.trim())) {
-        const reply = await handleModelCommand(message, channel, profile);
-        return { reply, messageId: "" };
+    // External channels can switch model/embedding with "/model" or "/embed-model"
+    // (a "!" prefix also works, since Discord intercepts "/" as its slash-command
+    // UI). Handle these before anything else and reply with a confirmation.
+    if (channel !== "web") {
+        const trimmed = message.trim();
+        if (/^[/!]embed-model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
+            return { reply: await handleEmbedModelCommand(message, channel, profile), messageId: "" };
+        }
+        if (/^[/!]model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
+            return { reply: await handleModelCommand(message, channel, profile), messageId: "" };
+        }
     }
 
     // Resolve which chat model to use. Web sends provider/model from its dropdown;
     // the messaging channels fall back to their saved choice, then the free chain.
     const chat = resolveChatForRequest(channel, provider, model, profile);
-    // Web sends its embedding choice; messaging channels default to the free chain
-    // (Nemotron Embed if OpenRouter is configured, else Gemini).
+    // Web sends its embedding choice; messaging channels use their saved
+    // "/embed-model" choice, then the free chain (Nemotron Embed if NIM is
+    // configured, else Gemini).
     const embRef = embeddingModel
         ? getEmbeddingRef(embeddingModel)
         : channel !== "web"
-            ? resolveMessagingEmbedding()
+            ? (resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding())
             : getEmbeddingRef();
 
     // check this on the server so it works on every channel, not just the web UI
