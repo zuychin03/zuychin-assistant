@@ -1,8 +1,8 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
-import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle } from "@/lib/db";
+import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
-import { resolveChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveAlias, availableAliases, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext } from "@/lib/datetime";
@@ -160,6 +160,63 @@ async function isDuplicateEmbedding(
 }
 
 
+type Profile = Awaited<ReturnType<typeof getDefaultProfile>>;
+
+// Read the model a channel was switched to (stored as "providerId::modelId").
+function getStoredChannelModel(profile: Profile, channel: MessageChannel): string | undefined {
+    const prefs = profile?.preferences as { channelModels?: Record<string, string> } | null | undefined;
+    return prefs?.channelModels?.[channel];
+}
+
+// Decide which chat model a request should use. Web sends provider/model from the
+// dropdown; the messaging channels use their saved choice, then the free chain.
+function resolveChatForRequest(
+    channel: MessageChannel,
+    provider: string | undefined,
+    model: string | undefined,
+    profile: Profile
+): ResolvedChat {
+    if (provider || model) return resolveChat(provider, model);
+    if (channel !== "web") {
+        return resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
+    }
+    return resolveChat();
+}
+
+// Handle "/model" on the messaging channels: list options or switch + persist.
+async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
+    const arg = message.trim().replace(/^\/model(?:@\S+)?\s*/i, "").trim();
+    const optionsLine = `Available models: ${availableAliases().join(", ")}.`;
+    const current = resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
+
+    if (!arg || arg.toLowerCase() === "list") {
+        return `Current model on ${channel}: ${current.model.label}.\n${optionsLine}\nSwitch with "/model <name>".`;
+    }
+
+    const resolved = resolveAlias(arg);
+    if (!resolved) {
+        return `Unknown or unavailable model "${arg}".\n${optionsLine}`;
+    }
+    if (!profile?.id) {
+        return "Couldn't save the model choice (no profile found). Please try again later.";
+    }
+
+    const prefs: Record<string, unknown> =
+        profile.preferences && typeof profile.preferences === "object"
+            ? { ...(profile.preferences as Record<string, unknown>) }
+            : {};
+    const channelModels = { ...((prefs.channelModels as Record<string, string>) ?? {}) };
+    channelModels[channel] = `${resolved.provider.id}::${resolved.model.id}`;
+    prefs.channelModels = channelModels;
+
+    try {
+        await updateProfilePreferences(profile.id, prefs);
+    } catch {
+        return "Failed to save the model choice. Please try again later.";
+    }
+    return `Model set to ${resolved.model.label} for ${channel}.`;
+}
+
 export async function ragChat(params: {
     message: string;
     channel: MessageChannel;
@@ -179,14 +236,24 @@ export async function ragChat(params: {
         genParams = {},
     } = params;
 
-    const chat = resolveChat(provider, model);
+    const profile = await getDefaultProfile();
+
+    // External channels can switch model with "/model" - handle it before anything
+    // else and reply with a confirmation (no history, no RAG).
+    if (channel !== "web" && /^\/model(?:@\S+)?(?:\s|$)/i.test(message.trim())) {
+        const reply = await handleModelCommand(message, channel, profile);
+        return { reply, messageId: "" };
+    }
+
+    // Resolve which chat model to use. Web sends provider/model from its dropdown;
+    // the messaging channels fall back to their saved choice, then the free chain.
+    const chat = resolveChatForRequest(channel, provider, model, profile);
     const embRef = getEmbeddingRef(embeddingModel);
 
     // check this on the server so it works on every channel, not just the web UI
     const allowThinking = thinking && chat.model.supportsThinking;
     const allowSearch = search && chat.model.supportsSearch;
 
-    const profile = await getDefaultProfile();
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 

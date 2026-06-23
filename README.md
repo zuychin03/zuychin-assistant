@@ -33,7 +33,7 @@ grounding.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3 Flash, OpenRouter (Nemotron), NVIDIA NIM (MiniMax M3, DeepSeek V4), OpenCode Zen (MiMo, Nemotron) |
+| Chat models | Gemini 3.5 / 3 Flash, OpenRouter (Nemotron), NVIDIA NIM (MiniMax M3, DeepSeek V4), OpenCode Zen (MiMo, Nemotron) |
 | Embeddings | Gemini Embedding 2 (768d), OpenRouter Nemotron Embed VL 1B v2 (2048d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Database | Supabase (PostgreSQL + pgvector) |
@@ -168,7 +168,7 @@ so add models or providers there.
 
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
-| Google Gemini | native | `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
+| Google Gemini | native | `gemini-3.5-flash`, `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free` | Chat plus the only non-Gemini embedding model (`nvidia/llama-nemotron-embed-vl-1b-v2:free`) |
 | NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b` | Free preview inference; MiniMax M3 is multimodal |
 | OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `nemotron-3-ultra-free` | Chat only |
@@ -216,6 +216,21 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `send_email` | Compose and send a new email |
 | `manage_todo_list` | Add / list / complete / delete to-do items |
 
+## Models on Discord / Telegram
+
+The messaging channels have no model dropdown, so they default to free models and pick the
+first one whose provider key is set, in this order:
+
+1. DeepSeek V4 Flash (NVIDIA NIM, then OpenCode Zen)
+2. MiMo V2.5 (OpenCode Zen)
+3. Gemini 3.5 Flash (always available)
+
+Switch the model from inside a chat with the `/model` command. The choice is saved per channel
+and reused until you change it again:
+
+- `/model` (or `/model list`) shows the current model and the available options.
+- `/model deepseek` / `/model mimo` / `/model gemini` switches and remembers the choice.
+
 ## Discord Bot (optional)
 
 The Discord bot runs as a separate process (`discord-bot/`) that listens on the Gateway and
@@ -229,8 +244,8 @@ node bot.js
 ```
 
 - Set `ZUYCHIN_API_URL` to your deployed web app (defaults to `http://localhost:3000`).
-- Honors `/search` and `/think` prefixes, downloads attachments (up to 20 MB) and chunks
-  replies to Discord's 2000-char limit.
+- Honors `/search`, `/think` and `/model` prefixes, downloads attachments (up to 20 MB) and
+  chunks replies to Discord's 2000-char limit.
 - Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` for Render.
 
 ## Telegram Bot (optional)

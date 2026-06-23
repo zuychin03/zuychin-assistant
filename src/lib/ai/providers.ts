@@ -47,6 +47,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
         chatModels: [
+            { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [
@@ -151,6 +152,73 @@ export function resolveChat(providerId?: string, modelId?: string): ResolvedChat
     if (!provider.chatModels.length) provider = getProvider(DEFAULT_CHAT.providerId)!;
     const model = provider.chatModels.find((m) => m.id === modelId) ?? provider.chatModels[0]!;
     return { provider, model };
+}
+
+// Resolve a specific provider+model only if the provider has a key set and the
+// model exists. Returns null otherwise (so callers can fall back).
+function resolveAvailable(providerId: string, modelId: string): ResolvedChat | null {
+    const provider = getProvider(providerId);
+    if (!provider || !isProviderAvailable(provider)) return null;
+    const model = provider.chatModels.find((m) => m.id === modelId);
+    return model ? { provider, model } : null;
+}
+
+// Free models the external messaging channels (Discord/Telegram) default to, in
+// order of preference. The first one whose provider key is set wins. Gemini is the
+// final fallback since it's always configured.
+export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
+    { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
+    { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
+    { providerId: "opencode-zen", modelId: "mimo-v2.5-free" },
+    { providerId: "gemini", modelId: "gemini-3.5-flash" },
+];
+
+// First available model in the messaging chain (defaults to Gemini Flash).
+export function resolveMessagingDefault(): ResolvedChat {
+    for (const c of MESSAGING_MODEL_CHAIN) {
+        const resolved = resolveAvailable(c.providerId, c.modelId);
+        if (resolved) return resolved;
+    }
+    return resolveChat();
+}
+
+// Resolve a stored "providerId::modelId" key, but only if it's still available.
+export function resolveModelKey(key?: string | null): ResolvedChat | null {
+    if (!key || !key.includes("::")) return null;
+    const idx = key.indexOf("::");
+    return resolveAvailable(key.slice(0, idx), key.slice(idx + 2));
+}
+
+// Friendly names accepted by the /model command, each mapped to ordered candidates
+// so we use the first one whose provider key is set.
+export const MODEL_ALIASES: Record<string, { providerId: string; modelId: string }[]> = {
+    deepseek: [
+        { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
+        { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
+    ],
+    "deepseek-flash": [
+        { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
+        { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
+    ],
+    mimo: [{ providerId: "opencode-zen", modelId: "mimo-v2.5-free" }],
+    gemini: [{ providerId: "gemini", modelId: "gemini-3.5-flash" }],
+    flash: [{ providerId: "gemini", modelId: "gemini-3.5-flash" }],
+};
+
+// Resolve a /model alias to the first available candidate, or null if none.
+export function resolveAlias(alias: string): ResolvedChat | null {
+    const candidates = MODEL_ALIASES[alias.trim().toLowerCase()];
+    if (!candidates) return null;
+    for (const c of candidates) {
+        const resolved = resolveAvailable(c.providerId, c.modelId);
+        if (resolved) return resolved;
+    }
+    return null;
+}
+
+// Aliases that map to at least one model whose provider key is configured.
+export function availableAliases(): string[] {
+    return Object.keys(MODEL_ALIASES).filter((a) => resolveAlias(a) !== null);
 }
 
 export interface ResolvedEmbedding {
