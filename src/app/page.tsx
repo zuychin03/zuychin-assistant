@@ -809,6 +809,7 @@ export default function Home() {
         <header style={styles.header}>
           <div style={styles.headerContent}>
             <div style={styles.headerLeft}>
+              <span aria-hidden style={isDesktop ? styles.logoMark : styles.logoMarkMobile} />
               <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
                 <h1 style={styles.title}>Zuychin</h1>
                 <span style={isDesktop ? styles.subtitle : styles.subtitleMobile}>Assistant</span>
@@ -1286,6 +1287,37 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 8,
     padding: "0 12px 10px",
+  },
+  // Brand logo, drawn as a mask so it follows the theme's primary text colour.
+  // Sized a touch taller than the brand text so it reads as the lead element.
+  logoMark: {
+    width: 46,
+    height: 36,
+    flexShrink: 0,
+    backgroundColor: "var(--color-text-primary)",
+    WebkitMaskImage: "url('/zuychin-logo.svg')",
+    maskImage: "url('/zuychin-logo.svg')",
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+    WebkitMaskPosition: "center",
+    maskPosition: "center",
+    WebkitMaskSize: "contain",
+    maskSize: "contain",
+  },
+  // On mobile the brand collapses to one line, so the logo scales down to match.
+  logoMarkMobile: {
+    width: 35,
+    height: 27,
+    flexShrink: 0,
+    backgroundColor: "var(--color-text-primary)",
+    WebkitMaskImage: "url('/zuychin-logo.svg')",
+    maskImage: "url('/zuychin-logo.svg')",
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+    WebkitMaskPosition: "center",
+    maskPosition: "center",
+    WebkitMaskSize: "contain",
+    maskSize: "contain",
   },
   brandText: {
     display: "flex",
