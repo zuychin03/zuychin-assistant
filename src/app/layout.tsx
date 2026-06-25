@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Zuychin Assistant",
   description: "Personal AI assistant",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({
