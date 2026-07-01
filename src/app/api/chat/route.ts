@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
         }
 
 
-        const { reply, messageId } = await ragChat({
+        const { reply, messageId, artifacts } = await ragChat({
             message: message.trim(),
             channel,
             imageBase64,
@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
             genParams: sanitizeGenParams(genParams),
         });
 
-        return NextResponse.json({ reply, messageId });
+        return NextResponse.json({ reply, messageId, artifacts });
     } catch (error: unknown) {
         console.error("[Chat API Error]", error);
 

@@ -1,5 +1,5 @@
 import { supabaseAdmin as supabase } from "./supabase";
-import type { Message, MessageChannel, KnowledgeItem } from "./types";
+import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
 
 
 export async function saveMessage(params: {
@@ -9,6 +9,7 @@ export async function saveMessage(params: {
     imageUrl?: string;
     userProfileId?: string;
     conversationId?: string;
+    metadata?: MessageMetadata;
 }): Promise<string> {
     const { data, error } = await supabase
         .from("messages")
@@ -19,6 +20,7 @@ export async function saveMessage(params: {
             image_url: params.imageUrl ?? null,
             user_profile_id: params.userProfileId ?? null,
             conversation_id: params.conversationId ?? null,
+            metadata: params.metadata ?? {},
         })
         .select("id")
         .single();
@@ -266,6 +268,7 @@ export async function getConversationMessages(
         imageUrl: row.image_url,
         channel: row.channel,
         createdAt: row.created_at,
+        metadata: row.metadata ?? undefined,
     }));
 }
 

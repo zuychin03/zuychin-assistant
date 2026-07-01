@@ -7,12 +7,32 @@ import {
     listUnreadEmails, listRecentEmails, getEmailContent, createDraftReply, sendEmail,
     formatEmailSummary,
 } from "@/lib/integrations/gmail-service";
+import { ARTIFACT_TOOLS, executeArtifactTool } from "@/lib/ai/tools/artifacts";
+import type { ArtifactDescriptor } from "@/lib/types";
 
+
+export interface McpToolParam {
+    type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+    description: string;
+    required?: boolean;
+    enum?: string[];
+    items?: McpToolParam;                       // element schema for type: "array"
+    properties?: Record<string, McpToolParam>;  // field schemas for type: "object"
+}
 
 export interface McpTool {
     name: string;
     description: string;
-    parameters: Record<string, { type: string; description: string; required?: boolean; enum?: string[] }>;
+    parameters: Record<string, McpToolParam>;
+}
+
+// Extra context passed to tool executors: which conversation/user the run belongs
+// to, and a sink for any artifacts (files) a tool produces so the caller can
+// attach them to the reply.
+export interface ToolContext {
+    conversationId?: string;
+    userProfileId?: string;
+    onArtifact?: (artifact: ArtifactDescriptor) => void;
 }
 
 // Web search tool. This is only handed to the OpenAI-compatible models since they
@@ -272,8 +292,14 @@ import { APP_TIMEZONE } from "@/lib/datetime";
 export async function executeTool(
     toolName: string,
     args: Record<string, unknown>,
-    embRef: ResolvedEmbedding = getEmbeddingRef()
+    embRef: ResolvedEmbedding = getEmbeddingRef(),
+    ctx?: ToolContext
 ): Promise<string> {
+    // File-producing tools (create_document / create_code_file / create_code_bundle).
+    // Returns null when toolName isn't one of them, so we fall through.
+    const artifactResult = await executeArtifactTool(toolName, args, ctx);
+    if (artifactResult !== null) return artifactResult;
+
     switch (toolName) {
         case "get_current_time":
             return executeGetCurrentTime(args.timezone as string | undefined);
@@ -617,34 +643,55 @@ async function executeManageTodoList(
 }
 
 
-export function buildGeminiFunctionDeclarations() {
+// Recursively convert a tool param into a Gemini schema node (handles arrays/objects).
+function toGeminiSchema(param: McpToolParam): Record<string, unknown> {
     const typeMap: Record<string, Type> = {
         string: Type.STRING,
         number: Type.NUMBER,
         integer: Type.INTEGER,
         boolean: Type.BOOLEAN,
+        array: Type.ARRAY,
+        object: Type.OBJECT,
     };
+    const schema: Record<string, unknown> = {
+        type: typeMap[param.type] ?? Type.STRING,
+        description: param.description,
+    };
+    if (param.enum) schema.enum = param.enum;
+    if (param.type === "array" && param.items) schema.items = toGeminiSchema(param.items);
+    if (param.type === "object" && param.properties) {
+        schema.properties = Object.fromEntries(
+            Object.entries(param.properties).map(([k, v]) => [k, toGeminiSchema(v)])
+        );
+        schema.required = Object.entries(param.properties).filter(([, v]) => v.required).map(([k]) => k);
+    }
+    return schema;
+}
 
-    return MCP_TOOLS.map((tool) => ({
+// Build Gemini function declarations for an arbitrary set of tools (used by the
+// agent to include its own update_plan / run_subagents tools).
+export function geminiDeclarationsFor(tools: McpTool[]) {
+    return tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
         parameters: {
             type: Type.OBJECT as const,
             properties: Object.fromEntries(
-                Object.entries(tool.parameters).map(([key, val]) => [
-                    key,
-                    {
-                        type: typeMap[val.type] ?? Type.STRING,
-                        description: val.description,
-                        ...(val.enum ? { enum: val.enum } : {}),
-                    },
-                ])
+                Object.entries(tool.parameters).map(([key, val]) => [key, toGeminiSchema(val)])
             ),
             required: Object.entries(tool.parameters)
                 .filter(([, val]) => val.required)
                 .map(([key]) => key),
         },
     }));
+}
+
+export type GeminiToolDeclarations = ReturnType<typeof geminiDeclarationsFor>;
+
+export function buildGeminiFunctionDeclarations() {
+    // Gemini grounds the web itself, so it doesn't get search_web; it does get the
+    // artifact tools so it can return files.
+    return geminiDeclarationsFor([...MCP_TOOLS, ...ARTIFACT_TOOLS]);
 }
 
 
@@ -656,16 +703,33 @@ export interface OpenAITool {
         description: string;
         parameters: {
             type: "object";
-            properties: Record<string, { type: string; description: string; enum?: string[] }>;
+            properties: Record<string, Record<string, unknown>>;
             required: string[];
         };
     };
 }
 
+// Recursively convert a tool param into a JSON-schema node for OpenAI-compatible APIs.
+function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
+    const schema: Record<string, unknown> = {
+        type: param.type === "integer" ? "number" : param.type,
+        description: param.description,
+    };
+    if (param.enum) schema.enum = param.enum;
+    if (param.type === "array" && param.items) schema.items = toOpenAISchema(param.items);
+    if (param.type === "object" && param.properties) {
+        schema.properties = Object.fromEntries(
+            Object.entries(param.properties).map(([k, v]) => [k, toOpenAISchema(v)])
+        );
+        schema.required = Object.entries(param.properties).filter(([, v]) => v.required).map(([k]) => k);
+    }
+    return schema;
+}
+
 export function buildOpenAIToolDeclarations(): OpenAITool[] {
     // OpenAI-compatible models get the web search tool too (Gemini doesn't, it
-    // grounds with Google Search instead).
-    return [...MCP_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
+    // grounds with Google Search instead) plus the artifact tools.
+    return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.name,
@@ -673,14 +737,7 @@ export function buildOpenAIToolDeclarations(): OpenAITool[] {
             parameters: {
                 type: "object" as const,
                 properties: Object.fromEntries(
-                    Object.entries(tool.parameters).map(([key, val]) => [
-                        key,
-                        {
-                            type: val.type === "integer" ? "number" : val.type,
-                            description: val.description,
-                            ...(val.enum ? { enum: val.enum } : {}),
-                        },
-                    ])
+                    Object.entries(tool.parameters).map(([key, val]) => [key, toOpenAISchema(val)])
                 ),
                 required: Object.entries(tool.parameters)
                     .filter(([, val]) => val.required)

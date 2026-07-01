@@ -9,6 +9,7 @@ import { getProviderApiKey, type ChatModel, type ProviderConfig, type GenParams 
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
+import type { ToolContext } from "@/lib/ai/mcp-service";
 import type { FileAttachment } from "@/lib/types";
 
 interface ToolCall {
@@ -82,8 +83,9 @@ export async function openaiCompatChat(params: {
     thinking?: boolean;
     search?: boolean;
     genParams?: GenParams;
+    ctx?: ToolContext;
 }): Promise<string> {
-    const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef } = params;
+    const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx } = params;
 
     const apiKey = getProviderApiKey(provider);
     if (!apiKey) {
@@ -170,7 +172,7 @@ export async function openaiCompatChat(params: {
                 } catch {
                     /* leave args empty on malformed JSON */
                 }
-                const result = await executeTool(call.function.name, args, embRef);
+                const result = await executeTool(call.function.name, args, embRef, ctx);
                 return { id: call.id, name: call.function.name, result };
             })
         );

@@ -7,6 +7,25 @@ export interface Message {
     imageUrl?: string;
     channel: MessageChannel;
     createdAt: string;
+    metadata?: MessageMetadata;
+}
+
+export type ArtifactKind = "document" | "code" | "archive";
+
+// Lightweight descriptor stored on the assistant message (metadata) and returned
+// to the client. The actual bytes live in the `artifacts` table, fetched on
+// demand from GET /api/artifacts/[id].
+export interface ArtifactDescriptor {
+    id: string;
+    name: string;   // filename, e.g. "outage-report.pdf"
+    mime: string;
+    kind: ArtifactKind;
+    size: number;
+}
+
+export interface MessageMetadata {
+    artifacts?: ArtifactDescriptor[];
+    [key: string]: unknown;
 }
 
 export type MessageChannel = "web" | "discord" | "telegram";
@@ -86,6 +105,7 @@ export function isSupportedAttachment(mimeType: string, name: string): boolean {
 export interface ChatResponse {
     reply: string;
     messageId: string;
+    artifacts?: ArtifactDescriptor[];
 }
 
 export interface BotStatus {

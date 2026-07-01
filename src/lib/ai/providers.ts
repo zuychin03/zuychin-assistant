@@ -224,6 +224,18 @@ export function resolveChatByName(providerArg: string, modelArg: string): Resolv
     return model ? { provider, model } : null;
 }
 
+// Resolve a bare model name/id (no provider given) to the first available provider
+// that offers it. Used by the agent to honor a worker's model hint.
+export function resolveChatModelByName(name: string): ResolvedChat | null {
+    const n = name.trim().toLowerCase();
+    for (const provider of PROVIDERS) {
+        if (!isProviderAvailable(provider)) continue;
+        const model = provider.chatModels.find((m) => m.name.toLowerCase() === n || m.id.toLowerCase() === n);
+        if (model) return { provider, model };
+    }
+    return null;
+}
+
 // Available chat models for the /model command, grouped by available provider.
 export function availableChatModels(): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
     return PROVIDERS

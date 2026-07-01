@@ -1,14 +1,15 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
-import { buildGeminiFunctionDeclarations, executeTool } from "@/lib/ai/mcp-service";
+import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext } from "@/lib/datetime";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
-import type { MessageChannel, FileAttachment, Message } from "@/lib/types";
+import { linkArtifactsToMessage } from "@/lib/artifacts/store";
+import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
 
@@ -162,7 +163,7 @@ async function isDuplicateEmbedding(
 }
 
 
-type Profile = Awaited<ReturnType<typeof getDefaultProfile>>;
+export type Profile = Awaited<ReturnType<typeof getDefaultProfile>>;
 
 // Read the model a channel was switched to (stored as "providerId::modelId").
 function getStoredChannelModel(profile: Profile, channel: MessageChannel): string | undefined {
@@ -281,39 +282,31 @@ async function handleEmbedModelCommand(message: string, channel: MessageChannel,
     return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: memories are stored per embedding model, so switching starts a fresh memory partition for this channel.`;
 }
 
-export async function ragChat(params: {
+export interface RagContext {
+    profile: Profile;
+    chat: ResolvedChat;
+    embRef: ResolvedEmbedding;
+    // system prompt + current date/time + relevant memories + conversation history
+    contextBlock: string;
+    allowThinking: boolean;
+    allowSearch: boolean;
+}
+
+// Resolves the model/embedding, runs retrieval (vector memories + history), stores
+// the query embedding, and assembles the grounding context. Shared by the fast
+// single-pass path (ragChat) and the agent orchestrator so both ground identically.
+export async function buildRagContext(params: {
     message: string;
     channel: MessageChannel;
-    imageBase64?: string;
-    file?: FileAttachment;
     conversationId?: string;
-    thinking?: boolean;
-    search?: boolean;
     provider?: string;
     model?: string;
     embeddingModel?: string;
-    genParams?: GenParams;
-}): Promise<{ reply: string; messageId: string }> {
-    const {
-        message, channel, imageBase64, file, conversationId,
-        thinking = false, search = false, provider, model, embeddingModel,
-        genParams = {},
-    } = params;
-
-    const profile = await getDefaultProfile();
-
-    // External channels can switch model/embedding with "/model" or "/embed-model"
-    // (a "!" prefix also works, since Discord intercepts "/" as its slash-command
-    // UI). Handle these before anything else and reply with a confirmation.
-    if (channel !== "web") {
-        const trimmed = message.trim();
-        if (/^[/!]embed-model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
-            return { reply: await handleEmbedModelCommand(message, channel, profile), messageId: "" };
-        }
-        if (/^[/!]model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
-            return { reply: await handleModelCommand(message, channel, profile), messageId: "" };
-        }
-    }
+    thinking: boolean;
+    search: boolean;
+    profile: Profile;
+}): Promise<RagContext> {
+    const { message, channel, conversationId, provider, model, embeddingModel, thinking, search, profile } = params;
 
     // Resolve which chat model to use. Web sends provider/model from its dropdown;
     // the messaging channels fall back to their saved choice, then the free chain.
@@ -333,19 +326,6 @@ export async function ragChat(params: {
 
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
-
-    let userMsgId = "";
-    try {
-        userMsgId = await saveMessage({
-            role: "user",
-            content: message,
-            channel,
-            userProfileId: profile?.id,
-            conversationId,
-        });
-    } catch (err) {
-        console.error("[RAG] Failed to save user message:", err);
-    }
 
     const queryEmbedding = await embedText(embRef, message);
 
@@ -403,35 +383,105 @@ export async function ragChat(params: {
     if (relevantContext) contextBlock += `## Relevant Memories\n${relevantContext}\n\n`;
     if (historySection) contextBlock += `${historySection}\n\n`;
 
+    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch };
+}
+
+export async function ragChat(params: {
+    message: string;
+    channel: MessageChannel;
+    imageBase64?: string;
+    file?: FileAttachment;
+    conversationId?: string;
+    thinking?: boolean;
+    search?: boolean;
+    provider?: string;
+    model?: string;
+    embeddingModel?: string;
+    genParams?: GenParams;
+}): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
+    const {
+        message, channel, imageBase64, file, conversationId,
+        thinking = false, search = false, provider, model, embeddingModel,
+        genParams = {},
+    } = params;
+
+    const profile = await getDefaultProfile();
+
+    // External channels can switch model/embedding with "/model" or "/embed-model"
+    // (a "!" prefix also works, since Discord intercepts "/" as its slash-command
+    // UI). Handle these before anything else and reply with a confirmation.
+    if (channel !== "web") {
+        const trimmed = message.trim();
+        if (/^[/!]embed-model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
+            return { reply: await handleEmbedModelCommand(message, channel, profile), messageId: "", artifacts: [] };
+        }
+        if (/^[/!]model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
+            return { reply: await handleModelCommand(message, channel, profile), messageId: "", artifacts: [] };
+        }
+    }
+
+    let userMsgId = "";
+    try {
+        userMsgId = await saveMessage({
+            role: "user",
+            content: message,
+            channel,
+            userProfileId: profile?.id,
+            conversationId,
+        });
+    } catch (err) {
+        console.error("[RAG] Failed to save user message:", err);
+    }
+
+    const rag = await buildRagContext({
+        message, channel, conversationId, provider, model,
+        embeddingModel, thinking, search, profile,
+    });
+
+    // Collect any files the model produces via the artifact tools so we can attach
+    // them to the reply and return them to the client.
+    const artifacts: ArtifactDescriptor[] = [];
+    const toolCtx: ToolContext = {
+        conversationId,
+        userProfileId: profile?.id,
+        onArtifact: (a) => artifacts.push(a),
+    };
+
     let reply: string;
-    if (chat.provider.kind === "gemini") {
+    if (rag.chat.provider.kind === "gemini") {
         reply = await generateGeminiReply({
-            contextBlock, message, imageBase64, file, channel,
-            thinking: allowThinking, search: allowSearch, model: chat.model.id, embRef, genParams,
+            contextBlock: rag.contextBlock, message, imageBase64, file, channel,
+            thinking: rag.allowThinking, search: rag.allowSearch,
+            model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx,
         });
     } else {
         reply = await openaiCompatChat({
-            provider: chat.provider,
-            model: chat.model,
-            systemText: contextBlock.trim(),
+            provider: rag.chat.provider,
+            model: rag.chat.model,
+            systemText: rag.contextBlock.trim(),
             userText: message,
             imageBase64,
             file,
-            embRef,
-            thinking: allowThinking,
-            search: allowSearch,
+            embRef: rag.embRef,
+            thinking: rag.allowThinking,
+            search: rag.allowSearch,
             genParams,
+            ctx: toolCtx,
         });
     }
 
     try {
-        await saveMessage({
+        const assistantMsgId = await saveMessage({
             role: "assistant",
             content: reply,
             channel,
             userProfileId: profile?.id,
             conversationId,
+            metadata: artifacts.length > 0 ? { artifacts } : undefined,
         });
+        if (artifacts.length > 0) {
+            await linkArtifactsToMessage(artifacts.map((a) => a.id), assistantMsgId);
+        }
     } catch (err) {
         console.error("[RAG] Failed to save assistant message:", err);
     }
@@ -449,7 +499,7 @@ export async function ragChat(params: {
         } catch { /* non-critical */ }
     }
 
-    return { reply, messageId: userMsgId };
+    return { reply, messageId: userMsgId, artifacts };
 }
 
 
@@ -465,8 +515,9 @@ async function generateGeminiReply(opts: {
     model: string;
     embRef: ResolvedEmbedding;
     genParams: GenParams;
+    ctx?: ToolContext;
 }): Promise<string> {
-    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams } = opts;
+    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx } = opts;
 
     // gemini uses slightly different names for these
     const genConfig: Record<string, number> = {};
@@ -523,7 +574,7 @@ async function generateGeminiReply(opts: {
 
         const results = await Promise.all(
             calls.map(async (fc) => {
-                const result = await executeTool(fc.name!, (fc.args ?? {}) as Record<string, unknown>, embRef);
+                const result = await executeTool(fc.name!, (fc.args ?? {}) as Record<string, unknown>, embRef, ctx);
                 return { name: fc.name!, result, id: (fc as any).id }; // eslint-disable-line @typescript-eslint/no-explicit-any
             })
         );

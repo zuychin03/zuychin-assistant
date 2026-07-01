@@ -103,6 +103,27 @@ create trigger trigger_todos_updated_at
 create index if not exists idx_todos_status
   on todos (status, created_at desc);
 
+-- Files the assistant generates during agent runs (report documents, code files,
+-- zip bundles). Small payloads are stored inline: text artifacts in content_text,
+-- binary ones (docx/pdf/zip) base64-encoded in content_base64. Move to Supabase
+-- Storage if outputs grow large.
+create table if not exists artifacts (
+  id uuid primary key default gen_random_uuid(),
+  user_profile_id uuid references user_profiles(id) on delete set null,
+  conversation_id uuid references conversations(id) on delete cascade,
+  message_id uuid references messages(id) on delete set null,
+  kind text not null default 'document' check (kind in ('document', 'code', 'archive')),
+  filename text not null,
+  mime_type text not null,
+  content_text text,
+  content_base64 text,
+  size integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_artifacts_conversation
+  on artifacts (conversation_id, created_at desc);
+
 -- Row level security. This is a single-user app, so the policies just allow the
 -- configured key full access. Tighten these with auth.uid() checks if you ever
 -- make it multi-user.
@@ -111,6 +132,7 @@ alter table conversations enable row level security;
 alter table messages enable row level security;
 alter table embeddings enable row level security;
 alter table todos enable row level security;
+alter table artifacts enable row level security;
 
 drop policy if exists "Allow all access to user_profiles" on user_profiles;
 create policy "Allow all access to user_profiles" on user_profiles for all using (true) with check (true);
@@ -126,6 +148,9 @@ create policy "Allow all access to embeddings" on embeddings for all using (true
 
 drop policy if exists "Allow all access to todos" on todos;
 create policy "Allow all access to todos" on todos for all using (true) with check (true);
+
+drop policy if exists "Allow all access to artifacts" on artifacts;
+create policy "Allow all access to artifacts" on artifacts for all using (true) with check (true);
 
 -- Vector search. Filters by model first so only same-dimension rows are compared,
 -- then ranks by cosine similarity.

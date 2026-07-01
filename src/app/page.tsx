@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
+import type { ArtifactDescriptor } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -12,6 +13,7 @@ interface ChatMessage {
   content: string;
   fileName?: string;
   fileMimeType?: string;
+  artifacts?: ArtifactDescriptor[];
 }
 
 interface Conversation {
@@ -441,10 +443,11 @@ export default function Home() {
       const data = await res.json();
       if (data.messages) {
         setMessages(
-          data.messages.map((m: { id: string; role: string; content: string }) => ({
+          data.messages.map((m: { id: string; role: string; content: string; metadata?: { artifacts?: ArtifactDescriptor[] } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
+            artifacts: m.metadata?.artifacts,
           }))
         );
       }
@@ -559,6 +562,7 @@ export default function Home() {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: data.reply,
+        artifacts: data.artifacts,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -642,6 +646,39 @@ export default function Home() {
     if (mimeType.startsWith("audio/")) return <Music size={14} />;
     if (mimeType.startsWith("video/")) return <Video size={14} />;
     return <FileText size={14} />;
+  };
+
+  const getArtifactIcon = (kind: ArtifactDescriptor["kind"]) => {
+    if (kind === "code") return <FileCode size={15} color="var(--color-primary)" />;
+    if (kind === "archive") return <FileArchive size={15} color="var(--color-primary)" />;
+    return <FileText size={15} color="var(--color-primary)" />;
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  // Download a generated file via fetch->blob so a failure never navigates the
+  // page away (which would drop the SPA back to an empty conversation).
+  const downloadArtifact = async (art: ArtifactDescriptor) => {
+    try {
+      const res = await fetch(`/api/artifacts/${art.id}`);
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = art.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Artifact download error:", err);
+      alert(`Could not download ${art.name}. ${err instanceof Error ? err.message : ""}`);
+    }
   };
 
   const handleExport = async (content: string, format: "docx" | "pdf" | "md") => {
@@ -894,6 +931,24 @@ export default function Home() {
                   </div>
                 ) : (
                   <p style={styles.bubbleText}>{msg.content}</p>
+                )}
+                {msg.role === "assistant" && msg.artifacts && msg.artifacts.length > 0 && (
+                  <div style={styles.artifactRow}>
+                    {msg.artifacts.map((art) => (
+                      <button
+                        key={art.id}
+                        type="button"
+                        onClick={() => downloadArtifact(art)}
+                        style={styles.artifactChip}
+                        title={`Download ${art.name}`}
+                      >
+                        {getArtifactIcon(art.kind)}
+                        <span style={styles.artifactName}>{art.name}</span>
+                        <span style={styles.artifactSize}>{formatBytes(art.size)}</span>
+                        <Download size={13} color="var(--color-primary)" />
+                      </button>
+                    ))}
+                  </div>
                 )}
                 {msg.role === "assistant" && msg.content.length > 80 && (
                   <div style={styles.exportRow}>
@@ -1623,6 +1678,40 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     cursor: "pointer",
     transition: "background 0.15s ease, color 0.15s ease",
+  },
+
+  // Generated file (artifact) download chips
+  artifactRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+  },
+  artifactChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 12px",
+    fontSize: 13,
+    fontWeight: 500,
+    fontFamily: "var(--font-family)",
+    color: "var(--color-text)",
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-primary)",
+    borderRadius: 8,
+    cursor: "pointer",
+    textDecoration: "none",
+    maxWidth: "100%",
+  },
+  artifactName: {
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: 220,
+  },
+  artifactSize: {
+    fontSize: 11,
+    color: "var(--color-text-muted)",
   },
 
   // Generation settings panel
