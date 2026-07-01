@@ -5,19 +5,15 @@ import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import type { FileAttachment, MessageChannel } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 
-// Agent runs make many model calls; give the function room (Vercel Pro = 300s).
 export const maxDuration = 300;
 
 const SSE_HEADERS = {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-    // Disable proxy buffering so events flush immediately.
     "X-Accel-Buffering": "no",
 };
 
-// POST /api/chat/stream — same as /api/chat but streams agent progress over SSE.
-// Used by the web UI; Discord/Telegram/cron keep using the JSON /api/chat.
 export async function POST(req: NextRequest) {
     let body: Record<string, unknown>;
     try {
@@ -53,7 +49,6 @@ export async function POST(req: NextRequest) {
                 if (closed) return;
                 try { controller.enqueue(encoder.encode(sseFormat(e))); } catch { /* client gone */ }
             };
-            // Keep-alive comments so intermediaries don't drop an idle connection.
             const heartbeat = setInterval(() => {
                 if (closed) return;
                 try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* ignore */ }
@@ -89,8 +84,6 @@ export async function POST(req: NextRequest) {
     return new Response(stream, { headers: SSE_HEADERS });
 }
 
-// Emit a single SSE event (used for early validation errors) so the client parses
-// everything the same way.
 function oneShot(event: AgentEvent, status: number): Response {
     return new Response(sseFormat(event), { status, headers: SSE_HEADERS });
 }

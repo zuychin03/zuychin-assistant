@@ -1,7 +1,5 @@
 import type { FileAttachment } from "./types";
 
-// Cap how much decoded text we inject into a prompt so a large upload can't blow
-// the model's context window. Generous enough for typical config/data files.
 const MAX_TEXT_ATTACHMENT_CHARS = 120_000;
 
 function getFileExtension(name: string): string {
@@ -9,7 +7,6 @@ function getFileExtension(name: string): string {
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : "";
 }
 
-/** Decode a base64 attachment to a UTF-8 string (server-side only). */
 export function decodeTextAttachment(file: FileAttachment): string {
     try {
         return Buffer.from(file.base64, "base64").toString("utf-8");
@@ -18,10 +15,6 @@ export function decodeTextAttachment(file: FileAttachment): string {
     }
 }
 
-/**
- * Render a text-like attachment as a fenced code block the model can read,
- * regardless of provider (works for both the native and OpenAI-compatible paths).
- */
 export function formatTextAttachment(file: FileAttachment): string {
     let text = decodeTextAttachment(file);
     let note = "";

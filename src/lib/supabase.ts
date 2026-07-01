@@ -10,4 +10,4 @@ export const supabaseAdmin = supabaseServiceKey
     ? createClient(supabaseUrl, supabaseServiceKey, {
         auth: { persistSession: false },
     })
-    : supabase; // fallback to anon if key not set
+    : supabase; 

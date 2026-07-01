@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sanitizeGenParams } from "@/lib/ai/providers";
+import { getArtifact } from "@/lib/artifacts/store";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
 
 const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 
+
+export const maxDuration = 300;
+
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
-        const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, provider, model, embeddingModel, genParams } = body;
+        const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, agent = false, provider, model, embeddingModel, genParams } = body;
 
 
         if (!message || typeof message !== "string") {
@@ -61,13 +65,30 @@ export async function POST(req: NextRequest) {
             conversationId,
             thinking,
             search,
+            agent,
             provider,
             model,
             embeddingModel,
             genParams: sanitizeGenParams(genParams),
         });
 
-        return NextResponse.json({ reply, messageId, artifacts });
+        
+        
+        
+        
+        const artifactsWithData = await Promise.all(
+            artifacts.map(async (a) => {
+                const stored = await getArtifact(a.id);
+                const base64 = !stored
+                    ? undefined
+                    : typeof stored.body === "string"
+                        ? Buffer.from(stored.body, "utf-8").toString("base64")
+                        : stored.body.toString("base64");
+                return { ...a, base64 };
+            })
+        );
+
+        return NextResponse.json({ reply, messageId, artifacts: artifactsWithData });
     } catch (error: unknown) {
         console.error("[Chat API Error]", error);
 

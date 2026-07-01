@@ -15,7 +15,6 @@ import { linkArtifactsToMessage } from "@/lib/artifacts/store";
 import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
-
 const RAG_CONFIG = {
     matchThreshold: 0.72,
     matchCount: 5,
@@ -27,8 +26,6 @@ const RAG_CONFIG = {
     maxToolRounds: 5,
 };
 
-
-// adds [1](url) style citations from Google Search grounding metadata
 function addCitations(response: GenerateContentResponse): string {
     let text = response.text ?? "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,7 +35,6 @@ function addCitations(response: GenerateContentResponse): string {
 
     if (!supports?.length || !chunks?.length) return text;
 
-    // insert from the end so the indexes don't shift as we go
     const sorted = [...supports].sort(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (a: any, b: any) => (b.segment?.endIndex ?? 0) - (a.segment?.endIndex ?? 0)
@@ -86,9 +82,6 @@ ${transcript}`,
     }
 }
 
-// Ask the model for a short topic title from the first exchange. Always uses
-// Gemini Flash (cheap) regardless of the chat model the user picked. Falls back to
-// a trimmed version of the first message if the call fails.
 async function generateConversationTitle(userMessage: string, reply: string): Promise<string> {
     const fallback = userMessage.length > 40 ? userMessage.slice(0, 40).trim() + "..." : userMessage;
 
@@ -103,7 +96,6 @@ Assistant: ${reply}`,
         });
 
         let title = (response.text ?? "").trim();
-        // strip wrapping quotes and any trailing punctuation the model adds
         title = title.replace(/^["'`]+|["'`]+$/g, "").replace(/[.!?,;:]+$/, "").trim();
         if (!title) return fallback;
         return title.length > 60 ? title.slice(0, 60).trim() : title;
@@ -133,14 +125,12 @@ function rerankResults(
             ? (keywordHits / queryTerms.size) * 0.2
             : 0;
 
-
         const source = r.metadata?.source ?? "";
         const recencyBonus = source === "user_message" ? 0.05 : 0;
 
         const totalScore = cosineSim + keywordScore + recencyBonus;
         return { ...r, totalScore };
     });
-
 
     scored.sort((a, b) => b.totalScore - a.totalScore);
     return scored.slice(0, maxResults);
@@ -165,23 +155,18 @@ async function isDuplicateEmbedding(
     }
 }
 
-
 export type Profile = Awaited<ReturnType<typeof getDefaultProfile>>;
 
-// Read the model a channel was switched to (stored as "providerId::modelId").
 function getStoredChannelModel(profile: Profile, channel: MessageChannel): string | undefined {
     const prefs = profile?.preferences as { channelModels?: Record<string, string> } | null | undefined;
     return prefs?.channelModels?.[channel];
 }
 
-// Read the embedding model a channel was switched to (stored as "providerId::modelId").
 function getStoredChannelEmbedding(profile: Profile, channel: MessageChannel): string | undefined {
     const prefs = profile?.preferences as { channelEmbeddings?: Record<string, string> } | null | undefined;
     return prefs?.channelEmbeddings?.[channel];
 }
 
-// Persist a "providerId::modelId" choice under the given preferences key for a
-// channel. Returns false if it couldn't be saved.
 async function saveChannelChoice(
     profile: Profile,
     channel: MessageChannel,
@@ -204,8 +189,6 @@ async function saveChannelChoice(
     }
 }
 
-// Decide which chat model a request should use. Web sends provider/model from the
-// dropdown; the messaging channels use their saved choice, then the free chain.
 function resolveChatForRequest(
     channel: MessageChannel,
     provider: string | undefined,
@@ -219,7 +202,6 @@ function resolveChatForRequest(
     return resolveChat();
 }
 
-// Render the grouped model listing for a command's help text.
 function formatModelListing(
     groups: { provider: string; providerId: string; models: { name: string; label: string }[] }[]
 ): string {
@@ -228,8 +210,6 @@ function formatModelListing(
         .join("\n");
 }
 
-// Handle "/model" (or "!model") on the messaging channels: list models or switch
-// to "<provider> <model>" and persist. Each model has one unique name per provider.
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
     const arg = message.trim().replace(/^[/!]model(?:@\S+)?\s*/i, "").trim();
     const current = resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
@@ -256,9 +236,6 @@ async function handleModelCommand(message: string, channel: MessageChannel, prof
     return `Model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}.`;
 }
 
-// Handle "/embed-model" (or "!embed-model"): list embedding models or switch to
-// "<provider> <model>" and persist. Switching changes which memory partition the
-// channel reads/writes (vectors from different models aren't comparable).
 async function handleEmbedModelCommand(message: string, channel: MessageChannel, profile: Profile): Promise<string> {
     const arg = message.trim().replace(/^[/!]embed-model(?:@\S+)?\s*/i, "").trim();
     const current = resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding();
@@ -289,15 +266,11 @@ export interface RagContext {
     profile: Profile;
     chat: ResolvedChat;
     embRef: ResolvedEmbedding;
-    // system prompt + current date/time + relevant memories + conversation history
     contextBlock: string;
     allowThinking: boolean;
     allowSearch: boolean;
 }
 
-// Resolves the model/embedding, runs retrieval (vector memories + history), stores
-// the query embedding, and assembles the grounding context. Shared by the fast
-// single-pass path (ragChat) and the agent orchestrator so both ground identically.
 export async function buildRagContext(params: {
     message: string;
     channel: MessageChannel;
@@ -311,19 +284,13 @@ export async function buildRagContext(params: {
 }): Promise<RagContext> {
     const { message, channel, conversationId, provider, model, embeddingModel, thinking, search, profile } = params;
 
-    // Resolve which chat model to use. Web sends provider/model from its dropdown;
-    // the messaging channels fall back to their saved choice, then the free chain.
     const chat = resolveChatForRequest(channel, provider, model, profile);
-    // Web sends its embedding choice; messaging channels use their saved
-    // "/embed-model" choice, then the free chain (Nemotron Embed if NIM is
-    // configured, else Gemini).
     const embRef = embeddingModel
         ? getEmbeddingRef(embeddingModel)
         : channel !== "web"
             ? (resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding())
             : getEmbeddingRef();
 
-    // check this on the server so it works on every channel, not just the web UI
     const allowThinking = thinking && chat.model.supportsThinking;
     const allowSearch = search && chat.model.supportsSearch;
 
@@ -380,7 +347,6 @@ export async function buildRagContext(params: {
         }).catch((err) => console.warn("[RAG] Failed to store embedding:", err));
     }
 
-    // build the context block: system prompt + current date/time + memories + history
     let contextBlock = sysPrompt + "\n\n";
     contextBlock += currentDateTimeContext() + "\n\n";
     if (relevantContext) contextBlock += `## Relevant Memories\n${relevantContext}\n\n`;
@@ -411,9 +377,6 @@ export async function ragChat(params: {
 
     const profile = await getDefaultProfile();
 
-    // External channels can switch model/embedding with "/model" or "/embed-model"
-    // (a "!" prefix also works, since Discord intercepts "/" as its slash-command
-    // UI). Handle these before anything else and reply with a confirmation.
     if (channel !== "web") {
         const trimmed = message.trim();
         if (/^[/!]embed-model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
@@ -442,14 +405,8 @@ export async function ragChat(params: {
         embeddingModel, thinking, search, profile,
     });
 
-    // Collect any files the model produces via the artifact tools so we can attach
-    // them to the reply and return them to the client.
     const artifacts: ArtifactDescriptor[] = [];
 
-    // Decide fast chat vs. multi-step agent. Forced by the client's `agent` flag,
-    // else the router auto-escalates complex web requests. Visual attachments
-    // (images / PDFs) stay on the fast path since the agent loop can't see them;
-    // a text-like file is folded into the agent's prompt instead.
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
     let mode: "chat" | "agent" = "chat";
     if (agent) mode = "agent";
@@ -512,9 +469,6 @@ export async function ragChat(params: {
         console.error("[RAG] Failed to save assistant message:", err);
     }
 
-    // Title the conversation once, on the first message, then leave it alone. We
-    // only (re)generate while it's still the default "New Chat" so a failed first
-    // attempt can recover, but an existing title is never overwritten.
     if (conversationId) {
         try {
             const convo = await getConversation(conversationId);
@@ -528,8 +482,6 @@ export async function ragChat(params: {
     return { reply, messageId: userMsgId, artifacts };
 }
 
-
-// Gemini path: native function calling plus Google Search/Maps grounding.
 async function generateGeminiReply(opts: {
     contextBlock: string;
     message: string;
@@ -545,7 +497,6 @@ async function generateGeminiReply(opts: {
 }): Promise<string> {
     const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx } = opts;
 
-    // gemini uses slightly different names for these
     const genConfig: Record<string, number> = {};
     if (genParams.temperature !== undefined) genConfig.temperature = genParams.temperature;
     if (genParams.topP !== undefined) genConfig.topP = genParams.topP;
@@ -558,8 +509,6 @@ async function generateGeminiReply(opts: {
         parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64 } });
     }
     if (file) {
-        // Machine-readable text (markdown/yaml/csv/code/…) is decoded and passed
-        // inline as text so it works reliably; binary media goes through inlineData.
         if (isTextLikeAttachment(file.mimeType, file.name)) {
             parts.push({ text: formatTextAttachment(file) });
         } else {
@@ -576,19 +525,16 @@ async function generateGeminiReply(opts: {
     const groundingConfig = { tools: [{ googleSearch: {} }, { urlContext: {} }], ...thinkingOpts, ...genConfig };
     const mapsConfig = { tools: [{ googleMaps: {} }], ...thinkingOpts, ...genConfig };
 
-    // route location-ish questions to Maps instead of plain Search
     const isLocationQuery = (q: string) => {
         const loc = /\b(near me|nearby|restaurant|cafe|coffee|hotel|hospital|pharmacy|cinema|gym|airport|station|directions?|map|address|open now|hours|rating|review|how far|distance|km|miles?|street|suburb|postcode|zip code|where is|located|location)\b/i;
         return loc.test(q);
     };
 
-    // explicit /search: skip the tools and just ground the answer
     if (search) {
         const response = await ai.models.generateContent({ model, contents, config: groundingConfig });
         return channel === "telegram" ? (response.text ?? "") : addCitations(response);
     }
 
-    // MCP function calling pass
     let response = await ai.models.generateContent({ model, contents, config: mcpConfig });
 
     let usedTool = false;
@@ -616,7 +562,6 @@ async function generateGeminiReply(opts: {
         response = await ai.models.generateContent({ model, contents, config: mcpConfig });
     }
 
-    // if no tool was used, fall back to grounding (Maps or Search)
     if (!usedTool) {
         const fallbackConfig = isLocationQuery(message) ? mapsConfig : groundingConfig;
         const label = isLocationQuery(message) ? "Maps" : "Search";
@@ -632,7 +577,6 @@ async function generateGeminiReply(opts: {
 
     return channel === "telegram" ? (response.text ?? "") : addCitations(response);
 }
-
 
 export async function ingestKnowledge(params: {
     content: string;

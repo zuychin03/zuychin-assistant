@@ -1,7 +1,3 @@
-// Minimal Gemini function-calling loop shared by the lead orchestrator and the
-// worker sub-agents. The caller supplies a `dispatch` that executes a tool call
-// and returns its string result (and may emit its own progress events); this loop
-// just drives the turns until the model stops calling tools or hits maxRounds.
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import type { GeminiToolDeclarations } from "@/lib/ai/mcp-service";

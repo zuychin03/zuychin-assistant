@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { getArtifact } from "@/lib/artifacts/store";
 
-// GET /api/artifacts/[id] — streams a generated file back for download.
-// Auth-gated by middleware (not in the public path list).
 export async function GET(
     _req: Request,
     ctx: { params: Promise<{ id: string }> },
@@ -18,9 +16,6 @@ export async function GET(
         ? new TextEncoder().encode(artifact.body)
         : new Uint8Array(artifact.body);
 
-    // RFC 5987 filename* handles names with spaces/unicode; let the runtime set
-    // Content-Length from the byte payload (a manual, mismatched value stalls the
-    // download).
     return new NextResponse(payload, {
         status: 200,
         headers: {

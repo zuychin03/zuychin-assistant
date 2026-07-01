@@ -1,6 +1,3 @@
-// The lead agent. Builds a plan, runs a tool-calling loop (with the artifact tools
-// so it can return files), and can fan out independent subtasks to parallel worker
-// sub-agents. Emits progress events for the live tracker. Runs on Gemini.
 import { MODEL } from "@/lib/gemini";
 import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { runWorker } from "@/lib/ai/agent/worker";
@@ -21,8 +18,6 @@ const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's req
 5. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
 Be decisive and keep going until the task is fully resolved.`;
 
-// Resolve with `fallback` if the promise rejects or exceeds `ms`, so one bad
-// worker can never stall Promise.all (and the whole agent run).
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
     return new Promise<T>((resolve) => {
         const timer = setTimeout(() => resolve(fallback), ms);
@@ -119,8 +114,6 @@ export async function runAgent(opts: {
         return result;
     };
 
-    // The agent always runs on Gemini (native tools, always available). If the
-    // user picked a Gemini model, honor it; otherwise use the default.
     const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
 
     onEvent?.({ type: "status", message: "Planning…" });

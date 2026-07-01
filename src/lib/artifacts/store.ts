@@ -1,9 +1,3 @@
-// Persistence for agent-generated files (report documents, code files, zip
-// bundles). Small payloads are stored inline in the `artifacts` table; text goes
-// in content_text and binary is base64 in content_base64. The descriptor (id,
-// filename, mime, kind, size) is what gets attached to a message and shown as a
-// download chip; GET /api/artifacts/[id] streams the bytes back.
-
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { ArtifactDescriptor, ArtifactKind } from "@/lib/types";
 
@@ -73,7 +67,6 @@ export async function getArtifact(id: string): Promise<StoredArtifact | null> {
     };
 }
 
-/** Point already-saved artifacts at the assistant message once it exists. */
 export async function linkArtifactsToMessage(artifactIds: string[], messageId: string): Promise<void> {
     if (artifactIds.length === 0) return;
     const { error } = await supabase

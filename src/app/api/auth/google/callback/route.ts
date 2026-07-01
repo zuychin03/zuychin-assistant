@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { SCOPES } from "@/lib/google-auth";
 
-// GET /api/auth/google/callback
 export async function GET(req: NextRequest) {
     const code = req.nextUrl.searchParams.get("code");
 

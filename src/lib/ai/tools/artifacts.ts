@@ -1,8 +1,3 @@
-// Tools that let the model emit downloadable files (report documents, code files,
-// zip bundles). Each renders/stores an artifact and registers it via the tool
-// context so the caller can attach it to the reply. Returning a file is the whole
-// point of the agent's "generate a report / write me this code" flows.
-
 import JSZip from "jszip";
 import { renderDocument, type ExportFormat } from "@/lib/export";
 import { saveArtifact } from "@/lib/artifacts/store";
@@ -10,7 +5,6 @@ import type { McpTool, ToolContext } from "@/lib/ai/mcp-service";
 
 const EXPORT_FORMATS: ExportFormat[] = ["docx", "pdf", "md"];
 
-/** Safe single-file name (no path separators). */
 function sanitizeFilename(name: string, fallback: string): string {
     const cleaned = (name || "")
         .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -20,7 +14,6 @@ function sanitizeFilename(name: string, fallback: string): string {
     return cleaned || fallback;
 }
 
-/** Safe path inside a zip (keeps forward slashes for folders). */
 function sanitizeZipPath(name: string, fallback: string): string {
     const cleaned = (name || "")
         .replace(/\\/g, "/")
@@ -72,10 +65,6 @@ export const ARTIFACT_TOOLS: McpTool[] = [
     },
 ];
 
-/**
- * Execute an artifact tool. Returns the tool-result string, or `null` if `name`
- * is not an artifact tool (so the caller can fall through to other tools).
- */
 export async function executeArtifactTool(
     name: string,
     args: Record<string, unknown>,

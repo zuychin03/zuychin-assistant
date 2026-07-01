@@ -1,6 +1,3 @@
-// Tools available only to the lead agent (not the fast path or workers):
-// declaring a plan (drives the live tracker), dispatching parallel workers, and
-// pulling in a skill playbook on demand.
 import type { McpTool } from "@/lib/ai/mcp-service";
 import { SKILL_IDS } from "@/lib/ai/skills/registry";
 

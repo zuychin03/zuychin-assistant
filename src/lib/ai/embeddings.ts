@@ -1,6 +1,3 @@
-// Generates embeddings using whichever embedding model was picked. Each model's
-// vectors are stored separately since vectors from different models can't be mixed.
-
 import { ai } from "@/lib/gemini";
 import {
     resolveEmbedding, getProviderApiKey,
@@ -9,16 +6,12 @@ import {
 
 export type { ResolvedEmbedding };
 
-// look up an embedding model by id (defaults to Gemini 768d)
 export function getEmbeddingRef(modelId?: string): ResolvedEmbedding {
     return resolveEmbedding(modelId);
 }
 
-// Whether the text is being embedded for storage ("passage") or for searching
-// ("query"). NVIDIA's bi-encoder retrieval models use this to pick the right mode.
 export type EmbedInputType = "query" | "passage";
 
-// turn text into an embedding vector with the given model
 export async function embedText(
     ref: ResolvedEmbedding,
     text: string,
@@ -33,7 +26,6 @@ export async function embedText(
         return result.embeddings?.[0]?.values ?? [];
     }
 
-    // OpenAI-compatible embeddings endpoint.
     const apiKey = getProviderApiKey(ref.provider);
     if (!apiKey) {
         throw new Error(`Missing API key (${ref.provider.apiKeyEnv}) for ${ref.provider.label}.`);
@@ -45,7 +37,6 @@ export async function embedText(
         input: text,
         encoding_format: "float",
     };
-    // NVIDIA NIM's retrieval embedders require the query/passage mode.
     if (ref.provider.id === "nvidia-nim") body.input_type = inputType;
 
     const res = await fetch(`${ref.provider.baseUrl}/embeddings`, {

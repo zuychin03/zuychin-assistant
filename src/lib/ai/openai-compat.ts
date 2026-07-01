@@ -1,7 +1,3 @@
-// Chat client for the OpenAI-compatible providers (OpenRouter, NVIDIA NIM, OpenCode Zen).
-// Runs the tool-calling loop, image input and reasoning. If a model rejects tools we
-// just retry once without them so chat keeps working.
-
 import {
     buildOpenAIToolDeclarations, executeTool, type OpenAITool,
 } from "@/lib/ai/mcp-service";
@@ -20,7 +16,6 @@ interface ToolCall {
 
 interface ChatChoiceMessage {
     role: string;
-    // content can be a string, an array of parts, or null depending on the provider
     content: string | { text?: string }[] | null;
     reasoning_content?: string | null;
     reasoning?: string | null;
@@ -32,7 +27,6 @@ interface ChatCompletion {
     error?: { message?: string };
 }
 
-// message shapes (text or multimodal content)
 type ContentPart =
     | { type: "text"; text: string }
     | { type: "image_url"; image_url: { url: string } };
@@ -46,21 +40,14 @@ interface ChatMessage {
 
 const MAX_TOOL_ROUNDS = 5;
 
-// Hard ceiling on a single streamed completion. Without this an abort/hung SSE
-// stream (some free providers do this) would stall the request — and an agent
-// run behind it — forever.
 const REQUEST_TIMEOUT_MS = 60_000;
 
-// Reasoning models sometimes inline their chain-of-thought in the content, e.g.
-// <think>...</think>. Strip those (several tag variants) before showing the reply.
 const THINK_PAIR_RE = /<(think|thinking|thought|reason|reasoning)>[\s\S]*?<\/\1>/gi;
 const THINK_OPEN_RE = /<(think|thinking|thought|reason|reasoning)>/i;
 const THINK_CLOSE_RE = /<\/(think|thinking|thought|reason|reasoning)>/gi;
 
 function stripThink(text: string): string {
     let t = text.replace(THINK_PAIR_RE, "");
-    // A stray closing tag with no opening one means the reasoning was streamed
-    // first; drop everything up to and including the last such tag.
     if (!THINK_OPEN_RE.test(t)) {
         let cut = -1;
         let m: RegExpExecArray | null;
@@ -102,9 +89,6 @@ export async function openaiCompatChat(params: {
         genParams: params.genParams ?? {},
     };
 
-    // build the user message. Machine-readable text (markdown/yaml/csv/code/…) is
-    // decoded and folded into the prompt so every model can read it; images only go
-    // to vision models; other binary media isn't reachable over this API.
     const isTextFile = !!file && isTextLikeAttachment(file.mimeType, file.name);
     const isImageFile = !!file && file.mimeType.startsWith("image/");
 
@@ -128,8 +112,6 @@ export async function openaiCompatChat(params: {
         userContent[0] = { type: "text", text: `${baseText}\n\n[Attached file: ${file.name} (${file.mimeType}). This model cannot read this file type directly.]` };
     }
 
-    // for text-only turns send a plain string - some models (MiniMax M3 on NIM)
-    // don't accept the array-of-parts format.
     const userMessageContent: string | ContentPart[] =
         userContent.length === 1 && userContent[0].type === "text"
             ? userContent[0].text
@@ -142,13 +124,10 @@ export async function openaiCompatChat(params: {
 
     const tools = model.supportsTools ? buildOpenAIToolDeclarations() : undefined;
 
-    // on an explicit /search, make the model run the web search first. Otherwise
-    // it can still call search_web on its own when it decides it needs to.
     const forceSearch = !!params.search && !!tools
         ? { type: "function" as const, function: { name: "search_web" } }
         : undefined;
 
-    // first request with tools + reasoning; if it fails, retry without them
     let data: ChatCompletion;
     try {
         data = await postChat(provider, apiKey, model.id, messages, tools, opts, forceSearch);
@@ -161,7 +140,6 @@ export async function openaiCompatChat(params: {
         }
     }
 
-    // MCP tool loop
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const msg = data.choices?.[0]?.message;
         const calls = msg?.tool_calls;
@@ -191,8 +169,6 @@ export async function openaiCompatChat(params: {
 
     let reply = extractContent(data);
 
-    // If the model only produced reasoning and no answer, retry once without
-    // thinking/tools so it returns a real answer instead of its chain of thought.
     if (!reply) {
         try {
             const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false });
@@ -202,14 +178,11 @@ export async function openaiCompatChat(params: {
         }
     }
 
-    // last resort: show the reasoning rather than nothing
     if (!reply) reply = extractReasoning(data);
 
     return reply || "(The model returned an empty response.)";
 }
 
-// the final answer from a completion's content (thinking stripped). Content may
-// be a string or an array of parts.
 function extractContent(data: ChatCompletion): string {
     const msg = data.choices?.[0]?.message;
     if (!msg) return "";
@@ -223,7 +196,6 @@ function extractContent(data: ChatCompletion): string {
     return stripThink(raw);
 }
 
-// the model's reasoning, used only as a last resort when there's no actual answer
 function extractReasoning(data: ChatCompletion): string {
     const msg = data.choices?.[0]?.message;
     const reasoning = msg?.reasoning_content ?? msg?.reasoning;
@@ -243,8 +215,6 @@ async function postChat(
 ): Promise<ChatCompletion> {
     const { thinking, genParams } = opts;
 
-    // we stream and accumulate. Some NIM models (MiniMax M3) only reply over SSE -
-    // a non-streaming request comes back with empty choices.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: Record<string, any> = {
         model,
@@ -257,16 +227,12 @@ async function postChat(
     if (genParams.topP !== undefined) body.top_p = genParams.topP;
     if (genParams.maxTokens !== undefined) body.max_tokens = genParams.maxTokens;
 
-    // NVIDIA NIM expects sampling params and some models (MiniMax M3) 500 when
-    // max_tokens is missing, so fill in NVIDIA's recommended defaults.
     if (provider.id === "nvidia-nim") {
         if (body.max_tokens === undefined) body.max_tokens = 8192;
         if (body.temperature === undefined) body.temperature = 1.0;
         if (body.top_p === undefined) body.top_p = 0.95;
     }
 
-    // each provider turns on reasoning differently. Only send it when thinking is
-    // on, otherwise some models (MiniMax M3) error on the extra param.
     if (thinking) {
         if (provider.id === "nvidia-nim") {
             body.chat_template_kwargs = { enable_thinking: true };
@@ -275,7 +241,6 @@ async function postChat(
         }
     }
 
-    // Abort the whole request (including the streamed body read) if it stalls.
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -310,8 +275,6 @@ async function postChat(
     }
 }
 
-// read the SSE stream and rebuild a single ChatCompletion, joining the content,
-// reasoning and tool-call deltas back together by index
 async function accumulateStream(
     stream: ReadableStream<Uint8Array>,
     providerLabel: string

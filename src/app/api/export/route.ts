@@ -3,7 +3,6 @@ import { renderDocument, type ExportFormat } from "@/lib/export";
 
 const FORMATS: ExportFormat[] = ["docx", "pdf", "md"];
 
-// POST /api/export
 export async function POST(req: NextRequest) {
     try {
         const { content, format, title = "Document" } = await req.json();

@@ -1,4 +1,3 @@
-// Events emitted during an agent run and streamed to the web client over SSE.
 import type { ArtifactDescriptor } from "@/lib/types";
 
 export interface PlanStep {
@@ -17,7 +16,6 @@ export type AgentEvent =
 
 export type AgentEventSink = (event: AgentEvent) => void;
 
-/** Serialize an event as an SSE `data:` frame. */
 export function sseFormat(event: AgentEvent): string {
     return `data: ${JSON.stringify(event)}\n\n`;
 }

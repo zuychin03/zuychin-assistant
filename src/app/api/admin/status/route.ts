@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { getDefaultProfile } from "@/lib/db";
 import { DEFAULT_CHAT } from "@/lib/ai/providers";
 
-// GET /api/admin/status
+
 
 export async function GET() {
     try {

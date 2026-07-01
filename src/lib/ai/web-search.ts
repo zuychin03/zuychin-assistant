@@ -1,7 +1,3 @@
-// Web search for models that have no built-in internet access. Primary path is
-// Tavily; if it isn't configured we fall back to a Gemini Google-Search-grounded
-// lookup so the agent still gets real web results with just the Gemini key.
-
 import { ai, MODEL } from "@/lib/gemini";
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
@@ -15,7 +11,6 @@ interface TavilyResponse {
     results?: { title: string; url: string; content: string }[];
 }
 
-// Run a search and return the results as plain text for the model to read.
 export async function webSearch(query: string, maxResults = 5): Promise<string> {
     if (!TAVILY_API_KEY) {
         return "Web search isn't set up on this server (no TAVILY_API_KEY).";
@@ -64,8 +59,6 @@ export async function webSearch(query: string, maxResults = 5): Promise<string> 
     }
 }
 
-// Real web results using Gemini's native Google Search grounding — no extra API
-// key needed beyond GEMINI_API_KEY. Returns the grounded answer plus source URLs.
 export async function geminiWebSearch(query: string): Promise<string> {
     try {
         const response = await ai.models.generateContent({
@@ -93,7 +86,6 @@ export async function geminiWebSearch(query: string): Promise<string> {
     }
 }
 
-/** Search the web via Tavily if configured, otherwise Gemini Google-Search grounding. */
 export async function runWebSearch(query: string): Promise<string> {
     return TAVILY_API_KEY ? webSearch(query) : geminiWebSearch(query);
 }

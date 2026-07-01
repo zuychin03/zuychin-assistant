@@ -11,7 +11,7 @@ const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// POST /api/cron/proactive
+
 export async function POST(req: NextRequest) {
     try {
 
@@ -84,7 +84,7 @@ Be friendly and concise.`;
         });
         const proactiveMessage = result.text ?? "";
 
-        // Deliver to all configured channels
+        
         let delivered = false;
         const sends: Promise<boolean>[] = [];
 

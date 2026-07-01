@@ -237,6 +237,17 @@ since Discord reserves `/` for its own slash-command UI:
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
   memory partition the channel uses (memories are stored per embedding model).
 
+### Files and agent mode on messaging
+
+When a request produces a file — a report, a code file, or a zip bundle — the bot delivers it as
+a real attachment (Telegram document / Discord upload), not a wall of text. This works on the
+normal fast path too, so "make me a report about X" returns a document without any special flag.
+
+Prefix a message with `/agent` (or `!agent`) to force the full multi-step **agent loop** (plans,
+web search, parallel sub-agents, skills) instead of a single reply. Keep agent tasks modest here:
+Discord runs allow up to ~300s, but the Telegram webhook is capped at ~60s, so heavy agent work
+is better done in the web UI.
+
 ## Discord Bot (optional)
 
 The Discord bot runs as a separate process (`discord-bot/`) that listens on the Gateway and
@@ -250,9 +261,9 @@ node bot.js
 ```
 
 - Set `ZUYCHIN_API_URL` to your deployed web app (defaults to `http://localhost:3000`).
-- Honors `/search`, `/think`, `/model` and `/embed-model` prefixes (use the `!` variant so
-  Discord doesn't capture `/`), downloads attachments (up to 20 MB) and chunks replies to
-  Discord's 2000-char limit.
+- Honors `/search`, `/think`, `/agent`, `/model` and `/embed-model` prefixes (use the `!` variant
+  so Discord doesn't capture `/`), downloads attachments (up to 20 MB), uploads any generated
+  files (reports/code) as attachments, and chunks replies to Discord's 2000-char limit.
 - Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` for Render.
 
 ## Telegram Bot (optional)

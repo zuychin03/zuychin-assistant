@@ -1,16 +1,7 @@
-// Skills: reusable procedure bundles the lead agent can pull in on demand
-// (progressive disclosure, like Claude Code skills). Only each skill's `whenToUse`
-// line lives in the always-on prompt (see buildSkillIndex); the full `instructions`
-// load only when the agent commits to a skill via the use_skill tool. This keeps
-// the base prompt small while giving the agent detailed playbooks when it needs them.
-
 export interface Skill {
     id: string;
-    /** Human-facing name, e.g. shown in the tracker. */
     name: string;
-    /** One line — the only part in the always-on prompt. Tells the agent when to reach for this. */
     whenToUse: string;
-    /** The full playbook, returned as a tool result when the agent calls use_skill. */
     instructions: string;
 }
 
@@ -87,14 +78,12 @@ export const SKILLS: Skill[] = [
 
 const SKILL_BY_ID = new Map(SKILLS.map((s) => [s.id, s]));
 
-/** All skill ids — used to build the use_skill tool's enum. */
 export const SKILL_IDS: string[] = SKILLS.map((s) => s.id);
 
 export function getSkill(id: string): Skill | undefined {
     return SKILL_BY_ID.get(id);
 }
 
-/** Full playbook for a skill, or a clear miss message the agent can recover from. */
 export function getSkillInstructions(id: string): string {
     const skill = SKILL_BY_ID.get(id);
     if (!skill) {
@@ -103,7 +92,6 @@ export function getSkillInstructions(id: string): string {
     return `# Skill: ${skill.name}\n\n${skill.instructions}`;
 }
 
-/** The always-on index injected into the lead's system prompt (name + whenToUse only). */
 export function buildSkillIndex(): string {
     return SKILLS.map((s) => `- ${s.id}: ${s.whenToUse}`).join("\n");
 }

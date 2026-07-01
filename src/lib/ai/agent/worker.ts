@@ -1,7 +1,3 @@
-// A worker sub-agent: a self-contained mini-agent the lead dispatches for one
-// subtask, on whatever model fits (a fast free model for grunt work, Gemini for
-// reasoning, etc.). Reuses the existing provider clients so there's no new tooling
-// — it just resolves a model and runs the matching path with the shared tool set.
 import { MODEL } from "@/lib/gemini";
 import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
@@ -24,8 +20,6 @@ const workerSystem = (contextBlock: string) =>
 const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL]);
 
 export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string }> {
-    // "auto" (no hint) → reliable Gemini Flash. Explicit hints can still route a
-    // worker to a fast free model on another provider (with a Gemini fallback).
     const resolved: ResolvedChat =
         (p.modelHint ? resolveChatModelByName(p.modelHint) : null) ?? resolveChat();
     const system = workerSystem(p.contextBlock);
@@ -53,9 +47,6 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
         });
         return { model: resolved.model.id, output };
     } catch (err) {
-        // A worker's chosen provider can fail (bad key, rate limit, flaky free
-        // model) — fall back to the always-available Gemini default rather than
-        // letting one subtask sink the whole run.
         console.warn(`[Worker] ${resolved.model.id} failed, falling back to Gemini:`, err);
         const output = await runGeminiLoop({
             systemPrompt: system,

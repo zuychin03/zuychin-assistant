@@ -1,17 +1,9 @@
-// Markdown → DOCX / PDF / Markdown renderers.
-//
-// Extracted from the /api/export route so both the export endpoint and the
-// agent's `create_document` tool can produce well-formatted files from the same
-// pipeline. The parser turns markdown into a block list, then each renderer
-// walks the blocks. Inline styling (bold/italic/code/links) is shared too.
-
 import {
     Document, Packer, Paragraph, TextRun, ExternalHyperlink, HeadingLevel,
     AlignmentType, BorderStyle, ShadingType,
     Table, TableRow, TableCell, WidthType, VerticalAlign,
 } from "docx";
 import PDFDocument from "pdfkit";
-
 
 export type ExportFormat = "docx" | "pdf" | "md";
 
@@ -26,11 +18,11 @@ type BlockType = "h1" | "h2" | "h3" | "bullet" | "numbered" | "code" | "paragrap
 interface Block {
     type: BlockType;
     text: string;
-    items?: string[];       // code lines
+    items?: string[];
     tableRows?: string[][];
-    ordinal?: number;       // numbered list index
-    level?: number;         // list nesting depth
-    lang?: string;          // code fence language
+    ordinal?: number;
+    level?: number;
+    lang?: string;
 }
 
 interface InlineToken {
@@ -41,7 +33,6 @@ interface InlineToken {
     link?: string;
 }
 
-// Shared palette (GitHub-ish) so the DOCX and PDF renderers stay in sync.
 const COLORS = {
     heading: "111827",
     text: "1F2937",
@@ -56,7 +47,6 @@ const COLORS = {
 };
 const hex = (c: string) => `#${c}`;
 
-
 export function parseMarkdown(content: string): Block[] {
     const lines = content.split("\n");
     const blocks: Block[] = [];
@@ -69,7 +59,6 @@ export function parseMarkdown(content: string): Block[] {
         if (tableBuffer.length === 0) return;
         const rows: string[][] = [];
         for (const tLine of tableBuffer) {
-            // Skip separator rows
             if (/^\|[\s\-:|]+\|$/.test(tLine.trim())) continue;
             const cells = tLine
                 .trim()
@@ -162,8 +151,6 @@ export function parseMarkdown(content: string): Block[] {
     return blocks;
 }
 
-
-/** Split a line into styled inline tokens (bold / italic / code / link). */
 function parseInline(text: string): InlineToken[] {
     const tokens: InlineToken[] = [];
     const pattern = /(\*\*(.+?)\*\*|__(.+?)__|\*(.+?)\*|`([^`]+?)`|\[([^\]]+)\]\(([^)\s]+)\))/g;
@@ -191,9 +178,6 @@ function parseInline(text: string): InlineToken[] {
 function stripInlineMarkdown(text: string): string {
     return parseInline(text).map(t => t.text).join("");
 }
-
-
-// ---------- DOCX ----------
 
 function buildTextRuns(text: string, opts: { bold?: boolean; italic?: boolean; color?: string } = {}): (TextRun | ExternalHyperlink)[] {
     const tokens = parseInline(text);
@@ -388,16 +372,12 @@ export async function generateDocx(content: string, title: string): Promise<Buff
     return Buffer.from(await Packer.toBuffer(doc));
 }
 
-
-// ---------- PDF ----------
-
 const PAGE = { left: 60, right: 535, bottom: 782 };
 
 function ensureSpace(doc: PDFKit.PDFDocument, needed: number) {
     if (doc.y + needed > PAGE.bottom) doc.addPage();
 }
 
-/** Render a line of inline markdown as a sequence of continued styled runs. */
 function renderInline(doc: PDFKit.PDFDocument, text: string, o: { fontSize: number; color?: string; lineGap?: number }) {
     const tokens = parseInline(text);
     const baseColor = o.color ?? hex(COLORS.text);
@@ -437,7 +417,7 @@ function drawPdfCodeBlock(doc: PDFKit.PDFDocument, lines: string[], lang: string
         ensureSpace(doc, h + 2);
         const y = doc.y;
         doc.rect(PAGE.left, y, width, h).fill(hex(COLORS.codeBg));
-        doc.rect(PAGE.left, y, 3, h).fill(hex(COLORS.border));   // accent bar
+        doc.rect(PAGE.left, y, 3, h).fill(hex(COLORS.border));
         doc.fillColor(idx === 0 && lang ? hex(COLORS.muted) : hex(COLORS.codeText))
             .font("Courier").fontSize(9)
             .text(txt, PAGE.left + pad + 6, y + pad / 2, { width: innerWidth });
@@ -508,7 +488,6 @@ export async function generatePdf(content: string, title: string): Promise<Buffe
 
         const blocks = parseMarkdown(content);
 
-        // Title block
         doc.fillColor(hex(COLORS.heading)).fontSize(22).font("Helvetica-Bold").text(title, { align: "left" });
         doc.moveDown(0.15);
         doc.fillColor(hex(COLORS.muted)).fontSize(9).font("Helvetica-Oblique").text("Exported from Zuychin Assistant");
@@ -594,16 +573,10 @@ export async function generatePdf(content: string, title: string): Promise<Buffe
     });
 }
 
-
-/** Sanitize a user/model-supplied title into a safe filename stem. */
 export function sanitizeExportTitle(title: string): string {
     return title.replace(/[^a-zA-Z0-9\s_-]/g, "").substring(0, 60).trim() || "Document";
 }
 
-/**
- * Render markdown `content` to the requested format. Returns the body (Buffer for
- * docx/pdf, string for md) plus the MIME type and a safe filename.
- */
 export async function renderDocument(
     content: string,
     format: ExportFormat,

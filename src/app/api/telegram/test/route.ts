@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 
-// GET /api/telegram/test - quick health check for the telegram setup
-// (env vars, a supabase write, the bot token and the webhook registration)
 export async function GET() {
     const results: Record<string, string> = {};
 
-    // 1. Check env vars
     results.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ? "✅ set" : "❌ missing";
     results.TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ? "✅ set" : "⚠️ not set (ok if intentional)";
     results.SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ? "✅ set" : "❌ missing";
@@ -14,7 +11,6 @@ export async function GET() {
     results.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ set" : "❌ missing - DB writes will fail on server-side routes!";
     results.GEMINI_API_KEY = process.env.GEMINI_API_KEY ? "✅ set" : "❌ missing";
 
-    // 2. Test Supabase write permission
     try {
         const { error } = await supabaseAdmin
             .from("messages")
@@ -35,7 +31,6 @@ export async function GET() {
         results.supabase_write = `❌ Exception: ${String(e)}`;
     }
 
-    // 3. Test Telegram bot token
     try {
         const token = process.env.TELEGRAM_BOT_TOKEN;
         if (!token) {
@@ -53,7 +48,6 @@ export async function GET() {
         results.telegram_bot = `❌ Exception: ${String(e)}`;
     }
 
-    // 4. Check webhook registration
     try {
         const token = process.env.TELEGRAM_BOT_TOKEN;
         if (token) {

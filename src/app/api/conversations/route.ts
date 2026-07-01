@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listConversations, createConversation, deleteConversation, getConversationMessages } from "@/lib/db";
 
-// GET /api/conversations[?id=xxx]
+
 export async function GET(req: NextRequest) {
     try {
         const conversationId = req.nextUrl.searchParams.get("id");
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     }
 }
 
-// POST /api/conversations
+
 export async function POST() {
     try {
         const conversation = await createConversation({});
@@ -34,7 +34,7 @@ export async function POST() {
     }
 }
 
-// DELETE /api/conversations?id=xxx
+
 export async function DELETE(req: NextRequest) {
     try {
         const id = req.nextUrl.searchParams.get("id");

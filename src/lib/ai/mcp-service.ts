@@ -16,8 +16,8 @@ export interface McpToolParam {
     description: string;
     required?: boolean;
     enum?: string[];
-    items?: McpToolParam;                       // element schema for type: "array"
-    properties?: Record<string, McpToolParam>;  // field schemas for type: "object"
+    items?: McpToolParam;                       
+    properties?: Record<string, McpToolParam>;  
 }
 
 export interface McpTool {
@@ -26,18 +26,18 @@ export interface McpTool {
     parameters: Record<string, McpToolParam>;
 }
 
-// Extra context passed to tool executors: which conversation/user the run belongs
-// to, and a sink for any artifacts (files) a tool produces so the caller can
-// attach them to the reply.
+
+
+
 export interface ToolContext {
     conversationId?: string;
     userProfileId?: string;
     onArtifact?: (artifact: ArtifactDescriptor) => void;
 }
 
-// Web search tool. This is only handed to the OpenAI-compatible models since they
-// can't reach the internet on their own. Gemini is left out of this list because
-// it uses its own Google Search grounding instead.
+
+
+
 export const WEB_SEARCH_TOOL: McpTool = {
     name: "search_web",
     description: "Search the internet for current, real-time or recent information - news, prices, weather, sports, events, or any fact that may have changed or happened after your training data. Returns a short list of results with their source URLs. Call this whenever the question needs up-to-date info or you aren't sure of the latest answer.",
@@ -295,8 +295,8 @@ export async function executeTool(
     embRef: ResolvedEmbedding = getEmbeddingRef(),
     ctx?: ToolContext
 ): Promise<string> {
-    // File-producing tools (create_document / create_code_file / create_code_bundle).
-    // Returns null when toolName isn't one of them, so we fall through.
+    
+    
     const artifactResult = await executeArtifactTool(toolName, args, ctx);
     if (artifactResult !== null) return artifactResult;
 
@@ -643,7 +643,7 @@ async function executeManageTodoList(
 }
 
 
-// Recursively convert a tool param into a Gemini schema node (handles arrays/objects).
+
 function toGeminiSchema(param: McpToolParam): Record<string, unknown> {
     const typeMap: Record<string, Type> = {
         string: Type.STRING,
@@ -668,8 +668,8 @@ function toGeminiSchema(param: McpToolParam): Record<string, unknown> {
     return schema;
 }
 
-// Build Gemini function declarations for an arbitrary set of tools (used by the
-// agent to include its own update_plan / run_subagents tools).
+
+
 export function geminiDeclarationsFor(tools: McpTool[]) {
     return tools.map((tool) => ({
         name: tool.name,
@@ -689,13 +689,13 @@ export function geminiDeclarationsFor(tools: McpTool[]) {
 export type GeminiToolDeclarations = ReturnType<typeof geminiDeclarationsFor>;
 
 export function buildGeminiFunctionDeclarations() {
-    // Gemini grounds the web itself, so it doesn't get search_web; it does get the
-    // artifact tools so it can return files.
+    
+    
     return geminiDeclarationsFor([...MCP_TOOLS, ...ARTIFACT_TOOLS]);
 }
 
 
-// OpenAI-compatible tool schema (OpenRouter, OpenCode Zen, NVIDIA NIM).
+
 export interface OpenAITool {
     type: "function";
     function: {
@@ -709,7 +709,7 @@ export interface OpenAITool {
     };
 }
 
-// Recursively convert a tool param into a JSON-schema node for OpenAI-compatible APIs.
+
 function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
     const schema: Record<string, unknown> = {
         type: param.type === "integer" ? "number" : param.type,
@@ -727,8 +727,8 @@ function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
 }
 
 export function buildOpenAIToolDeclarations(): OpenAITool[] {
-    // OpenAI-compatible models get the web search tool too (Gemini doesn't, it
-    // grounds with Google Search instead) plus the artifact tools.
+    
+    
     return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
         type: "function" as const,
         function: {

@@ -3,7 +3,7 @@ import { convert } from "telegram-markdown-v2";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
-// Convert standard markdown to Telegram MarkdownV2 format
+
 function toTelegramMarkdown(text: string): string {
     try {
         return convert(text);
@@ -13,7 +13,7 @@ function toTelegramMarkdown(text: string): string {
     }
 }
 
-// Escape special chars for MarkdownV2 plain-text fallback
+
 function escapeTelegramPlain(text: string): string {
     return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
 }
@@ -32,7 +32,7 @@ export async function sendTelegramMessage(
 
     try {
         for (const chunk of chunks) {
-            // Try sending with MarkdownV2 first
+            
             let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -43,7 +43,7 @@ export async function sendTelegramMessage(
                 }),
             });
 
-            // Fallback to plain text if MarkdownV2 is rejected
+            
             if (!res.ok) {
                 console.warn("[Telegram] MarkdownV2 rejected, falling back to plain text.");
                 res = await fetch(`${TELEGRAM_API}/sendMessage`, {
@@ -66,6 +66,39 @@ export async function sendTelegramMessage(
         return true;
     } catch (error) {
         console.error("[Telegram] sendMessage error:", error);
+        return false;
+    }
+}
+
+
+export async function sendTelegramDocument(
+    chatId: string | number,
+    doc: { filename: string; mimeType: string; body: Buffer | string; caption?: string }
+): Promise<boolean> {
+    if (!TELEGRAM_BOT_TOKEN) {
+        console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set, cannot send document.");
+        return false;
+    }
+
+    try {
+        const bytes = typeof doc.body === "string" ? Buffer.from(doc.body, "utf-8") : doc.body;
+        const form = new FormData();
+        form.append("chat_id", String(chatId));
+        if (doc.caption) form.append("caption", doc.caption.slice(0, 1024));
+        
+        
+        const blob = new Blob([new Uint8Array(bytes)], { type: doc.mimeType || "application/octet-stream" });
+        form.append("document", blob, doc.filename);
+
+        const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: "POST", body: form });
+        if (!res.ok) {
+            const err = await res.text();
+            console.error("[Telegram] sendDocument failed:", res.status, err);
+            return false;
+        }
+        return true;
+    } catch (error) {
+        console.error("[Telegram] sendDocument error:", error);
         return false;
     }
 }

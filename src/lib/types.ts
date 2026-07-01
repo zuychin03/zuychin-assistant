@@ -12,12 +12,12 @@ export interface Message {
 
 export type ArtifactKind = "document" | "code" | "archive";
 
-// Lightweight descriptor stored on the assistant message (metadata) and returned
-// to the client. The actual bytes live in the `artifacts` table, fetched on
-// demand from GET /api/artifacts/[id].
+
+
+
 export interface ArtifactDescriptor {
     id: string;
-    name: string;   // filename, e.g. "outage-report.pdf"
+    name: string;   
     mime: string;
     kind: ArtifactKind;
     size: number;
@@ -65,8 +65,8 @@ export const ALL_SUPPORTED_MIME_TYPES = Object.values(SUPPORTED_MIME_TYPES).flat
 export const MAX_FILE_SIZE_MB = 20;
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
-// Browsers report inconsistent (often empty) MIME types for machine-readable
-// files like .md / .yaml / .csv, so we also recognise them by extension.
+
+
 export const TEXT_LIKE_EXTENSIONS = [
     "txt", "text", "md", "markdown", "mdx", "rst",
     "csv", "tsv", "json", "jsonl", "ndjson",
@@ -77,7 +77,7 @@ export const TEXT_LIKE_EXTENSIONS = [
     "ini", "cfg", "conf", "env", "properties", "log", "tex",
 ];
 
-/** The `accept` attribute value for the upload input. */
+
 export const UPLOAD_ACCEPT = [
     "image/*", "audio/*", "video/*", ".pdf",
     ...TEXT_LIKE_EXTENSIONS.map((e) => `.${e}`),
@@ -88,7 +88,7 @@ function getFileExtension(name: string): string {
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : "";
 }
 
-/** Is this attachment plain text we can read by decoding it (vs. binary media)? */
+
 export function isTextLikeAttachment(mimeType: string, name: string): boolean {
     if (mimeType && (mimeType.startsWith("text/") || SUPPORTED_MIME_TYPES.text.includes(mimeType))) {
         return true;
@@ -96,7 +96,7 @@ export function isTextLikeAttachment(mimeType: string, name: string): boolean {
     return TEXT_LIKE_EXTENSIONS.includes(getFileExtension(name));
 }
 
-/** Whether an upload is accepted at all (binary media by MIME, or text by MIME/extension). */
+
 export function isSupportedAttachment(mimeType: string, name: string): boolean {
     if (mimeType && ALL_SUPPORTED_MIME_TYPES.includes(mimeType)) return true;
     return isTextLikeAttachment(mimeType, name);

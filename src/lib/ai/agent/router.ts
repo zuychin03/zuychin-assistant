@@ -1,6 +1,3 @@
-// Decides whether a web message should run the fast single-pass chat or escalate
-// to the multi-step agent. A cheap heuristic pre-gate short-circuits obvious cases;
-// everything else gets one low-cost Gemini classification.
 import { ai, MODEL } from "@/lib/gemini";
 import { Type, ThinkingLevel } from "@google/genai";
 
@@ -10,8 +7,6 @@ export interface RouteDecision {
 
 const TRIVIAL = /^(hi|hey|hello|thanks|thank you|thx|ok|okay|cool|nice|yes|no|yep|nope|sup|yo|good (morning|afternoon|evening|night))\b/i;
 
-// Clear "do a task / make something" signals — used only as the offline fallback
-// if the classification call fails.
 const AGENT_HINT = /\b(report|essay|write[- ]?up|document|generate|build|create|script|code|program|refactor|debug|implement|research|analy[sz]e|draft|bundle|project|spreadsheet|\.(py|js|ts|tsx|md|pdf|docx|csv|json|zip))\b/i;
 
 function routerPrompt(message: string): string {
@@ -26,7 +21,6 @@ Respond ONLY with JSON: {"mode":"agent"} or {"mode":"chat"}.`;
 export async function classifyIntent(message: string): Promise<RouteDecision> {
     const text = message.trim();
 
-    // Cheap pre-gate: greetings / very short messages are always plain chat.
     if (text.length < 16 || TRIVIAL.test(text)) return { mode: "chat" };
 
     try {

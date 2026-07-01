@@ -18,7 +18,7 @@ const client = new Client({
     ],
 });
 
-// Deduplication guard: both bot instances receive the same gateway event
+
 const processedIds = new Set();
 
 client.once(Events.ClientReady, (c) => {
@@ -29,7 +29,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
 
-    // Skip if already handled by another instance
+    
     if (processedIds.has(message.id)) return;
     processedIds.add(message.id);
     if (processedIds.size > 1000) {
@@ -47,12 +47,13 @@ client.on(Events.MessageCreate, async (message) => {
         await message.channel.sendTyping();
 
 
-        // Prefixes can start with "/" or "!" — Discord intercepts "/" as its own
-        // slash-command UI, so "!" is the reliable option in chat. Model switching
-        // ("/model", "/embed-model") is forwarded as-is and handled by the API.
+        
+        
+        
         let text = message.content.trim();
         let useSearch = false;
         let useThinking = false;
+        let useAgent = false;
         if (/^[/!]search\b/i.test(text)) {
             useSearch = true;
             text = text.replace(/^[/!]search\b/i, "").trim();
@@ -61,15 +62,20 @@ client.on(Events.MessageCreate, async (message) => {
             useThinking = true;
             text = text.replace(/^[/!]think\b/i, "").trim();
         }
+        if (/^[/!]agent\b/i.test(text)) {
+            useAgent = true;
+            text = text.replace(/^[/!]agent\b/i, "").trim();
+        }
 
         const body = {
             message: text || (attachment ? `[Sent ${attachment.name}]` : ""),
             channel: "discord",
             search: useSearch,
             thinking: useThinking,
+            agent: useAgent,
         };
 
-        // Download attachment (max 20MB)
+        
         if (attachment && attachment.size <= 20 * 1024 * 1024) {
             try {
                 const fileRes = await fetch(attachment.url);
@@ -105,13 +111,28 @@ client.on(Events.MessageCreate, async (message) => {
         const data = await res.json();
         const reply = data.reply || "No response.";
 
-        // Discord 2000-char limit
+        
+        
+        const MAX_DISCORD_FILE = 8 * 1024 * 1024; 
+        const files = [];
+        for (const a of data.artifacts || []) {
+            if (!a.base64) continue;
+            const buffer = Buffer.from(a.base64, "base64");
+            if (buffer.length > MAX_DISCORD_FILE) {
+                console.warn(`[Bot] Skipping ${a.name} — too large for Discord (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
+                continue;
+            }
+            files.push({ attachment: buffer, name: a.name });
+        }
+
+        
         if (reply.length <= 2000) {
-            await message.reply(reply);
+            await message.reply({ content: reply, files });
         } else {
             const chunks = splitMessage(reply, 2000);
-            for (const chunk of chunks) {
-                await message.channel.send(chunk);
+            for (let i = 0; i < chunks.length; i++) {
+                const isLast = i === chunks.length - 1;
+                await message.channel.send({ content: chunks[i], files: isLast ? files : [] });
             }
         }
     } catch (err) {

@@ -1,15 +1,11 @@
-// Reference info shown in the model info modal: modalities, size, and the fields
-// each model is strongest at. Several registry entries point at the same underlying
-// model (e.g. Nemotron on OpenRouter and NIM), so metas are shared by id below.
-
 export interface ModelMeta {
     developer: string;
     description: string;
-    inputs: string[];          // input modalities
-    context?: string;          // context window, human-readable (e.g. "1M")
-    maxOutput?: string;        // max output tokens (e.g. "64K")
-    params?: string;           // parameter count summary
-    strengths: string[];       // fields the model excels at (shown as tags)
+    inputs: string[];
+    context?: string;
+    maxOutput?: string;
+    params?: string;
+    strengths: string[];
 }
 
 const GEMINI_35_FLASH: ModelMeta = {
@@ -210,18 +206,14 @@ const LLAMA_EMBED_8B: ModelMeta = {
     strengths: ["Retrieval", "Multilingual", "Reranking", "Classification"],
 };
 
-// Every model id used in the registry maps to one of the metas above.
 export const MODEL_META: Record<string, ModelMeta> = {
-    // Gemini
     "gemini-3.5-flash": GEMINI_35_FLASH,
     "gemini-3-flash-preview": GEMINI_3_FLASH,
     "gemini-embedding-2-preview": GEMINI_EMBED_2,
-    // OpenRouter
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
     "poolside/laguna-m.1:free": LAGUNA_M1,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
     "openai/gpt-oss-120b:free": GPT_OSS_120B,
-    // NVIDIA NIM
     "minimaxai/minimax-m3": MINIMAX_M3,
     "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,
     "deepseek-ai/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
@@ -236,7 +228,6 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "qwen/qwen3.5-397b-a17b": QWEN_35,
     "nvidia/llama-nemotron-embed-1b-v2": NEMOTRON_EMBED_1B,
     "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
-    // OpenCode Zen
     "mimo-v2.5-free": MIMO_V25,
     "deepseek-v4-flash-free": DEEPSEEK_V4_FLASH,
 };

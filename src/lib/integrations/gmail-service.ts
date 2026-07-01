@@ -24,14 +24,9 @@ export interface EmailMessage {
     date: string;
 }
 
-
-// Shared helper: run a Gmail search and return the matching threads with headers.
 async function fetchEmailThreads(query: string, maxResults: number): Promise<EmailThread[]> {
     const gmail = getGmail();
 
-    // Gmail only returns one page at a time, so we follow nextPageToken until we
-    // either run out of pages or hit maxResults. Without this we'd silently drop
-    // any email past the first page (default page size is small).
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
@@ -47,8 +42,6 @@ async function fetchEmailThreads(query: string, maxResults: number): Promise<Ema
         pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken && ids.length < maxResults);
 
-    // Pull the headers for each message in small batches - one at a time is slow
-    // when there are a lot of emails, and all at once can trip Gmail's rate limit.
     const threads: EmailThread[] = [];
     const batchSize = 10;
     for (let i = 0; i < ids.length; i += batchSize) {
@@ -97,8 +90,6 @@ export async function listUnreadEmails(
     return fetchEmailThreads(query ? `${baseQuery} ${query}` : baseQuery, maxResults);
 }
 
-// Recent inbox emails, read or unread. Defaults to the last 7 days so "recent"
-// stays meaningful, but a custom query can widen or narrow that.
 export async function listRecentEmails(
     maxResults: number = 25,
     query?: string
