@@ -2,6 +2,9 @@ import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
+import { classifyIntent } from "@/lib/ai/agent/router";
+import { runAgent } from "@/lib/ai/agent/orchestrator";
+import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -398,11 +401,12 @@ export async function ragChat(params: {
     model?: string;
     embeddingModel?: string;
     genParams?: GenParams;
-}): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
+    agent?: boolean;
+}, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
     const {
         message, channel, imageBase64, file, conversationId,
         thinking = false, search = false, provider, model, embeddingModel,
-        genParams = {},
+        genParams = {}, agent = false,
     } = params;
 
     const profile = await getDefaultProfile();
@@ -441,33 +445,55 @@ export async function ragChat(params: {
     // Collect any files the model produces via the artifact tools so we can attach
     // them to the reply and return them to the client.
     const artifacts: ArtifactDescriptor[] = [];
-    const toolCtx: ToolContext = {
-        conversationId,
-        userProfileId: profile?.id,
-        onArtifact: (a) => artifacts.push(a),
-    };
+
+    // Decide fast chat vs. multi-step agent. Forced by the client's `agent` flag,
+    // else the router auto-escalates complex web requests. Visual attachments
+    // (images / PDFs) stay on the fast path since the agent loop can't see them;
+    // a text-like file is folded into the agent's prompt instead.
+    const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
+    let mode: "chat" | "agent" = "chat";
+    if (agent) mode = "agent";
+    else if (channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message)).mode;
+    if (mode === "agent" && hasVisualAttachment) mode = "chat";
 
     let reply: string;
-    if (rag.chat.provider.kind === "gemini") {
-        reply = await generateGeminiReply({
-            contextBlock: rag.contextBlock, message, imageBase64, file, channel,
-            thinking: rag.allowThinking, search: rag.allowSearch,
-            model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx,
+    if (mode === "agent") {
+        const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
+            ? `${message}\n\n${formatTextAttachment(file)}`
+            : message;
+        onEvent?.({ type: "status", message: "Understanding your request…" });
+        const res = await runAgent({
+            rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
         });
+        reply = res.reply;
+        artifacts.push(...res.artifacts);
     } else {
-        reply = await openaiCompatChat({
-            provider: rag.chat.provider,
-            model: rag.chat.model,
-            systemText: rag.contextBlock.trim(),
-            userText: message,
-            imageBase64,
-            file,
-            embRef: rag.embRef,
-            thinking: rag.allowThinking,
-            search: rag.allowSearch,
-            genParams,
-            ctx: toolCtx,
-        });
+        const toolCtx: ToolContext = {
+            conversationId,
+            userProfileId: profile?.id,
+            onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
+        };
+        if (rag.chat.provider.kind === "gemini") {
+            reply = await generateGeminiReply({
+                contextBlock: rag.contextBlock, message, imageBase64, file, channel,
+                thinking: rag.allowThinking, search: rag.allowSearch,
+                model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx,
+            });
+        } else {
+            reply = await openaiCompatChat({
+                provider: rag.chat.provider,
+                model: rag.chat.model,
+                systemText: rag.contextBlock.trim(),
+                userText: message,
+                imageBase64,
+                file,
+                embRef: rag.embRef,
+                thinking: rag.allowThinking,
+                search: rag.allowSearch,
+                genParams,
+                ctx: toolCtx,
+            });
+        }
     }
 
     try {

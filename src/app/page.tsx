@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import type { ArtifactDescriptor } from "@/lib/types";
+import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -15,6 +16,33 @@ interface ChatMessage {
   fileMimeType?: string;
   artifacts?: ArtifactDescriptor[];
 }
+
+// Live state of an in-flight agent run, driven by SSE events.
+interface AgentRun {
+  status: string;
+  steps: { title: string; status: string }[];
+  lines: string[];
+}
+
+const FRIENDLY_TOOL: Record<string, string> = {
+  search_web: "Searching the web",
+  search_knowledge: "Searching memory",
+  save_note: "Saving a note",
+  get_recent_conversations: "Reviewing recent chats",
+  list_calendar_events: "Checking the calendar",
+  manage_calendar_event: "Updating the calendar",
+  list_unread_emails: "Checking email",
+  list_recent_emails: "Checking email",
+  read_email: "Reading an email",
+  send_email: "Sending an email",
+  draft_gmail_reply: "Drafting a reply",
+  manage_todo_list: "Updating the to-do list",
+  get_current_time: "Checking the time",
+  create_document: "Writing a document",
+  create_code_file: "Writing a code file",
+  create_code_bundle: "Bundling files",
+};
+const friendlyTool = (name: string) => FRIENDLY_TOOL[name] ?? name;
 
 interface Conversation {
   id: string;
@@ -279,6 +307,8 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [agentEnabled, setAgentEnabled] = useState(false);
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [isDesktop, setIsDesktop] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   // "providerId::modelId" for chat; embedding model id for embeddings.
@@ -428,6 +458,14 @@ export default function Home() {
     });
   };
 
+  const toggleAgent = () => {
+    setAgentEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem("zuychin-agent-mode", String(next));
+      return next;
+    });
+  };
+
   const handleLogout = async () => {
     try {
       await fetch("/api/auth", { method: "DELETE" });
@@ -524,13 +562,14 @@ export default function Home() {
     }
 
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userMessage.content,
           conversationId: convId,
           thinking: thinkingEnabled && canThink,
+          agent: agentEnabled,
           genParams: {
             ...(genParams.temperature !== null && { temperature: genParams.temperature }),
             ...(genParams.topP !== null && { topP: genParams.topP }),
@@ -552,21 +591,66 @@ export default function Home() {
         }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to get response.");
+      if (!res.ok || !res.body) {
+        throw new Error(`Request failed (${res.status})`);
       }
+
+      // Parse the SSE stream: update the live tracker on progress events, and
+      // render the final message on `done`.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done: { reply: string; artifacts?: ArtifactDescriptor[] } | null = null;
+      let streamError = "";
+
+      const base = (): AgentRun => ({ status: "", steps: [], lines: [] });
+
+      for (;;) {
+        const { done: finished, value } = await reader.read();
+        if (finished) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue; // skip heartbeats (": ping")
+          const json = dataLine.slice(5).trim();
+          if (!json) continue;
+          let evt: AgentEvent;
+          try { evt = JSON.parse(json) as AgentEvent; } catch { continue; }
+
+          if (evt.type === "status") {
+            setAgentRun((r) => ({ ...(r ?? base()), status: evt.message }));
+          } else if (evt.type === "plan") {
+            setAgentRun((r) => ({ ...(r ?? base()), steps: evt.steps }));
+          } else if (evt.type === "tool") {
+            if (evt.phase === "start") {
+              setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `${friendlyTool(evt.name)}…`] }));
+            }
+          } else if (evt.type === "subagent") {
+            if (evt.phase === "start") {
+              setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `Delegating to ${evt.model}: ${evt.objective}`] }));
+            }
+          } else if (evt.type === "artifact") {
+            setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `Created ${evt.artifact.name}`] }));
+          } else if (evt.type === "done") {
+            done = { reply: evt.reply, artifacts: evt.artifacts };
+          } else if (evt.type === "error") {
+            streamError = evt.message;
+          }
+        }
+      }
+
+      if (streamError) throw new Error(streamError);
 
       const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.reply,
-        artifacts: data.artifacts,
+        content: done?.reply ?? "(No response.)",
+        artifacts: done?.artifacts,
       };
-
       setMessages((prev) => [...prev, assistantMessage]);
-      // Refresh conversation list to update title
       await loadConversations();
     } catch (error: unknown) {
       const errorMsg =
@@ -579,6 +663,7 @@ export default function Home() {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setAgentRun(null);
     }
   };
 
@@ -993,14 +1078,38 @@ export default function Home() {
                 <Bot size={14} color="#fff" />
               </div>
               <div style={{ ...styles.bubble, ...styles.aiBubble }}>
-                <div style={styles.typingRow}>
-                  <span style={styles.typingDot} className="animate-bounce-dot" />
-                  <span style={styles.typingDot} className="animate-bounce-dot-2" />
-                  <span style={styles.typingDot} className="animate-bounce-dot-3" />
-                  {thinkingEnabled && (
-                    <span style={styles.typingLabel}>Thinking deeply...</span>
-                  )}
-                </div>
+                {agentRun ? (
+                  <div style={styles.agentTracker}>
+                    <div style={styles.agentHeader}>
+                      <Bot size={14} color="var(--color-primary)" />
+                      <span>{agentRun.status || "Working…"}</span>
+                    </div>
+                    {agentRun.steps.length > 0 && (
+                      <div style={styles.agentSteps}>
+                        {agentRun.steps.map((s, i) => (
+                          <div key={i} style={styles.agentStep}>
+                            <span style={styles.agentStepMark}>
+                              {s.status === "done" ? "✓" : s.status === "in_progress" ? "▸" : "○"}
+                            </span>
+                            <span style={{ opacity: s.status === "done" ? 0.6 : 1 }}>{s.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {agentRun.lines.slice(-4).map((l, i) => (
+                      <div key={i} style={styles.agentLine}>{l}</div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={styles.typingRow}>
+                    <span style={styles.typingDot} className="animate-bounce-dot" />
+                    <span style={styles.typingDot} className="animate-bounce-dot-2" />
+                    <span style={styles.typingDot} className="animate-bounce-dot-3" />
+                    {thinkingEnabled && (
+                      <span style={styles.typingLabel}>Thinking deeply...</span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1073,6 +1182,18 @@ export default function Home() {
               aria-label="Attach file"
             >
               <Paperclip size={18} color="var(--color-text-muted)" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleAgent}
+              style={{
+                ...styles.attachBtn,
+                opacity: agentEnabled ? 1 : 0.5,
+              }}
+              aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
+              title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
+            >
+              <Bot size={18} color={agentEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
             </button>
             {canThink && (
               <button
@@ -1712,6 +1833,45 @@ const styles: Record<string, React.CSSProperties> = {
   artifactSize: {
     fontSize: 11,
     color: "var(--color-text-muted)",
+  },
+
+  // Live agent progress tracker (shown while an agent run streams)
+  agentTracker: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    minWidth: 220,
+  },
+  agentHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--color-text)",
+  },
+  agentSteps: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+    marginTop: 2,
+  },
+  agentStep: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6,
+    fontSize: 12.5,
+    color: "var(--color-text)",
+  },
+  agentStepMark: {
+    color: "var(--color-primary)",
+    width: 12,
+    flexShrink: 0,
+  },
+  agentLine: {
+    fontSize: 11.5,
+    color: "var(--color-text-muted)",
+    fontStyle: "italic",
   },
 
   // Generation settings panel

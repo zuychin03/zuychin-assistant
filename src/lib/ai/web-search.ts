@@ -1,7 +1,8 @@
-// Web search for the non-Gemini models. Those models have no built-in internet
-// access, so this hits a search API (Tavily) and returns a short list of results
-// the model can read. Gemini doesn't use this - it has its own Google Search
-// grounding.
+// Web search for models that have no built-in internet access. Primary path is
+// Tavily; if it isn't configured we fall back to a Gemini Google-Search-grounded
+// lookup so the agent still gets real web results with just the Gemini key.
+
+import { ai, MODEL } from "@/lib/gemini";
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 
@@ -61,4 +62,38 @@ export async function webSearch(query: string, maxResults = 5): Promise<string> 
         console.error("[WebSearch] failed:", err);
         return "Web search failed, please try again later.";
     }
+}
+
+// Real web results using Gemini's native Google Search grounding — no extra API
+// key needed beyond GEMINI_API_KEY. Returns the grounded answer plus source URLs.
+export async function geminiWebSearch(query: string): Promise<string> {
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL,
+            contents: [{ role: "user", parts: [{ text: `Search the web and answer with concrete, current facts and figures: ${query}` }] }],
+            config: { tools: [{ googleSearch: {} }] },
+        });
+
+        const text = (response.text ?? "").trim();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const chunks = (response.candidates?.[0] as any)?.groundingMetadata?.groundingChunks as { web?: { uri?: string; title?: string } }[] | undefined;
+        const sources = (chunks ?? [])
+            .map((c) => c.web?.uri)
+            .filter((u): u is string => !!u)
+            .slice(0, 5);
+
+        if (!text) return `No web results found for "${query}".`;
+        const srcText = sources.length
+            ? `\n\nSources:\n${sources.map((u, i) => `[${i + 1}] ${u}`).join("\n")}`
+            : "";
+        return text + srcText;
+    } catch (err) {
+        console.error("[WebSearch] Gemini grounding failed:", err);
+        return "Web search failed, please try again later.";
+    }
+}
+
+/** Search the web via Tavily if configured, otherwise Gemini Google-Search grounding. */
+export async function runWebSearch(query: string): Promise<string> {
+    return TAVILY_API_KEY ? webSearch(query) : geminiWebSearch(query);
 }

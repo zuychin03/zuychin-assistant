@@ -286,7 +286,7 @@ export const MCP_TOOLS: McpTool[] = [
 
 import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
-import { webSearch } from "@/lib/ai/web-search";
+import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
 
 export async function executeTool(
@@ -305,7 +305,7 @@ export async function executeTool(
             return executeGetCurrentTime(args.timezone as string | undefined);
 
         case "search_web":
-            return webSearch(args.query as string);
+            return runWebSearch(args.query as string);
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef);

@@ -46,6 +46,11 @@ interface ChatMessage {
 
 const MAX_TOOL_ROUNDS = 5;
 
+// Hard ceiling on a single streamed completion. Without this an abort/hung SSE
+// stream (some free providers do this) would stall the request — and an agent
+// run behind it — forever.
+const REQUEST_TIMEOUT_MS = 60_000;
+
 // Reasoning models sometimes inline their chain-of-thought in the content, e.g.
 // <think>...</think>. Strip those (several tag variants) before showing the reply.
 const THINK_PAIR_RE = /<(think|thinking|thought|reason|reasoning)>[\s\S]*?<\/\1>/gi;
@@ -270,26 +275,39 @@ async function postChat(
         }
     }
 
-    const res = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-            ...(provider.extraHeaders ?? {}),
-        },
-        body: JSON.stringify(body),
-    });
+    // Abort the whole request (including the streamed body read) if it stalls.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+        const res = await fetch(`${provider.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+                Accept: "text/event-stream",
+                ...(provider.extraHeaders ?? {}),
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
 
-    if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`${provider.label} ${res.status}: ${detail.slice(0, 400)}`);
-    }
-    if (!res.body) {
-        throw new Error(`${provider.label}: empty stream body.`);
-    }
+        if (!res.ok) {
+            const detail = await res.text().catch(() => "");
+            throw new Error(`${provider.label} ${res.status}: ${detail.slice(0, 400)}`);
+        }
+        if (!res.body) {
+            throw new Error(`${provider.label}: empty stream body.`);
+        }
 
-    return accumulateStream(res.body, provider.label);
+        return await accumulateStream(res.body, provider.label);
+    } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+            throw new Error(`${provider.label}: request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
+        }
+        throw err;
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 // read the SSE stream and rebuild a single ChatCompletion, joining the content,
