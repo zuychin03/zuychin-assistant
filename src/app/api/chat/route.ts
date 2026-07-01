@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sanitizeGenParams } from "@/lib/ai/providers";
-import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
+import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
 
@@ -37,9 +37,9 @@ export async function POST(req: NextRequest) {
 
         let validatedFile: FileAttachment | undefined;
         if (file) {
-            if (!ALL_SUPPORTED_MIME_TYPES.includes(file.mimeType)) {
+            if (!isSupportedAttachment(file.mimeType, file.name)) {
                 return NextResponse.json(
-                    { error: `Unsupported file type: ${file.mimeType}` },
+                    { error: `Unsupported file type: ${file.mimeType || file.name}` },
                     { status: 400 }
                 );
             }

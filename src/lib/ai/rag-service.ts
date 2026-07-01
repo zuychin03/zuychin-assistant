@@ -6,6 +6,8 @@ import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessaging
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext } from "@/lib/datetime";
+import { isTextLikeAttachment } from "@/lib/types";
+import { formatTextAttachment } from "@/lib/attachments";
 import type { MessageChannel, FileAttachment, Message } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
@@ -479,7 +481,13 @@ async function generateGeminiReply(opts: {
         parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64 } });
     }
     if (file) {
-        parts.push({ inlineData: { mimeType: file.mimeType, data: file.base64 } });
+        // Machine-readable text (markdown/yaml/csv/code/…) is decoded and passed
+        // inline as text so it works reliably; binary media goes through inlineData.
+        if (isTextLikeAttachment(file.mimeType, file.name)) {
+            parts.push({ text: formatTextAttachment(file) });
+        } else {
+            parts.push({ inlineData: { mimeType: file.mimeType, data: file.base64 } });
+        }
     }
 
     const toolDeclarations = buildGeminiFunctionDeclarations();

@@ -7,6 +7,8 @@ import {
 } from "@/lib/ai/mcp-service";
 import { getProviderApiKey, type ChatModel, type ProviderConfig, type GenParams } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { isTextLikeAttachment } from "@/lib/types";
+import { formatTextAttachment } from "@/lib/attachments";
 import type { FileAttachment } from "@/lib/types";
 
 interface ToolCall {
@@ -93,20 +95,30 @@ export async function openaiCompatChat(params: {
         genParams: params.genParams ?? {},
     };
 
-    // build the user message - only send the image if the model can see images
-    const userContent: ContentPart[] = [{ type: "text", text: userText }];
+    // build the user message. Machine-readable text (markdown/yaml/csv/code/…) is
+    // decoded and folded into the prompt so every model can read it; images only go
+    // to vision models; other binary media isn't reachable over this API.
+    const isTextFile = !!file && isTextLikeAttachment(file.mimeType, file.name);
+    const isImageFile = !!file && file.mimeType.startsWith("image/");
+
+    let baseText = userText;
+    if (file && isTextFile) {
+        baseText = `${userText}\n\n${formatTextAttachment(file)}`;
+    }
+
+    const userContent: ContentPart[] = [{ type: "text", text: baseText }];
     if (model.supportsVision) {
         if (imageBase64) {
             const mime = imageMimeType || "image/jpeg";
             userContent.push({ type: "image_url", image_url: { url: `data:${mime};base64,${imageBase64}` } });
         }
-        if (file && file.mimeType.startsWith("image/")) {
+        if (file && isImageFile) {
             userContent.push({ type: "image_url", image_url: { url: `data:${file.mimeType};base64,${file.base64}` } });
         }
-    } else if (imageBase64 || (file && file.mimeType.startsWith("image/"))) {
-        userContent[0] = { type: "text", text: `${userText}\n\n[An image was attached but ${model.label} is text-only, so it was not included.]` };
-    } else if (file) {
-        userContent[0] = { type: "text", text: `${userText}\n\n[Attached file: ${file.name} (${file.mimeType}). This model cannot read file attachments directly.]` };
+    } else if (imageBase64 || isImageFile) {
+        userContent[0] = { type: "text", text: `${baseText}\n\n[An image was attached but ${model.label} is text-only, so it was not included.]` };
+    } else if (file && !isTextFile) {
+        userContent[0] = { type: "text", text: `${baseText}\n\n[Attached file: ${file.name} (${file.mimeType}). This model cannot read this file type directly.]` };
     }
 
     // for text-only turns send a plain string - some models (MiniMax M3 on NIM)

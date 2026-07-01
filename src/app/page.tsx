@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
-import { ALL_SUPPORTED_MIME_TYPES, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
+import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -610,8 +610,8 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!ALL_SUPPORTED_MIME_TYPES.includes(file.type)) {
-      alert(`Unsupported file type: ${file.type}\n\nSupported: images, audio, video, PDF, text/code files.`);
+    if (!isSupportedAttachment(file.type, file.name)) {
+      alert(`Unsupported file type: ${file.type || file.name}\n\nSupported: images, audio, video, PDF, and text/data files (Markdown, YAML, CSV, JSON, code, …).`);
       return;
     }
     if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -641,11 +641,10 @@ export default function Home() {
     if (mimeType.startsWith("image/")) return <ImageIcon size={14} />;
     if (mimeType.startsWith("audio/")) return <Music size={14} />;
     if (mimeType.startsWith("video/")) return <Video size={14} />;
-    if (mimeType === "application/pdf") return <FileText size={14} />;
     return <FileText size={14} />;
   };
 
-  const handleExport = async (content: string, format: "docx" | "pdf") => {
+  const handleExport = async (content: string, format: "docx" | "pdf" | "md") => {
     try {
       const title = content.substring(0, 40).replace(/[^a-zA-Z0-9\s]/g, "").trim() || "Document";
       const res = await fetch("/api/export", {
@@ -914,6 +913,14 @@ export default function Home() {
                       <Download size={12} />
                       <span>PDF</span>
                     </button>
+                    <button
+                      onClick={() => handleExport(msg.content, "md")}
+                      style={styles.exportBtn}
+                      title="Download as Markdown"
+                    >
+                      <Download size={12} />
+                      <span>MD</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -1002,7 +1009,7 @@ export default function Home() {
               type="file"
               onChange={handleFileSelect}
               style={{ display: "none" }}
-              accept="image/*,audio/*,video/*,.pdf,.txt,.csv,.js,.ts,.py,.json,.xml,.html,.css"
+              accept={UPLOAD_ACCEPT}
             />
             <button
               type="button"
