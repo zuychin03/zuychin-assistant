@@ -1,6 +1,8 @@
 // Tools available only to the lead agent (not the fast path or workers):
-// declaring a plan (drives the live tracker) and dispatching parallel workers.
+// declaring a plan (drives the live tracker), dispatching parallel workers, and
+// pulling in a skill playbook on demand.
 import type { McpTool } from "@/lib/ai/mcp-service";
+import { SKILL_IDS } from "@/lib/ai/skills/registry";
 
 export const AGENT_TOOLS: McpTool[] = [
     {
@@ -24,7 +26,7 @@ export const AGENT_TOOLS: McpTool[] = [
     },
     {
         name: "run_subagents",
-        description: "Delegate independent subtasks to parallel worker agents to save time, each optionally on a specific model. Use when the task has 2+ independent parts (e.g. research several subtopics at once, or draft several separate files). Each worker runs on its own and can use the same tools, including creating files. Their results come back together for you to synthesize. Do NOT use this for a single simple step — just do it yourself.",
+        description: "Delegate independent subtasks to parallel worker agents to save time, each optionally on a specific model. Use when the task has 2+ independent parts (e.g. research several subtopics at once). Workers gather information and return findings as text — they do NOT create files; you synthesize their results and author the deliverables yourself. Do NOT use this for a single simple step — just do it yourself.",
         parameters: {
             tasks: {
                 type: "array",
@@ -38,6 +40,18 @@ export const AGENT_TOOLS: McpTool[] = [
                         model: { type: "string", description: "Optional model hint — a short name like 'gemini-3.5-flash', 'deepseek-v4-flash', 'minimax-m3', 'gemma-4', or 'mimo'. Omit to auto-pick a fast model.", required: false },
                     },
                 },
+            },
+        },
+    },
+    {
+        name: "use_skill",
+        description: "Load a skill playbook — a detailed, proven procedure for a kind of task — before you carry it out. Consult the skill index in your instructions and call this when a skill fits, then follow the returned steps. Cheap to call; prefer using a skill over improvising when one matches.",
+        parameters: {
+            skill_id: {
+                type: "string",
+                description: "The id of the skill to load, from the skill index.",
+                required: true,
+                enum: SKILL_IDS,
             },
         },
     },

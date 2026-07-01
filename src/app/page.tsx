@@ -41,6 +41,7 @@ const FRIENDLY_TOOL: Record<string, string> = {
   create_document: "Writing a document",
   create_code_file: "Writing a code file",
   create_code_bundle: "Bundling files",
+  use_skill: "Consulting a skill",
 };
 const friendlyTool = (name: string) => FRIENDLY_TOOL[name] ?? name;
 

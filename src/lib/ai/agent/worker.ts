@@ -7,7 +7,6 @@ import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
-import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
 import { resolveChatModelByName, resolveChat, type ResolvedChat } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 
@@ -20,9 +19,9 @@ export interface WorkerParams {
 }
 
 const workerSystem = (contextBlock: string) =>
-    `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, using tools as needed — call search_web for any current/factual information, and you may create files with create_document / create_code_file. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
+    `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, using tools as needed — call search_web for any current or factual information you need. Do NOT create files or documents yourself; return your findings as clear, well-structured text so the lead agent can synthesize them into the single final deliverable. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
 
-const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS]);
+const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL]);
 
 export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string }> {
     // "auto" (no hint) → reliable Gemini Flash. Explicit hints can still route a

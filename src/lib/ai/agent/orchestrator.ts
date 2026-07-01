@@ -8,15 +8,17 @@ import { AGENT_TOOLS } from "@/lib/ai/agent/tools";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
 import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
+import { buildSkillIndex, getSkillInstructions } from "@/lib/ai/skills/registry";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
 import type { ArtifactDescriptor } from "@/lib/types";
 
 const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's request end-to-end:
 1. Call update_plan first with a short plan (2–6 steps), and update it as you progress.
-2. Carry out the steps using your tools. Call search_web whenever you need current, factual, or up-to-date information — don't rely on stale knowledge for research. To return files to the user, ALWAYS use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) — never paste large file contents into the chat.
-3. When subtasks are independent, call run_subagents to do them in parallel and save time (workers can also search the web); otherwise just do them yourself.
-4. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
+2. Carry out the steps using your tools. Call search_web whenever you need current, factual, or up-to-date information — don't rely on stale knowledge for research.
+3. When subtasks are independent, call run_subagents to do them in parallel and save time. Sub-agents only gather information and return findings as text — they do NOT create files. You are the SOLE author of the deliverables: gather everything first, then synthesize it yourself.
+4. You alone produce the output files: use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) — never paste large file contents into the chat. Produce exactly what the user asked for and no more: if they asked for "a PDF report", create ONE document. Never create duplicate or overlapping files for the same deliverable.
+5. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
 Be decisive and keep going until the task is fully resolved.`;
 
 // Resolve with `fallback` if the promise rejects or exceeds `ms`, so one bad
@@ -105,6 +107,12 @@ export async function runAgent(opts: {
         if (name === "run_subagents") {
             return runSubagents(args);
         }
+        if (name === "use_skill") {
+            onEvent?.({ type: "tool", name, phase: "start" });
+            const instructions = getSkillInstructions(String(args.skill_id ?? ""));
+            onEvent?.({ type: "tool", name, phase: "done" });
+            return instructions;
+        }
         onEvent?.({ type: "tool", name, phase: "start" });
         const result = await executeTool(name, args, rag.embRef, toolCtx);
         onEvent?.({ type: "tool", name, phase: "done" });
@@ -118,7 +126,7 @@ export async function runAgent(opts: {
     onEvent?.({ type: "status", message: "Planning…" });
     const reply = await runGeminiLoop({
         model,
-        systemPrompt: `${AGENT_SYSTEM}\n\n${rag.contextBlock}`,
+        systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${buildSkillIndex()}\n\n${rag.contextBlock}`,
         userMessage: message,
         toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
         dispatch,
