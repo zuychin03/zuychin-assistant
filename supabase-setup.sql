@@ -189,6 +189,68 @@ begin
 end;
 $$;
 
+-- Second-brain vault page index. The vault itself (interlinked Markdown wiki
+-- pages) lives in a private GitHub repo (see vault-template/ and the
+-- GITHUB_VAULT_* env vars); this table is only the semantic index over it —
+-- one row per wiki page with its embedding, so vault_search can do pgvector
+-- lookups without touching GitHub. Model-aware like the embeddings table.
+create table if not exists vault_pages (
+  id uuid primary key default gen_random_uuid(),
+  path text not null unique,
+  title text not null,
+  summary text not null default '',
+  category text not null default 'concepts',
+  embedding vector,
+  embedding_model text not null default 'gemini-embedding-2-preview',
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_vault_pages_model
+  on vault_pages (embedding_model);
+
+alter table vault_pages enable row level security;
+
+drop policy if exists "Allow all access to vault_pages" on vault_pages;
+create policy "Allow all access to vault_pages" on vault_pages for all using (true) with check (true);
+
+create or replace function match_vault_pages(
+  query_embedding vector,
+  match_threshold float default 0.5,
+  match_count int default 8,
+  filter_model text default 'gemini-embedding-2-preview'
+)
+returns table (
+  id uuid,
+  path text,
+  title text,
+  summary text,
+  category text,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select q.id, q.path, q.title, q.summary, q.category, q.similarity
+  from (
+    select
+      v.id,
+      v.path,
+      v.title,
+      v.summary,
+      v.category,
+      1 - (v.embedding <=> query_embedding) as similarity
+    from vault_pages v
+    where
+      v.embedding_model = filter_model
+      and v.embedding is not null
+  ) q
+  where q.similarity > match_threshold
+  order by q.similarity desc
+  limit match_count;
+end;
+$$;
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (

@@ -3,7 +3,6 @@ import { convert } from "telegram-markdown-v2";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
-
 function toTelegramMarkdown(text: string): string {
     try {
         return convert(text);
@@ -12,7 +11,6 @@ function toTelegramMarkdown(text: string): string {
         return escapeTelegramPlain(text);
     }
 }
-
 
 function escapeTelegramPlain(text: string): string {
     return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
@@ -32,7 +30,7 @@ export async function sendTelegramMessage(
 
     try {
         for (const chunk of chunks) {
-            
+
             let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -43,7 +41,6 @@ export async function sendTelegramMessage(
                 }),
             });
 
-            
             if (!res.ok) {
                 console.warn("[Telegram] MarkdownV2 rejected, falling back to plain text.");
                 res = await fetch(`${TELEGRAM_API}/sendMessage`, {
@@ -70,7 +67,6 @@ export async function sendTelegramMessage(
     }
 }
 
-
 export async function sendTelegramDocument(
     chatId: string | number,
     doc: { filename: string; mimeType: string; body: Buffer | string; caption?: string }
@@ -85,8 +81,7 @@ export async function sendTelegramDocument(
         const form = new FormData();
         form.append("chat_id", String(chatId));
         if (doc.caption) form.append("caption", doc.caption.slice(0, 1024));
-        
-        
+
         const blob = new Blob([new Uint8Array(bytes)], { type: doc.mimeType || "application/octet-stream" });
         form.append("document", blob, doc.filename);
 

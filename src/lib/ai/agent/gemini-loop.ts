@@ -48,5 +48,29 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<string> {
         response = await ai.models.generateContent({ model, contents, config });
     }
 
-    return response.text ?? "";
+    // If the round budget runs out with calls still pending, response.text is
+    // empty or mid-work narration. Answer the calls with a stop notice and
+    // force one final tool-free turn instead.
+    if (response.functionCalls && response.functionCalls.length > 0) {
+        contents.push(response.candidates![0].content);
+        contents.push({
+            role: "user",
+            parts: response.functionCalls.map((fc) => ({
+                functionResponse: {
+                    name: fc.name!,
+                    response: { result: "Iteration budget exhausted. Stop working. Summarize exactly what you completed and what remains, and suggest the user say 'continue' to finish the rest." },
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    id: (fc as any).id,
+                },
+            })),
+        });
+        response = await ai.models.generateContent({
+            model,
+            contents,
+            config: { thinkingConfig: config.thinkingConfig },
+        });
+    }
+
+    return response.text?.trim()
+        || "I ran out of steps before finishing this task. Say 'continue' and I'll pick up where I left off.";
 }

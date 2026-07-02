@@ -47,11 +47,11 @@ export async function POST(req: NextRequest) {
             let closed = false;
             const send = (e: AgentEvent) => {
                 if (closed) return;
-                try { controller.enqueue(encoder.encode(sseFormat(e))); } catch { /* client gone */ }
+                try { controller.enqueue(encoder.encode(sseFormat(e))); } catch { }
             };
             const heartbeat = setInterval(() => {
                 if (closed) return;
-                try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* ignore */ }
+                try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { }
             }, 15000);
 
             try {
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
             } finally {
                 closed = true;
                 clearInterval(heartbeat);
-                try { controller.close(); } catch { /* already closed */ }
+                try { controller.close(); } catch { }
             }
         },
     });

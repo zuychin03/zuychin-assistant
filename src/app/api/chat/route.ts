@@ -8,14 +8,12 @@ import type { MessageChannel } from "@/lib/types";
 
 const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 
-
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, agent = false, provider, model, embeddingModel, genParams } = body;
-
 
         if (!message || typeof message !== "string") {
             return NextResponse.json(
@@ -38,7 +36,6 @@ export async function POST(req: NextRequest) {
             );
         }
 
-
         let validatedFile: FileAttachment | undefined;
         if (file) {
             if (!isSupportedAttachment(file.mimeType, file.name)) {
@@ -56,7 +53,6 @@ export async function POST(req: NextRequest) {
             validatedFile = file;
         }
 
-
         const { reply, messageId, artifacts } = await ragChat({
             message: message.trim(),
             channel,
@@ -72,10 +68,6 @@ export async function POST(req: NextRequest) {
             genParams: sanitizeGenParams(genParams),
         });
 
-        
-        
-        
-        
         const artifactsWithData = await Promise.all(
             artifacts.map(async (a) => {
                 const stored = await getArtifact(a.id);

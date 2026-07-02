@@ -1,5 +1,3 @@
-
-
 export interface Message {
     id: string;
     role: "user" | "assistant" | "system";
@@ -12,12 +10,9 @@ export interface Message {
 
 export type ArtifactKind = "document" | "code" | "archive";
 
-
-
-
 export interface ArtifactDescriptor {
     id: string;
-    name: string;   
+    name: string;
     mime: string;
     kind: ArtifactKind;
     size: number;
@@ -45,7 +40,6 @@ export interface FileAttachment {
     size: number;
 }
 
-
 export const SUPPORTED_MIME_TYPES: Record<string, string[]> = {
     images: ["image/jpeg", "image/png", "image/webp", "image/heic"],
     audio: ["audio/mp3", "audio/mpeg", "audio/wav", "audio/flac", "audio/ogg", "audio/m4a", "audio/x-aac"],
@@ -65,8 +59,6 @@ export const ALL_SUPPORTED_MIME_TYPES = Object.values(SUPPORTED_MIME_TYPES).flat
 export const MAX_FILE_SIZE_MB = 20;
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
-
-
 export const TEXT_LIKE_EXTENSIONS = [
     "txt", "text", "md", "markdown", "mdx", "rst",
     "csv", "tsv", "json", "jsonl", "ndjson",
@@ -76,7 +68,6 @@ export const TEXT_LIKE_EXTENSIONS = [
     "cs", "php", "swift", "sh", "bash", "zsh", "sql",
     "ini", "cfg", "conf", "env", "properties", "log", "tex",
 ];
-
 
 export const UPLOAD_ACCEPT = [
     "image/*", "audio/*", "video/*", ".pdf",
@@ -88,14 +79,12 @@ function getFileExtension(name: string): string {
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : "";
 }
 
-
 export function isTextLikeAttachment(mimeType: string, name: string): boolean {
     if (mimeType && (mimeType.startsWith("text/") || SUPPORTED_MIME_TYPES.text.includes(mimeType))) {
         return true;
     }
     return TEXT_LIKE_EXTENSIONS.includes(getFileExtension(name));
 }
-
 
 export function isSupportedAttachment(mimeType: string, name: string): boolean {
     if (mimeType && ALL_SUPPORTED_MIME_TYPES.includes(mimeType)) return true;

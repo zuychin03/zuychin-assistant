@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listConversations, createConversation, deleteConversation, getConversationMessages } from "@/lib/db";
 
-
 export async function GET(req: NextRequest) {
     try {
         const conversationId = req.nextUrl.searchParams.get("id");
@@ -12,7 +11,6 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ messages });
         }
 
-
         const conversations = await listConversations(50);
         return NextResponse.json({ conversations });
     } catch (error: unknown) {
@@ -21,7 +19,6 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
 }
-
 
 export async function POST() {
     try {
@@ -33,7 +30,6 @@ export async function POST() {
         return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
 }
-
 
 export async function DELETE(req: NextRequest) {
     try {

@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateSystemPrompt, getDefaultProfile } from "@/lib/db";
 
-
-
 export async function PUT(req: NextRequest) {
     try {
         const { systemPrompt } = await req.json();

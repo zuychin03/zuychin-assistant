@@ -17,7 +17,6 @@ interface ChatMessage {
   artifacts?: ArtifactDescriptor[];
 }
 
-
 interface AgentRun {
   status: string;
   steps: { title: string; status: string }[];
@@ -42,6 +41,11 @@ const FRIENDLY_TOOL: Record<string, string> = {
   create_code_file: "Writing a code file",
   create_code_bundle: "Bundling files",
   use_skill: "Consulting a skill",
+  vault_search: "Searching the second brain",
+  vault_read: "Reading a vault page",
+  vault_ingest: "Saving to the second brain",
+  vault_write: "Updating a vault page",
+  vault_lint: "Tidying the vault",
 };
 const friendlyTool = (name: string) => FRIENDLY_TOOL[name] ?? name;
 
@@ -83,7 +87,6 @@ interface GenParamsState {
   topP: number | null;
   maxTokens: number | null;
 }
-
 
 function SelectMenu({
   icon, groups, value, onChange, ariaLabel, align = "left", compact = false,
@@ -153,7 +156,6 @@ function SelectMenu({
   );
 }
 
-
 function ParamRow({
   label, value, min, max, step, def, onChange,
 }: {
@@ -197,7 +199,6 @@ function ParamRow({
   );
 }
 
-
 const STRENGTH_COLORS: Record<string, string> = {
   Coding: "#8b5cf6", Code: "#8b5cf6", Reasoning: "#3b82f6", Agentic: "#ec4899",
   Math: "#f59e0b", Science: "#10b981", Multimodal: "#a855f7", Vision: "#06b6d4",
@@ -207,7 +208,6 @@ const STRENGTH_COLORS: Record<string, string> = {
   "Visual documents": "#f97316",
 };
 const strengthColor = (s: string) => STRENGTH_COLORS[s] ?? "#94a3b8";
-
 
 function ModelInfoModal({
   model, providerLabel, onClose,
@@ -312,7 +312,7 @@ export default function Home() {
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [isDesktop, setIsDesktop] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  
+
   const [chatSel, setChatSel] = useState("");
   const [embedSel, setEmbedSel] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -338,7 +338,6 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  
   const loadConversations = useCallback(async () => {
     try {
       const res = await fetch("/api/conversations");
@@ -355,13 +354,11 @@ export default function Home() {
     loadConversations();
   }, [loadConversations]);
 
-  
   useEffect(() => {
     const saved = localStorage.getItem("zuychin-think-mode");
     if (saved === "true") setThinkingEnabled(true);
   }, []);
 
-  
   useEffect(() => {
     const current = document.documentElement.getAttribute("data-theme");
     setTheme(current === "dark" ? "dark" : "light");
@@ -376,7 +373,6 @@ export default function Home() {
     });
   };
 
-  
   useEffect(() => {
     (async () => {
       try {
@@ -418,12 +414,11 @@ export default function Home() {
     localStorage.setItem("zuychin-embed-model", val);
   };
 
-  
   useEffect(() => {
     try {
       const saved = localStorage.getItem("zuychin-gen-params");
       if (saved) setGenParams({ temperature: null, topP: null, maxTokens: null, ...JSON.parse(saved) });
-    } catch { /* ignore */ }
+    } catch { }
   }, []);
 
   const updateGenParams = (next: GenParamsState) => {
@@ -431,7 +426,6 @@ export default function Home() {
     localStorage.setItem("zuychin-gen-params", JSON.stringify(next));
   };
 
-  
   const currentChatProvider = (() => {
     const sep = chatSel.indexOf("::");
     if (sep === -1) return undefined;
@@ -445,8 +439,6 @@ export default function Home() {
   })();
   const canThink = !!currentChatModel?.supportsThinking;
 
-  
-  
   useEffect(() => {
     if (!canThink && thinkingEnabled) setThinkingEnabled(false);
   }, [canThink, thinkingEnabled]);
@@ -475,7 +467,6 @@ export default function Home() {
     }
   };
 
-  
   const loadConversation = async (convId: string) => {
     try {
       const res = await fetch(`/api/conversations?id=${convId}`);
@@ -497,7 +488,6 @@ export default function Home() {
     }
   };
 
-  
   const handleNewChat = async () => {
     try {
       const res = await fetch("/api/conversations", { method: "POST" });
@@ -511,7 +501,6 @@ export default function Home() {
     }
   };
 
-  
   const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
     e.stopPropagation();
     try {
@@ -530,7 +519,6 @@ export default function Home() {
     e.preventDefault();
     if ((!input.trim() && !pendingFile) || isLoading) return;
 
-    
     let convId = activeConversationId;
     if (!convId) {
       try {
@@ -539,7 +527,6 @@ export default function Home() {
         convId = data.id;
         setActiveConversationId(data.id);
       } catch {
-        // proceed without conversation
       }
     }
 
@@ -557,7 +544,6 @@ export default function Home() {
     setPendingFile(null);
     setIsLoading(true);
 
-    
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
     }
@@ -596,8 +582,6 @@ export default function Home() {
         throw new Error(`Request failed (${res.status})`);
       }
 
-      
-      
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -615,7 +599,7 @@ export default function Home() {
         buffer = frames.pop() ?? "";
         for (const frame of frames) {
           const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-          if (!dataLine) continue; 
+          if (!dataLine) continue;
           const json = dataLine.slice(5).trim();
           if (!json) continue;
           let evt: AgentEvent;
@@ -670,7 +654,7 @@ export default function Home() {
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
-    
+
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
   };
@@ -695,7 +679,6 @@ export default function Home() {
     return `${diffDays}d ago`;
   };
 
-  
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -712,7 +695,7 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      const base64 = result.split(",")[1]; 
+      const base64 = result.split(",")[1];
       setPendingFile({
         name: file.name,
         mimeType: file.type,
@@ -722,7 +705,6 @@ export default function Home() {
     };
     reader.readAsDataURL(file);
 
-    
     e.target.value = "";
   };
 
@@ -746,8 +728,6 @@ export default function Home() {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
 
-  
-  
   const downloadArtifact = async (art: ArtifactDescriptor) => {
     try {
       const res = await fetch(`/api/artifacts/${art.id}`);
@@ -838,7 +818,6 @@ export default function Home() {
 
   return (
     <div style={styles.wrapper}>
-      {/* Sidebar overlay (mobile only) */}
       {!isDesktop && sidebarOpen && (
         <div
           style={styles.overlay}
@@ -847,7 +826,6 @@ export default function Home() {
         />
       )}
 
-      {/* Model info modal */}
       {modelInfoOpen && currentChatModel && (
         <ModelInfoModal
           model={currentChatModel}
@@ -856,7 +834,6 @@ export default function Home() {
         />
       )}
 
-      {/* Sidebar */}
       <aside
         style={{
           ...(isDesktop ? {
@@ -925,9 +902,7 @@ export default function Home() {
         </button>
       </aside>
 
-      {/* Main Chat */}
       <div style={isDesktop ? styles.containerDesktop : styles.container}>
-        {/* Header */}
         <header style={styles.header}>
           <div style={styles.headerContent}>
             <div style={styles.headerLeft}>
@@ -971,7 +946,6 @@ export default function Home() {
           )}
         </header>
 
-        {/* Messages */}
         <main style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}>
           {messages.length === 0 && (
             <div style={styles.emptyState} className="animate-fade-in-scale">
@@ -1118,7 +1092,6 @@ export default function Home() {
           <div ref={messagesEndRef} />
         </main>
 
-        {/* Input */}
         <footer style={isDesktop ? styles.footer : { ...styles.footer, padding: "10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px)" }}>
           {settingsOpen && (
             <div style={styles.settingsPanel} className="animate-fade-in-scale">
@@ -1257,7 +1230,6 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
   },
 
-  
   overlay: {
     position: "fixed",
     inset: 0,
@@ -1267,7 +1239,6 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 20,
   },
 
-  
   sidebar: {
     position: "fixed",
     top: 0,
@@ -1282,7 +1253,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "transform 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
 
-  
   sidebarDesktop: {
     order: 2,
     background: "var(--color-surface)",
@@ -1402,7 +1372,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "background 0.15s ease, color 0.15s ease",
   },
 
-  
   container: {
     display: "flex",
     flexDirection: "column",
@@ -1414,7 +1383,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
   },
 
-  
   containerDesktop: {
     display: "flex",
     flexDirection: "column",
@@ -1424,7 +1392,6 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
   },
 
-  
   header: {
     position: "sticky",
     top: 0,
@@ -1437,8 +1404,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    
-    
+
     padding: "12px 16px 12px 26px",
   },
   headerLeft: {
@@ -1454,8 +1420,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     minWidth: 0,
     flexShrink: 1,
-    
-    
+
     marginLeft: 16,
     paddingLeft: 26,
     borderLeft: "1px solid var(--color-border)",
@@ -1472,8 +1437,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     padding: "0 12px 10px",
   },
-  
-  
+
   logoMark: {
     width: 46,
     height: 36,
@@ -1488,7 +1452,7 @@ const styles: Record<string, React.CSSProperties> = {
     WebkitMaskSize: "contain",
     maskSize: "contain",
   },
-  
+
   logoMarkMobile: {
     width: 35,
     height: 27,
@@ -1541,7 +1505,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--color-text-muted)",
     letterSpacing: "0.2px",
   },
-  
+
   subtitleMobile: {
     fontSize: 17,
     fontWeight: 500,
@@ -1561,7 +1525,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "background 0.15s ease",
   },
 
-  
   messages: {
     flex: 1,
     overflowY: "auto",
@@ -1574,7 +1537,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "0 auto",
   },
 
-  
   emptyState: {
     flex: 1,
     display: "flex",
@@ -1604,7 +1566,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--color-text-muted)",
   },
 
-  
   messageBubbleWrapper: {
     display: "flex",
     alignItems: "flex-end",
@@ -1645,7 +1606,6 @@ const styles: Record<string, React.CSSProperties> = {
     wordBreak: "break-word",
   },
 
-  
   typingRow: {
     display: "flex",
     alignItems: "center",
@@ -1664,7 +1624,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginLeft: 6,
   },
 
-  
   footer: {
     position: "sticky",
     bottom: 0,
@@ -1676,7 +1635,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "0 auto",
   },
 
-  
   filePreview: {
     display: "flex",
     alignItems: "center",
@@ -1715,7 +1673,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
 
-  
   fileTag: {
     display: "inline-flex",
     alignItems: "center",
@@ -1778,7 +1735,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
 
-  
   exportRow: {
     display: "flex",
     gap: 6,
@@ -1802,7 +1758,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: "background 0.15s ease, color 0.15s ease",
   },
 
-  
   artifactRow: {
     display: "flex",
     flexWrap: "wrap",
@@ -1836,7 +1791,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--color-text-muted)",
   },
 
-  
   agentTracker: {
     display: "flex",
     flexDirection: "column",
@@ -1875,7 +1829,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontStyle: "italic",
   },
 
-  
   settingsPanel: {
     background: "var(--color-surface)",
     border: "1px solid var(--color-border)",
@@ -1903,7 +1856,6 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
   },
 };
-
 
 const dropdown: Record<string, React.CSSProperties> = {
   wrap: {
@@ -1997,7 +1949,6 @@ const dropdown: Record<string, React.CSSProperties> = {
   },
 };
 
-
 const paramRow: Record<string, React.CSSProperties> = {
   wrap: {
     display: "flex",
@@ -2048,7 +1999,6 @@ const paramRow: Record<string, React.CSSProperties> = {
     cursor: "pointer",
   },
 };
-
 
 const modal: Record<string, React.CSSProperties> = {
   overlay: {

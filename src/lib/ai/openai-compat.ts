@@ -152,9 +152,7 @@ export async function openaiCompatChat(params: {
                 let args: Record<string, unknown> = {};
                 try {
                     args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-                } catch {
-                    /* leave args empty on malformed JSON */
-                }
+                } catch { }
                 const result = await executeTool(call.function.name, args, embRef, ctx);
                 return { id: call.id, name: call.function.name, result };
             })

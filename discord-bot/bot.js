@@ -18,7 +18,6 @@ const client = new Client({
     ],
 });
 
-
 const processedIds = new Set();
 
 client.once(Events.ClientReady, (c) => {
@@ -29,7 +28,6 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
 
-    
     if (processedIds.has(message.id)) return;
     processedIds.add(message.id);
     if (processedIds.size > 1000) {
@@ -46,10 +44,6 @@ client.on(Events.MessageCreate, async (message) => {
     try {
         await message.channel.sendTyping();
 
-
-        
-        
-        
         let text = message.content.trim();
         let useSearch = false;
         let useThinking = false;
@@ -75,7 +69,6 @@ client.on(Events.MessageCreate, async (message) => {
             agent: useAgent,
         };
 
-        
         if (attachment && attachment.size <= 20 * 1024 * 1024) {
             try {
                 const fileRes = await fetch(attachment.url);
@@ -111,9 +104,7 @@ client.on(Events.MessageCreate, async (message) => {
         const data = await res.json();
         const reply = data.reply || "No response.";
 
-        
-        
-        const MAX_DISCORD_FILE = 8 * 1024 * 1024; 
+        const MAX_DISCORD_FILE = 8 * 1024 * 1024;
         const files = [];
         for (const a of data.artifacts || []) {
             if (!a.base64) continue;
@@ -125,7 +116,6 @@ client.on(Events.MessageCreate, async (message) => {
             files.push({ attachment: buffer, name: a.name });
         }
 
-        
         if (reply.length <= 2000) {
             await message.reply({ content: reply, files });
         } else {
@@ -140,7 +130,6 @@ client.on(Events.MessageCreate, async (message) => {
         await message.reply("Failed to reach the API.").catch(() => { });
     }
 });
-
 
 function splitMessage(text, maxLen) {
     const chunks = [];

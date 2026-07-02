@@ -3,12 +3,9 @@ import { supabase } from "@/lib/supabase";
 import { getDefaultProfile } from "@/lib/db";
 import { DEFAULT_CHAT } from "@/lib/ai/providers";
 
-
-
 export async function GET() {
     try {
         const profile = await getDefaultProfile();
-
 
         const { count: totalMessages } = await supabase
             .from("messages")
@@ -18,14 +15,12 @@ export async function GET() {
             .from("embeddings")
             .select("*", { count: "exact", head: true });
 
-
         const { data: lastMsg } = await supabase
             .from("messages")
             .select("created_at, channel")
             .order("created_at", { ascending: false })
             .limit(1)
             .single();
-
 
         const { data: channelStats } = await supabase
             .from("messages")

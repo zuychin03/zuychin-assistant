@@ -64,6 +64,21 @@ export const SKILLS: Skill[] = [
 5. Keep it concise and answer in chat by default. Only produce a create_document if the user asks for a file or the result is long and structured enough to warrant one.`,
     },
     {
+        id: "second-brain",
+        name: "Second Brain (Research & Study)",
+        whenToUse: "The user wants a topic researched/studied AND remembered long-term, asks to save an article or notes to the knowledge base, or asks what the vault already knows about something.",
+        instructions: `Grow and use the second-brain vault: durable research/study knowledge as interlinked wiki pages. (Personal facts, preferences and reminders belong in save_note, NOT here.)
+1. Always check coverage first: vault_search the topic. If pages exist, vault_read the relevant ones and build on them instead of duplicating; vault_read('index.md') shows the full catalogue.
+2. To answer a study/research question: read the relevant vault pages and answer from them with page citations (e.g. wiki/concepts/attention.md). Fill gaps with search_web.
+3. To add knowledge: gather the substance first (search_web / run_subagents for 2+ independent threads / the user's pasted material), then call vault_ingest with the FULL material in content — it synthesizes the page, auto-links related pages bidirectionally, updates the catalogue, and commits. Never pass a stub.
+4. Pick the category: 'sources' for one external article/paper/video, 'concepts' for a durable idea or method, 'entities' for a person/tool/project, 'synthesis' for a cross-source answer to a question. Pass the origin URL/reference as source.
+5. One page per distinct topic — a research session with three distinct findings is three vault_ingest calls, not one dump.
+6. If you answered a substantial question from multiple sources and the answer is durable, file it back as a 'synthesis' ingest so the vault learns from the question.
+7. Use vault_write only to correct or extend a page you have just vault_read, sending the complete updated markdown.
+8. If asked to check, clean up, or maintain the vault: vault_lint with mode 'suggest' to report, 'auto' to also fix low-risk link/catalogue issues. Relay its warnings — those need the user's judgement.
+9. In chat, summarize what was learned and mention the page path(s) saved.`,
+    },
+    {
         id: "plan-feature",
         name: "Plan a Feature",
         whenToUse: "The user wants an implementation plan, technical design, or phased roadmap for building a feature or project.",

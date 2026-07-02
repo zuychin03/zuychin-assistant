@@ -97,7 +97,6 @@ export default function AdminPage() {
                 </span>
             </header>
 
-            {/* Stats Grid */}
             <div style={styles.grid}>
                 <div style={styles.card}>
                     <div style={styles.cardLabel}>Model</div>
@@ -121,7 +120,6 @@ export default function AdminPage() {
                 </div>
             </div>
 
-            {/* Activity */}
             <div style={styles.section}>
                 <h2 style={styles.sectionTitle}>Recent Activity</h2>
                 <div style={styles.activityRow}>
@@ -136,7 +134,6 @@ export default function AdminPage() {
                 </div>
             </div>
 
-            {/* Channel Breakdown */}
             {stats?.stats.channelBreakdown &&
                 Object.keys(stats.stats.channelBreakdown).length > 0 && (
                     <div style={styles.section}>
@@ -154,7 +151,6 @@ export default function AdminPage() {
                     </div>
                 )}
 
-            {/* Personality Editor */}
             <div style={styles.section}>
                 <h2 style={styles.sectionTitle}>Bot Personality</h2>
                 <textarea
@@ -179,14 +175,12 @@ export default function AdminPage() {
                 </div>
             </div>
 
-            {/* Refresh */}
             <button style={styles.refreshButton} onClick={fetchStats}>
                 ↻ Refresh Stats
             </button>
         </div>
     );
 }
-
 
 const styles: Record<string, React.CSSProperties> = {
     container: {

@@ -10,14 +10,13 @@ import {
 import { ARTIFACT_TOOLS, executeArtifactTool } from "@/lib/ai/tools/artifacts";
 import type { ArtifactDescriptor } from "@/lib/types";
 
-
 export interface McpToolParam {
     type: "string" | "number" | "integer" | "boolean" | "array" | "object";
     description: string;
     required?: boolean;
     enum?: string[];
-    items?: McpToolParam;                       
-    properties?: Record<string, McpToolParam>;  
+    items?: McpToolParam;
+    properties?: Record<string, McpToolParam>;
 }
 
 export interface McpTool {
@@ -26,17 +25,11 @@ export interface McpTool {
     parameters: Record<string, McpToolParam>;
 }
 
-
-
-
 export interface ToolContext {
     conversationId?: string;
     userProfileId?: string;
     onArtifact?: (artifact: ArtifactDescriptor) => void;
 }
-
-
-
 
 export const WEB_SEARCH_TOOL: McpTool = {
     name: "search_web",
@@ -239,6 +232,88 @@ export const MCP_TOOLS: McpTool[] = [
         },
     },
     {
+        name: "vault_search",
+        description: "Search the second-brain vault (the long-term research/study knowledge base of interlinked wiki pages). Returns matching pages with their path and a one-line summary. Use this for study or research questions about topics the user has ingested; use search_knowledge for personal/temporal memory instead.",
+        parameters: {
+            query: {
+                type: "string",
+                description: "What to look for in the vault.",
+                required: true,
+            },
+        },
+    },
+    {
+        name: "vault_read",
+        description: "Read a page from the second-brain vault by its repo path (e.g. 'wiki/concepts/transformers.md' or 'index.md'). Use after vault_search to open the pages worth citing.",
+        parameters: {
+            path: {
+                type: "string",
+                description: "Path of the page inside the vault repo, including the .md extension.",
+                required: true,
+            },
+        },
+    },
+    {
+        name: "vault_ingest",
+        description: "Save durable research/study knowledge into the second-brain vault. Takes raw material (an article, findings from web research, study notes) and runs the full ingest pipeline: writes an interlinked wiki page, auto-links it to related pages, updates the catalogue, verifies, and commits. Use for knowledge worth keeping long-term; use save_note for personal/temporal memory instead.",
+        parameters: {
+            title: {
+                type: "string",
+                description: "Human-readable page title, e.g. 'Transformer attention mechanisms'.",
+                required: true,
+            },
+            content: {
+                type: "string",
+                description: "The material to distil into the page: the source text, or your synthesized research findings. Include the substance, not a placeholder.",
+                required: true,
+            },
+            category: {
+                type: "string",
+                description: "'sources' for external material (default), 'concepts' for durable ideas/methods, 'entities' for people/tools/projects, 'synthesis' for cross-source answers.",
+                required: false,
+                enum: ["sources", "concepts", "entities", "synthesis"],
+            },
+            source: {
+                type: "string",
+                description: "Optional origin to cite: a URL, paper reference, or book/course name.",
+                required: false,
+            },
+        },
+    },
+    {
+        name: "vault_write",
+        description: "Directly create or overwrite ONE vault wiki page with markdown you have already written — for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it handles synthesis and auto-linking). The catalogue and log update automatically.",
+        parameters: {
+            path: {
+                type: "string",
+                description: "Page path like 'wiki/concepts/attention.md' (must be under wiki/<category>/ with a kebab-case filename).",
+                required: true,
+            },
+            markdown: {
+                type: "string",
+                description: "The COMPLETE new page content, including the YAML frontmatter (title, category, created, updated).",
+                required: true,
+            },
+            summary: {
+                type: "string",
+                description: "One-line summary (< 140 chars) for the index catalogue.",
+                required: false,
+            },
+        },
+    },
+    {
+        name: "vault_lint",
+        description: "Health-check the second-brain vault: orphan pages, dead links, missing back-references, catalogue/search-index drift, contradictions. Mode 'suggest' (default) only reports findings; 'auto' also fixes the low-risk issues (link and catalogue hygiene), verifies, and commits. Use when the user asks to check, clean up, or maintain the vault.",
+        parameters: {
+            mode: {
+                type: "string",
+                description: "'suggest' to report findings only (default); 'auto' to apply low-risk fixes and commit.",
+                required: false,
+                enum: ["suggest", "auto"],
+            },
+        },
+    },
+    {
         name: "manage_todo_list",
         description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task).",
         parameters: {
@@ -288,6 +363,10 @@ import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
+import { getFile, getVaultConfig } from "@/lib/vault/github";
+import { searchVaultPages } from "@/lib/vault/store";
+import { ingestToVault, writeVaultPage, type VaultCategory } from "@/lib/vault/ingest";
+import { lintVault, type LintMode } from "@/lib/vault/lint";
 
 export async function executeTool(
     toolName: string,
@@ -295,8 +374,7 @@ export async function executeTool(
     embRef: ResolvedEmbedding = getEmbeddingRef(),
     ctx?: ToolContext
 ): Promise<string> {
-    
-    
+
     const artifactResult = await executeArtifactTool(toolName, args, ctx);
     if (artifactResult !== null) return artifactResult;
 
@@ -340,6 +418,21 @@ export async function executeTool(
 
         case "send_email":
             return executeSendEmail(args);
+
+        case "vault_search":
+            return executeVaultSearch(args.query as string, embRef);
+
+        case "vault_read":
+            return executeVaultRead(args.path as string);
+
+        case "vault_ingest":
+            return executeVaultIngest(args, embRef);
+
+        case "vault_write":
+            return executeVaultWrite(args, embRef);
+
+        case "vault_lint":
+            return executeVaultLint(args.mode as LintMode | undefined, embRef);
 
         case "manage_todo_list":
             return executeManageTodoList(args);
@@ -434,7 +527,6 @@ async function executeManageCalendarEvent(
             const success = await deleteCalendarEvent(eventId);
             return success ? "Event deleted successfully." : "Failed to delete event.";
         }
-
 
         const summary = args.summary as string;
         const start = args.start as string;
@@ -581,6 +673,104 @@ async function executeSendEmail(
     }
 }
 
+async function executeVaultSearch(query: string, embRef: ResolvedEmbedding): Promise<string> {
+    if (!query) return "Error: query is required.";
+    if (!getVaultConfig()) return "The second-brain vault is not configured.";
+
+    try {
+        const hits = await searchVaultPages({ query, embRef });
+        if (hits.length === 0) {
+            return "No vault pages matched. The topic may not have been ingested yet — check index.md via vault_read('index.md') if unsure.";
+        }
+        return hits
+            .map((h) => `- ${h.path} (${h.category}, ${h.similarity.toFixed(2)}): ${h.title} — ${h.summary}`)
+            .join("\n");
+    } catch (error) {
+        console.error("[MCP] Vault search failed:", error);
+        return "Vault search is temporarily unavailable.";
+    }
+}
+
+async function executeVaultRead(path: string): Promise<string> {
+    if (!path) return "Error: path is required.";
+    const cfg = getVaultConfig();
+    if (!cfg) return "The second-brain vault is not configured.";
+
+    try {
+        const file = await getFile(cfg, path);
+        if (!file) return `No page found at "${path}". Use vault_search or vault_read('index.md') to find valid paths.`;
+        return file.text;
+    } catch (error) {
+        console.error("[MCP] Vault read failed:", error);
+        return "Vault read is temporarily unavailable.";
+    }
+}
+
+async function executeVaultIngest(
+    args: Record<string, unknown>,
+    embRef: ResolvedEmbedding
+): Promise<string> {
+    const title = (args.title as string | undefined)?.trim();
+    const content = (args.content as string | undefined)?.trim();
+    if (!title || !content) return "Error: title and content are both required.";
+    if (!getVaultConfig()) return "The second-brain vault is not configured.";
+
+    try {
+        const result = await ingestToVault({
+            title,
+            content,
+            category: args.category as VaultCategory | undefined,
+            source: args.source as string | undefined,
+            embRef,
+        });
+        const links = result.links.length
+            ? `Linked (bidirectionally): ${result.links.map((l) => `${l.path} (${l.label})`).join(", ")}.`
+            : "No related pages yet — this is a new area of the vault.";
+        return `${result.updatedExisting ? "Updated" : "Created"} ${result.pagePath} (commit ${result.commit.slice(0, 7)}). Summary: ${result.summary} ${links}`;
+    } catch (error) {
+        console.error("[MCP] Vault ingest failed:", error);
+        const message = error instanceof Error ? error.message : "";
+        if (message.startsWith("Verification failed")) return message;
+        return "Vault ingest failed — nothing was committed. Try again, or use vault_write if you already have the exact page content.";
+    }
+}
+
+async function executeVaultWrite(
+    args: Record<string, unknown>,
+    embRef: ResolvedEmbedding
+): Promise<string> {
+    const path = (args.path as string | undefined)?.trim();
+    const markdown = args.markdown as string | undefined;
+    if (!path || !markdown?.trim()) return "Error: path and markdown are both required.";
+    if (!getVaultConfig()) return "The second-brain vault is not configured.";
+
+    try {
+        const result = await writeVaultPage({
+            path,
+            markdown,
+            summary: args.summary as string | undefined,
+            embRef,
+        });
+        return `${result.created ? "Created" : "Updated"} ${result.pagePath} (commit ${result.commit.slice(0, 7)}). Index and log updated.`;
+    } catch (error) {
+        console.error("[MCP] Vault write failed:", error);
+        const message = error instanceof Error ? error.message : "";
+        if (message.startsWith("vault_write only")) return message;
+        return "Vault write failed — nothing was committed.";
+    }
+}
+
+async function executeVaultLint(mode: LintMode | undefined, embRef: ResolvedEmbedding): Promise<string> {
+    if (!getVaultConfig()) return "The second-brain vault is not configured.";
+    try {
+        const result = await lintVault({ mode: mode === "auto" ? "auto" : "suggest", embRef });
+        return result.report;
+    } catch (error) {
+        console.error("[MCP] Vault lint failed:", error);
+        return "Vault lint failed — nothing was changed.";
+    }
+}
+
 async function executeManageTodoList(
     args: Record<string, unknown>
 ): Promise<string> {
@@ -642,8 +832,6 @@ async function executeManageTodoList(
     }
 }
 
-
-
 function toGeminiSchema(param: McpToolParam): Record<string, unknown> {
     const typeMap: Record<string, Type> = {
         string: Type.STRING,
@@ -668,8 +856,6 @@ function toGeminiSchema(param: McpToolParam): Record<string, unknown> {
     return schema;
 }
 
-
-
 export function geminiDeclarationsFor(tools: McpTool[]) {
     return tools.map((tool) => ({
         name: tool.name,
@@ -689,12 +875,9 @@ export function geminiDeclarationsFor(tools: McpTool[]) {
 export type GeminiToolDeclarations = ReturnType<typeof geminiDeclarationsFor>;
 
 export function buildGeminiFunctionDeclarations() {
-    
-    
+
     return geminiDeclarationsFor([...MCP_TOOLS, ...ARTIFACT_TOOLS]);
 }
-
-
 
 export interface OpenAITool {
     type: "function";
@@ -708,7 +891,6 @@ export interface OpenAITool {
         };
     };
 }
-
 
 function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
     const schema: Record<string, unknown> = {
@@ -727,8 +909,7 @@ function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
 }
 
 export function buildOpenAIToolDeclarations(): OpenAITool[] {
-    
-    
+
     return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
         type: "function" as const,
         function: {
@@ -746,7 +927,6 @@ export function buildOpenAIToolDeclarations(): OpenAITool[] {
         },
     }));
 }
-
 
 export function buildToolSystemPrompt(): string {
     const toolList = MCP_TOOLS.map(

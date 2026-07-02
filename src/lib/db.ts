@@ -1,7 +1,6 @@
 import { supabaseAdmin as supabase } from "./supabase";
 import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
 
-
 export async function saveMessage(params: {
     role: "user" | "assistant" | "system";
     content: string;
@@ -285,7 +284,6 @@ export async function updateConversationTitle(
         console.error("[DB] Failed to update conversation title:", error.message);
     }
 }
-
 
 export interface Todo {
     id: string;

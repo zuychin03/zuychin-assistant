@@ -157,7 +157,6 @@ export async function POST(req: NextRequest) {
         await processUpdate(update);
     } catch (err) {
         console.error("[Telegram Webhook] processUpdate failed:", err);
-        // Return 200 anyway so Telegram doesn't keep retrying
     }
 
     return NextResponse.json({ ok: true });

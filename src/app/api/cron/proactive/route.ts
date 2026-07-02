@@ -5,12 +5,9 @@ import { sendDiscordMessage } from "@/lib/messaging/discord-service";
 import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
 
-
-
 const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
 
 export async function POST(req: NextRequest) {
     try {
@@ -23,12 +20,10 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { type = "daily_check" } = body;
 
-
         const profile = await getDefaultProfile();
         if (!profile) {
             return NextResponse.json({ message: "No user profile found." });
         }
-
 
         const recentMessages = await getRecentMessages(5);
         const hasRecentActivity = recentMessages.some((m) => {
@@ -36,7 +31,6 @@ export async function POST(req: NextRequest) {
             const hourAgo = Date.now() - 60 * 60 * 1000;
             return msgTime > hourAgo;
         });
-
 
         let proactivePrompt = "";
 
@@ -77,14 +71,12 @@ Be friendly and concise.`;
                 return NextResponse.json({ error: "Unknown proactive type." }, { status: 400 });
         }
 
-
         const result = await ai.models.generateContent({
             model: MODEL,
             contents: proactivePrompt,
         });
         const proactiveMessage = result.text ?? "";
 
-        
         let delivered = false;
         const sends: Promise<boolean>[] = [];
 

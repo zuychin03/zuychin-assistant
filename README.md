@@ -15,8 +15,14 @@ grounding.
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 12 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
-  current time and recent conversations
+- MCP tools: 17 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+  the second-brain vault, current time and recent conversations
+- Agent mode: complex requests are auto-routed (or forced with `/agent`) to a multi-step
+  agent loop with live step streaming, parallel sub-agents, reusable skills and
+  downloadable artifacts (documents, code files, zip bundles)
+- Second brain: a Karpathy-style LLM-wiki in a private GitHub repo — the agent ingests
+  research into interlinked Markdown pages (auto-linked via pgvector + LLM curation,
+  verified before every commit) and a lint curator keeps the graph healthy
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
 - Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
@@ -104,14 +110,18 @@ Optional auth, integrations, channels and cron:
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord channel |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
+| `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
+| `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
+| `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
 
 ### 3. Database
 
 Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
-extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`),
-the row-level-security policies, the `match_embeddings` search function and a default profile.
-The script is safe to run more than once.
+extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
+`artifacts`, `vault_pages`), the row-level-security policies, the `match_embeddings` and
+`match_vault_pages` search functions and a default profile. The script is safe to run more
+than once.
 
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
@@ -153,6 +163,8 @@ npm run dev
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
 | POST | `/api/cron/reminders` | Imminent event reminders |
 | POST | `/api/cron/proactive` | Proactive check-ins |
+| POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
+| GET | `/api/vault/health` | Vault repo connectivity / permissions check |
 | GET | `/api/admin/status` | Bot stats |
 | PUT | `/api/admin/personality` | Update system prompt |
 
@@ -289,8 +301,34 @@ channels (Discord + Telegram).
 | `/api/cron/daily-briefing` | Daily 7:00 AM | `{}` |
 | `/api/cron/reminders` | Every 15 min | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
+| `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
+
+## Second Brain (optional)
+
+A long-term research/study knowledge base following Andrej Karpathy's LLM-wiki pattern:
+the agent writes interlinked Markdown wiki pages into a **private GitHub repo** and keeps
+them cross-linked, catalogued and healthy. It complements (not replaces) pgvector RAG —
+`search_knowledge`/`save_note` stay for personal/temporal memory; the vault holds durable
+knowledge worth keeping.
+
+Setup:
+
+1. Create a private GitHub repo and seed it with the contents of
+   [`vault-template/`](vault-template/) (`agents.md` schema, empty `index.md`/`log.md`,
+   `raw/` + `wiki/` folders).
+2. Create a fine-grained PAT scoped to that one repo with **Contents read/write**, and set
+   `GITHUB_VAULT_REPO`, `GITHUB_VAULT_TOKEN`, `GITHUB_VAULT_BRANCH` in `.env.local` / Vercel.
+3. Check `GET /api/vault/health` returns `"ok": true`.
+
+The assistant then gets five tools: `vault_search` (pgvector over page summaries),
+`vault_read`, `vault_ingest` (full pipeline: raw capture → authored wiki page → auto-linked
+bidirectional `[[wikilinks]]` → catalogue/log update → independent verification → one atomic
+`learn:` commit), `vault_write` (direct page edits) and `vault_lint` (suggest/auto curator —
+also runs on the weekly cron above with `curator:` commits). Every change is a Git commit,
+so any bad write is one revert away. Point Obsidian at a clone of the repo for a free graph
+view.
 
 ## Deployment
 
@@ -315,7 +353,9 @@ src/
 │       ├── conversations/route.ts      # Conversation CRUD
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
-│       ├── cron/                       # Briefing / reminders / proactive
+│       ├── cron/                       # Briefing / reminders / proactive / vault lint
+│       ├── vault/health/route.ts       # Second-brain connectivity check
+│       ├── artifacts/[id]/route.ts     # Download generated files
 │       └── admin/                      # Status + personality
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
@@ -330,7 +370,11 @@ src/
 │   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
-│   │   └── mcp-service.ts              # MCP tool definitions + executors
+│   │   ├── mcp-service.ts              # MCP tool definitions + executors
+│   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
+│   │   └── skills/                     # Reusable skill registry (reports, code, second brain…)
+│   ├── vault/                          # Second brain: GitHub client, ingest, lint, page index
+│   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram services
 ├── middleware.ts                       # Cookie auth middleware

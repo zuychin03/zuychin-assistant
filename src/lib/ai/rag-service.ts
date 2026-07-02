@@ -23,7 +23,7 @@ const RAG_CONFIG = {
     recentMessageCount: 5,
     summarizationThreshold: 8,
     deduplicationThreshold: 0.95,
-    maxToolRounds: 5,
+    maxToolRounds: 8,
 };
 
 function addCitations(response: GenerateContentResponse): string {
@@ -269,6 +269,7 @@ export interface RagContext {
     contextBlock: string;
     allowThinking: boolean;
     allowSearch: boolean;
+    lastAssistantMessage?: string;
 }
 
 export async function buildRagContext(params: {
@@ -352,7 +353,9 @@ export async function buildRagContext(params: {
     if (relevantContext) contextBlock += `## Relevant Memories\n${relevantContext}\n\n`;
     if (historySection) contextBlock += `${historySection}\n\n`;
 
-    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch };
+    const lastAssistantMessage = [...recentMessages].reverse().find((m) => m.role === "assistant")?.content;
+
+    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage };
 }
 
 export async function ragChat(params: {
@@ -410,7 +413,7 @@ export async function ragChat(params: {
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
     let mode: "chat" | "agent" = "chat";
     if (agent) mode = "agent";
-    else if (channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message)).mode;
+    else if (channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message, rag.lastAssistantMessage)).mode;
     if (mode === "agent" && hasVisualAttachment) mode = "chat";
 
     let reply: string;
@@ -476,7 +479,7 @@ export async function ragChat(params: {
                 const title = await generateConversationTitle(message, reply);
                 await updateConversationTitle(conversationId, title);
             }
-        } catch { /* non-critical */ }
+        } catch { }
     }
 
     return { reply, messageId: userMsgId, artifacts };
@@ -560,6 +563,26 @@ async function generateGeminiReply(opts: {
         });
 
         response = await ai.models.generateContent({ model, contents, config: mcpConfig });
+    }
+
+    // Same guard as the agent loop (gemini-loop.ts): if the tool budget runs
+    // out with calls still pending, response.text is empty or mid-work
+    // narration. Answer the calls with a stop notice and force one final
+    // tool-free turn.
+    if (response.functionCalls && response.functionCalls.length > 0) {
+        contents.push(response.candidates![0].content);
+        contents.push({
+            role: "user",
+            parts: response.functionCalls.map((fc) => ({
+                functionResponse: {
+                    name: fc.name!,
+                    response: { result: "Tool budget for this reply is exhausted. Stop working. Tell the user exactly what you completed and what remains, and suggest they say 'continue' to finish the rest." },
+                    id: (fc as any).id, // eslint-disable-line @typescript-eslint/no-explicit-any
+                },
+            })),
+        });
+        const wrapConfig = { ...thinkingOpts, ...genConfig };
+        response = await ai.models.generateContent({ model, contents, config: wrapConfig });
     }
 
     if (!usedTool) {

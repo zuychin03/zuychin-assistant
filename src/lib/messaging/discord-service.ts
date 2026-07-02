@@ -1,8 +1,5 @@
-
-
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_API = "https://discord.com/api/v10";
-
 
 export async function sendDiscordMessage(
     channelId: string,
@@ -39,7 +36,6 @@ export async function sendDiscordMessage(
         return false;
     }
 }
-
 
 function splitMessage(text: string, maxLength: number): string[] {
     const chunks: string[] = [];
