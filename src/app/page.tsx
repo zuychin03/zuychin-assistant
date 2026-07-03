@@ -941,12 +941,12 @@ export default function Home() {
       <>
         <Link
           href="/graph"
-          style={compact ? { ...styles.graphBtn, flex: "none" } : styles.graphBtn}
+          style={{ ...styles.graphBtn, flexShrink: 0 }}
           aria-label="Knowledge graph"
           title="Knowledge graph"
         >
           <Waypoints size={14} color="var(--color-text-muted)" />
-          {!compact && <span>Knowledge Graph</span>}
+          <span>Knowledge Graph</span>
         </Link>
         <SelectMenu
           compact={compact}
@@ -1526,7 +1526,7 @@ export default function Home() {
               value={input}
               onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
-              placeholder="Message Zuychin... (type / for commands)"
+              placeholder="Message Zuychin..."
               rows={1}
               style={styles.textarea}
             />
