@@ -335,6 +335,7 @@ export default function GraphPage() {
         .backgroundColor(theme.bg)
         .showNavInfo(false)
         .nodeVal((n) => 1 + n.links)
+        .nodeResolution(32)
         .nodeOpacity(0.85)
         .nodeLabel((n) =>
           `<div style="padding:6px 9px;border-radius:8px;background:${theme.light ? "rgba(255,255,255,.95)" : "rgba(20,20,24,.95)"};color:${theme.text};font-size:12px;max-width:260px;box-shadow:0 2px 10px rgba(0,0,0,.25)">` +
@@ -579,6 +580,8 @@ export default function GraphPage() {
 
   return (
     <div style={styles.root}>
+      <div style={styles.ambientOne} />
+      <div style={styles.ambientTwo} />
       <div ref={containerRef} style={styles.canvas} />
 
       {/* Top bar */}
@@ -586,12 +589,11 @@ export default function GraphPage() {
         <Link href="/" style={styles.backBtn} aria-label="Back to chat">
           <ArrowLeft size={17} />
         </Link>
-        <span style={styles.pageTitle}>Knowledge Graph</span>
-        {data && (
-          <span style={styles.counts}>
-            {visible.nodes.length}/{data.nodes.length} pages · {visible.links.length} links
-          </span>
-        )}
+        <div style={styles.titleStack}>
+          <span style={styles.eyebrow}>Second Brain</span>
+          <span style={styles.pageTitle}>Knowledge Graph</span>
+        </div>
+        {data && <span style={styles.counts}>{visible.nodes.length}/{data.nodes.length} pages</span>}
         <button
           onClick={() => fetchGraph(false)}
           style={styles.iconBtn}
@@ -613,7 +615,7 @@ export default function GraphPage() {
 
       {/* Local mode banner */}
       {localRoot && (
-        <div style={styles.localBanner}>
+        <div style={styles.localBanner} className="animate-fade-in-scale">
           <Crosshair size={13} />
           <span>Local: <b>{nodeById(localRoot)?.title ?? localRoot}</b></span>
           <button
@@ -629,7 +631,15 @@ export default function GraphPage() {
 
       {/* Controls panel */}
       {controlsOpen && (
-        <div style={styles.controls}>
+        <div style={styles.controls} className="animate-fade-in-scale">
+          <div style={styles.cardHeader}>
+            <div>
+              <div style={styles.cardTitle}>Explore</div>
+              <div style={styles.cardSubtle}>Filter, search and tune the layout</div>
+            </div>
+            {data && <span style={styles.suggestionPill}>{data.suggestions.length} suggestions</span>}
+          </div>
+
           <div style={styles.searchRow}>
             <Search size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
             <input
@@ -644,6 +654,20 @@ export default function GraphPage() {
               </button>
             )}
           </div>
+
+          {data && (
+            <div style={styles.statsGrid}>
+              <div style={styles.statCard}>
+                <span style={styles.statValue}>{visible.nodes.length}</span>
+                <span style={styles.statLabel}>Visible pages</span>
+              </div>
+              <div style={styles.statCard}>
+                <span style={styles.statValue}>{visible.links.length}</span>
+                <span style={styles.statLabel}>Visible links</span>
+              </div>
+            </div>
+          )}
+
           {searchMatches.length > 0 && (
             <div style={styles.searchResults}>
               {searchMatches.map((n) => (
@@ -697,7 +721,7 @@ export default function GraphPage() {
 
       {/* Node panel */}
       {selected?.type === "node" && (
-        <div style={styles.panel}>
+        <div style={styles.panel} className="animate-fade-in-scale">
           <div style={styles.panelHeader}>
             <span style={{ ...styles.categoryChip, background: CATEGORY_COLORS[selectedNode?.category ?? ""] ?? "#888" }}>
               {selectedNode?.category}
@@ -811,7 +835,7 @@ export default function GraphPage() {
 
       {/* Link panel */}
       {selected?.type === "link" && (
-        <div style={{ ...styles.panel, maxHeight: "none", height: "auto" }}>
+        <div style={{ ...styles.panel, maxHeight: "none", height: "auto" }} className="animate-fade-in-scale">
           <div style={styles.panelHeader}>
             <span style={{ ...styles.categoryChip, background: selected.kind === "suggestion" ? "#7aa2ff" : "var(--color-secondary)" }}>
               {selected.kind === "suggestion" ? "suggested link" : "connection"}
@@ -871,19 +895,25 @@ export default function GraphPage() {
       {/* Loading / error / empty */}
       {loading && (
         <div style={styles.center}>
-          <Loader2 size={22} className="animate-spin" />
-          <span style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>Reading the vault...</span>
+          <div style={styles.centerCard}>
+            <Loader2 size={22} className="animate-spin" />
+            <span style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>Reading the vault...</span>
+          </div>
         </div>
       )}
       {!loading && error && (
         <div style={styles.center}>
-          <p style={{ fontSize: 14, marginBottom: 12 }}>{error}</p>
-          <button style={styles.actionBtn} onClick={() => fetchGraph(true)}>Retry</button>
+          <div style={styles.centerCard}>
+            <p style={{ fontSize: 14, marginBottom: 12 }}>{error}</p>
+            <button style={styles.actionBtn} onClick={() => fetchGraph(true)}>Retry</button>
+          </div>
         </div>
       )}
       {!loading && !error && data && data.nodes.length === 0 && (
         <div style={styles.center}>
-          <p style={{ fontSize: 14, opacity: 0.75 }}>The vault has no wiki pages yet. Ask the agent to save something first.</p>
+          <div style={styles.centerCard}>
+            <p style={{ fontSize: 14, opacity: 0.75 }}>The vault has no wiki pages yet. Ask the agent to save something first.</p>
+          </div>
         </div>
       )}
 
@@ -914,60 +944,119 @@ const styles: Record<string, React.CSSProperties> = {
   root: {
     position: "fixed",
     inset: 0,
-    background: "var(--color-background)",
+    background: "radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 28%), radial-gradient(circle at 90% 80%, color-mix(in srgb, #7aa2ff 14%, transparent), transparent 30%), var(--color-background)",
     color: "var(--color-text-primary)",
     overflow: "hidden",
     fontFamily: "var(--font-family)",
   },
-  canvas: { position: "absolute", inset: 0 },
+  ambientOne: {
+    position: "absolute",
+    width: 420,
+    height: 420,
+    left: -120,
+    top: -140,
+    borderRadius: "50%",
+    background: "color-mix(in srgb, var(--color-secondary) 20%, transparent)",
+    filter: "blur(70px)",
+    opacity: 0.45,
+    pointerEvents: "none",
+  },
+  ambientTwo: {
+    position: "absolute",
+    width: 520,
+    height: 520,
+    right: -180,
+    bottom: -180,
+    borderRadius: "50%",
+    background: "color-mix(in srgb, #7aa2ff 18%, transparent)",
+    filter: "blur(90px)",
+    opacity: 0.4,
+    pointerEvents: "none",
+  },
+  canvas: { position: "absolute", inset: 0, zIndex: 1 },
   topBar: {
     position: "absolute",
-    top: 12,
-    left: 12,
+    top: 16,
+    left: 16,
     display: "flex",
     alignItems: "center",
-    gap: 10,
-    padding: "8px 12px",
-    borderRadius: "var(--radius-md)",
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border)",
-    boxShadow: "var(--shadow-md)",
+    gap: 12,
+    padding: "10px 12px",
+    borderRadius: "20px",
+    background: "linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 90%, transparent), color-mix(in srgb, var(--color-surface) 72%, transparent))",
+    backdropFilter: "blur(22px) saturate(1.2)",
+    WebkitBackdropFilter: "blur(22px) saturate(1.2)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+    boxShadow: "0 16px 50px rgba(0, 0, 0, 0.22)",
     zIndex: 10,
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   backBtn: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "center",
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    background: "color-mix(in srgb, var(--color-background) 72%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
     color: "var(--color-text-primary)",
     textDecoration: "none",
   },
-  pageTitle: { fontSize: 14, fontWeight: 600 },
-  counts: { fontSize: 12, color: "var(--color-text-muted)" },
+  titleStack: { display: "flex", flexDirection: "column", minWidth: 118 },
+  eyebrow: {
+    fontSize: 10,
+    lineHeight: 1,
+    fontWeight: 700,
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+    color: "var(--color-text-muted)",
+  },
+  pageTitle: { fontSize: 15, fontWeight: 750, letterSpacing: "-0.03em", lineHeight: 1.25 },
+  counts: {
+    padding: "6px 9px",
+    borderRadius: 999,
+    fontSize: 12,
+    color: "var(--color-text-muted)",
+    background: "color-mix(in srgb, var(--color-background) 70%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
+  },
   iconBtn: {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    border: "none",
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "transparent",
     background: "transparent",
     color: "var(--color-text-primary)",
     cursor: "pointer",
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
-  iconBtnActive: { background: "var(--color-bubble-ai)" },
+  iconBtnActive: {
+    background: "color-mix(in srgb, var(--color-secondary) 16%, var(--color-background))",
+    borderColor: "color-mix(in srgb, var(--color-secondary) 40%, var(--color-border))",
+  },
   localBanner: {
     position: "absolute",
-    top: 64,
-    left: 12,
+    top: 78,
+    left: 16,
     display: "flex",
     alignItems: "center",
     gap: 8,
     padding: "6px 10px",
     fontSize: 12,
-    borderRadius: "var(--radius-sm)",
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border)",
+    borderRadius: "14px",
+    background: "color-mix(in srgb, var(--color-surface) 90%, transparent)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+    boxShadow: "0 12px 34px rgba(0, 0, 0, 0.18)",
     zIndex: 10,
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   depthBtn: {
     padding: "3px 8px",
@@ -980,29 +1069,50 @@ const styles: Record<string, React.CSSProperties> = {
   },
   controls: {
     position: "absolute",
-    top: 64,
-    right: 12,
-    width: 240,
-    maxHeight: "calc(100vh - 90px)",
-    overflowY: "auto",
-    padding: 14,
-    borderRadius: "var(--radius-md)",
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border)",
-    boxShadow: "var(--shadow-md)",
+    bottom: 16,
+    right: 16,
+    width: 304,
+    padding: 16,
+    borderRadius: "22px",
+    background: "linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 93%, transparent), color-mix(in srgb, var(--color-surface) 78%, transparent))",
+    backdropFilter: "blur(24px) saturate(1.18)",
+    WebkitBackdropFilter: "blur(24px) saturate(1.18)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 68%, transparent)",
+    boxShadow: "0 22px 70px rgba(0, 0, 0, 0.26)",
     zIndex: 10,
     display: "flex",
     flexDirection: "column",
-    gap: 6,
+    gap: 8,
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
+  },
+  cardHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 4,
+  },
+  cardTitle: { fontSize: 14, fontWeight: 750, letterSpacing: "-0.02em" },
+  cardSubtle: { marginTop: 2, fontSize: 11.5, color: "var(--color-text-muted)" },
+  suggestionPill: {
+    flexShrink: 0,
+    padding: "4px 8px",
+    borderRadius: 999,
+    fontSize: 10.5,
+    fontWeight: 650,
+    color: "#7aa2ff",
+    background: "color-mix(in srgb, #7aa2ff 14%, transparent)",
+    border: "1px solid color-mix(in srgb, #7aa2ff 24%, transparent)",
   },
   searchRow: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    padding: "6px 8px",
-    borderRadius: 8,
-    border: "1px solid var(--color-border)",
-    background: "var(--color-background)",
+    padding: "9px 10px",
+    borderRadius: 14,
+    border: "1px solid color-mix(in srgb, var(--color-border) 85%, transparent)",
+    background: "color-mix(in srgb, var(--color-background) 78%, transparent)",
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   searchInput: {
     flex: 1,
@@ -1013,22 +1123,38 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--color-text-primary)",
     fontSize: 13,
   },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
+  },
+  statCard: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    padding: "10px 11px",
+    borderRadius: 15,
+    background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
+  },
+  statValue: { fontSize: 18, fontWeight: 800, letterSpacing: "-0.04em" },
+  statLabel: { fontSize: 10.5, color: "var(--color-text-muted)" },
   searchResults: {
     display: "flex",
     flexDirection: "column",
-    borderRadius: 8,
-    border: "1px solid var(--color-border)",
+    borderRadius: 13,
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
     overflow: "hidden",
   },
   searchItem: {
     display: "flex",
     alignItems: "center",
     gap: 7,
-    padding: "7px 9px",
+    padding: "8px 10px",
     fontSize: 12.5,
     border: "none",
-    borderBottom: "1px solid var(--color-border)",
-    background: "var(--color-background)",
+    borderBottom: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+    background: "color-mix(in srgb, var(--color-background) 78%, transparent)",
     color: "var(--color-text-primary)",
     cursor: "pointer",
     textAlign: "left",
@@ -1051,70 +1177,101 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 7,
     fontSize: 12.5,
     cursor: "pointer",
-    padding: "2px 0",
+    padding: "6px 8px",
+    borderRadius: 11,
+    background: "color-mix(in srgb, var(--color-background) 38%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
   },
   checkLabel: { textTransform: "capitalize" as const },
-  sliderRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 },
+  sliderRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12,
+    padding: "4px 0",
+  },
   sliderLabel: { width: 78, flexShrink: 0, color: "var(--color-text-muted)" },
   sliderValue: { width: 30, textAlign: "right", fontSize: 11, color: "var(--color-text-muted)" },
-  hint: { marginTop: 10, fontSize: 11, lineHeight: 1.45, color: "var(--color-text-muted)" },
+  hint: {
+    marginTop: 10,
+    padding: "10px 11px",
+    fontSize: 11,
+    lineHeight: 1.45,
+    color: "var(--color-text-muted)",
+    borderRadius: 14,
+    background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+  },
   panel: {
     position: "absolute",
-    bottom: 12,
-    left: 12,
-    width: 400,
-    maxWidth: "calc(100vw - 24px)",
-    maxHeight: "min(560px, calc(100vh - 90px))",
+    bottom: 16,
+    left: 16,
+    width: 430,
+    maxWidth: "calc(100vw - 32px)",
+    maxHeight: "min(620px, calc(100vh - 110px))",
     display: "flex",
     flexDirection: "column",
-    padding: 16,
-    borderRadius: "var(--radius-md)",
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border)",
-    boxShadow: "var(--shadow-lg)",
+    padding: 18,
+    borderRadius: "24px",
+    background: "linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 94%, transparent), color-mix(in srgb, var(--color-surface) 80%, transparent))",
+    backdropFilter: "blur(26px) saturate(1.2)",
+    WebkitBackdropFilter: "blur(26px) saturate(1.2)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 68%, transparent)",
+    boxShadow: "0 28px 80px rgba(0, 0, 0, 0.32)",
     zIndex: 11,
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
-  panelHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  panelHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   categoryChip: {
-    padding: "2px 9px",
-    fontSize: 11,
-    fontWeight: 600,
+    padding: "4px 10px",
+    fontSize: 10.5,
+    fontWeight: 750,
     borderRadius: 999,
     color: "#fff",
+    letterSpacing: 0.3,
     textTransform: "capitalize" as const,
   },
   clearBtn: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "center",
     border: "none",
-    background: "transparent",
+    background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
     color: "var(--color-text-muted)",
     cursor: "pointer",
-    padding: 3,
+    padding: 5,
+    borderRadius: 10,
   },
-  panelTitle: { fontSize: 16, fontWeight: 650, lineHeight: 1.3, marginBottom: 6 },
+  panelTitle: { fontSize: 20, fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1.2, marginBottom: 8 },
   panelMeta: {
     display: "flex",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
     fontSize: 11,
     color: "var(--color-text-muted)",
-    marginBottom: 10,
+    marginBottom: 14,
   },
-  mono: { fontFamily: "var(--font-mono)", fontSize: 10.5 },
-  panelActions: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 },
+  mono: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10.5,
+    padding: "2px 6px",
+    borderRadius: 7,
+    background: "color-mix(in srgb, var(--color-background) 52%, transparent)",
+  },
+  panelActions: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 },
   actionBtn: {
     display: "inline-flex",
     alignItems: "center",
     gap: 5,
-    padding: "6px 11px",
+    padding: "7px 12px",
     fontSize: 12.5,
-    fontWeight: 500,
-    borderRadius: 8,
-    border: "1px solid var(--color-border)",
-    background: "var(--color-background)",
+    fontWeight: 650,
+    borderRadius: 12,
+    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
+    background: "color-mix(in srgb, var(--color-background) 72%, transparent)",
     color: "var(--color-text-primary)",
     cursor: "pointer",
+    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   actionPrimary: {
     background: "var(--color-text-primary)",
@@ -1122,40 +1279,70 @@ const styles: Record<string, React.CSSProperties> = {
     borderColor: "var(--color-text-primary)",
   },
   actionDanger: { background: "#c0392b", borderColor: "#c0392b", color: "#fff" },
-  actionDangerGhost: { color: "#c0392b", borderColor: "#c0392b55" },
-  dangerNote: { fontSize: 11.5, lineHeight: 1.45, color: "#c0392b", marginBottom: 8 },
-  panelNote: { fontSize: 12.5, lineHeight: 1.5, color: "var(--color-text-muted)", margin: "4px 0 10px" },
-  panelBody: { flex: 1, minHeight: 0, overflowY: "auto" },
+  actionDangerGhost: { color: "#ff6b5a", borderColor: "#c0392b55", background: "color-mix(in srgb, #c0392b 8%, transparent)" },
+  dangerNote: {
+    fontSize: 11.5,
+    lineHeight: 1.45,
+    color: "#ff6b5a",
+    marginBottom: 10,
+    padding: "9px 10px",
+    borderRadius: 12,
+    background: "color-mix(in srgb, #c0392b 10%, transparent)",
+    border: "1px solid color-mix(in srgb, #c0392b 24%, transparent)",
+  },
+  panelNote: {
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    color: "var(--color-text-muted)",
+    margin: "6px 0 12px",
+    padding: "10px 11px",
+    borderRadius: 14,
+    background: "color-mix(in srgb, var(--color-background) 46%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 46%, transparent)",
+  },
+  panelBody: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: "auto",
+    borderRadius: 16,
+    paddingRight: 2,
+  },
   panelLoading: { display: "flex", justifyContent: "center", padding: 24 },
-  mdView: { fontSize: 13, lineHeight: 1.55 },
+  mdView: {
+    fontSize: 13.5,
+    lineHeight: 1.6,
+    padding: "2px 2px 4px",
+  },
   editor: {
     width: "100%",
-    minHeight: 220,
+    minHeight: 280,
     resize: "vertical",
-    padding: 10,
+    padding: 12,
     fontSize: 12,
     lineHeight: 1.5,
     fontFamily: "var(--font-mono)",
-    borderRadius: 8,
-    border: "1px solid var(--color-border)",
-    background: "var(--color-background)",
+    borderRadius: 14,
+    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
+    background: "color-mix(in srgb, var(--color-background) 82%, transparent)",
     color: "var(--color-text-primary)",
     outline: "none",
   },
   linkAdder: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTop: "1px solid var(--color-border)",
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 17,
+    background: "color-mix(in srgb, var(--color-background) 42%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 46%, transparent)",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
+    gap: 8,
   },
   textInput: {
-    padding: "7px 9px",
+    padding: "9px 10px",
     fontSize: 12.5,
-    borderRadius: 8,
-    border: "1px solid var(--color-border)",
-    background: "var(--color-background)",
+    borderRadius: 12,
+    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
+    background: "color-mix(in srgb, var(--color-background) 76%, transparent)",
     color: "var(--color-text-primary)",
     outline: "none",
   },
@@ -1171,17 +1358,30 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: "center",
     padding: 24,
   },
+  centerCard: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    maxWidth: 380,
+    padding: "22px 24px",
+    borderRadius: 24,
+    background: "color-mix(in srgb, var(--color-surface) 86%, transparent)",
+    backdropFilter: "blur(22px)",
+    WebkitBackdropFilter: "blur(22px)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
+    boxShadow: "0 24px 70px rgba(0, 0, 0, 0.25)",
+  },
   toast: {
     position: "absolute",
     bottom: 20,
     left: "50%",
     transform: "translateX(-50%)",
-    padding: "9px 16px",
+    padding: "10px 16px",
     fontSize: 13,
     borderRadius: 999,
-    background: "var(--color-text-primary)",
+    background: "color-mix(in srgb, var(--color-text-primary) 92%, transparent)",
     color: "var(--color-background)",
-    boxShadow: "var(--shadow-lg)",
+    boxShadow: "0 16px 44px rgba(0, 0, 0, 0.28)",
     zIndex: 20,
     maxWidth: "80vw",
   },

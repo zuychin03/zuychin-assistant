@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown } from "lucide-react";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import type { ArtifactDescriptor } from "@/lib/types";
@@ -17,7 +17,21 @@ interface ChatMessage {
   fileName?: string;
   fileMimeType?: string;
   artifacts?: ArtifactDescriptor[];
+  /** Which model produced this reply (only known for messages sent this session). */
+  modelLabel?: string;
+  /** ISO timestamp shown under assistant replies. */
+  at?: string;
 }
+
+// Starter suggestions on the empty state. Each fills the input with a command
+// (trailing space keeps the slash menu closed so Enter sends right away).
+const STARTER_SUGGESTIONS: { icon: React.ReactNode; label: string; fill: string }[] = [
+  { icon: <CalendarDays size={15} />, label: "Plan my day", fill: "/plan_day " },
+  { icon: <Mail size={15} />, label: "Triage my inbox", fill: "/triage_emails " },
+  { icon: <Globe size={15} />, label: "Research a topic", fill: "/research " },
+  { icon: <Code2 size={15} />, label: "Write some code", fill: "/code " },
+  { icon: <Lightbulb size={15} />, label: "Explain a concept", fill: "/explain " },
+];
 
 interface AgentRun {
   status: string;
@@ -343,6 +357,8 @@ export default function Home() {
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [convosLoaded, setConvosLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -362,6 +378,12 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
+  // Show the jump-to-bottom button once the user scrolls up during a long chat.
+  const handleMessagesScroll = (e: React.UIEvent<HTMLElement>) => {
+    const el = e.currentTarget;
+    setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 280);
+  };
+
   const loadConversations = useCallback(async () => {
     try {
       const res = await fetch("/api/conversations");
@@ -371,6 +393,8 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Failed to load conversations:", err);
+    } finally {
+      setConvosLoaded(true);
     }
   }, []);
 
@@ -546,11 +570,12 @@ export default function Home() {
       const data = await res.json();
       if (data.messages) {
         setMessages(
-          data.messages.map((m: { id: string; role: string; content: string; metadata?: { artifacts?: ArtifactDescriptor[] } }) => ({
+          data.messages.map((m: { id: string; role: string; content: string; createdAt?: string; metadata?: { artifacts?: ArtifactDescriptor[] } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
             artifacts: m.metadata?.artifacts,
+            at: m.createdAt,
           }))
         );
       }
@@ -675,7 +700,7 @@ export default function Home() {
 
       const base = (): AgentRun => ({ status: "", steps: [], lines: [] });
 
-      for (;;) {
+      for (; ;) {
         const { done: finished, value } = await reader.read();
         if (finished) break;
         buffer += decoder.decode(value, { stream: true });
@@ -719,6 +744,8 @@ export default function Home() {
         role: "assistant",
         content: done?.reply ?? "(No response.)",
         artifacts: done?.artifacts,
+        modelLabel: currentChatModel?.label,
+        at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
       await loadConversations();
@@ -744,7 +771,18 @@ export default function Home() {
     setCmdIndex(0);
 
     e.target.style.height = "auto";
-    e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
+    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+  };
+
+  const applySuggestion = (fill: string) => {
+    setInput(fill);
+    inputRef.current?.focus();
+  };
+
+  const msgClock = (iso?: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   };
 
   // Command suggestions show while the first token is being typed ("/dra…").
@@ -893,6 +931,11 @@ export default function Home() {
     }
   };
 
+  const activeConvTitle = (() => {
+    const title = conversations.find((c) => c.id === activeConversationId)?.title;
+    return title && title !== "New Chat" ? title : undefined;
+  })();
+
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
       <>
@@ -963,7 +1006,7 @@ export default function Home() {
             width: notesOpen ? 280 : 0,
             minWidth: notesOpen ? 280 : 0,
           } : styles.notesPanel),
-          ...(!isDesktop && { transform: notesOpen ? "translateX(0)" : "translateX(-100%)" }),
+          ...(!isDesktop && { transform: notesOpen ? "translateX(0)" : "translateX(100%)" }),
         }}
       >
         <div style={styles.sidebarHeader}>
@@ -1034,7 +1077,15 @@ export default function Home() {
         </button>
 
         <div style={styles.conversationList}>
-          {conversations.length === 0 && (
+          {!convosLoaded && conversations.length === 0 &&
+            [0, 1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="animate-pulse-soft"
+                style={{ ...styles.convSkeleton, animationDelay: `${i * 0.12}s` }}
+              />
+            ))}
+          {convosLoaded && conversations.length === 0 && (
             <p style={styles.noConversations}>No conversations yet</p>
           )}
           {conversations.map((conv) => (
@@ -1092,7 +1143,23 @@ export default function Home() {
               )}
             </div>
 
+            {isDesktop && activeConvTitle && messages.length > 0 && (
+              <div style={styles.headerConvTitle} title={activeConvTitle}>
+                {activeConvTitle}
+              </div>
+            )}
+
             <div style={styles.headerRight}>
+              <button type="button"
+                onClick={toggleTheme}
+                style={styles.iconBtn}
+                aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                title={theme === "dark" ? "Light mode" : "Dark mode"}
+              >
+                {theme === "dark"
+                  ? <Sun size={19} color="var(--color-text-primary)" />
+                  : <Moon size={19} color="var(--color-text-primary)" />}
+              </button>
               <button
                 onClick={toggleNotes}
                 style={{ ...styles.iconBtn, position: "relative" }}
@@ -1104,21 +1171,11 @@ export default function Home() {
                   <span style={styles.noteBadge}>{notes.length > 9 ? "9+" : notes.length}</span>
                 )}
               </button>
-              <button
-                onClick={toggleTheme}
-                style={styles.iconBtn}
-                aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                title={theme === "dark" ? "Light mode" : "Dark mode"}
-              >
-                {theme === "dark"
-                  ? <Sun size={19} color="var(--color-text-primary)" />
-                  : <Moon size={19} color="var(--color-text-primary)" />}
+              <button onClick={() => setSidebarOpen((prev) => !prev)} style={styles.iconBtn} aria-label="Conversation history" title="History">
+                <History size={19} color="var(--color-text-primary)" />
               </button>
               <button onClick={handleNewChat} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
                 <Plus size={20} color="var(--color-text-primary)" />
-              </button>
-              <button onClick={() => setSidebarOpen(true)} style={styles.iconBtn} aria-label="Conversation history" title="History">
-                <History size={19} color="var(--color-text-primary)" />
               </button>
             </div>
           </div>
@@ -1130,15 +1187,34 @@ export default function Home() {
           )}
         </header>
 
-        <main style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}>
+        <main
+          onScroll={handleMessagesScroll}
+          style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}
+        >
           {messages.length === 0 && (
             <div style={styles.emptyState} className="animate-fade-in-scale">
               <div style={styles.emptyIcon} className="animate-float">
-                <Bot size={32} color="#fff" />
+                <Bot size={32} color="var(--color-primary-foreground)" />
               </div>
               <p style={styles.emptyTitle}>Hi, I&apos;m Zuychin</p>
               <p style={styles.emptySubtitle}>
-                Your personal AI assistant. Ask me anything.
+                Your personal AI assistant for research, coding and planning.
+              </p>
+              <div style={styles.suggestionRow}>
+                {STARTER_SUGGESTIONS.map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    style={styles.suggestionChip}
+                    onClick={() => applySuggestion(s.fill)}
+                  >
+                    <span style={styles.suggestionIcon}>{s.icon}</span>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              <p style={styles.emptyHint}>
+                Type <code style={styles.hintKbd}>/</code> for {`all commands · attach files up to ${MAX_FILE_SIZE_MB} MB · switch models from the header`}
               </p>
             </div>
           )}
@@ -1154,7 +1230,7 @@ export default function Home() {
             >
               {msg.role === "assistant" && (
                 <div style={styles.msgAvatar}>
-                  <Bot size={14} color="#fff" />
+                  <Bot size={14} color="var(--color-primary-foreground)" />
                 </div>
               )}
               <div
@@ -1222,6 +1298,11 @@ export default function Home() {
                     </button>
                   </div>
                 )}
+                {msg.role === "assistant" && (msg.modelLabel || msgClock(msg.at)) && (
+                  <div style={styles.msgMeta}>
+                    {[msg.modelLabel, msgClock(msg.at)].filter(Boolean).join(" · ")}
+                  </div>
+                )}
               </div>
               {msg.role === "user" && (
                 <div style={{ ...styles.msgAvatar, ...styles.userAvatar }}>
@@ -1234,7 +1315,7 @@ export default function Home() {
           {isLoading && (
             <div style={styles.messageBubbleWrapper} className="animate-fade-in">
               <div style={styles.msgAvatar}>
-                <Bot size={14} color="#fff" />
+                <Bot size={14} color="var(--color-primary-foreground)" />
               </div>
               <div style={{ ...styles.bubble, ...styles.aiBubble }}>
                 {agentRun ? (
@@ -1275,6 +1356,19 @@ export default function Home() {
 
           <div ref={messagesEndRef} />
         </main>
+
+        {showScrollBtn && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            style={styles.scrollDownBtn}
+            className="animate-fade-in"
+            aria-label="Scroll to latest message"
+            title="Jump to latest"
+          >
+            <ArrowDown size={16} />
+          </button>
+        )}
 
         <footer style={isDesktop ? styles.footer : { ...styles.footer, padding: "10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px)" }}>
           {settingsOpen && (
@@ -1445,7 +1539,7 @@ export default function Home() {
               }}
               aria-label="Send message"
             >
-              <Send size={18} color="#fff" />
+              <Send size={20} color="var(--color-primary-foreground)" />
             </button>
           </form>
         </footer>
@@ -1460,6 +1554,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100dvh",
     position: "relative",
     overflow: "hidden",
+    background: "radial-gradient(circle at 15% 0%, color-mix(in srgb, var(--color-secondary) 14%, transparent), transparent 32%), radial-gradient(circle at 90% 100%, color-mix(in srgb, #7aa2ff 10%, transparent), transparent 34%), var(--color-background)",
   },
 
   overlay: {
@@ -1477,7 +1572,9 @@ const styles: Record<string, React.CSSProperties> = {
     right: 0,
     bottom: 0,
     width: 280,
-    background: "var(--color-surface)",
+    background: "color-mix(in srgb, var(--color-surface) 94%, transparent)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
     borderLeft: "1px solid var(--color-border)",
     zIndex: 30,
     display: "flex",
@@ -1487,7 +1584,9 @@ const styles: Record<string, React.CSSProperties> = {
 
   sidebarDesktop: {
     order: 2,
-    background: "var(--color-surface)",
+    background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
     borderLeft: "1px solid var(--color-border)",
     display: "flex",
     flexDirection: "column",
@@ -1499,19 +1598,24 @@ const styles: Record<string, React.CSSProperties> = {
   notesPanel: {
     position: "fixed",
     top: 0,
-    left: 0,
+    right: 0,
     bottom: 0,
     width: 280,
-    background: "var(--color-surface)",
-    borderRight: "1px solid var(--color-border)",
+    background: "color-mix(in srgb, var(--color-surface) 94%, transparent)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    borderLeft: "1px solid var(--color-border)",
     zIndex: 30,
     display: "flex",
     flexDirection: "column",
     transition: "transform 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   notesPanelDesktop: {
-    background: "var(--color-surface)",
-    borderRight: "1px solid var(--color-border)",
+    order: 1,
+    background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    borderLeft: "1px solid var(--color-border)",
     display: "flex",
     flexDirection: "column",
     height: "100dvh",
@@ -1574,7 +1678,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 3px",
     borderRadius: 8,
     background: "var(--color-primary)",
-    color: "#fff",
+    color: "var(--color-primary-foreground)",
     fontSize: 9.5,
     fontWeight: 700,
     lineHeight: 1,
@@ -1586,7 +1690,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "16px",
+    padding: "0 16px",
+    height: 69,
     borderBottom: "1px solid var(--color-border)",
   },
   sidebarTitle: {
@@ -1608,7 +1713,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "12px 12px 8px",
     padding: "10px 14px",
     background: "var(--color-primary)",
-    color: "#fff",
+    color: "var(--color-primary-foreground)",
     border: "none",
     borderRadius: "var(--radius-md)",
     cursor: "pointer",
@@ -1698,8 +1803,9 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     maxWidth: 720,
     margin: "0 auto",
-    background: "var(--color-background)",
+    background: "transparent",
     width: "100%",
+    position: "relative",
   },
 
   containerDesktop: {
@@ -1707,23 +1813,25 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     height: "100dvh",
     flex: 1,
-    background: "var(--color-background)",
+    background: "transparent",
     width: "100%",
+    position: "relative",
   },
 
   header: {
     position: "sticky",
     top: 0,
     zIndex: 10,
-    background: "var(--color-background)",
-    borderBottom: "1px solid var(--color-border)",
+    background: "color-mix(in srgb, var(--color-background) 82%, transparent)",
+    backdropFilter: "blur(18px) saturate(1.15)",
+    WebkitBackdropFilter: "blur(18px) saturate(1.15)",
+    borderBottom: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
   },
   headerContent: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-
     padding: "12px 16px 12px 26px",
   },
   headerLeft: {
@@ -1749,6 +1857,22 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 2,
     flexShrink: 0,
+    padding: 3,
+    borderRadius: 999,
+    background: "color-mix(in srgb, var(--color-surface) 80%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+  },
+  headerConvTitle: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--color-text-muted)",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    padding: "0 14px",
   },
   headerSelectorsRow: {
     display: "flex",
@@ -1866,7 +1990,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 6,
-    maxWidth: 900,
+    maxWidth: 820,
     width: "100%",
     margin: "0 auto",
   },
@@ -1878,7 +2002,51 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    opacity: 0.7,
+    padding: "0 16px",
+  },
+  suggestionRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 18,
+    maxWidth: 520,
+  },
+  suggestionChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    padding: "9px 14px",
+    fontSize: 13,
+    fontWeight: 550,
+    fontFamily: "var(--font-family)",
+    color: "var(--color-text-primary)",
+    background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 999,
+    cursor: "pointer",
+    boxShadow: "0 4px 18px rgba(0, 0, 0, 0.06)",
+    transition: "background 0.15s ease, transform 0.15s ease",
+  },
+  suggestionIcon: {
+    display: "flex",
+    alignItems: "center",
+    color: "var(--color-text-muted)",
+  },
+  emptyHint: {
+    marginTop: 16,
+    fontSize: 12,
+    color: "var(--color-text-muted)",
+    textAlign: "center",
+    lineHeight: 1.6,
+  },
+  hintKbd: {
+    padding: "1px 6px",
+    borderRadius: 6,
+    fontSize: 11.5,
+    fontFamily: "var(--font-mono)",
+    background: "color-mix(in srgb, var(--color-surface) 90%, transparent)",
+    border: "1px solid var(--color-border)",
   },
   emptyIcon: {
     width: 56,
@@ -1926,7 +2094,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   userBubble: {
     background: "var(--color-primary)",
-    color: "#fff",
+    color: "var(--color-primary-foreground)",
     borderBottomRightRadius: 4,
   },
   aiBubble: {
@@ -1961,10 +2129,9 @@ const styles: Record<string, React.CSSProperties> = {
   footer: {
     position: "sticky",
     bottom: 0,
-    background: "var(--color-background)",
-    borderTop: "1px solid var(--color-border)",
-    padding: "10px 24px calc(env(safe-area-inset-bottom, 0px) + 10px)",
-    maxWidth: 900,
+    background: "transparent",
+    padding: "14px 24px calc(env(safe-area-inset-bottom, 0px) + 14px)",
+    maxWidth: 820,
     width: "100%",
     margin: "0 auto",
   },
@@ -2029,9 +2196,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    background: "var(--color-surface)",
-    borderRadius: 24,
-    padding: "8px 8px 8px 16px",
+    background: "color-mix(in srgb, var(--color-surface) 92%, transparent)",
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 85%, transparent)",
+    borderRadius: 999,
+    padding: "10px 10px 10px 18px",
+    boxShadow: "0 10px 40px rgba(0, 0, 0, 0.12)",
   },
   attachBtn: {
     background: "none",
@@ -2056,8 +2227,8 @@ const styles: Record<string, React.CSSProperties> = {
     paddingBottom: 6,
   },
   sendButton: {
-    width: 36,
-    height: 36,
+    width: 42,
+    height: 42,
     borderRadius: "50%",
     background: "var(--color-primary)",
     border: "none",
@@ -2067,6 +2238,42 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     transition: "opacity 0.15s ease",
     flexShrink: 0,
+    boxShadow: "0 4px 14px rgba(0, 0, 0, 0.18)",
+  },
+
+  msgMeta: {
+    marginTop: 8,
+    fontSize: 10.5,
+    color: "var(--color-text-muted)",
+    letterSpacing: 0.1,
+  },
+
+  scrollDownBtn: {
+    position: "absolute",
+    left: "50%",
+    transform: "translateX(-50%)",
+    bottom: 96,
+    zIndex: 9,
+    width: 36,
+    height: 36,
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "color-mix(in srgb, var(--color-surface) 94%, transparent)",
+    color: "var(--color-text-primary)",
+    border: "1px solid var(--color-border)",
+    boxShadow: "0 8px 26px rgba(0, 0, 0, 0.2)",
+    cursor: "pointer",
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+  },
+
+  convSkeleton: {
+    height: 46,
+    margin: "6px 4px",
+    borderRadius: 10,
+    background: "color-mix(in srgb, var(--color-text-muted) 14%, transparent)",
   },
 
   exportRow: {
@@ -2407,7 +2614,7 @@ const paramRow: Record<string, React.CSSProperties> = {
   toggleOn: {
     background: "var(--color-primary)",
     border: "1px solid var(--color-primary)",
-    color: "#fff",
+    color: "var(--color-primary-foreground)",
   },
   slider: {
     width: "100%",

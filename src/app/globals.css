@@ -9,6 +9,7 @@
 
 :root {
   --color-primary: #000000;
+  --color-primary-foreground: #ffffff;
   --color-secondary: #333333;
   --color-background: #ffffff;
   --color-surface: #f2f2f7;
@@ -32,16 +33,17 @@
 }
 
 [data-theme="dark"] {
-  --color-primary: #3a3a3c;
-  --color-secondary: #aeaeb2;
-  --color-background: #0c0c0e;
-  --color-surface: #1b1b1e;
-  --color-bubble-ai: #1f1f23;
-  --color-text-primary: #f2f2f7;
-  --color-text-muted: #98989f;
-  --color-border: #2c2c2e;
-  --color-success: #30d158;
-  --color-code-bg: rgba(255, 255, 255, 0.1);
+  --color-primary: #ffffff;
+  --color-primary-foreground: #0f172a;
+  --color-secondary: #94a3b8;
+  --color-background: #0f172a;
+  --color-surface: #1e293b;
+  --color-bubble-ai: #334155;
+  --color-text-primary: #f8fafc;
+  --color-text-muted: #94a3b8;
+  --color-border: #334155;
+  --color-success: #10b981;
+  --color-code-bg: rgba(0, 0, 0, 0.25);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
@@ -69,6 +71,12 @@ body {
   /* Stop mobile browsers from auto-inflating block text (e.g. the header title). */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+
+/* ---- Inputs ---- */
+input[type="checkbox"],
+input[type="range"] {
+  accent-color: var(--color-primary);
 }
 
 /* ---- Scrollbar ---- */
@@ -126,6 +134,11 @@ body {
   to { transform: rotate(360deg); }
 }
 
+@keyframes pulseSoft {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
 .animate-fade-in {
   animation: fadeIn 0.3s ease-out forwards;
 }
@@ -148,6 +161,10 @@ body {
 
 .animate-overlay-in {
   animation: overlayIn 0.2s ease-out both;
+}
+
+.animate-pulse-soft {
+  animation: pulseSoft 1.4s ease-in-out infinite;
 }
 
 .animate-bounce-dot {

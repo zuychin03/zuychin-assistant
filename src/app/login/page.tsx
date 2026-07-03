@@ -40,7 +40,7 @@ export default function LoginPage() {
     <div style={styles.page}>
       <div style={styles.card} className="animate-fade-in">
         <div style={styles.iconWrap}>
-          <Bot size={28} color="#fff" />
+          <Bot size={28} color="var(--color-primary-foreground)" />
         </div>
 
         <h1 style={styles.title}>Zuychin Assistant</h1>
@@ -153,7 +153,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "12px 0",
     borderRadius: "var(--radius-md)",
     background: "var(--color-primary)",
-    color: "#fff",
+    color: "var(--color-primary-foreground)",
     border: "none",
     fontSize: 15,
     fontWeight: 600,
