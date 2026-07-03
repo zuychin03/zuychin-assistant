@@ -74,14 +74,15 @@ export async function runAgent(opts: {
 
         const results = await Promise.all(
             tasks.map(async (t) => {
-                const task = t as { objective?: unknown; model?: unknown };
+                const task = t as { objective?: unknown; model?: unknown; needs_tools?: unknown };
                 const objective = String(task.objective ?? "").trim();
                 if (!objective) return "(skipped: empty objective)";
                 const modelHint = task.model ? String(task.model) : undefined;
+                const needsTools = task.needs_tools !== false;
 
                 onEvent?.({ type: "subagent", objective, model: modelHint ?? "auto", phase: "start" });
                 const res = await withTimeout(
-                    runWorker({ objective, modelHint, contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx }),
+                    runWorker({ objective, modelHint, needsTools, contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx }),
                     AGENT_CONFIG.workerTimeoutMs,
                     { model: modelHint ?? "auto", output: "(this subtask timed out and produced no result)" },
                 );

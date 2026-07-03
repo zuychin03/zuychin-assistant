@@ -68,7 +68,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "save_note",
-        description: "Save a note or piece of information for the user to remember later.",
+        description: "Save a note or piece of information for the user to remember later. For actionable tasks or reminders use manage_todo_list instead — those show up in the user's Notes checklist where they can tick them off.",
         parameters: {
             content: {
                 type: "string",
@@ -315,7 +315,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_todo_list",
-        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task).",
+        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task). Open tasks appear as a checklist in the web app's Notes panel, where the user can tick them off themselves — a task marked done there is finished; never remind the user about it again.",
         parameters: {
             action: {
                 type: "string",
@@ -375,7 +375,7 @@ export async function executeTool(
     ctx?: ToolContext
 ): Promise<string> {
 
-    const artifactResult = await executeArtifactTool(toolName, args, ctx);
+    const artifactResult = await executeArtifactTool(toolName, args, ctx, embRef);
     if (artifactResult !== null) return artifactResult;
 
     switch (toolName) {

@@ -164,6 +164,44 @@ export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = 
     { providerId: "gemini", modelId: "gemini-3.5-flash" },
 ];
 
+// Sub-agent pool: preferred models first, then any free "Fast"-tagged model
+// that supports tools. Gemini is excluded; runWorker uses it only as the
+// last-resort fallback.
+const WORKER_PREFERRED: { providerId: string; modelId: string }[] = [
+    { providerId: "opencode-zen", modelId: "deepseek-v4-flash-free" },
+    { providerId: "nvidia-nim", modelId: "stepfun-ai/step-3.7-flash" },
+];
+
+// Tried first for no-tool subtasks; cannot call functions.
+export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "google/diffusiongemma-26b-a4b-it" };
+
+export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
+    const out: ResolvedChat[] = [];
+    const seen = new Set<string>();
+    const push = (r: ResolvedChat | null) => {
+        if (!r) return;
+        const key = `${r.provider.id}::${r.model.id}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            out.push(r);
+        }
+    };
+
+    if (!needsTools) {
+        push(resolveAvailable(WORKER_NO_TOOLS_MODEL.providerId, WORKER_NO_TOOLS_MODEL.modelId));
+    }
+    for (const c of WORKER_PREFERRED) push(resolveAvailable(c.providerId, c.modelId));
+    for (const provider of PROVIDERS) {
+        if (provider.kind === "gemini" || !isProviderAvailable(provider)) continue;
+        for (const model of provider.chatModels) {
+            if (model.supportsTools && getModelMeta(model.id)?.strengths.includes("Fast")) {
+                push({ provider, model });
+            }
+        }
+    }
+    return out;
+}
+
 export function resolveMessagingDefault(): ResolvedChat {
     for (const c of MESSAGING_MODEL_CHAIN) {
         const resolved = resolveAvailable(c.providerId, c.modelId);

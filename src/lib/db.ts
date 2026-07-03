@@ -29,6 +29,17 @@ export async function saveMessage(params: {
         throw new Error("Failed to save message.");
     }
 
+    if (params.conversationId) {
+        // Bump updated_at so the sidebar sorts this conversation to the top.
+        const { error: touchError } = await supabase
+            .from("conversations")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", params.conversationId);
+        if (touchError) {
+            console.warn("[DB] Failed to touch conversation:", touchError.message);
+        }
+    }
+
     return data.id;
 }
 
@@ -283,6 +294,29 @@ export async function updateConversationTitle(
     if (error) {
         console.error("[DB] Failed to update conversation title:", error.message);
     }
+}
+
+export async function countUserMessagesSince(
+    sinceIso: string,
+    excludeId?: string
+): Promise<number> {
+    let query = supabase
+        .from("messages")
+        .select("id", { count: "exact", head: true })
+        .eq("role", "user")
+        .gte("created_at", sinceIso);
+    if (excludeId) {
+        query = query.neq("id", excludeId);
+    }
+
+    const { count, error } = await query;
+
+    if (error) {
+        console.error("[DB] Failed to count messages:", error.message);
+        // Fail as "not the first message" so callers don't over-trigger.
+        return 1;
+    }
+    return count ?? 0;
 }
 
 export interface Todo {

@@ -1,6 +1,8 @@
 import JSZip from "jszip";
 import { renderDocument, type ExportFormat } from "@/lib/export";
 import { saveArtifact } from "@/lib/artifacts/store";
+import { storeEmbedding } from "@/lib/db";
+import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import type { McpTool, ToolContext } from "@/lib/ai/mcp-service";
 
 const EXPORT_FORMATS: ExportFormat[] = ["docx", "pdf", "md"];
@@ -27,7 +29,7 @@ function sanitizeZipPath(name: string, fallback: string): string {
 export const ARTIFACT_TOOLS: McpTool[] = [
     {
         name: "create_document",
-        description: "Generate a downloadable, nicely formatted report/document from Markdown and attach it to your reply. Use whenever the user asks for a report, summary write-up, briefing, or any document they can download and open (Word/PDF). Supports headings, lists, tables, code blocks, bold/italic and links. After calling this, tell the user the document is ready to download.",
+        description: "Generate a downloadable, nicely formatted report/document from Markdown and attach it to your reply. Use whenever the user asks for a report, summary write-up, briefing, or any document they can download and open (Word/PDF). Supports headings, lists, tables, code blocks, bold/italic and links. The document is automatically remembered in the knowledge base — do not save it again with save_note. After calling this, tell the user the document is ready to download.",
         parameters: {
             title: { type: "string", description: "Document title; also used as the filename.", required: true },
             markdown: { type: "string", description: "The full document body in Markdown.", required: true },
@@ -69,16 +71,41 @@ export async function executeArtifactTool(
     name: string,
     args: Record<string, unknown>,
     ctx?: ToolContext,
+    embRef?: ResolvedEmbedding,
 ): Promise<string | null> {
     switch (name) {
-        case "create_document": return execCreateDocument(args, ctx);
+        case "create_document": return execCreateDocument(args, ctx, embRef);
         case "create_code_file": return execCreateCodeFile(args, ctx);
         case "create_code_bundle": return execCreateCodeBundle(args, ctx);
         default: return null;
     }
 }
 
-async function execCreateDocument(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
+// Embeds generated documents into the RAG knowledge base for later recall.
+async function rememberDocument(
+    title: string,
+    filename: string,
+    markdown: string,
+    ctx?: ToolContext,
+    embRef?: ResolvedEmbedding,
+): Promise<void> {
+    try {
+        const ref = embRef ?? getEmbeddingRef();
+        const content = `Generated document "${title}" (${filename}):\n${markdown.slice(0, 2000)}`;
+        const embedding = await embedText(ref, content);
+        await storeEmbedding({
+            content,
+            embedding,
+            embeddingModel: ref.model.id,
+            metadata: { source: "generated_document", filename },
+            userProfileId: ctx?.userProfileId,
+        });
+    } catch (err) {
+        console.warn("[Artifacts] failed to save document to knowledge base:", err);
+    }
+}
+
+async function execCreateDocument(args: Record<string, unknown>, ctx?: ToolContext, embRef?: ResolvedEmbedding): Promise<string> {
     const title = String(args.title ?? "Document");
     const markdown = String(args.markdown ?? "");
     if (!markdown.trim()) return "Error: `markdown` content is required.";
@@ -93,7 +120,8 @@ async function execCreateDocument(args: Record<string, unknown>, ctx?: ToolConte
             conversationId: ctx?.conversationId, userProfileId: ctx?.userProfileId,
         });
         ctx?.onArtifact?.(art);
-        return `Created document "${filename}" (${(art.size / 1024).toFixed(0)} KB). It is attached to this reply as a download — let the user know it's ready.`;
+        await rememberDocument(title, filename, markdown, ctx, embRef);
+        return `Created document "${filename}" (${(art.size / 1024).toFixed(0)} KB). It is attached to this reply as a download and saved to the knowledge base — let the user know it's ready.`;
     } catch (err) {
         console.error("[Artifacts] create_document failed:", err);
         return "Failed to generate the document.";

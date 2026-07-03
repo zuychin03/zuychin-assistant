@@ -1,6 +1,6 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
-import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences } from "@/lib/db";
+import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences, listTodos, countUserMessagesSince } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
 import { classifyIntent } from "@/lib/ai/agent/router";
 import { runAgent } from "@/lib/ai/agent/orchestrator";
@@ -8,7 +8,8 @@ import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
-import { currentDateTimeContext } from "@/lib/datetime";
+import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
+import { expandSlashCommand } from "@/lib/commands";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
@@ -262,6 +263,34 @@ async function handleEmbedModelCommand(message: string, channel: MessageChannel,
     return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: memories are stored per embedding model, so switching starts a fresh memory partition for this channel.`;
 }
 
+function startOfTodayUtc(): Date {
+    const now = new Date();
+    const local = new Date(now.toLocaleString("en-US", { timeZone: APP_TIMEZONE }));
+    const start = new Date(local);
+    start.setHours(0, 0, 0, 0);
+    return new Date(start.getTime() + (now.getTime() - local.getTime()));
+}
+
+// Reminder about undated pending tasks, appended to the first reply of the
+// day. Dated tasks are covered by the calendar/agenda flows.
+async function dailyNotesReminder(excludeMessageId?: string): Promise<string> {
+    try {
+        const earlierToday = await countUserMessagesSince(startOfTodayUtc().toISOString(), excludeMessageId);
+        if (earlierToday > 0) return "";
+
+        const undated = (await listTodos("pending", 50)).filter((t) => !t.dueDate);
+        if (undated.length === 0) return "";
+
+        const shown = undated.slice(0, 5).map((t) => `"${t.title}"`).join(", ");
+        const more = undated.length > 5 ? ` and ${undated.length - 5} more` : "";
+        const plural = undated.length === 1 ? "task" : "tasks";
+        return `\n\n---\n📌 First chat of the day — you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
+    } catch (err) {
+        console.warn("[RAG] Daily notes reminder failed:", err);
+        return "";
+    }
+}
+
 export interface RagContext {
     profile: Profile;
     chat: ResolvedChat;
@@ -390,6 +419,10 @@ export async function ragChat(params: {
         }
     }
 
+    // Slash commands expand into a full prompt; history keeps the raw command.
+    const slash = channel === "web" ? expandSlashCommand(message) : null;
+    const effectiveMessage = slash?.prompt ?? message;
+
     let userMsgId = "";
     try {
         userMsgId = await saveMessage({
@@ -404,7 +437,7 @@ export async function ragChat(params: {
     }
 
     const rag = await buildRagContext({
-        message, channel, conversationId, provider, model,
+        message: effectiveMessage, channel, conversationId, provider, model,
         embeddingModel, thinking, search, profile,
     });
 
@@ -412,15 +445,15 @@ export async function ragChat(params: {
 
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
     let mode: "chat" | "agent" = "chat";
-    if (agent) mode = "agent";
-    else if (channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message, rag.lastAssistantMessage)).mode;
+    if (agent || slash?.agent) mode = "agent";
+    else if (!slash && channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message, rag.lastAssistantMessage)).mode;
     if (mode === "agent" && hasVisualAttachment) mode = "chat";
 
     let reply: string;
     if (mode === "agent") {
         const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
-            ? `${message}\n\n${formatTextAttachment(file)}`
-            : message;
+            ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
+            : effectiveMessage;
         onEvent?.({ type: "status", message: "Understanding your request…" });
         const res = await runAgent({
             rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
@@ -435,7 +468,7 @@ export async function ragChat(params: {
         };
         if (rag.chat.provider.kind === "gemini") {
             reply = await generateGeminiReply({
-                contextBlock: rag.contextBlock, message, imageBase64, file, channel,
+                contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
                 thinking: rag.allowThinking, search: rag.allowSearch,
                 model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx,
             });
@@ -444,7 +477,7 @@ export async function ragChat(params: {
                 provider: rag.chat.provider,
                 model: rag.chat.model,
                 systemText: rag.contextBlock.trim(),
-                userText: message,
+                userText: effectiveMessage,
                 imageBase64,
                 file,
                 embRef: rag.embRef,
@@ -455,6 +488,8 @@ export async function ragChat(params: {
             });
         }
     }
+
+    reply += await dailyNotesReminder(userMsgId || undefined);
 
     try {
         const assistantMsgId = await saveMessage({

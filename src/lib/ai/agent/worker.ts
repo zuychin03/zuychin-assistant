@@ -3,58 +3,77 @@ import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
-import { resolveChatModelByName, resolveChat, type ResolvedChat } from "@/lib/ai/providers";
+import { resolveChatModelByName, resolveWorkerChain, type ResolvedChat } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 
 export interface WorkerParams {
     objective: string;
     modelHint?: string;
+    needsTools?: boolean;
     contextBlock: string;
     embRef: ResolvedEmbedding;
     toolCtx: ToolContext;
 }
 
-const workerSystem = (contextBlock: string) =>
-    `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, using tools as needed — call search_web for any current or factual information you need. Do NOT create files or documents yourself; return your findings as clear, well-structured text so the lead agent can synthesize them into the single final deliverable. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
+const workerSystem = (contextBlock: string, hasTools: boolean) => {
+    const toolLine = hasTools
+        ? "using tools as needed — call search_web for any current or factual information you need"
+        : "working from the objective and the context you are given (you have no tools on this run, so do not reference tool calls)";
+    return `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, ${toolLine}. Do NOT create files or documents yourself; return your findings as clear, well-structured text so the lead agent can synthesize them into the single final deliverable. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
+};
 
 const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL]);
 
+// Sentinel returned by openaiCompatChat instead of throwing on an empty answer.
+const EMPTY_REPLY = "(The model returned an empty response.)";
+const isEmptyReply = (out: string) => !out.trim() || out.trim() === EMPTY_REPLY;
+
 export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string }> {
-    const resolved: ResolvedChat =
-        (p.modelHint ? resolveChatModelByName(p.modelHint) : null) ?? resolveChat();
-    const system = workerSystem(p.contextBlock);
+    const needsTools = p.needsTools ?? true;
 
-    try {
-        if (resolved.provider.kind === "gemini") {
-            const output = await runGeminiLoop({
-                model: resolved.model.id,
-                systemPrompt: system,
-                userMessage: p.objective,
-                toolDeclarations: workerTools(),
-                dispatch: (name, args) => executeTool(name, args, p.embRef, p.toolCtx),
-                maxRounds: AGENT_CONFIG.workerMaxRounds,
-            });
-            return { model: resolved.model.id, output };
+    // Candidates: explicit model hint first, then the free fast chain.
+    // Gemini runs only when all candidates error or return nothing.
+    const hinted = p.modelHint ? resolveChatModelByName(p.modelHint) : null;
+    const seen = new Set<string>();
+    const candidates: ResolvedChat[] = [];
+    for (const c of [hinted, ...resolveWorkerChain(needsTools)]) {
+        if (!c) continue;
+        const key = `${c.provider.id}::${c.model.id}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            candidates.push(c);
         }
+    }
 
-        const output = await openaiCompatChat({
-            provider: resolved.provider,
-            model: resolved.model,
-            systemText: system,
-            userText: p.objective,
-            embRef: p.embRef,
-            ctx: p.toolCtx,
-        });
-        return { model: resolved.model.id, output };
-    } catch (err) {
-        console.warn(`[Worker] ${resolved.model.id} failed, falling back to Gemini:`, err);
-        const output = await runGeminiLoop({
-            systemPrompt: system,
+    const geminiRun = (model?: string) =>
+        runGeminiLoop({
+            ...(model ? { model } : {}),
+            systemPrompt: workerSystem(p.contextBlock, true),
             userMessage: p.objective,
             toolDeclarations: workerTools(),
             dispatch: (name, args) => executeTool(name, args, p.embRef, p.toolCtx),
             maxRounds: AGENT_CONFIG.workerMaxRounds,
         });
-        return { model: `${MODEL} (fallback)`, output };
+
+    for (const resolved of candidates) {
+        try {
+            const output = resolved.provider.kind === "gemini"
+                ? await geminiRun(resolved.model.id)
+                : await openaiCompatChat({
+                    provider: resolved.provider,
+                    model: resolved.model,
+                    systemText: workerSystem(p.contextBlock, resolved.model.supportsTools),
+                    userText: p.objective,
+                    embRef: p.embRef,
+                    ctx: p.toolCtx,
+                });
+            if (!isEmptyReply(output)) return { model: resolved.model.id, output };
+            console.warn(`[Worker] ${resolved.model.id} returned nothing, trying next model`);
+        } catch (err) {
+            console.warn(`[Worker] ${resolved.model.id} failed, trying next model:`, err);
+        }
     }
+
+    const output = await geminiRun();
+    return { model: `${MODEL} (fallback)`, output };
 }

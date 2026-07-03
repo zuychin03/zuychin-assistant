@@ -79,6 +79,72 @@ export const SKILLS: Skill[] = [
 9. In chat, summarize what was learned and mention the page path(s) saved.`,
     },
     {
+        id: "plan-my-day",
+        name: "Plan My Day",
+        whenToUse: "The user wants a daily plan, a morning briefing, help prioritizing today, or asks 'what should I do today?'.",
+        instructions: `Turn today's calendar, tasks and inbox into one prioritized plan.
+1. Gather in parallel: list_calendar_events (next ~24h), manage_todo_list action 'list' (pending tasks), and list_unread_emails. Note the current time with get_current_time.
+2. Triage: fixed commitments (events) are anchors; then anything urgent from email or overdue/dated tasks; then the highest-value pending tasks. Flag conflicts or an overloaded day honestly.
+3. Produce a compact plan: a timeline around the fixed events, a short "top 3 focus" list, and a "can wait" list. Keep it scannable — no walls of text.
+4. If the user commits to new tasks during the conversation, add them with manage_todo_list so they land in the Notes checklist. Do NOT re-add tasks that already exist.
+5. End with the single most important thing to do first.`,
+    },
+    {
+        id: "email-triage",
+        name: "Email Triage",
+        whenToUse: "The user wants their inbox processed: what's urgent, what needs a reply, and drafts prepared — more than a plain unread summary.",
+        instructions: `Process the inbox to zero-decision state.
+1. list_unread_emails (and list_recent_emails if the user mentions a time span). If it's empty, say so and stop.
+2. Categorize each email: URGENT (needs action today), REPLY NEEDED, FYI (read and archive), and NOISE (ignore).
+3. For each REPLY NEEDED email the user plausibly wants answered: read_email for full context, then draft_gmail_reply with a concise, appropriate reply. Never send_email unless the user explicitly asked to send.
+4. If an email implies a task or deadline, add it via manage_todo_list (with due_date when one is stated) so it shows in the Notes checklist.
+5. Report as a short table/list grouped by category: sender, subject, one-line gist, and what you did (drafted / task added / nothing). Lead with the urgent items.`,
+    },
+    {
+        id: "compare-options",
+        name: "Compare Options",
+        whenToUse: "The user is choosing between products, tools, libraries, services, or approaches and wants a researched comparison with a recommendation.",
+        instructions: `Research the options and make a real recommendation.
+1. Pin down the options and the criteria that actually matter to THIS user (cost, learning curve, ecosystem, performance, lock-in…). Infer criteria from context; state them explicitly.
+2. Research each option with search_web — current pricing, recent releases, known problems. For 3+ options, dispatch run_subagents with one worker per option.
+3. Build a comparison table: options as columns, criteria as rows, concrete facts in the cells (numbers, not adjectives).
+4. Give ONE clear recommendation for the user's situation and say why, plus the main scenario in which you'd pick the runner-up instead. Never end with "it depends".
+5. Answer in chat for quick comparisons; use create_document only if the user asked for a document or there are many options/criteria.`,
+    },
+    {
+        id: "explain-concept",
+        name: "Explain a Concept",
+        whenToUse: "The user wants to learn, understand, or study a concept, technology, or idea — 'explain X', 'how does X work', 'teach me X'.",
+        instructions: `Teach the concept so it sticks, building on what the vault already knows.
+1. vault_search the topic first — if the vault has pages on it, build on them and cite the page paths; fill gaps with search_web for anything recent or factual.
+2. Explain in layers: one-sentence essence → a concrete everyday analogy → how it actually works (with a small example, code if it's a programming topic) → where it breaks down or gets misused.
+3. Calibrate depth to the user's question; they are a developer, so technical precision beats hand-waving, but lead with intuition before formalism.
+4. Name the 2–3 most common misconceptions or gotchas about the topic.
+5. If the explanation is substantial and durable (not a quick lookup), save it as a 'concepts' page with vault_ingest so the second brain learns it; mention the saved path.`,
+    },
+    {
+        id: "refactor-code",
+        name: "Refactor Code",
+        whenToUse: "The user shares working code and wants it cleaned up, simplified, modernized, or restructured WITHOUT changing behavior.",
+        instructions: `Improve the code while provably preserving behavior.
+1. Read the whole input and state in one line what the code does — refactor only what you understand.
+2. Identify the improvements worth making: duplication, dead code, misleading names, oversized functions, outdated idioms, missing error handling. Skip cosmetic churn.
+3. Preserve behavior exactly: same inputs → same outputs and side effects. If a change WOULD alter behavior (even fixing an apparent bug), do not silently include it — flag it separately as a suggested fix.
+4. Keep the user's style and conventions (naming, formatting, framework idioms) rather than imposing your own.
+5. Return the refactored code via create_code_file (or create_code_bundle for multiple files). In chat, list each meaningful change and why, plus the separate list of flagged behavior-changing suggestions.`,
+    },
+    {
+        id: "write-tests",
+        name: "Write Tests",
+        whenToUse: "The user wants unit/integration tests written for code they provide or describe.",
+        instructions: `Deliver a runnable test suite, not sample assertions.
+1. Identify the language and the test framework from the code or the user's stack (their projects use Vitest/Jest for TS/JS); state your choice in one line if it's ambiguous.
+2. Read the code and enumerate what must be covered: the happy path, edge cases (empty/null/boundary values), error paths, and any tricky branch you can see in the logic.
+3. Write complete, runnable tests — real imports, correct mocking of external calls (network, DB, time), descriptive test names that read as specifications.
+4. Don't test implementation details; test observable behavior, so the tests survive refactors.
+5. Return the tests via create_code_file (matching the source filename, e.g. utils.test.ts). In chat, list what's covered, what isn't, and the command to run them.`,
+    },
+    {
         id: "plan-feature",
         name: "Plan a Feature",
         whenToUse: "The user wants an implementation plan, technical design, or phased roadmap for building a feature or project.",

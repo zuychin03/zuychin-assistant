@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo } from "lucide-react";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
+import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import type { ArtifactDescriptor } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
@@ -53,6 +54,16 @@ interface Conversation {
   id: string;
   title: string;
   updatedAt: string;
+}
+
+interface NoteItem {
+  id: string;
+  title: string;
+  description: string;
+  status: "pending" | "in_progress" | "done";
+  priority: "low" | "medium" | "high";
+  dueDate: string | null;
+  createdAt: string;
 }
 
 interface ModelMeta {
@@ -306,6 +317,10 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [cmdDismissed, setCmdDismissed] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
@@ -354,9 +369,58 @@ export default function Home() {
     loadConversations();
   }, [loadConversations]);
 
+  const loadNotes = useCallback(async () => {
+    try {
+      const res = await fetch("/api/todos");
+      const data = await res.json();
+      if (data.todos) {
+        // Undated notes first (newest on top), then dated ones by due date.
+        const items = data.todos as NoteItem[];
+        const undated = items.filter((n) => !n.dueDate);
+        const dated = items
+          .filter((n) => n.dueDate)
+          .sort((a, b) => a.dueDate!.localeCompare(b.dueDate!));
+        setNotes([...undated, ...dated]);
+      }
+    } catch (err) {
+      console.error("Failed to load notes:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadNotes();
+  }, [loadNotes]);
+
+  const completeNote = async (id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    try {
+      const res = await fetch("/api/todos", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status: "done" }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    } catch (err) {
+      console.error("Failed to complete note:", err);
+      loadNotes();
+    }
+  };
+
+  const toggleNotes = () => {
+    setNotesOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem("zuychin-notes-open", String(next));
+      if (next) loadNotes();
+      return next;
+    });
+  };
+
   useEffect(() => {
     const saved = localStorage.getItem("zuychin-think-mode");
     if (saved === "true") setThinkingEnabled(true);
+    if (localStorage.getItem("zuychin-notes-open") === "true" && window.innerWidth >= 768) {
+      setNotesOpen(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -544,6 +608,18 @@ export default function Home() {
     setPendingFile(null);
     setIsLoading(true);
 
+    if (convId) {
+      const bumpedId = convId;
+      setConversations((prev) => {
+        const idx = prev.findIndex((c) => c.id === bumpedId);
+        if (idx <= 0) return prev;
+        const next = [...prev];
+        const [conv] = next.splice(idx, 1);
+        next.unshift({ ...conv, updatedAt: new Date().toISOString() });
+        return next;
+      });
+    }
+
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
     }
@@ -637,6 +713,7 @@ export default function Home() {
       };
       setMessages((prev) => [...prev, assistantMessage]);
       await loadConversations();
+      loadNotes();
     } catch (error: unknown) {
       const errorMsg =
         error instanceof Error ? error.message : "Something went wrong.";
@@ -654,12 +731,46 @@ export default function Home() {
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    setCmdDismissed(false);
+    setCmdIndex(0);
 
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
   };
 
+  // Command suggestions show while the first token is being typed ("/dra…").
+  const slashMatches = cmdDismissed ? [] : matchSlashCommands(input);
+  const cmdSel = Math.min(cmdIndex, Math.max(0, slashMatches.length - 1));
+
+  const applyCommand = (c: SlashCommand) => {
+    setInput(`/${c.id} `);
+    setCmdIndex(0);
+    inputRef.current?.focus();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCmdIndex((cmdSel + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCmdIndex((cmdSel - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        applyCommand(slashMatches[cmdSel]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCmdDismissed(true);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
@@ -826,6 +937,14 @@ export default function Home() {
         />
       )}
 
+      {!isDesktop && notesOpen && (
+        <div
+          style={styles.overlay}
+          className="animate-overlay-in"
+          onClick={() => setNotesOpen(false)}
+        />
+      )}
+
       {modelInfoOpen && currentChatModel && (
         <ModelInfoModal
           model={currentChatModel}
@@ -833,6 +952,57 @@ export default function Home() {
           onClose={() => setModelInfoOpen(false)}
         />
       )}
+
+      <aside
+        style={{
+          ...(isDesktop ? {
+            ...styles.notesPanelDesktop,
+            width: notesOpen ? 280 : 0,
+            minWidth: notesOpen ? 280 : 0,
+          } : styles.notesPanel),
+          ...(!isDesktop && { transform: notesOpen ? "translateX(0)" : "translateX(-100%)" }),
+        }}
+      >
+        <div style={styles.sidebarHeader}>
+          <h2 style={styles.sidebarTitle}>Notes</h2>
+          <button
+            onClick={() => setNotesOpen(false)}
+            style={styles.closeBtn}
+            aria-label="Close notes"
+          >
+            <X size={18} color="var(--color-text-muted)" />
+          </button>
+        </div>
+
+        <div style={styles.notesList}>
+          {notes.length === 0 && (
+            <p style={styles.noConversations}>
+              Nothing pending. Ask me to remember a task and it will show up here.
+            </p>
+          )}
+          {notes.map((note) => (
+            <div key={note.id} style={styles.noteItem}>
+              <button
+                onClick={() => completeNote(note.id)}
+                style={styles.noteCheckbox}
+                aria-label={`Mark "${note.title}" as done`}
+                title="Mark as done"
+              />
+              <div style={styles.noteInfo}>
+                <span style={styles.noteTitle}>{note.title}</span>
+                {note.description && (
+                  <span style={styles.noteDesc}>{note.description}</span>
+                )}
+                {note.dueDate && (
+                  <span style={styles.noteDue}>
+                    {new Date(note.dueDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
 
       <aside
         style={{
@@ -920,6 +1090,17 @@ export default function Home() {
             </div>
 
             <div style={styles.headerRight}>
+              <button
+                onClick={toggleNotes}
+                style={{ ...styles.iconBtn, position: "relative" }}
+                aria-label={notesOpen ? "Close notes" : `Open notes (${notes.length} pending)`}
+                title="Notes & tasks"
+              >
+                <ListTodo size={19} color={notesOpen ? "var(--color-primary)" : "var(--color-text-primary)"} />
+                {!notesOpen && notes.length > 0 && (
+                  <span style={styles.noteBadge}>{notes.length > 9 ? "9+" : notes.length}</span>
+                )}
+              </button>
               <button
                 onClick={toggleTheme}
                 style={styles.iconBtn}
@@ -1141,6 +1322,23 @@ export default function Home() {
             </div>
           )}
 
+          {slashMatches.length > 0 && (
+            <div style={styles.cmdMenu} className="animate-fade-in-scale">
+              {slashMatches.map((c, i) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); applyCommand(c); }}
+                  onMouseEnter={() => setCmdIndex(i)}
+                  style={{ ...styles.cmdItem, ...(i === cmdSel ? styles.cmdItemActive : {}) }}
+                >
+                  <span style={styles.cmdUsage}>{c.usage}</span>
+                  <span style={styles.cmdDesc}>{c.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} style={styles.inputRow}>
             <input
               ref={fileInputRef}
@@ -1200,7 +1398,7 @@ export default function Home() {
               value={input}
               onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
-              placeholder="Message Zuychin..."
+              placeholder="Message Zuychin... (type / for commands)"
               rows={1}
               style={styles.textarea}
             />
@@ -1262,6 +1460,93 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100dvh",
     overflow: "hidden",
     transition: "width 0.25s cubic-bezier(0.23, 1, 0.32, 1), min-width 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
+  },
+
+  notesPanel: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width: 280,
+    background: "var(--color-surface)",
+    borderRight: "1px solid var(--color-border)",
+    zIndex: 30,
+    display: "flex",
+    flexDirection: "column",
+    transition: "transform 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
+  },
+  notesPanelDesktop: {
+    background: "var(--color-surface)",
+    borderRight: "1px solid var(--color-border)",
+    display: "flex",
+    flexDirection: "column",
+    height: "100dvh",
+    overflow: "hidden",
+    transition: "width 0.25s cubic-bezier(0.23, 1, 0.32, 1), min-width 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
+  },
+  notesList: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "8px 10px",
+  },
+  noteItem: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: "9px 10px",
+    borderRadius: 8,
+  },
+  noteCheckbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 5,
+    border: "1.5px solid var(--color-text-muted)",
+    background: "transparent",
+    cursor: "pointer",
+    flexShrink: 0,
+    marginTop: 1,
+    padding: 0,
+  },
+  noteInfo: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    minWidth: 0,
+  },
+  noteTitle: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: "var(--color-text-primary)",
+    lineHeight: 1.35,
+    overflowWrap: "anywhere",
+  },
+  noteDesc: {
+    fontSize: 12,
+    color: "var(--color-text-muted)",
+    lineHeight: 1.35,
+  },
+  noteDue: {
+    fontSize: 11,
+    fontWeight: 500,
+    color: "var(--color-primary)",
+  },
+  noteBadge: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    minWidth: 15,
+    height: 15,
+    padding: "0 3px",
+    borderRadius: 8,
+    background: "var(--color-primary)",
+    color: "#fff",
+    fontSize: 9.5,
+    fontWeight: 700,
+    lineHeight: 1,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
   sidebarHeader: {
     display: "flex",
@@ -1839,6 +2124,44 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: 14,
     boxShadow: "0 6px 24px rgba(0,0,0,0.10)",
+  },
+
+  cmdMenu: {
+    background: "var(--color-surface)",
+    border: "1px solid var(--color-border)",
+    borderRadius: 14,
+    padding: 6,
+    marginBottom: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    maxHeight: 280,
+    overflowY: "auto",
+    boxShadow: "0 6px 24px rgba(0,0,0,0.10)",
+  },
+  cmdItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 1,
+    padding: "8px 10px",
+    background: "transparent",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer",
+    textAlign: "left",
+    fontFamily: "var(--font-family)",
+  },
+  cmdItemActive: {
+    background: "var(--color-background)",
+  },
+  cmdUsage: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--color-primary)",
+  },
+  cmdDesc: {
+    fontSize: 12,
+    color: "var(--color-text-muted)",
   },
   settingsHeader: {
     display: "flex",
