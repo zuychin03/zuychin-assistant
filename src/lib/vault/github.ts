@@ -23,7 +23,9 @@ export interface VaultEntry {
 
 export interface CommitFileChange {
     path: string;
+    /** Ignored when delete is true. */
     content: string;
+    delete?: boolean;
 }
 
 export function getVaultConfig(): VaultConfig | null {
@@ -171,12 +173,12 @@ export async function commitFiles(
         method: "POST",
         body: JSON.stringify({
             base_tree: baseTree,
-            tree: changes.map((c) => ({
-                path: c.path,
-                mode: "100644",
-                type: "blob",
-                content: c.content,
-            })),
+            // sha: null removes the path from the tree (GitHub delete semantics).
+            tree: changes.map((c) =>
+                c.delete
+                    ? { path: c.path, mode: "100644", type: "blob", sha: null }
+                    : { path: c.path, mode: "100644", type: "blob", content: c.content },
+            ),
         }),
     });
 

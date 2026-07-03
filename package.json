@@ -12,6 +12,7 @@
     "@google/genai": "^1.42.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@supabase/supabase-js": "^2.97.0",
+    "3d-force-graph": "^1.80.0",
     "discord.js": "^14.25.1",
     "docx": "^9.6.1",
     "googleapis": "^171.4.0",
@@ -23,7 +24,8 @@
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "telegram-markdown-v2": "^0.0.4"
+    "telegram-markdown-v2": "^0.0.4",
+    "three-spritetext": "^1.10.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -31,6 +33,7 @@
     "@types/pdfkit": "^0.17.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.185.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",

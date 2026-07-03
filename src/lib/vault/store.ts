@@ -46,24 +46,46 @@ export async function upsertVaultPage(
 
 export interface VaultPageRow extends VaultPageMeta {
     embeddingModel: string;
+    updatedAt: string | null;
 }
 
 /** All indexed pages (no vectors) — used by lint to reconcile repo vs index. */
 export async function listVaultPages(): Promise<VaultPageRow[]> {
     const { data, error } = await supabase
         .from("vault_pages")
-        .select("path, title, summary, category, embedding_model");
+        .select("path, title, summary, category, embedding_model, updated_at");
     if (error) {
         console.error("[Vault] Failed to list page index:", error.message);
         throw new Error("Failed to list the vault page index.");
     }
-    return (data ?? []).map((r: { path: string; title: string; summary: string; category: string; embedding_model: string }) => ({
+    return (data ?? []).map((r: { path: string; title: string; summary: string; category: string; embedding_model: string; updated_at: string | null }) => ({
         path: r.path,
         title: r.title,
         summary: r.summary,
         category: r.category,
         embeddingModel: r.embedding_model,
+        updatedAt: r.updated_at,
     }));
+}
+
+/** Stored vectors of one model partition — used for offline link suggestions. */
+export async function listVaultEmbeddings(model: string): Promise<{ path: string; embedding: number[] }[]> {
+    const { data, error } = await supabase
+        .from("vault_pages")
+        .select("path, embedding")
+        .eq("embedding_model", model);
+    if (error) {
+        console.error("[Vault] Failed to list embeddings:", error.message);
+        return [];
+    }
+    const out: { path: string; embedding: number[] }[] = [];
+    for (const r of data ?? []) {
+        try {
+            const vec = typeof r.embedding === "string" ? JSON.parse(r.embedding) : r.embedding;
+            if (Array.isArray(vec) && vec.length > 0) out.push({ path: r.path, embedding: vec });
+        } catch { /* skip malformed rows */ }
+    }
+    return out;
 }
 
 export async function deleteVaultPage(path: string): Promise<void> {

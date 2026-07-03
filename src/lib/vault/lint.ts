@@ -24,16 +24,16 @@ export interface LintResult {
     report: string;
 }
 
-interface VaultPage {
+export interface VaultPage {
     path: string;
     text: string;
     category: VaultCategory;
     outbound: string[]; // normalized wikilink targets (no .md), wiki/ only
 }
 
-const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g;
+export const WIKILINK_RE = /\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g;
 
-function extractLinks(text: string): string[] {
+export function extractLinks(text: string): string[] {
     const targets: string[] = [];
     for (const m of text.matchAll(WIKILINK_RE)) {
         const norm = m[1].trim().replace(/\.md$/, "");
@@ -47,13 +47,13 @@ function escapeRegExp(s: string): string {
 }
 
 /** Unlink a dead wikilink but keep readable text ([[x|label]] → label, [[x]] → humanized slug). */
-function removeDeadLink(text: string, deadTarget: string): string {
+export function removeDeadLink(text: string, deadTarget: string): string {
     const fallback = deadTarget.replace(/\.md$/, "").split("/").pop()!.replace(/-/g, " ");
     const re = new RegExp(`\\[\\[${escapeRegExp(deadTarget)}(?:\\|([^\\]]*))?\\]\\]`, "g");
     return text.replace(re, (_m, label: string | undefined) => label?.trim() || fallback);
 }
 
-async function loadWikiPages(cfg: VaultConfig): Promise<VaultPage[]> {
+export async function loadWikiPages(cfg: VaultConfig): Promise<VaultPage[]> {
     const pages: VaultPage[] = [];
     for (const category of VAULT_CATEGORIES) {
         const entries = await listDir(cfg, `wiki/${category}`);

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo } from "lucide-react";
+import Link from "next/link";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, ChevronDown, Check, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints } from "lucide-react";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import type { ArtifactDescriptor } from "@/lib/types";
@@ -100,7 +101,7 @@ interface GenParamsState {
 }
 
 function SelectMenu({
-  icon, groups, value, onChange, ariaLabel, align = "left", compact = false,
+  icon, groups, value, onChange, ariaLabel, align = "left", compact = false, dropUp = false, wide = false,
 }: {
   icon: React.ReactNode;
   groups: { label: string; options: { value: string; label: string }[] }[];
@@ -109,6 +110,9 @@ function SelectMenu({
   ariaLabel: string;
   align?: "left" | "right";
   compact?: boolean;
+  dropUp?: boolean;
+  /** Lifts the trigger/menu width caps so long labels are not truncated. */
+  wide?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -125,7 +129,7 @@ function SelectMenu({
   const current = groups.flatMap((g) => g.options).find((o) => o.value === value);
 
   return (
-    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}) }}>
+    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}) }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -137,12 +141,17 @@ function SelectMenu({
         <span style={dropdown.triggerLabel}>{current?.label ?? "Select"}</span>
         <ChevronDown
           size={14}
-          style={{ flexShrink: 0, opacity: 0.5, transform: open ? "rotate(180deg)" : "none", transition: "transform .18s ease" }}
+          style={{ flexShrink: 0, opacity: 0.5, transform: (dropUp ? !open : open) ? "rotate(180deg)" : "none", transition: "transform .18s ease" }}
         />
       </button>
       {open && (
         <div
-          style={{ ...dropdown.menu, ...(align === "right" ? { right: 0 } : { left: 0 }) }}
+          style={{
+            ...dropdown.menu,
+            ...(align === "right" ? { right: 0 } : { left: 0 }),
+            ...(dropUp ? { top: "auto", bottom: "calc(100% + 6px)" } : {}),
+            ...(wide ? { maxWidth: "min(380px, calc(100vw - 20px))" } : {}),
+          }}
           className="animate-fade-in-scale"
         >
           {groups.map((g) => (
@@ -887,21 +896,15 @@ export default function Home() {
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
       <>
-        {providers.some((p) => p.embeddingModels.length > 0) && (
-          <SelectMenu
-            compact={compact}
-            ariaLabel="Embedding model"
-            icon={<Database size={14} color="var(--color-text-muted)" />}
-            value={embedSel}
-            onChange={handleEmbedSelChange}
-            groups={providers
-              .filter((p) => p.embeddingModels.length > 0)
-              .map((p) => ({
-                label: p.label,
-                options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
-              }))}
-          />
-        )}
+        <Link
+          href="/graph"
+          style={compact ? { ...styles.graphBtn, flex: "none" } : styles.graphBtn}
+          aria-label="Knowledge graph"
+          title="Knowledge graph"
+        >
+          <Waypoints size={14} color="var(--color-text-muted)" />
+          {!compact && <span>Knowledge Graph</span>}
+        </Link>
         <SelectMenu
           compact={compact}
           align="right"
@@ -1300,6 +1303,49 @@ export default function Home() {
               <p style={styles.settingsNote}>
                 Unset = provider default. Applied to the selected model where supported.
               </p>
+              <div style={styles.settingsEmbedRow}>
+                {providers.some((p) => p.embeddingModels.length > 0) && (
+                  <>
+                    <span style={styles.settingsEmbedLabel}>Embedding</span>
+                    <SelectMenu
+                      dropUp
+                      wide
+                      ariaLabel="Embedding model"
+                      icon={<Database size={14} color="var(--color-text-muted)" />}
+                      value={embedSel}
+                      onChange={handleEmbedSelChange}
+                      groups={providers
+                        .filter((p) => p.embeddingModels.length > 0)
+                        .map((p) => ({
+                          label: p.label,
+                          options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
+                        }))}
+                    />
+                  </>
+                )}
+                <div style={styles.agentSwitchWrap}>
+                  <span style={styles.settingsEmbedLabel}>Agent mode</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={agentEnabled}
+                    onClick={toggleAgent}
+                    style={{
+                      ...styles.switchTrack,
+                      ...(agentEnabled ? styles.switchTrackOn : {}),
+                    }}
+                    aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
+                    title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
+                  >
+                    <span
+                      style={{
+                        ...styles.switchKnob,
+                        transform: agentEnabled ? "translateX(16px)" : "translateX(0)",
+                      }}
+                    />
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1354,18 +1400,6 @@ export default function Home() {
               aria-label="Attach file"
             >
               <Paperclip size={18} color="var(--color-text-muted)" />
-            </button>
-            <button
-              type="button"
-              onClick={toggleAgent}
-              style={{
-                ...styles.attachBtn,
-                opacity: agentEnabled ? 1 : 0.5,
-              }}
-              aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
-              title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
-            >
-              <Bot size={18} color={agentEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
             </button>
             {canThink && (
               <button
@@ -1809,6 +1843,21 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     transition: "background 0.15s ease",
   },
+  graphBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "6px 11px",
+    fontSize: 12.5,
+    fontWeight: 500,
+    borderRadius: 10,
+    border: "1px solid var(--color-border)",
+    background: "var(--color-surface)",
+    color: "var(--color-text-primary)",
+    textDecoration: "none",
+    flexShrink: 0,
+    transition: "background 0.15s ease",
+  },
 
   messages: {
     flex: 1,
@@ -2177,6 +2226,50 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: "var(--color-text-muted)",
     lineHeight: 1.4,
+  },
+  settingsEmbedRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTop: "1px solid var(--color-border)",
+  },
+  settingsEmbedLabel: {
+    fontSize: 12,
+    color: "var(--color-text-muted)",
+    flexShrink: 0,
+  },
+  agentSwitchWrap: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 22,
+    flexShrink: 0,
+  },
+  switchTrack: {
+    position: "relative",
+    width: 40,
+    height: 24,
+    padding: 2,
+    borderRadius: 999,
+    border: "none",
+    background: "var(--color-border)",
+    cursor: "pointer",
+    flexShrink: 0,
+    transition: "background 0.2s ease",
+  },
+  switchTrackOn: {
+    background: "var(--color-text-primary)",
+  },
+  switchKnob: {
+    display: "block",
+    width: 20,
+    height: 20,
+    borderRadius: "50%",
+    background: "var(--color-background)",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+    transition: "transform 0.2s ease",
   },
 };
 

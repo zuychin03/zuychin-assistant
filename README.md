@@ -4,7 +4,8 @@ A personal AI chatbot you can talk to from the web, Discord, or Telegram. It let
 switch chat model providers per message (Google Gemini, OpenRouter, NVIDIA NIM, OpenCode Zen),
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
-grounding.
+grounding. Its second-brain wiki vault comes with an interactive Obsidian-style 3D graph view
+where pages and links can be inspected, edited and deleted in place.
 
 ## Features
 
@@ -15,14 +16,26 @@ grounding.
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 17 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+- MCP tools: 18 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   the second-brain vault, current time and recent conversations
-- Agent mode: complex requests are auto-routed (or forced with `/agent`) to a multi-step
-  agent loop with live step streaming, parallel sub-agents, reusable skills and
-  downloadable artifacts (documents, code files, zip bundles)
+- Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
+  to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
+  and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
+  free fast models (DeepSeek V4 Flash, Step 3.7 Flash, any Fast-tagged tool-capable model)
+  with Gemini only as the fallback
+- Slash commands: type `/` in the message bar for a drop-up of 20 ready-made commands
+  (`/plan_day`, `/triage_emails`, `/research`, `/code`, `/debug`, `/vault_save`, …) that
+  expand into full prompts — skill-backed ones force the agent loop
+- Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
+  completes the task and the agent never reminds you about it again. Pending undated tasks
+  are surfaced once a day, at the end of the first reply
 - Second brain: a Karpathy-style LLM-wiki in a private GitHub repo — the agent ingests
   research into interlinked Markdown pages (auto-linked via pgvector + LLM curation,
   verified before every commit) and a lint curator keeps the graph healthy
+- 3D knowledge graph: an Obsidian-style force-directed graph of the vault at `/graph` —
+  rotate/zoom, search with camera fly-to, category filters, local mode, physics sliders,
+  AI-suggested links, and click-to-edit/delete pages and connections with every change
+  landing as an atomic Git commit
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
 - Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
@@ -30,7 +43,8 @@ grounding.
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
-- Cron jobs: daily briefing, event reminders and proactive check-ins
+- Cron jobs: daily briefing (LLM-triaged inbox — only the emails that matter, icon-coded
+  by urgency), event reminders and proactive check-ins
 - Export: save conversations to PDF or DOCX (Markdown-aware)
 - Admin dashboard: stats and a live personality/system-prompt editor at `/admin`
 - Password auth: cookie-based access control via middleware
@@ -44,6 +58,7 @@ grounding.
 | Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Database | Supabase (PostgreSQL + pgvector) |
+| 3D graph | 3d-force-graph (three.js + d3-force-3d), three-spritetext |
 | Integrations | Google Calendar API, Gmail API |
 | Messaging | Discord.js, Telegram Bot API |
 | Export | docx, pdfkit |
@@ -141,9 +156,16 @@ npm run dev
 
 ## Using the app
 
-- Pick the chat model and embedding model from the dropdowns in the header.
+- Pick the chat model from the header dropdown. The **Graph** button next to it opens the
+  3D knowledge-graph view of the second-brain vault.
+- Open the sliders in the message bar for temperature / top-p / max-tokens, the embedding
+  model picker and the **Agent mode** switch (forces the multi-step agent loop for every
+  message; off = auto-detect).
+- Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
+  to pick). Commands expand into full prompts server-side; the raw command stays in history.
+- The checklist icon in the header opens the **Notes** panel — undated tasks the agent has
+  remembered. Ticking one completes it for good.
 - Toggle dark/light mode, start a new conversation, or open history from the header buttons.
-- Open the sliders in the message bar to set temperature / top-p / max-tokens (optional).
 - Prefix a message with `/think` for deeper reasoning or `/search` to force a web-grounded
   answer. These only apply to models that support them, and the UI hides toggles a model
   can't use.
@@ -153,8 +175,11 @@ npm run dev
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/chat` | RAG chat with file, thinking, search and hyperparameters |
+| POST | `/api/chat/stream` | Same as `/api/chat` but streams agent steps + tokens over SSE (web UI) |
 | GET | `/api/providers` | Available providers/models (filtered by configured keys) |
 | GET/POST/DELETE | `/api/conversations` | Conversation list / create / delete |
+| GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
+| GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
 | POST / DELETE | `/api/auth` | Login / logout |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
@@ -165,6 +190,9 @@ npm run dev
 | POST | `/api/cron/proactive` | Proactive check-ins |
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
+| GET | `/api/vault/graph` | Vault as graph data: nodes, edges, similarity link suggestions |
+| GET/PUT/DELETE | `/api/vault/page` | Read / edit / cascade-delete a wiki page |
+| POST/DELETE | `/api/vault/link` | Create / remove a bidirectional wikilink between two pages |
 | GET | `/api/admin/status` | Bot stats |
 | PUT | `/api/admin/personality` | Update system prompt |
 
@@ -228,7 +256,17 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `read_email` | Read a full email body by message ID |
 | `draft_gmail_reply` | Create a draft reply in Gmail |
 | `send_email` | Compose and send a new email |
-| `manage_todo_list` | Add / list / complete / delete to-do items |
+| `manage_todo_list` | Add / list / complete / delete to-do items (feeds the web Notes checklist) |
+| `vault_search` | Semantic search over second-brain wiki pages |
+| `vault_read` | Read a wiki page from the vault |
+| `vault_ingest` | Full ingest pipeline: raw capture → authored page → links → verified commit |
+| `vault_write` | Direct wiki page write (index/log/embedding kept consistent) |
+| `vault_lint` | Vault health check / auto-fix curator |
+
+Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
+(downloadable artifacts — generated documents are auto-embedded into the knowledge base),
+`update_plan` (live step tracker), `use_skill` (loads a skill's full instructions) and
+`run_subagents` (parallel workers on free fast models).
 
 ## Models on Discord / Telegram
 
@@ -327,8 +365,26 @@ The assistant then gets five tools: `vault_search` (pgvector over page summaries
 bidirectional `[[wikilinks]]` → catalogue/log update → independent verification → one atomic
 `learn:` commit), `vault_write` (direct page edits) and `vault_lint` (suggest/auto curator —
 also runs on the weekly cron above with `curator:` commits). Every change is a Git commit,
-so any bad write is one revert away. Point Obsidian at a clone of the repo for a free graph
-view.
+so any bad write is one revert away.
+
+### 3D graph view
+
+The **Graph** button in the header (or `/graph`) opens an interactive 3D force-directed
+view of the vault, in the spirit of Obsidian's graph:
+
+- Nodes are wiki pages (colored by category, sized by connection count, recently updated
+  pages glow); edges are `[[wikilinks]]`.
+- Click a page to read/edit its Markdown or delete it — deletion also strips every
+  reference in other pages, the `index.md` entry and the pgvector row, in one atomic commit.
+- Click a connection to remove it (both directions, readable text kept) or to add a new
+  labelled link from the page panel.
+- Toggle **suggested links**: dashed edges between similar-but-unlinked pages, computed
+  from the stored embeddings — click one to materialize it as a real link.
+- Search with camera fly-to, per-category filters, orphan toggle, physics sliders, and a
+  local mode (double-click a node) that isolates its 1–2 hop neighborhood.
+
+You can still point Obsidian at a clone of the repo — the on-disk format is plain
+Markdown + wikilinks.
 
 ## Deployment
 
@@ -343,18 +399,20 @@ view.
 ```
 src/
 ├── app/
-│   ├── page.tsx                        # Chat UI (header selectors, theme, file upload, toggles)
+│   ├── page.tsx                        # Chat UI (header selectors, notes panel, slash commands)
+│   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── login/page.tsx                  # Login page
 │   ├── admin/page.tsx                  # Admin dashboard
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
-│       ├── chat/route.ts               # RAG chat endpoint
+│       ├── chat/route.ts               # RAG chat endpoint (+ chat/stream for SSE)
 │       ├── providers/route.ts          # Available providers/models
 │       ├── conversations/route.ts      # Conversation CRUD
+│       ├── todos/route.ts              # Notes checklist backend
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
 │       ├── cron/                       # Briefing / reminders / proactive / vault lint
-│       ├── vault/health/route.ts       # Second-brain connectivity check
+│       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
 │       └── admin/                      # Status + personality
 ├── lib/
@@ -362,6 +420,7 @@ src/
 │   ├── supabase.ts                     # Supabase client
 │   ├── db.ts                           # Database layer (messages, embeddings, todos, convos)
 │   ├── types.ts                        # Shared types + MIME/size constants
+│   ├── commands.ts                     # Slash-command registry (shared client/server)
 │   ├── datetime.ts                     # Current date/time context injected on every request
 │   ├── google-auth.ts                  # Google OAuth2 client
 │   ├── ai/
@@ -373,7 +432,7 @@ src/
 │   │   ├── mcp-service.ts              # MCP tool definitions + executors
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
 │   │   └── skills/                     # Reusable skill registry (reports, code, second brain…)
-│   ├── vault/                          # Second brain: GitHub client, ingest, lint, page index
+│   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram services
