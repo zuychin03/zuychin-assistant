@@ -399,7 +399,10 @@ Markdown + wikilinks.
 ```
 src/
 ├── app/
-│   ├── page.tsx                        # Chat UI (header selectors, notes panel, slash commands)
+│   ├── page.tsx                        # Chat UI (state, handlers, layout)
+│   ├── home/
+│   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
+│   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── login/page.tsx                  # Login page
 │   ├── admin/page.tsx                  # Admin dashboard
