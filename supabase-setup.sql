@@ -359,6 +359,49 @@ begin
 end;
 $$;
 
+-- User-schedulable tasks: the assistant runs `instruction` through ragChat on a
+-- schedule and delivers the reply to `channel`. Recurring tasks store a 5-field
+-- cron string evaluated in `timezone`; one-off tasks store run_at and disable
+-- after firing. The dispatcher claims rows optimistically by bumping next_run_at
+-- before running (a crashed run skips one occurrence instead of double-firing).
+create table if not exists scheduled_tasks (
+  id uuid primary key default gen_random_uuid(),
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  title text not null,
+  instruction text not null,
+  schedule_type text not null check (schedule_type in ('once', 'recurring')),
+  cron text,
+  run_at timestamptz,
+  timezone text not null default 'Australia/Sydney',
+  channel text not null default 'telegram' check (channel in ('telegram', 'discord', 'web')),
+  conversation_id uuid references conversations(id) on delete set null,
+  agent_mode boolean not null default false,
+  enabled boolean not null default true,
+  next_run_at timestamptz,
+  last_run_at timestamptz,
+  last_status text check (last_status in ('ok', 'error')),
+  last_result text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_scheduled_tasks_updated_at on scheduled_tasks;
+create trigger trigger_scheduled_tasks_updated_at
+  before update on scheduled_tasks
+  for each row execute function update_updated_at();
+
+create index if not exists idx_scheduled_tasks_due
+  on scheduled_tasks (enabled, next_run_at);
+
+alter table scheduled_tasks enable row level security;
+
+drop policy if exists "Allow all access to scheduled_tasks" on scheduled_tasks;
+create policy "Allow all access to scheduled_tasks" on scheduled_tasks for all using (true) with check (true);
+
+-- Due-todo nagging (reminders cron): when the last nag went out, so overdue
+-- tasks re-nag roughly daily instead of every cron tick.
+alter table todos add column if not exists reminded_at timestamptz;
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (

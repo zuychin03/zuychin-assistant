@@ -368,6 +368,60 @@ export const MCP_TOOLS: McpTool[] = [
             },
         },
     },
+    {
+        name: "manage_scheduled_task",
+        description: "Schedule the assistant to run an instruction later or on a recurring schedule and deliver the result (e.g. 'every weekday at 8am send me a workout reminder on telegram'). Actions: 'create', 'list', 'update', 'delete', 'enable', 'disable'. Recurring tasks use a 5-field cron expression evaluated in the user's timezone; one-off tasks use run_at. Channel 'web' delivers into the current conversation. Always tell the user the next run time from the tool result. This schedules future runs — for a to-do list item use manage_todo_list instead.",
+        parameters: {
+            action: {
+                type: "string",
+                description: "Action: 'create', 'list', 'update', 'delete', 'enable', or 'disable'.",
+                required: true,
+                enum: ["create", "list", "update", "delete", "enable", "disable"],
+            },
+            title: {
+                type: "string",
+                description: "Short task name (required for create), e.g. 'Morning workout reminder'.",
+                required: false,
+            },
+            instruction: {
+                type: "string",
+                description: "The full instruction the assistant will execute on each run (required for create). Write it as a self-contained request.",
+                required: false,
+            },
+            schedule_type: {
+                type: "string",
+                description: "'recurring' (needs cron) or 'once' (needs run_at). Required for create.",
+                required: false,
+                enum: ["once", "recurring"],
+            },
+            cron: {
+                type: "string",
+                description: "5-field cron 'minute hour day-of-month month day-of-week' in the user's timezone, e.g. '0 8 * * 1-5' for weekdays 8am.",
+                required: false,
+            },
+            run_at: {
+                type: "string",
+                description: "ISO 8601 datetime for one-off tasks, e.g. '2026-07-10T09:00:00+10:00'.",
+                required: false,
+            },
+            channel: {
+                type: "string",
+                description: "Where to deliver the result: 'telegram' (default), 'discord', or 'web' (into the current conversation).",
+                required: false,
+                enum: ["telegram", "discord", "web"],
+            },
+            agent_mode: {
+                type: "boolean",
+                description: "Run the instruction as a full agent task (multi-step research/tools). Only for tasks that genuinely need it — agent runs are slow and expensive.",
+                required: false,
+            },
+            task_id: {
+                type: "string",
+                description: "Task ID (required for update/delete/enable/disable).",
+                required: false,
+            },
+        },
+    },
 ];
 
 import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
@@ -379,6 +433,11 @@ import { searchVaultPages } from "@/lib/vault/store";
 import { ingestToVault, writeVaultPage, type VaultCategory } from "@/lib/vault/ingest";
 import { lintVault, type LintMode } from "@/lib/vault/lint";
 import { deleteGraphPage } from "@/lib/vault/graph";
+import {
+    createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask,
+    type ScheduledTask, type TaskChannel,
+} from "@/lib/tasks/store";
+import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 
 export async function executeTool(
     toolName: string,
@@ -451,6 +510,9 @@ export async function executeTool(
 
         case "manage_todo_list":
             return executeManageTodoList(args);
+
+        case "manage_scheduled_task":
+            return executeManageScheduledTask(args, ctx);
 
         default:
             return `Unknown tool: ${toolName}`;
@@ -868,6 +930,115 @@ async function executeManageTodoList(
     } catch (error) {
         console.error("[MCP] Todo list failed:", error);
         return "Failed to manage to-do list.";
+    }
+}
+
+function formatTask(t: ScheduledTask): string {
+    const schedule = t.scheduleType === "recurring" ? `cron ${t.cron}` : `once at ${t.runAt}`;
+    const state = t.enabled ? describeNextRun(t.nextRunAt, t.timezone) : "disabled";
+    const last = t.lastStatus ? `, last run ${t.lastStatus}` : "";
+    return `- "${t.title}" (${schedule}, ${t.channel}${t.agentMode ? ", agent" : ""}) — ${state}${last} [id: ${t.id}]`;
+}
+
+async function executeManageScheduledTask(
+    args: Record<string, unknown>,
+    ctx?: ToolContext
+): Promise<string> {
+    const action = (args.action as string) ?? "list";
+    const taskId = args.task_id as string | undefined;
+
+    try {
+        switch (action) {
+            case "create": {
+                const title = (args.title as string | undefined)?.trim();
+                const instruction = (args.instruction as string | undefined)?.trim();
+                const scheduleType = args.schedule_type as "once" | "recurring" | undefined;
+                if (!title || !instruction) return "Error: title and instruction are required to create a task.";
+                if (scheduleType !== "once" && scheduleType !== "recurring") {
+                    return "Error: schedule_type must be 'once' (with run_at) or 'recurring' (with cron).";
+                }
+
+                const cron = (args.cron as string | undefined)?.trim();
+                const runAt = (args.run_at as string | undefined)?.trim();
+                if (scheduleType === "recurring") {
+                    if (!cron) return "Error: a recurring task needs a 5-field cron expression.";
+                    const cronError = validateCron(cron);
+                    if (cronError) return `Error: ${cronError}`;
+                } else {
+                    if (!runAt || isNaN(Date.parse(runAt))) return "Error: a one-off task needs a valid ISO run_at datetime.";
+                    if (new Date(runAt) <= new Date()) return "Error: run_at is in the past — pick a future time.";
+                }
+
+                const channel = (args.channel as TaskChannel | undefined) ?? "telegram";
+                if (channel === "web" && !ctx?.conversationId) {
+                    return "Error: channel 'web' delivers into the current conversation, which is unavailable here. Use 'telegram' or 'discord' instead.";
+                }
+
+                const task = await createScheduledTask({
+                    title,
+                    instruction,
+                    scheduleType,
+                    cron,
+                    runAt,
+                    channel,
+                    conversationId: channel === "web" ? ctx?.conversationId : undefined,
+                    agentMode: args.agent_mode === true,
+                    userProfileId: ctx?.userProfileId,
+                });
+                return `✅ Scheduled "${task.title}" (${task.channel}${task.agentMode ? ", agent mode" : ""}) — ${describeNextRun(task.nextRunAt, task.timezone)}. Task id: ${task.id}`;
+            }
+
+            case "list": {
+                const tasks = await listScheduledTasks();
+                if (tasks.length === 0) return "No scheduled tasks yet.";
+                return `Scheduled tasks:\n${tasks.map(formatTask).join("\n")}`;
+            }
+
+            case "update": {
+                if (!taskId) return "Error: task_id is required to update a task.";
+                const cron = (args.cron as string | undefined)?.trim();
+                if (cron) {
+                    const cronError = validateCron(cron);
+                    if (cronError) return `Error: ${cronError}`;
+                }
+                const runAt = (args.run_at as string | undefined)?.trim();
+                if (runAt && isNaN(Date.parse(runAt))) return "Error: run_at must be a valid ISO datetime.";
+
+                const task = await updateScheduledTask(taskId, {
+                    ...(args.title !== undefined && { title: args.title as string }),
+                    ...(args.instruction !== undefined && { instruction: args.instruction as string }),
+                    ...(args.schedule_type !== undefined && { scheduleType: args.schedule_type as "once" | "recurring" }),
+                    ...(cron !== undefined && { cron }),
+                    ...(runAt !== undefined && { runAt }),
+                    ...(args.channel !== undefined && { channel: args.channel as TaskChannel }),
+                    ...(args.agent_mode !== undefined && { agentMode: args.agent_mode === true }),
+                });
+                if (!task) return "Failed to update — check the task_id with action 'list'.";
+                return `✅ Updated "${task.title}" — ${task.enabled ? describeNextRun(task.nextRunAt, task.timezone) : "still disabled"}.`;
+            }
+
+            case "delete": {
+                if (!taskId) return "Error: task_id is required to delete a task.";
+                const ok = await deleteScheduledTask(taskId);
+                return ok ? "🗑️ Scheduled task deleted." : "Failed to delete — check the task_id with action 'list'.";
+            }
+
+            case "enable":
+            case "disable": {
+                if (!taskId) return `Error: task_id is required to ${action} a task.`;
+                const task = await updateScheduledTask(taskId, { enabled: action === "enable" });
+                if (!task) return "Failed — check the task_id with action 'list'.";
+                return action === "enable"
+                    ? `✅ Enabled "${task.title}" — ${describeNextRun(task.nextRunAt, task.timezone)}.`
+                    : `⏸ Disabled "${task.title}".`;
+            }
+
+            default:
+                return `Unknown action: ${action}. Use 'create', 'list', 'update', 'delete', 'enable', or 'disable'.`;
+        }
+    } catch (error) {
+        console.error("[MCP] Scheduled task failed:", error);
+        return "Failed to manage scheduled tasks.";
     }
 }
 
