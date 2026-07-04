@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
                     thinking: !!body.thinking,
                     search: !!body.search,
                     agent: !!body.agent,
+                    resumeRunId: body.resumeRunId as string | undefined,
                     provider: body.provider as string | undefined,
                     model: body.model as string | undefined,
                     embeddingModel: body.embeddingModel as string | undefined,

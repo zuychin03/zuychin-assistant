@@ -6,6 +6,7 @@ import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
 import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
 import { buildSkillIndex, getSkillInstructions } from "@/lib/ai/skills/registry";
+import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
 import type { ArtifactDescriptor } from "@/lib/types";
@@ -49,8 +50,15 @@ export async function runAgent(opts: {
     conversationId?: string;
     userProfileId?: string;
     onEvent?: AgentEventSink;
+    resumePrefix?: string;
 }): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[] }> {
-    const { rag, message, conversationId, userProfileId, onEvent } = opts;
+    const { rag, message, conversationId, userProfileId, resumePrefix } = opts;
+
+    const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
+    const runId = await createAgentRun({ message, conversationId, userProfileId, model });
+    const runBuffer = new RunEventBuffer(runId);
+    const onEvent = runBuffer.wrap(opts.onEvent);
+    if (runId) onEvent({ type: "run", runId });
 
     const artifacts: ArtifactDescriptor[] = [];
     const toolCtx: ToolContext = {
@@ -64,6 +72,7 @@ export async function runAgent(opts: {
 
     let steps: PlanStep[] = [];
     let subagentsSpawned = 0;
+    let workerTokens = 0;
 
     async function runSubagents(args: Record<string, unknown>): Promise<string> {
         const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
@@ -84,8 +93,9 @@ export async function runAgent(opts: {
                 const res = await withTimeout(
                     runWorker({ objective, modelHint, needsTools, contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx }),
                     AGENT_CONFIG.workerTimeoutMs,
-                    { model: modelHint ?? "auto", output: "(this subtask timed out and produced no result)" },
+                    { model: modelHint ?? "auto", output: "(this subtask timed out and produced no result)", tokens: 0 },
                 );
+                workerTokens += res.tokens;
                 onEvent?.({ type: "subagent", objective, model: res.model, phase: "done" });
                 return `### Worker result — ${objective}\n(model: ${res.model})\n${res.output}`;
             })
@@ -115,18 +125,25 @@ export async function runAgent(opts: {
         return result;
     };
 
-    const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
-
     onEvent?.({ type: "status", message: "Planning…" });
-    const reply = await runGeminiLoop({
-        model,
-        systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${buildSkillIndex()}\n\n${rag.contextBlock}`,
-        userMessage: message,
-        toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
-        dispatch,
-        maxRounds: AGENT_CONFIG.maxIterations,
-        thinking: rag.allowThinking,
-    });
-
-    return { reply, artifacts, steps };
+    try {
+        const { text: reply, usage } = await runGeminiLoop({
+            model,
+            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${buildSkillIndex()}\n\n${rag.contextBlock}`,
+            userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
+            toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
+            dispatch,
+            maxRounds: AGENT_CONFIG.maxIterations,
+            thinking: rag.allowThinking,
+        });
+        await runBuffer.finish({ status: "done", reply, usage: { ...usage, workerTokens } });
+        return { reply, artifacts, steps };
+    } catch (err) {
+        await runBuffer.finish({
+            status: "error",
+            error: err instanceof Error ? err.message : String(err),
+            usage: { workerTokens },
+        });
+        throw err;
+    }
 }

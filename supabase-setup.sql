@@ -251,6 +251,114 @@ begin
 end;
 $$;
 
+-- Agent run traces. One row per agent-mode run: live status, the plan, a capped
+-- event log (tool calls, subagents, artifacts), token usage, and the final reply.
+-- Rows stuck in 'running' past the Vercel function ceiling are swept to 'timeout'
+-- lazily on read (hard kills skip finally blocks, so the writer can't be trusted
+-- to close its own row).
+create table if not exists agent_runs (
+  id uuid primary key default gen_random_uuid(),
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  conversation_id uuid references conversations(id) on delete set null,
+  message text not null,
+  status text not null default 'running' check (status in ('running', 'done', 'error', 'timeout')),
+  model text,
+  plan jsonb not null default '[]',
+  events jsonb not null default '[]',
+  reply text,
+  error text,
+  usage jsonb not null default '{}',
+  started_at timestamptz not null default now(),
+  finished_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_agent_runs_updated_at on agent_runs;
+create trigger trigger_agent_runs_updated_at
+  before update on agent_runs
+  for each row execute function update_updated_at();
+
+create index if not exists idx_agent_runs_time
+  on agent_runs (started_at desc);
+
+alter table agent_runs enable row level security;
+
+drop policy if exists "Allow all access to agent_runs" on agent_runs;
+create policy "Allow all access to agent_runs" on agent_runs for all using (true) with check (true);
+
+-- Extracted long-term facts (Mem0-style). A post-turn extraction pass distills
+-- durable user facts from conversations and consolidates them (add/update/delete
+-- against near-duplicates), separate from the raw-message embeddings table.
+-- project_id is a plain uuid until the projects table exists (FK added there).
+-- Model-partitioned like the embeddings table.
+create table if not exists memories (
+  id uuid primary key default gen_random_uuid(),
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  project_id uuid,
+  fact text not null,
+  category text not null default 'other'
+    check (category in ('identity', 'preference', 'relationship', 'project', 'routine', 'fact', 'other')),
+  source text not null default 'chat',
+  embedding vector,
+  embedding_model text not null default 'gemini-embedding-2-preview',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_memories_updated_at on memories;
+create trigger trigger_memories_updated_at
+  before update on memories
+  for each row execute function update_updated_at();
+
+create index if not exists idx_memories_model
+  on memories (embedding_model);
+
+alter table memories enable row level security;
+
+drop policy if exists "Allow all access to memories" on memories;
+create policy "Allow all access to memories" on memories for all using (true) with check (true);
+
+-- filter_project null -> global facts only; set -> global + that project's facts.
+create or replace function match_memories(
+  query_embedding vector,
+  match_threshold float default 0.5,
+  match_count int default 8,
+  filter_user_id uuid default null,
+  filter_model text default 'gemini-embedding-2-preview',
+  filter_project uuid default null
+)
+returns table (
+  id uuid,
+  fact text,
+  category text,
+  project_id uuid,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select q.id, q.fact, q.category, q.project_id, q.similarity
+  from (
+    select
+      m.id,
+      m.fact,
+      m.category,
+      m.project_id,
+      1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where
+      m.embedding_model = filter_model
+      and m.embedding is not null
+      and (filter_user_id is null or m.user_profile_id = filter_user_id)
+      and (m.project_id is null or m.project_id = filter_project)
+  ) q
+  where q.similarity > match_threshold
+  order by q.similarity desc
+  limit match_count;
+end;
+$$;
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (

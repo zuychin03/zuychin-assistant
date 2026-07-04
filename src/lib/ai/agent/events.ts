@@ -6,6 +6,7 @@ export interface PlanStep {
 }
 
 export type AgentEvent =
+    | { type: "run"; runId: string }
     | { type: "status"; message: string }
     | { type: "plan"; steps: PlanStep[] }
     | { type: "tool"; name: string; phase: "start" | "done" }

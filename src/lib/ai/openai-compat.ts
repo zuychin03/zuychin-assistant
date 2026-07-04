@@ -24,6 +24,7 @@ interface ChatChoiceMessage {
 
 interface ChatCompletion {
     choices?: { message: ChatChoiceMessage; finish_reason?: string }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     error?: { message?: string };
 }
 
@@ -76,8 +77,16 @@ export async function openaiCompatChat(params: {
     search?: boolean;
     genParams?: GenParams;
     ctx?: ToolContext;
+    onUsage?: (u: { promptTokens: number; outputTokens: number; totalTokens: number }) => void;
 }): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx } = params;
+
+    const usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const trackUsage = (d: ChatCompletion) => {
+        usage.promptTokens += d.usage?.prompt_tokens ?? 0;
+        usage.outputTokens += d.usage?.completion_tokens ?? 0;
+        usage.totalTokens += d.usage?.total_tokens ?? 0;
+    };
 
     const apiKey = getProviderApiKey(provider);
     if (!apiKey) {
@@ -139,6 +148,7 @@ export async function openaiCompatChat(params: {
             throw err;
         }
     }
+    trackUsage(data);
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const msg = data.choices?.[0]?.message;
@@ -163,6 +173,7 @@ export async function openaiCompatChat(params: {
         }
 
         data = await postChat(provider, apiKey, model.id, messages, tools, opts);
+        trackUsage(data);
     }
 
     let reply = extractContent(data);
@@ -170,6 +181,7 @@ export async function openaiCompatChat(params: {
     if (!reply) {
         try {
             const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false });
+            trackUsage(plain);
             reply = extractContent(plain);
         } catch (err) {
             console.error(`[${provider.id}] retry after empty answer failed:`, err);
@@ -178,6 +190,7 @@ export async function openaiCompatChat(params: {
 
     if (!reply) reply = extractReasoning(data);
 
+    params.onUsage?.(usage);
     return reply || "(The model returned an empty response.)";
 }
 

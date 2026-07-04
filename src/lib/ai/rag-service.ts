@@ -4,6 +4,10 @@ import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDe
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
 import { classifyIntent } from "@/lib/ai/agent/router";
 import { runAgent } from "@/lib/ai/agent/orchestrator";
+import { getAgentRun } from "@/lib/ai/agent/run-store";
+import { searchMemories } from "@/lib/ai/memory/store";
+import { extractMemories } from "@/lib/ai/memory/extractor";
+import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
@@ -20,6 +24,7 @@ const RAG_CONFIG = {
     matchThreshold: 0.72,
     matchCount: 5,
     maxContextItems: 3,
+    factCount: 6,
     historyFetchCount: 20,
     recentMessageCount: 5,
     summarizationThreshold: 8,
@@ -329,7 +334,7 @@ export async function buildRagContext(params: {
 
     const queryEmbedding = await embedText(embRef, message);
 
-    const [rawMatches, recentMessages] = await Promise.all([
+    const [rawMatches, recentMessages, knownFacts] = await Promise.all([
         searchEmbeddings({
             queryEmbedding,
             matchThreshold: RAG_CONFIG.matchThreshold,
@@ -341,6 +346,12 @@ export async function buildRagContext(params: {
             return [];
         }),
         getRecentMessages(RAG_CONFIG.historyFetchCount, channel, conversationId),
+        searchMemories({
+            queryEmbedding,
+            embeddingModel: embRef.model.id,
+            userId: profile?.id,
+            matchCount: RAG_CONFIG.factCount,
+        }),
     ]);
 
     const rankedMatches = rerankResults(rawMatches, message, RAG_CONFIG.maxContextItems);
@@ -379,12 +390,46 @@ export async function buildRagContext(params: {
 
     let contextBlock = sysPrompt + "\n\n";
     contextBlock += currentDateTimeContext() + "\n\n";
+    if (knownFacts.length > 0) {
+        contextBlock += `## Known Facts (long-term memory)\n${knownFacts.map((f) => `- [${f.category}] ${f.fact}`).join("\n")}\n\n`;
+    }
     if (relevantContext) contextBlock += `## Relevant Memories\n${relevantContext}\n\n`;
     if (historySection) contextBlock += `${historySection}\n\n`;
 
     const lastAssistantMessage = [...recentMessages].reverse().find((m) => m.role === "assistant")?.content;
 
     return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage };
+}
+
+// Summarizes an interrupted run so a fresh agent pass can pick up where it
+// stopped instead of redoing completed work. No transcript replay — the new
+// run re-derives context and treats this as briefing notes.
+async function buildResumePrefix(resumeRunId: string): Promise<string | undefined> {
+    try {
+        const run = await getAgentRun(resumeRunId);
+        if (!run) return undefined;
+        const planLines = run.plan.map((s) => `- [${s.status}] ${s.title}`).join("\n");
+        const eventLines = run.events
+            .slice(-15)
+            .map((e) => {
+                switch (e.type) {
+                    case "tool": return `tool ${e.name}: ${e.phase}`;
+                    case "subagent": return `subagent (${e.model}) ${e.phase}: ${String(e.objective ?? "").slice(0, 100)}`;
+                    case "artifact": {
+                        const a = e.artifact as { name?: string } | undefined;
+                        return `artifact created: ${a?.name ?? "?"}`;
+                    }
+                    case "status": return `status: ${e.message}`;
+                    default: return "";
+                }
+            })
+            .filter(Boolean)
+            .join("\n");
+        return `A previous attempt at this task was interrupted (status: ${run.status}). Its plan and progress:\n${planLines || "(no plan recorded)"}\n\nLast recorded activity:\n${eventLines || "(none)"}\n\nDo not redo completed work — artifacts already created were delivered. Continue from where it stopped.\n\n## Original Task\n`;
+    } catch (err) {
+        console.warn("[RAG] Failed to build resume prefix:", err);
+        return undefined;
+    }
 }
 
 export async function ragChat(params: {
@@ -400,6 +445,7 @@ export async function ragChat(params: {
     embeddingModel?: string;
     genParams?: GenParams;
     agent?: boolean;
+    resumeRunId?: string;
 }, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
     const {
         message, channel, imageBase64, file, conversationId,
@@ -455,8 +501,9 @@ export async function ragChat(params: {
             ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
             : effectiveMessage;
         onEvent?.({ type: "status", message: "Understanding your request…" });
+        const resumePrefix = params.resumeRunId ? await buildResumePrefix(params.resumeRunId) : undefined;
         const res = await runAgent({
-            rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
+            rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent, resumePrefix,
         });
         reply = res.reply;
         artifacts.push(...res.artifacts);
@@ -505,6 +552,22 @@ export async function ragChat(params: {
         }
     } catch (err) {
         console.error("[RAG] Failed to save assistant message:", err);
+    }
+
+    // Post-turn fact extraction, off the reply path. after() defers past the
+    // response; the Discord bot calls ragChat outside a request scope, where
+    // after() throws — fall back to plain fire-and-forget there.
+    const extraction = () => extractMemories({
+        userMessage: message,
+        assistantReply: reply,
+        channel,
+        userProfileId: profile?.id,
+        embRef: rag.embRef,
+    });
+    try {
+        after(extraction);
+    } catch {
+        void extraction();
     }
 
     if (conversationId) {

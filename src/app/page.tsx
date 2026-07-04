@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown } from "lucide-react";
+import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
 import { styles } from "./home/styles";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
@@ -23,6 +23,8 @@ interface ChatMessage {
   modelLabel?: string;
   /** ISO timestamp shown under assistant replies. */
   at?: string;
+  /** Set on interruption notices: lets the user relaunch the agent run with prior progress. */
+  resume?: { runId: string; text: string };
 }
 
 // Starter suggestions on the empty state. Each fills the input with a command
@@ -369,9 +371,10 @@ export default function Home() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!input.trim() && !pendingFile) || isLoading) return;
+  const handleSubmit = async (e: React.FormEvent | null, resume?: { runId: string; text: string }) => {
+    e?.preventDefault();
+    const text = resume?.text ?? input.trim();
+    if ((!text && !pendingFile) || isLoading) return;
 
     let convId = activeConversationId;
     if (!convId) {
@@ -387,15 +390,17 @@ export default function Home() {
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
-      content: input.trim() || (pendingFile ? `[Sent ${pendingFile.name}]` : ""),
-      fileName: pendingFile?.name,
-      fileMimeType: pendingFile?.mimeType,
+      content: text || (pendingFile && !resume ? `[Sent ${pendingFile.name}]` : ""),
+      fileName: resume ? undefined : pendingFile?.name,
+      fileMimeType: resume ? undefined : pendingFile?.mimeType,
     };
 
-    const fileToSend = pendingFile;
+    const fileToSend = resume ? null : pendingFile;
     setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-    setPendingFile(null);
+    if (!resume) {
+      setInput("");
+      setPendingFile(null);
+    }
     setIsLoading(true);
 
     if (convId) {
@@ -422,7 +427,8 @@ export default function Home() {
           message: userMessage.content,
           conversationId: convId,
           thinking: thinkingEnabled && canThink,
-          agent: agentEnabled,
+          agent: resume ? true : agentEnabled,
+          ...(resume && { resumeRunId: resume.runId }),
           genParams: {
             ...(genParams.temperature !== null && { temperature: genParams.temperature }),
             ...(genParams.topP !== null && { topP: genParams.topP }),
@@ -453,6 +459,7 @@ export default function Home() {
       let buffer = "";
       let done: { reply: string; artifacts?: ArtifactDescriptor[] } | null = null;
       let streamError = "";
+      let runId = "";
 
       const base = (): AgentRun => ({ status: "", steps: [], lines: [] });
 
@@ -471,7 +478,9 @@ export default function Home() {
           let evt: AgentEvent;
           try { evt = JSON.parse(json) as AgentEvent; } catch { continue; }
 
-          if (evt.type === "status") {
+          if (evt.type === "run") {
+            runId = evt.runId;
+          } else if (evt.type === "status") {
             setAgentRun((r) => ({ ...(r ?? base()), status: evt.message }));
           } else if (evt.type === "plan") {
             setAgentRun((r) => ({ ...(r ?? base()), steps: evt.steps }));
@@ -493,13 +502,26 @@ export default function Home() {
         }
       }
 
-      if (streamError) throw new Error(streamError);
+      // A dead stream without a done event (e.g. the serverless function was
+      // killed mid-run) gets an interruption notice with a Resume affordance
+      // when we know the run id.
+      if (streamError || !done) {
+        const notice: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: streamError ? `⚠️ ${streamError}` : "⚠️ The run was interrupted before finishing.",
+          ...(runId ? { resume: { runId, text: userMessage.content } } : {}),
+        };
+        setMessages((prev) => [...prev, notice]);
+        await loadConversations();
+        return;
+      }
 
       const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: done?.reply ?? "(No response.)",
-        artifacts: done?.artifacts,
+        content: done.reply,
+        artifacts: done.artifacts,
         modelLabel: currentChatModel?.label,
         at: new Date().toISOString(),
       };
@@ -1024,6 +1046,19 @@ export default function Home() {
                         <Download size={13} color="var(--color-primary)" />
                       </button>
                     ))}
+                  </div>
+                )}
+                {msg.role === "assistant" && msg.resume && (
+                  <div style={styles.exportRow}>
+                    <button
+                      onClick={() => handleSubmit(null, msg.resume)}
+                      style={{ ...styles.exportBtn, opacity: isLoading ? 0.5 : 1 }}
+                      disabled={isLoading}
+                      title="Relaunch this run — the agent continues from its recorded progress"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Resume run</span>
+                    </button>
                   </div>
                 )}
                 {msg.role === "assistant" && msg.content.length > 80 && (

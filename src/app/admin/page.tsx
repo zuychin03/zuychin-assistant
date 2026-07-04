@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import RunsPanel from "./runs-panel";
+import MemoriesPanel from "./memories-panel";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
     GitBranch, MessageSquare, RefreshCw, Save, ShieldCheck,
@@ -283,6 +285,14 @@ export default function AdminPage() {
                         <Capability label="Gmail/Calendar tools" enabled={!!stats?.integrations.google} note="OAuth-backed personal tools" />
                         <Capability label="External channels" enabled={!!(stats?.integrations.discord || stats?.integrations.telegram)} note="Discord and Telegram entry points" />
                     </div>
+                </section>
+
+                <section style={styles.panel}>
+                    <RunsPanel />
+                </section>
+
+                <section style={styles.panel}>
+                    <MemoriesPanel />
                 </section>
             </div>
 

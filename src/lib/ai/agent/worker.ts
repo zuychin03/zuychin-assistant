@@ -28,7 +28,7 @@ const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL])
 const EMPTY_REPLY = "(The model returned an empty response.)";
 const isEmptyReply = (out: string) => !out.trim() || out.trim() === EMPTY_REPLY;
 
-export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string }> {
+export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string; tokens: number }> {
     const needsTools = p.needsTools ?? true;
 
     // Candidates: explicit model hint first, then the free fast chain.
@@ -57,23 +57,28 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
 
     for (const resolved of candidates) {
         try {
-            const output = resolved.provider.kind === "gemini"
-                ? await geminiRun(resolved.model.id)
-                : await openaiCompatChat({
+            if (resolved.provider.kind === "gemini") {
+                const { text, usage } = await geminiRun(resolved.model.id);
+                if (!isEmptyReply(text)) return { model: resolved.model.id, output: text, tokens: usage.totalTokens };
+            } else {
+                let compatTokens = 0;
+                const output = await openaiCompatChat({
                     provider: resolved.provider,
                     model: resolved.model,
                     systemText: workerSystem(p.contextBlock, resolved.model.supportsTools),
                     userText: p.objective,
                     embRef: p.embRef,
                     ctx: p.toolCtx,
+                    onUsage: (u) => { compatTokens = u.totalTokens; },
                 });
-            if (!isEmptyReply(output)) return { model: resolved.model.id, output };
+                if (!isEmptyReply(output)) return { model: resolved.model.id, output, tokens: compatTokens };
+            }
             console.warn(`[Worker] ${resolved.model.id} returned nothing, trying next model`);
         } catch (err) {
             console.warn(`[Worker] ${resolved.model.id} failed, trying next model:`, err);
         }
     }
 
-    const output = await geminiRun();
-    return { model: `${MODEL} (fallback)`, output };
+    const { text, usage } = await geminiRun();
+    return { model: `${MODEL} (fallback)`, output: text, tokens: usage.totalTokens };
 }
