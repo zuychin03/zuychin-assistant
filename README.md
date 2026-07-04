@@ -47,7 +47,7 @@ where pages and links can be inspected, edited and deleted in place.
   by urgency), event reminders and proactive check-ins
 - Export: save conversations to PDF or DOCX (Markdown-aware)
 - Admin dashboard: stats and a live personality/system-prompt editor at `/admin`
-- Password auth: cookie-based access control via middleware
+- Password auth: cookie-based access control via the auth proxy
 
 ## Tech Stack
 
@@ -197,7 +197,7 @@ npm run dev
 | PUT | `/api/admin/personality` | Update system prompt |
 
 All routes except `/login`, `/api/auth`, `/api/cron`, `/api/chat` and `/api/telegram` require
-the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `middleware.ts`).
+the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
 
 ## Providers & Models
 
@@ -436,7 +436,7 @@ src/
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram services
-├── middleware.ts                       # Cookie auth middleware
+├── proxy.ts                            # Cookie auth proxy (Next 16 middleware convention)
 discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
 └── Procfile                            # Render deployment
