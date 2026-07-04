@@ -76,7 +76,8 @@ export const SKILLS: Skill[] = [
 6. If you answered a substantial question from multiple sources and the answer is durable, file it back as a 'synthesis' ingest so the vault learns from the question.
 7. Use vault_write only to correct or extend a page you have just vault_read, sending the complete updated markdown.
 8. If asked to check, clean up, or maintain the vault: vault_lint with mode 'suggest' to report, 'auto' to also fix low-risk link/catalogue issues. Relay its warnings — those need the user's judgement.
-9. In chat, summarize what was learned and mention the page path(s) saved.`,
+9. To remove a redundant page (e.g. the leftover after merging duplicates, and only with the user's go-ahead): vault_delete — it unlinks the page everywhere and updates the catalogue in one commit. NEVER 'mark' a page as deleted by overwriting it with vault_write; that leaves junk in the vault.
+10. In chat, summarize what was learned and mention the page path(s) saved.`,
     },
     {
         id: "plan-my-day",

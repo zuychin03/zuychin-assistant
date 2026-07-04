@@ -282,7 +282,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "vault_write",
-        description: "Directly create or overwrite ONE vault wiki page with markdown you have already written — for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it handles synthesis and auto-linking). The catalogue and log update automatically.",
+        description: "Directly create or overwrite ONE vault wiki page with markdown you have already written — for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it handles synthesis and auto-linking). The catalogue and log update automatically. This tool cannot remove a page — to delete one call vault_delete; NEVER overwrite a page with a 'DELETE'/'redirect' marker.",
         parameters: {
             path: {
                 type: "string",
@@ -298,6 +298,17 @@ export const MCP_TOOLS: McpTool[] = [
                 type: "string",
                 description: "One-line summary (< 140 chars) for the index catalogue.",
                 required: false,
+            },
+        },
+    },
+    {
+        name: "vault_delete",
+        description: "Permanently delete ONE vault wiki page and everything pointing at it: wikilinks in other pages, its catalogue entry, and its search-index row, in one commit (the immutable raw/ capture and git history are kept). Use when a page is redundant — e.g. after merging duplicates — or the user asks to remove it. This is the ONLY way to remove a page; never mark one as deleted with vault_write.",
+        parameters: {
+            path: {
+                type: "string",
+                description: "Path of the wiki page to delete, e.g. 'wiki/concepts/attention.md'.",
+                required: true,
             },
         },
     },
@@ -367,6 +378,7 @@ import { getFile, getVaultConfig } from "@/lib/vault/github";
 import { searchVaultPages } from "@/lib/vault/store";
 import { ingestToVault, writeVaultPage, type VaultCategory } from "@/lib/vault/ingest";
 import { lintVault, type LintMode } from "@/lib/vault/lint";
+import { deleteGraphPage } from "@/lib/vault/graph";
 
 export async function executeTool(
     toolName: string,
@@ -430,6 +442,9 @@ export async function executeTool(
 
         case "vault_write":
             return executeVaultWrite(args, embRef);
+
+        case "vault_delete":
+            return executeVaultDelete(args.path as string);
 
         case "vault_lint":
             return executeVaultLint(args.mode as LintMode | undefined, embRef);
@@ -757,6 +772,30 @@ async function executeVaultWrite(
         const message = error instanceof Error ? error.message : "";
         if (message.startsWith("vault_write only")) return message;
         return "Vault write failed — nothing was committed.";
+    }
+}
+
+async function executeVaultDelete(path: string): Promise<string> {
+    const trimmed = path?.trim();
+    if (!trimmed) return "Error: path is required.";
+    if (!getVaultConfig()) return "The second-brain vault is not configured.";
+    if (!/^wiki\/(sources|concepts|entities|synthesis)\/[a-z0-9-]+\.md$/.test(trimmed)) {
+        return "vault_delete only removes wiki pages: path must look like wiki/<sources|concepts|entities|synthesis>/<page-name>.md.";
+    }
+
+    try {
+        const result = await deleteGraphPage(trimmed);
+        const cleaned = result.changedPages.length
+            ? ` Unlinked from: ${result.changedPages.join(", ")}.`
+            : "";
+        return `Deleted ${trimmed} (commit ${result.commit.slice(0, 7)}). Index, log and search index updated.${cleaned}`;
+    } catch (error) {
+        console.error("[MCP] Vault delete failed:", error);
+        const message = error instanceof Error ? error.message : "";
+        if (message.startsWith("Page not found")) {
+            return `No page found at "${trimmed}" — nothing was deleted. Use vault_read('index.md') to find valid paths.`;
+        }
+        return "Vault delete failed — nothing was removed.";
     }
 }
 
