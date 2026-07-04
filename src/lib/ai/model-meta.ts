@@ -111,12 +111,12 @@ const STEP_37_FLASH: ModelMeta = {
     strengths: ["Coding", "Agentic", "Vision", "Tool use", "Reasoning", "Search"],
 };
 
-const GLM_5_1: ModelMeta = {
+const GLM_5_2: ModelMeta = {
     developer: "Z.ai",
     description:
         "Z.ai's flagship open MoE built for agentic engineering. Optimized for long-horizon coding in tools like Claude Code, with thinking mode, native function calling and MCP support — it can work autonomously on a single task for hours.",
     inputs: ["Text"],
-    context: "200K",
+    context: "1M",
     maxOutput: "128K",
     params: "744B total · 40B active (MoE)",
     strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Long context"],
@@ -128,8 +128,8 @@ const MISTRAL_LARGE_3: ModelMeta = {
         "Mistral's general-purpose multimodal MoE with a built-in vision encoder. Trained from the ground up for production assistants, retrieval-augmented systems and complex enterprise workflows, accepting both text and images.",
     inputs: ["Text", "Image"],
     context: "256K",
-    params: "675B total · 41B active (MoE)",
-    strengths: ["Multimodal", "Vision", "Reasoning", "Agentic", "Multilingual", "Tool use"],
+    params: "675B total · 40B active (MoE)",
+    strengths: ["Multimodal", "Reasoning", "Agentic", "Multilingual", "Tool use"],
 };
 
 const MINIMAX_M2_7: ModelMeta = {
@@ -222,7 +222,7 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "google/diffusiongemma-26b-a4b-it": DIFFUSIONGEMMA_26B,
     "moonshotai/kimi-k2.6": KIMI_K2_6,
     "stepfun-ai/step-3.7-flash": STEP_37_FLASH,
-    "z-ai/glm-5.1": GLM_5_1,
+    "z-ai/glm-5.2": GLM_5_2,
     "mistralai/mistral-large-3-675b-instruct-2512": MISTRAL_LARGE_3,
     "minimaxai/minimax-m2.7": MINIMAX_M2_7,
     "qwen/qwen3.5-397b-a17b": QWEN_35,
