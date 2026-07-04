@@ -424,7 +424,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
 ];
 
-import { searchEmbeddings, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
+import { searchEmbeddings, hybridSearchKnowledge, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
@@ -528,7 +528,12 @@ async function executeGetCurrentTime(timezone?: string): Promise<string> {
 async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding): Promise<string> {
     try {
         const embedding = await embedText(embRef, query, "query");
-        const results = await searchEmbeddings({
+        const results = await hybridSearchKnowledge({
+            queryEmbedding: embedding,
+            queryText: query,
+            matchCount: 5,
+            embeddingModel: embRef.model.id,
+        }) ?? await searchEmbeddings({
             queryEmbedding: embedding,
             matchThreshold: 0.6,
             matchCount: 5,
@@ -755,7 +760,7 @@ async function executeVaultSearch(query: string, embRef: ResolvedEmbedding): Pro
     if (!getVaultConfig()) return "The second-brain vault is not configured.";
 
     try {
-        const hits = await searchVaultPages({ query, embRef });
+        const hits = await searchVaultPages({ query, embRef, hybrid: true });
         if (hits.length === 0) {
             return "No vault pages matched. The topic may not have been ingested yet — check index.md via vault_read('index.md') if unsure.";
         }

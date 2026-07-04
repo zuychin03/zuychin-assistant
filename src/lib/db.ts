@@ -135,6 +135,40 @@ export async function searchEmbeddings(params: {
     }));
 }
 
+/**
+ * BM25 + vector RRF over the knowledge base. Returns null when the hybrid RPC
+ * is unavailable (DDL not applied yet) so callers can fall back to
+ * searchEmbeddings with their own threshold.
+ */
+export async function hybridSearchKnowledge(params: {
+    queryEmbedding: number[];
+    queryText: string;
+    matchCount?: number;
+    userId?: string;
+    embeddingModel?: string;
+}): Promise<KnowledgeItem[] | null> {
+    const { data, error } = await supabase.rpc("hybrid_match_knowledge", {
+        query_embedding: JSON.stringify(params.queryEmbedding),
+        query_text: params.queryText,
+        match_count: params.matchCount ?? 5,
+        filter_user_id: params.userId ?? null,
+        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
+    });
+
+    if (error) {
+        console.warn("[DB] Hybrid search unavailable, falling back to vector:", error.message);
+        return null;
+    }
+
+    return (data ?? []).map((row: { id: string; content: string; metadata: Record<string, string>; similarity: number }) => ({
+        id: row.id,
+        content: row.content,
+        metadata: row.metadata,
+        similarity: row.similarity,
+        createdAt: "",
+    }));
+}
+
 export async function getDefaultProfile() {
     const { data, error } = await supabase
         .from("user_profiles")

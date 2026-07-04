@@ -31,6 +31,7 @@ export async function upsertVaultPage(
                 title: meta.title,
                 summary: meta.summary,
                 category: meta.category,
+                content: markdown.slice(0, 8000),
                 embedding: JSON.stringify(embedding),
                 embedding_model: embRef.model.id,
                 updated_at: new Date().toISOString(),
@@ -101,8 +102,24 @@ export async function searchVaultPages(params: {
     // "query" for question→page search; "passage" when comparing a document
     // against stored pages (symmetric doc↔doc scores run notably higher).
     inputType?: EmbedInputType;
+    // BM25 + vector RRF via hybrid_match_vault_pages. Keyword hits carry
+    // similarity 0, so matchThreshold does not apply — leave this off for
+    // threshold-driven callers (ingest link candidates).
+    hybrid?: boolean;
 }): Promise<VaultPageHit[]> {
     const embedding = await embedText(params.embRef, params.query, params.inputType ?? "query");
+
+    if (params.hybrid) {
+        const { data, error } = await supabase.rpc("hybrid_match_vault_pages", {
+            query_embedding: JSON.stringify(embedding),
+            query_text: params.query,
+            match_count: params.matchCount ?? 8,
+            filter_model: params.embRef.model.id,
+        });
+        if (!error) return (data ?? []).map(mapPageHit);
+        // Missing RPC (DDL not applied yet) degrades to pure vector.
+        console.warn("[Vault] Hybrid search unavailable, falling back to vector:", error.message);
+    }
 
     const { data, error } = await supabase.rpc("match_vault_pages", {
         query_embedding: JSON.stringify(embedding),
@@ -116,11 +133,15 @@ export async function searchVaultPages(params: {
         return [];
     }
 
-    return (data ?? []).map((row: { path: string; title: string; summary: string; category: string; similarity: number }) => ({
+    return (data ?? []).map(mapPageHit);
+}
+
+function mapPageHit(row: { path: string; title: string; summary: string; category: string; similarity: number }): VaultPageHit {
+    return {
         path: row.path,
         title: row.title,
         summary: row.summary,
         category: row.category,
         similarity: row.similarity,
-    }));
+    };
 }

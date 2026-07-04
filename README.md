@@ -4,8 +4,10 @@ A personal AI chatbot you can talk to from the web, Discord, or Telegram. It let
 switch chat model providers per message (Google Gemini, OpenRouter, NVIDIA NIM, OpenCode Zen),
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
-grounding. Its second-brain wiki vault comes with an interactive Obsidian-style 3D graph view
-where pages and links can be inspected, edited and deleted in place.
+grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
+and remember durable facts about you across conversations. Its second-brain wiki vault comes
+with an interactive Obsidian-style 3D graph view where pages and links can be inspected,
+edited and deleted in place.
 
 ## Features
 
@@ -16,13 +18,25 @@ where pages and links can be inspected, edited and deleted in place.
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 18 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
-  the second-brain vault, current time and recent conversations
+- MCP tools: 20 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+  the second-brain vault, scheduled tasks, current time and recent conversations
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
   free fast models (DeepSeek V4 Flash, Step 3.7 Flash, any Fast-tagged tool-capable model)
   with Gemini only as the fallback
+- Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
+  token usage); long runs self-compact their context, and if a stream dies mid-run the web
+  UI offers a **Resume run** chip that continues from where it stopped
+- Fact memory: durable facts about you are extracted after each turn (Mem0-style
+  add/update/delete consolidation) and injected as "Known Facts" alongside the raw-message
+  RAG memories; editable in the admin dashboard
+- Scheduled tasks: ask in chat for one-off or recurring jobs ("every weekday at 8am send me
+  a workout reminder on telegram") — stored with a 5-field cron schedule, executed through
+  the real chat pipeline and delivered to Telegram, Discord or a web conversation
+- Email triggers: the inbox is scanned every few hours for concrete obligations (bills,
+  deadlines, appointments, renewals) — each one becomes a todo with a due date, a calendar
+  event when dated, and a digest message, with a dedup ledger so nothing fires twice
 - Slash commands: type `/` in the message bar for a drop-up of 20 ready-made commands
   (`/plan_day`, `/triage_emails`, `/research`, `/code`, `/debug`, `/vault_save`, …) that
   expand into full prompts — skill-backed ones force the agent loop
@@ -44,9 +58,11 @@ where pages and links can be inspected, edited and deleted in place.
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
 - Cron jobs: daily briefing (LLM-triaged inbox — only the emails that matter, icon-coded
-  by urgency), event reminders and proactive check-ins
+  by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers
+  and proactive check-ins
 - Export: save conversations to PDF or DOCX (Markdown-aware)
-- Admin dashboard: stats and a live personality/system-prompt editor at `/admin`
+- Admin dashboard: stats, a live personality/system-prompt editor, agent-run traces
+  (status, duration, tokens, expandable step timeline) and a fact-memory editor at `/admin`
 - Password auth: cookie-based access control via the auth proxy
 
 ## Tech Stack
@@ -134,9 +150,11 @@ Optional auth, integrations, channels and cron:
 Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
 extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
-`artifacts`, `vault_pages`), the row-level-security policies, the `match_embeddings` and
-`match_vault_pages` search functions and a default profile. The script is safe to run more
-than once.
+`artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`),
+the row-level-security policies, the search functions (`match_embeddings`,
+`match_vault_pages`, `match_memories` plus the hybrid keyword+vector
+`hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
+is safe to run more than once — re-run it after upgrading to pick up new tables and columns.
 
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
@@ -186,7 +204,9 @@ npm run dev
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
 | GET | `/api/telegram/test` | Telegram connectivity / config check |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
-| POST | `/api/cron/reminders` | Imminent event reminders |
+| POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
+| POST | `/api/cron/scheduled-tasks` | Run due user-scheduled tasks (claims up to 3 per invocation) |
+| POST | `/api/cron/email-triggers` | Scan inbox for bills/deadlines → todos + calendar events |
 | POST | `/api/cron/proactive` | Proactive check-ins |
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
@@ -195,6 +215,8 @@ npm run dev
 | POST/DELETE | `/api/vault/link` | Create / remove a bidirectional wikilink between two pages |
 | GET | `/api/admin/status` | Bot stats |
 | PUT | `/api/admin/personality` | Update system prompt |
+| GET | `/api/admin/runs` | Agent-run traces (list, or `?id=` for the full event timeline) |
+| GET/POST/PUT/DELETE | `/api/admin/memories` | List / add / edit / delete extracted memory facts |
 
 All routes except `/login`, `/api/auth`, `/api/cron`, `/api/chat` and `/api/telegram` require
 the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
@@ -246,7 +268,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 |------|---------|
 | `get_current_time` | Current date/time in a given timezone |
 | `search_web` | Real-time internet search (OpenAI-compatible models only; Gemini grounds natively) |
-| `search_knowledge` | Semantic search over the pgvector knowledge base |
+| `search_knowledge` | Hybrid keyword + vector search over the pgvector knowledge base |
 | `save_note` | Persist a note as an embedding for later recall |
 | `get_recent_conversations` | Summary of recent messages across channels |
 | `manage_calendar_event` | Create or delete a Google Calendar event |
@@ -257,10 +279,12 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `draft_gmail_reply` | Create a draft reply in Gmail |
 | `send_email` | Compose and send a new email |
 | `manage_todo_list` | Add / list / complete / delete to-do items (feeds the web Notes checklist) |
-| `vault_search` | Semantic search over second-brain wiki pages |
+| `manage_scheduled_task` | Create / list / update / delete one-off or recurring scheduled tasks |
+| `vault_search` | Hybrid keyword + vector search over second-brain wiki pages |
 | `vault_read` | Read a wiki page from the vault |
 | `vault_ingest` | Full ingest pipeline: raw capture → authored page → links → verified commit |
 | `vault_write` | Direct wiki page write (index/log/embedding kept consistent) |
+| `vault_delete` | Permanently delete a wiki page + every reference to it, in one commit |
 | `vault_lint` | Vault health check / auto-fix curator |
 
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
@@ -338,10 +362,17 @@ channels (Discord + Telegram).
 |----------|----------|------|
 | `/api/cron/daily-briefing` | Daily 7:00 AM | `{}` |
 | `/api/cron/reminders` | Every 15 min | `{}` |
+| `/api/cron/scheduled-tasks` | Every 5–15 min | `{}` |
+| `/api/cron/email-triggers` | Every 4 h | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
+
+The reminders job covers imminent calendar events and todos due within 24 h (re-nagged
+roughly daily while overdue). Scheduled-tasks is the dispatcher for user-created tasks
+(`manage_scheduled_task`); email-triggers turns bills/deadlines found in the inbox into
+todos and calendar events, deduplicated via the `processed_emails` ledger.
 
 ## Second Brain (optional)
 
@@ -360,12 +391,13 @@ Setup:
    `GITHUB_VAULT_REPO`, `GITHUB_VAULT_TOKEN`, `GITHUB_VAULT_BRANCH` in `.env.local` / Vercel.
 3. Check `GET /api/vault/health` returns `"ok": true`.
 
-The assistant then gets five tools: `vault_search` (pgvector over page summaries),
+The assistant then gets six tools: `vault_search` (hybrid keyword + pgvector over pages),
 `vault_read`, `vault_ingest` (full pipeline: raw capture → authored wiki page → auto-linked
 bidirectional `[[wikilinks]]` → catalogue/log update → independent verification → one atomic
-`learn:` commit), `vault_write` (direct page edits) and `vault_lint` (suggest/auto curator —
-also runs on the weekly cron above with `curator:` commits). Every change is a Git commit,
-so any bad write is one revert away.
+`learn:` commit), `vault_write` (direct page edits), `vault_delete` (cascade removal: the
+page, every inbound wikilink, the `index.md` entry and the pgvector row in one commit) and
+`vault_lint` (suggest/auto curator — also runs on the weekly cron above with `curator:`
+commits). Every change is a Git commit, so any bad write is one revert away.
 
 ### 3D graph view
 
@@ -405,7 +437,7 @@ src/
 │   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/page.tsx                  # Admin dashboard
+│   ├── admin/                          # Dashboard + run-trace and memory panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── chat/route.ts               # RAG chat endpoint (+ chat/stream for SSE)
@@ -414,10 +446,10 @@ src/
 │       ├── todos/route.ts              # Notes checklist backend
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
-│       ├── cron/                       # Briefing / reminders / proactive / vault lint
+│       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / proactive / vault lint
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status + personality
+│       └── admin/                      # Status, personality, run traces, memories
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client

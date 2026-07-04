@@ -279,6 +279,7 @@ export const styles: Record<string, CSSProperties> = {
     borderBottom: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
   },
   headerContent: {
+    position: "relative",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
@@ -314,8 +315,11 @@ export const styles: Record<string, CSSProperties> = {
     border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
   },
   headerConvTitle: {
-    flex: 1,
-    minWidth: 0,
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    transform: "translate(-50%, -50%)",
+    pointerEvents: "none",
     textAlign: "center",
     fontSize: 13,
     fontWeight: 600,
@@ -323,7 +327,6 @@ export const styles: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    padding: "0 14px",
   },
   headerSelectorsRow: {
     display: "flex",

@@ -117,9 +117,12 @@ export default function Home() {
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [convosLoaded, setConvosLoaded] = useState(false);
+  const [convTitleSpace, setConvTitleSpace] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const headerLeftRef = useRef<HTMLDivElement>(null);
+  const headerRightRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const check = () => setIsDesktop(window.innerWidth >= 768);
@@ -127,6 +130,34 @@ export default function Home() {
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
+
+  // The centered conversation title is absolutely positioned, so on narrow
+  // screens it can overlap the model selectors / header buttons. Measure the
+  // free gap around the header midpoint (headerLeft is flex:1, so its children,
+  // not its own box, mark where the content ends) and hide the title when the
+  // gap is too tight to render it legibly.
+  useEffect(() => {
+    const measure = () => {
+      const left = headerLeftRef.current;
+      const right = headerRightRef.current;
+      const container = left?.parentElement;
+      if (!left || !right || !container) return;
+      const c = container.getBoundingClientRect();
+      const mid = c.left + c.width / 2;
+      let contentRight = c.left;
+      for (const child of Array.from(left.children)) {
+        contentRight = Math.max(contentRight, child.getBoundingClientRect().right);
+      }
+      const half = Math.min(mid - contentRight, right.getBoundingClientRect().left - mid);
+      setConvTitleSpace(Math.max(0, Math.floor((half - 12) * 2)));
+    };
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+    };
+  }, [isDesktop, providers, chatSel, embedSel]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -907,7 +938,7 @@ export default function Home() {
       <div style={isDesktop ? styles.containerDesktop : styles.container}>
         <header style={styles.header}>
           <div style={styles.headerContent}>
-            <div style={styles.headerLeft}>
+            <div style={styles.headerLeft} ref={headerLeftRef}>
               <span aria-hidden style={isDesktop ? styles.logoMark : styles.logoMarkMobile} />
               <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
                 <h1 style={styles.title}>Zuychin</h1>
@@ -921,13 +952,13 @@ export default function Home() {
               )}
             </div>
 
-            {isDesktop && activeConvTitle && messages.length > 0 && (
-              <div style={styles.headerConvTitle} title={activeConvTitle}>
+            {isDesktop && activeConvTitle && messages.length > 0 && convTitleSpace >= 120 && (
+              <div style={{ ...styles.headerConvTitle, maxWidth: Math.min(convTitleSpace, 420) }} title={activeConvTitle}>
                 {activeConvTitle}
               </div>
             )}
 
-            <div style={styles.headerRight}>
+            <div style={styles.headerRight} ref={headerRightRef}>
               <button type="button"
                 onClick={toggleTheme}
                 style={styles.iconBtn}

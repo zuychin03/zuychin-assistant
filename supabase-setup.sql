@@ -402,6 +402,148 @@ create policy "Allow all access to scheduled_tasks" on scheduled_tasks for all u
 -- tasks re-nag roughly daily instead of every cron tick.
 alter table todos add column if not exists reminded_at timestamptz;
 
+-- Email-trigger dedup ledger: every scanned email gets a row (obligation found
+-- or not) so the email-triggers cron never processes a message twice.
+create table if not exists processed_emails (
+  gmail_message_id text primary key,
+  processed_at timestamptz not null default now(),
+  outcome jsonb not null default '{}'
+);
+
+alter table processed_emails enable row level security;
+
+drop policy if exists "Allow all access to processed_emails" on processed_emails;
+create policy "Allow all access to processed_emails" on processed_emails for all using (true) with check (true);
+
+-- Hybrid search (BM25 + vector, reciprocal rank fusion). vault_pages gains the
+-- page text so keyword search has something to match; legacy rows stay empty
+-- (vector-only) until the page is next written or ingested.
+alter table vault_pages add column if not exists content text not null default '';
+
+alter table vault_pages add column if not exists fts tsvector
+  generated always as (to_tsvector('english', title || ' ' || summary || ' ' || content)) stored;
+
+create index if not exists idx_vault_pages_fts on vault_pages using gin (fts);
+
+alter table embeddings add column if not exists fts tsvector
+  generated always as (to_tsvector('english', content)) stored;
+
+create index if not exists idx_embeddings_fts on embeddings using gin (fts);
+
+-- Vector top-20 and keyword top-20 fused with reciprocal rank fusion
+-- (score = 1/(60+vec_rank) + 1/(60+kw_rank)). Both arms stay model-partitioned,
+-- matching match_vault_pages semantics. A stop-word-only query_text produces an
+-- empty tsquery (numnode = 0) and degrades to vector-only; keyword-only hits
+-- come back with similarity 0.
+create or replace function hybrid_match_vault_pages(
+  query_embedding vector,
+  query_text text default '',
+  match_count int default 8,
+  filter_model text default 'gemini-embedding-2-preview'
+)
+returns table (
+  id uuid,
+  path text,
+  title text,
+  summary text,
+  category text,
+  similarity float,
+  score float
+)
+language plpgsql
+as $$
+declare
+  q tsquery := websearch_to_tsquery('english', coalesce(query_text, ''));
+begin
+  return query
+  with vec as (
+    select v.id,
+           row_number() over (order by v.embedding <=> query_embedding) as rnk,
+           1 - (v.embedding <=> query_embedding) as sim
+    from vault_pages v
+    where v.embedding_model = filter_model and v.embedding is not null
+    order by v.embedding <=> query_embedding
+    limit 20
+  ),
+  kw as (
+    select v.id,
+           row_number() over (order by ts_rank_cd(v.fts, q) desc) as rnk
+    from vault_pages v
+    where numnode(q) > 0 and v.fts @@ q and v.embedding_model = filter_model
+    order by ts_rank_cd(v.fts, q) desc
+    limit 20
+  ),
+  fused as (
+    select coalesce(vec.id, kw.id) as page_id,
+           coalesce(vec.sim, 0)::float as sim,
+           (coalesce(1.0 / (60 + vec.rnk), 0) + coalesce(1.0 / (60 + kw.rnk), 0))::float as rrf
+    from vec full outer join kw on vec.id = kw.id
+  )
+  select p.id, p.path, p.title, p.summary, p.category, f.sim, f.rrf
+  from fused f
+  join vault_pages p on p.id = f.page_id
+  order by f.rrf desc
+  limit match_count;
+end;
+$$;
+
+-- Same fusion over the raw-message knowledge base. The keyword arm keeps the
+-- model filter because the same note is stored once per embedding-model
+-- partition — an unfiltered arm would return cross-partition duplicates.
+create or replace function hybrid_match_knowledge(
+  query_embedding vector,
+  query_text text default '',
+  match_count int default 5,
+  filter_user_id uuid default null,
+  filter_model text default 'gemini-embedding-2-preview'
+)
+returns table (
+  id uuid,
+  content text,
+  metadata jsonb,
+  similarity float,
+  score float
+)
+language plpgsql
+as $$
+declare
+  q tsquery := websearch_to_tsquery('english', coalesce(query_text, ''));
+begin
+  return query
+  with vec as (
+    select e.id,
+           row_number() over (order by e.embedding <=> query_embedding) as rnk,
+           1 - (e.embedding <=> query_embedding) as sim
+    from embeddings e
+    where e.embedding_model = filter_model
+      and (filter_user_id is null or e.user_profile_id = filter_user_id)
+    order by e.embedding <=> query_embedding
+    limit 20
+  ),
+  kw as (
+    select e.id,
+           row_number() over (order by ts_rank_cd(e.fts, q) desc) as rnk
+    from embeddings e
+    where numnode(q) > 0 and e.fts @@ q
+      and e.embedding_model = filter_model
+      and (filter_user_id is null or e.user_profile_id = filter_user_id)
+    order by ts_rank_cd(e.fts, q) desc
+    limit 20
+  ),
+  fused as (
+    select coalesce(vec.id, kw.id) as row_id,
+           coalesce(vec.sim, 0)::float as sim,
+           (coalesce(1.0 / (60 + vec.rnk), 0) + coalesce(1.0 / (60 + kw.rnk), 0))::float as rrf
+    from vec full outer join kw on vec.id = kw.id
+  )
+  select em.id, em.content, em.metadata, f.sim, f.rrf
+  from fused f
+  join embeddings em on em.id = f.row_id
+  order by f.rrf desc
+  limit match_count;
+end;
+$$;
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (
