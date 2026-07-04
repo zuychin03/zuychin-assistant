@@ -210,8 +210,8 @@ so add models or providers there.
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
 | Google Gemini | native | `gemini-3.5-flash`, `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free` | Chat only |
-| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free`, `nousresearch/hermes-3-llama-3.1-405b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
+| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `qwen/qwen3-next-80b-a3b-instruct`, `stockmark/stockmark-2-100b-instruct` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
 | OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free` | Chat only |
 
 How it works:
