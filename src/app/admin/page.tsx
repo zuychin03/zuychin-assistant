@@ -65,6 +65,14 @@ export default function AdminPage() {
     const [message, setMessage] = useState("");
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [isNarrow, setIsNarrow] = useState(false);
+
+    useEffect(() => {
+        const check = () => setIsNarrow(window.innerWidth < 640);
+        check();
+        window.addEventListener("resize", check);
+        return () => window.removeEventListener("resize", check);
+    }, []);
 
     const fetchStats = useCallback(async () => {
         setRefreshing(true);
@@ -178,10 +186,10 @@ export default function AdminPage() {
                 </div>
             </header>
 
-            <section style={styles.hero}>
+            <section style={{ ...styles.hero, ...(isNarrow ? styles.heroNarrow : {}) }}>
                 <div style={styles.heroMain}>
                     <div style={styles.heroIcon}><Bot size={22} /></div>
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                         <div style={styles.heroLabel}>Default chat model</div>
                         <div style={styles.heroTitle}>{stats?.model ?? "Unknown"}</div>
                         <div style={styles.heroMeta}>
@@ -189,7 +197,7 @@ export default function AdminPage() {
                         </div>
                     </div>
                 </div>
-                <div style={styles.quickActions}>
+                <div style={{ ...styles.quickActions, ...(isNarrow ? { justifyContent: "flex-start" } : {}) }}>
                     <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
                     <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
                     <a href="/api/vault/health" style={styles.quickLink}><ShieldCheck size={15} /> Vault health</a>
@@ -457,10 +465,15 @@ const styles: Record<string, React.CSSProperties> = {
         WebkitBackdropFilter: "blur(24px)",
         marginBottom: 16,
     },
+    heroNarrow: {
+        gridTemplateColumns: "1fr",
+        gap: 14,
+    },
     heroMain: { display: "flex", alignItems: "center", gap: 15, minWidth: 0 },
     heroIcon: {
         width: 48,
         height: 48,
+        flexShrink: 0,
         borderRadius: 18,
         display: "flex",
         alignItems: "center",
@@ -469,7 +482,7 @@ const styles: Record<string, React.CSSProperties> = {
         background: "var(--color-text-primary)",
     },
     heroLabel: { fontSize: 11, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: 0.8, fontWeight: 750 },
-    heroTitle: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.04em", marginTop: 2 },
+    heroTitle: { fontSize: 22, fontWeight: 800, letterSpacing: "-0.04em", marginTop: 2, overflowWrap: "anywhere" },
     heroMeta: { color: "var(--color-text-muted)", fontSize: 13, marginTop: 4 },
     quickActions: { display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" },
     quickLink: {
