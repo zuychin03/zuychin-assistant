@@ -59,7 +59,6 @@ export const PROVIDERS: ProviderConfig[] = [
             { id: "poolside/laguna-m.1:free", label: "Laguna M.1 (free)", name: "laguna-m.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { id: "openai/gpt-oss-120b:free", label: "GPT-OSS 120B (free)", name: "gpt-oss-120b", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "nousresearch/hermes-3-llama-3.1-405b:free", label: "Hermes 3 405B (free)", name: "hermes-3-405b", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "qwen/qwen3-next-80b-a3b-instruct:free", label: "Qwen3 Next 80B (free)", name: "qwen3-next", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
         ],
         embeddingModels: [],
@@ -81,8 +80,7 @@ export const PROVIDERS: ProviderConfig[] = [
             { id: "z-ai/glm-5.2", label: "GLM-5.2 (free)", name: "glm-5.2", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "minimaxai/minimax-m2.7", label: "MiniMax M2.7 (free)", name: "minimax-m2.7", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "qwen/qwen3.5-397b-a17b", label: "Qwen3.5 397B (free)", name: "qwen3.5", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "qwen/qwen3-next-80b-a3b-instruct", label: "Qwen3 Next 80B (free)", name: "qwen3-next", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
-            { id: "stockmark/stockmark-2-100b-instruct", label: "Stockmark 2 100B (free)", name: "stockmark-2", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
+            { id: "qwen/qwen3-next-80b-a3b-instruct", label: "Qwen3 Next 80B (free)", name: "qwen3-next", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true }
         ],
         embeddingModels: [
             { id: "nvidia/llama-nemotron-embed-1b-v2", label: "Llama Nemotron Embed 1B v2 (free, 2048d)", name: "nemotron-embed-1b", dimension: 2048 },

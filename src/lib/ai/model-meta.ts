@@ -186,16 +186,6 @@ const LLAMA_EMBED_8B: ModelMeta = {
     strengths: ["Retrieval", "Multilingual", "Reranking", "Classification"],
 };
 
-const HERMES_3_405B: ModelMeta = {
-    developer: "Nous Research",
-    description:
-        "Frontier full-parameter finetune of Llama 3.1 405B. Hermes 3 improves agentic function calling, structured output, roleplay and multi-turn coherence over Hermes 2, with competitive general reasoning and code generation.",
-    inputs: ["Text"],
-    context: "131K",
-    params: "405B (dense)",
-    strengths: ["Agentic", "Tool use", "Reasoning", "Roleplay", "Structured output", "Coding"],
-};
-
 const QWEN3_NEXT_80B: ModelMeta = {
     developer: "Alibaba Qwen",
     description:
@@ -206,16 +196,6 @@ const QWEN3_NEXT_80B: ModelMeta = {
     strengths: ["Long context", "Agentic", "Tool use", "Coding", "Fast", "RAG"],
 };
 
-const STOCKMARK_2_100B: ModelMeta = {
-    developer: "Stockmark",
-    description:
-        "100B-parameter instruct model optimized for Japanese and English. Pretrained on ~2T tokens (60% English, 30% Japanese, 10% code) and post-trained with Japanese synthetic data for strong instruction following over a 32K context.",
-    inputs: ["Text"],
-    context: "32K",
-    params: "100B (dense)",
-    strengths: ["Japanese", "Multilingual", "Instruction following", "Coding"],
-};
-
 export const MODEL_META: Record<string, ModelMeta> = {
     "gemini-3.5-flash": GEMINI_35_FLASH,
     "gemini-3-flash-preview": GEMINI_3_FLASH,
@@ -224,7 +204,6 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "poolside/laguna-m.1:free": LAGUNA_M1,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
     "openai/gpt-oss-120b:free": GPT_OSS_120B,
-    "nousresearch/hermes-3-llama-3.1-405b:free": HERMES_3_405B,
     "qwen/qwen3-next-80b-a3b-instruct:free": QWEN3_NEXT_80B,
     "minimaxai/minimax-m3": MINIMAX_M3,
     "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,
@@ -237,7 +216,6 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "minimaxai/minimax-m2.7": MINIMAX_M2_7,
     "qwen/qwen3.5-397b-a17b": QWEN_35,
     "qwen/qwen3-next-80b-a3b-instruct": QWEN3_NEXT_80B,
-    "stockmark/stockmark-2-100b-instruct": STOCKMARK_2_100B,
     "nvidia/llama-nemotron-embed-1b-v2": NEMOTRON_EMBED_1B,
     "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
     "mimo-v2.5-free": MIMO_V25,
