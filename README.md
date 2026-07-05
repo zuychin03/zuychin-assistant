@@ -17,6 +17,9 @@ edited and deleted in place.
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
+- Projects: group conversations into collapsible sidebar sections, each with its own
+  instructions injected into every chat inside it; extracted facts can be scoped to a
+  project so they only surface in that project's chats
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
 - MCP tools: 20 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   the second-brain vault, scheduled tasks, current time and recent conversations
@@ -150,7 +153,8 @@ Optional auth, integrations, channels and cron:
 Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
 extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
-`artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`),
+`artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`,
+`projects`),
 the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
@@ -184,6 +188,9 @@ npm run dev
 - The checklist icon in the header opens the **Notes** panel — undated tasks the agent has
   remembered. Ticking one completes it for good.
 - Toggle dark/light mode, start a new conversation, or open history from the header buttons.
+- In the history sidebar, **New project** creates a collapsible group: use the folder icon
+  on a chat row to move it into a project, and the project's ⋯ menu to rename it, edit the
+  instructions injected into its chats, or delete it (chats fall back to Ungrouped).
 - Prefix a message with `/think` for deeper reasoning or `/search` to force a web-grounded
   answer. These only apply to models that support them, and the UI hides toggles a model
   can't use.
@@ -195,7 +202,8 @@ npm run dev
 | POST | `/api/chat` | RAG chat with file, thinking, search and hyperparameters |
 | POST | `/api/chat/stream` | Same as `/api/chat` but streams agent steps + tokens over SSE (web UI) |
 | GET | `/api/providers` | Available providers/models (filtered by configured keys) |
-| GET/POST/DELETE | `/api/conversations` | Conversation list / create / delete |
+| GET/POST/PUT/DELETE | `/api/conversations` | Conversation list / create (optionally in a project) / move between projects / delete |
+| GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
@@ -434,6 +442,7 @@ src/
 │   ├── page.tsx                        # Chat UI (state, handlers, layout)
 │   ├── home/
 │   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
+│   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
 │   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── login/page.tsx                  # Login page
@@ -442,7 +451,8 @@ src/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── chat/route.ts               # RAG chat endpoint (+ chat/stream for SSE)
 │       ├── providers/route.ts          # Available providers/models
-│       ├── conversations/route.ts      # Conversation CRUD
+│       ├── conversations/route.ts      # Conversation CRUD + move between projects
+│       ├── projects/route.ts           # Project CRUD
 │       ├── todos/route.ts              # Notes checklist backend
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
@@ -454,6 +464,7 @@ src/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
 │   ├── db.ts                           # Database layer (messages, embeddings, todos, convos)
+│   ├── projects.ts                     # Project CRUD + conversation→project resolution
 │   ├── types.ts                        # Shared types + MIME/size constants
 │   ├── commands.ts                     # Slash-command registry (shared client/server)
 │   ├── datetime.ts                     # Current date/time context injected on every request

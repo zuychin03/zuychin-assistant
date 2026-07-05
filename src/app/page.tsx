@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, MessageSquare, Trash2, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
+import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
@@ -73,6 +74,7 @@ interface Conversation {
   id: string;
   title: string;
   updatedAt: string;
+  projectId?: string | null;
 }
 
 interface NoteItem {
@@ -96,6 +98,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -190,6 +193,22 @@ export default function Home() {
   useEffect(() => {
     loadConversations();
   }, [loadConversations]);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects");
+      const data = await res.json();
+      if (data.projects) {
+        setProjects(data.projects);
+      }
+    } catch (err) {
+      console.error("Failed to load projects:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProjects();
+  }, [loadProjects]);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -375,9 +394,15 @@ export default function Home() {
     }
   };
 
-  const handleNewChat = async () => {
+  const handleNewChat = async (projectId?: string) => {
     try {
-      const res = await fetch("/api/conversations", { method: "POST" });
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        ...(projectId && {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        }),
+      });
       const data = await res.json();
       setActiveConversationId(data.id);
       setMessages([]);
@@ -385,6 +410,54 @@ export default function Home() {
       await loadConversations();
     } catch (err) {
       console.error("Failed to create conversation:", err);
+    }
+  };
+
+  const handleCreateProject = async (name: string) => {
+    try {
+      await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await loadProjects();
+    } catch (err) {
+      console.error("Failed to create project:", err);
+    }
+  };
+
+  const handleUpdateProject = async (id: string, patch: { name?: string; instructions?: string }) => {
+    try {
+      await fetch("/api/projects", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...patch }),
+      });
+      await loadProjects();
+    } catch (err) {
+      console.error("Failed to update project:", err);
+    }
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    try {
+      await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
+      await Promise.all([loadProjects(), loadConversations()]);
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+    }
+  };
+
+  const handleMoveConversation = async (convId: string, projectId: string | null) => {
+    try {
+      await fetch("/api/conversations", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: convId, projectId }),
+      });
+      await loadConversations();
+    } catch (err) {
+      console.error("Failed to move conversation:", err);
     }
   };
 
@@ -880,54 +953,26 @@ export default function Home() {
           </button>
         </div>
 
-        <button onClick={handleNewChat} style={styles.newChatBtn}>
+        <NewProjectButton onCreate={handleCreateProject} />
+
+        <button onClick={() => handleNewChat()} style={{ ...styles.newChatBtn, marginTop: 8 }}>
           <Plus size={16} />
           <span>New Chat</span>
         </button>
 
-        <div style={styles.conversationList}>
-          {!convosLoaded && conversations.length === 0 &&
-            [0, 1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="animate-pulse-soft"
-                style={{ ...styles.convSkeleton, animationDelay: `${i * 0.12}s` }}
-              />
-            ))}
-          {convosLoaded && conversations.length === 0 && (
-            <p style={styles.noConversations}>No conversations yet</p>
-          )}
-          {conversations.map((conv) => (
-            <div
-              key={conv.id}
-              onClick={() => loadConversation(conv.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && loadConversation(conv.id)}
-              style={{
-                ...styles.conversationItem,
-                ...(activeConversationId === conv.id
-                  ? styles.conversationItemActive
-                  : {}),
-              }}
-            >
-              <MessageSquare size={14} style={{ flexShrink: 0, marginTop: 2 }} />
-              <div style={styles.conversationInfo}>
-                <span style={styles.conversationTitle}>{conv.title}</span>
-                <span style={styles.conversationTime}>
-                  {formatTime(conv.updatedAt)}
-                </span>
-              </div>
-              <button
-                onClick={(e) => handleDeleteConversation(e, conv.id)}
-                style={styles.deleteBtn}
-                aria-label="Delete conversation"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
+        <ConversationList
+          conversations={conversations}
+          projects={projects}
+          activeConversationId={activeConversationId}
+          loaded={convosLoaded}
+          onSelect={loadConversation}
+          onDelete={handleDeleteConversation}
+          onNewChat={handleNewChat}
+          onUpdateProject={handleUpdateProject}
+          onDeleteProject={handleDeleteProject}
+          onMoveConversation={handleMoveConversation}
+          formatTime={formatTime}
+        />
 
         <button onClick={handleLogout} style={styles.logoutBtn}>
           <LogOut size={15} />
@@ -983,7 +1028,7 @@ export default function Home() {
               <button onClick={() => setSidebarOpen((prev) => !prev)} style={styles.iconBtn} aria-label="Conversation history" title="History">
                 <History size={19} color="var(--color-text-primary)" />
               </button>
-              <button onClick={handleNewChat} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
+              <button onClick={() => handleNewChat()} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
                 <Plus size={20} color="var(--color-text-primary)" />
               </button>
             </div>

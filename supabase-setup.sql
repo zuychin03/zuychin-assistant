@@ -544,6 +544,40 @@ begin
 end;
 $$;
 
+-- Projects group conversations in the sidebar and carry per-project
+-- instructions that get injected into every chat inside the project.
+-- Deleting a project keeps its data: conversations drop back to Ungrouped
+-- and project-scoped facts become global (both FKs are on delete set null).
+create table if not exists projects (
+  id uuid primary key default gen_random_uuid(),
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  name text not null,
+  instructions text not null default '',
+  color text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_projects_updated_at on projects;
+create trigger trigger_projects_updated_at
+  before update on projects
+  for each row execute function update_updated_at();
+
+alter table projects enable row level security;
+
+drop policy if exists "Allow all access to projects" on projects;
+create policy "Allow all access to projects" on projects for all using (true) with check (true);
+
+alter table conversations add column if not exists project_id uuid references projects(id) on delete set null;
+
+create index if not exists idx_conversations_project
+  on conversations (project_id, updated_at desc);
+
+-- memories.project_id predates this table (plain uuid); attach the FK now.
+alter table memories drop constraint if exists memories_project_id_fkey;
+alter table memories add constraint memories_project_id_fkey
+  foreign key (project_id) references projects(id) on delete set null;
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (

@@ -222,12 +222,14 @@ export async function updateProfilePreferences(
 export async function createConversation(params: {
     title?: string;
     userProfileId?: string;
+    projectId?: string;
 }): Promise<{ id: string; title: string }> {
     const { data, error } = await supabase
         .from("conversations")
         .insert({
             title: params.title ?? "New Chat",
             user_profile_id: params.userProfileId ?? null,
+            project_id: params.projectId ?? null,
         })
         .select("id, title")
         .single();
@@ -242,10 +244,10 @@ export async function createConversation(params: {
 
 export async function listConversations(
     limit: number = 20
-): Promise<{ id: string; title: string; updatedAt: string; createdAt: string }[]> {
+): Promise<{ id: string; title: string; updatedAt: string; createdAt: string; projectId: string | null }[]> {
     const { data, error } = await supabase
         .from("conversations")
-        .select("id, title, updated_at, created_at")
+        .select("id, title, updated_at, created_at, project_id")
         .order("updated_at", { ascending: false })
         .limit(limit);
 
@@ -259,15 +261,16 @@ export async function listConversations(
         title: row.title,
         updatedAt: row.updated_at,
         createdAt: row.created_at,
+        projectId: row.project_id ?? null,
     }));
 }
 
 export async function getConversation(
     id: string
-): Promise<{ id: string; title: string } | null> {
+): Promise<{ id: string; title: string; projectId: string | null } | null> {
     const { data, error } = await supabase
         .from("conversations")
-        .select("id, title")
+        .select("id, title, project_id")
         .eq("id", id)
         .single();
 
@@ -276,7 +279,7 @@ export async function getConversation(
         return null;
     }
 
-    return { id: data.id, title: data.title };
+    return { id: data.id, title: data.title, projectId: data.project_id ?? null };
 }
 
 export async function deleteConversation(id: string): Promise<void> {

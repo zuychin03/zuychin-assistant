@@ -7,6 +7,7 @@ import { runAgent } from "@/lib/ai/agent/orchestrator";
 import { getAgentRun } from "@/lib/ai/agent/run-store";
 import { searchMemories } from "@/lib/ai/memory/store";
 import { extractMemories } from "@/lib/ai/memory/extractor";
+import { getConversationProject } from "@/lib/projects";
 import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
@@ -304,6 +305,8 @@ export interface RagContext {
     allowThinking: boolean;
     allowSearch: boolean;
     lastAssistantMessage?: string;
+    /** Set when the conversation belongs to a project; scopes fact extraction. */
+    projectId?: string;
 }
 
 export async function buildRagContext(params: {
@@ -332,7 +335,12 @@ export async function buildRagContext(params: {
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 
-    const queryEmbedding = await embedText(embRef, message);
+    // Project lookup runs alongside the embed call: the project's id scopes
+    // the fact search below and its instructions join the prompt.
+    const [queryEmbedding, project] = await Promise.all([
+        embedText(embRef, message),
+        conversationId ? getConversationProject(conversationId) : Promise.resolve(null),
+    ]);
 
     const [rawMatches, recentMessages, knownFacts] = await Promise.all([
         searchEmbeddings({
@@ -350,6 +358,7 @@ export async function buildRagContext(params: {
             queryEmbedding,
             embeddingModel: embRef.model.id,
             userId: profile?.id,
+            projectId: project?.id,
             matchCount: RAG_CONFIG.factCount,
         }),
     ]);
@@ -389,6 +398,11 @@ export async function buildRagContext(params: {
     }
 
     let contextBlock = sysPrompt + "\n\n";
+    if (project) {
+        contextBlock += `## Project: ${project.name}\n`;
+        if (project.instructions.trim()) contextBlock += `${project.instructions.trim()}\n`;
+        contextBlock += "\n";
+    }
     contextBlock += currentDateTimeContext() + "\n\n";
     if (knownFacts.length > 0) {
         contextBlock += `## Known Facts (long-term memory)\n${knownFacts.map((f) => `- [${f.category}] ${f.fact}`).join("\n")}\n\n`;
@@ -398,7 +412,7 @@ export async function buildRagContext(params: {
 
     const lastAssistantMessage = [...recentMessages].reverse().find((m) => m.role === "assistant")?.content;
 
-    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage };
+    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage, projectId: project?.id };
 }
 
 // Summarizes an interrupted run so a fresh agent pass can pick up where it
@@ -563,6 +577,7 @@ export async function ragChat(params: {
         channel,
         userProfileId: profile?.id,
         embRef: rag.embRef,
+        projectId: rag.projectId,
     });
     try {
         after(extraction);
