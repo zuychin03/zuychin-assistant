@@ -40,9 +40,10 @@ edited and deleted in place.
 - Email triggers: the inbox is scanned every few hours for concrete obligations (bills,
   deadlines, appointments, renewals) — each one becomes a todo with a due date, a calendar
   event when dated, and a digest message, with a dedup ledger so nothing fires twice
-- Slash commands: type `/` in the message bar for a drop-up of 20 ready-made commands
-  (`/plan_day`, `/triage_emails`, `/research`, `/code`, `/debug`, `/vault_save`, …) that
-  expand into full prompts — skill-backed ones force the agent loop
+- Slash commands: type `/` in the message bar for a drop-up of 26 ready-made commands
+  (`/plan_day`, `/weekly_review`, `/remind`, `/facts`, `/skill`, `/research`, `/code`,
+  `/debug`, `/vault_save`, …) that expand into full prompts — skill-backed ones force
+  the agent loop
 - Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
   completes the task and the agent never reminds you about it again. Pending undated tasks
   are surfaced once a day, at the end of the first reply
@@ -292,6 +293,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `send_email` | Compose and send a new email |
 | `manage_todo_list` | Add / list / complete / delete to-do items (feeds the web Notes checklist) |
 | `manage_scheduled_task` | Create / list / update / delete one-off or recurring scheduled tasks |
+| `manage_memory_facts` | List / forget / correct the extracted long-term Known Facts |
 | `vault_search` | Hybrid keyword + vector search over second-brain wiki pages |
 | `vault_read` | Read a wiki page from the vault |
 | `vault_ingest` | Full ingest pipeline: raw capture → authored page → links → verified commit |

@@ -422,6 +422,34 @@ export const MCP_TOOLS: McpTool[] = [
             },
         },
     },
+    {
+        name: "manage_memory_facts",
+        description: "Manage the extracted long-term memory facts (the Known Facts). Actions: 'list' (what is remembered, optionally by category), 'forget' (delete a fact the user wants gone), 'correct' (replace a fact's text with what the user says is right). Use when the user asks what you remember about them, or says to forget or fix something. New facts are extracted automatically from conversation — to explicitly save something, use save_note instead.",
+        parameters: {
+            action: {
+                type: "string",
+                description: "Action: 'list', 'forget', or 'correct'.",
+                required: true,
+                enum: ["list", "forget", "correct"],
+            },
+            category: {
+                type: "string",
+                description: "Filter for list: identity, preference, relationship, project, routine, fact, or other.",
+                required: false,
+                enum: ["identity", "preference", "relationship", "project", "routine", "fact", "other"],
+            },
+            fact_id: {
+                type: "string",
+                description: "Fact ID (required for forget/correct) — from a previous list result.",
+                required: false,
+            },
+            fact: {
+                type: "string",
+                description: "The corrected fact text (required for correct).",
+                required: false,
+            },
+        },
+    },
 ];
 
 import { searchEmbeddings, hybridSearchKnowledge, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
@@ -438,6 +466,7 @@ import {
     type ScheduledTask, type TaskChannel,
 } from "@/lib/tasks/store";
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
+import { listMemories, deleteMemory, updateMemoryFact } from "@/lib/ai/memory/store";
 
 export async function executeTool(
     toolName: string,
@@ -513,6 +542,9 @@ export async function executeTool(
 
         case "manage_scheduled_task":
             return executeManageScheduledTask(args, ctx);
+
+        case "manage_memory_facts":
+            return executeManageMemoryFacts(args, embRef);
 
         default:
             return `Unknown tool: ${toolName}`;
@@ -1044,6 +1076,47 @@ async function executeManageScheduledTask(
     } catch (error) {
         console.error("[MCP] Scheduled task failed:", error);
         return "Failed to manage scheduled tasks.";
+    }
+}
+
+async function executeManageMemoryFacts(
+    args: Record<string, unknown>,
+    embRef: ResolvedEmbedding
+): Promise<string> {
+    const action = (args.action as string) ?? "list";
+    const factId = args.fact_id as string | undefined;
+
+    try {
+        switch (action) {
+            case "list": {
+                const category = args.category as string | undefined;
+                const facts = await listMemories(50, category);
+                if (facts.length === 0) return category ? `No ${category} facts remembered yet.` : "No facts remembered yet.";
+                const formatted = facts
+                    .map((f) => `- [${f.category}${f.projectId ? ", project" : ""}] ${f.fact}\n  _ID: ${f.id}_`)
+                    .join("\n");
+                return `Known facts (${facts.length}):\n${formatted}`;
+            }
+
+            case "forget": {
+                if (!factId) return "Error: fact_id is required to forget a fact — list them first.";
+                const ok = await deleteMemory(factId);
+                return ok ? "🗑️ Fact forgotten." : "Failed to delete — check the fact_id with action 'list'.";
+            }
+
+            case "correct": {
+                const fact = (args.fact as string | undefined)?.trim();
+                if (!factId || !fact) return "Error: fact_id and the corrected fact text are both required.";
+                const ok = await updateMemoryFact({ id: factId, fact, embRef });
+                return ok ? `✅ Fact updated to: "${fact}"` : "Failed to update — check the fact_id with action 'list'.";
+            }
+
+            default:
+                return `Unknown action: ${action}. Use 'list', 'forget', or 'correct'.`;
+        }
+    } catch (error) {
+        console.error("[MCP] Memory facts failed:", error);
+        return "Failed to manage memory facts.";
     }
 }
 

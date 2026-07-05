@@ -156,6 +156,18 @@ export const SKILLS: Skill[] = [
 4. Be specific and decisive — name the actual files, libraries, and data shapes involved, and make a clear recommendation rather than listing every option.
 5. Deliver as ONE Markdown document via create_document (format "md" unless the user asks otherwise) with a clear title. In chat, give a short phase-by-phase overview.`,
     },
+    {
+        id: "weekly-review",
+        name: "Weekly Review",
+        whenToUse: "The user wants a weekly review or retrospective, or to plan the coming week — 'how was my week', 'plan next week'.",
+        instructions: `Close out the week and set up the next one.
+1. Gather in parallel: manage_todo_list action 'list' with status_filter 'all', list_calendar_events for the next 7 days (168 hours), and get_current_time.
+2. Retrospective from the task list (the calendar tool only looks forward): what got DONE this week, and what STALLED — pending tasks that have sat for over a week or blew past their due date. Report stalled items honestly; don't pad the wins.
+3. Propose cleanup for stalled items: reschedule, or delete if clearly dead. Confirm with the user before deleting anything.
+4. Plan next week: fixed calendar events as anchors, then the highest-value pending tasks around them. Be realistic about capacity.
+5. If the user commits to new tasks or reminders during the review, add them via manage_todo_list or manage_scheduled_task.
+6. Report compactly in four blocks: Done / Stalled / Next week's anchors / Top-3 focus. End with the single most important thing to start Monday with.`,
+    },
 ];
 
 const SKILL_BY_ID = new Map(SKILLS.map((s) => [s.id, s]));

@@ -52,6 +52,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
             "Plan my day (follow the plan-my-day skill): pull today's calendar, my pending tasks and unread emails, then give me a prioritized plan with a top-3 focus list.",
     },
     {
+        id: "weekly_review",
+        usage: "/weekly_review",
+        description: "Week retrospective plus next week's plan and top-3 focus",
+        agent: true,
+        build: () =>
+            "Run my weekly review (follow the weekly-review skill): what got done, what stalled, next week's anchors and a top-3 focus.",
+    },
+    {
         id: "schedule",
         usage: "/schedule <event, date & time>",
         description: "Add an event to the calendar",
@@ -65,10 +73,32 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) => (args ? `Add this to my to-do list: ${args}` : "Show me my pending to-dos."),
     },
     {
+        id: "remind",
+        usage: "/remind <what & when>",
+        description: "Schedule a reminder (one-off or recurring, Telegram by default)",
+        build: (args) =>
+            args
+                ? `Set up a scheduled reminder with manage_scheduled_task: ${args}. One-off unless I said it repeats; deliver to Telegram unless I said otherwise. Confirm the next run time.`
+                : "I want to set a reminder — ask me what and when.",
+    },
+    {
+        id: "automations",
+        usage: "/automations",
+        description: "List scheduled tasks and their next run times",
+        build: () => "List my scheduled tasks with manage_scheduled_task and summarize each one with its schedule, delivery channel and next run time.",
+    },
+    {
         id: "note",
         usage: "/note <content>",
         description: "Save a note to memory",
         build: (args) => (args ? `Save this note for me: ${args}` : "I want to save a note — ask me what to remember."),
+    },
+    {
+        id: "facts",
+        usage: "/facts [category]",
+        description: "Review what the assistant remembers about you",
+        build: (args) =>
+            `List everything you remember about me with manage_memory_facts${args ? ` in the "${args}" category` : ""}, grouped by category. Include the fact IDs so I can ask you to forget or fix one.`,
     },
     {
         id: "research",
@@ -147,6 +177,27 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         agent: true,
         build: (args) =>
             `Create a staged implementation plan (follow the plan-feature skill) for: ${args || "(ask me what to plan first)"}`,
+    },
+    {
+        id: "skill",
+        usage: "/skill <slug> [task]",
+        description: "Run a specific skill (built-in or approved custom)",
+        agent: true,
+        build: (args) => {
+            const [slug, ...rest] = args.split(/\s+/).filter(Boolean);
+            const task = rest.join(" ");
+            return slug
+                ? `Load the skill "${slug}" with use_skill and follow it${task ? ` for: ${task}` : " for the current context of this conversation"}.`
+                : "List the skills in your skill index and ask me which one to run.";
+        },
+    },
+    {
+        id: "save_skill",
+        usage: "/save_skill [name]",
+        description: "Save what was just done as a draft skill for approval",
+        agent: true,
+        build: (args) =>
+            `Review the multi-step procedure we just completed in this conversation and save it as a reusable draft skill with save_skill${args ? ` named "${args}"` : ""}: pick a clear kebab-case slug, a one-line when-to-use, and full numbered instructions naming the exact tools. Tell me the slug so I can approve it in the admin panel.`,
     },
     {
         id: "vault_save",
