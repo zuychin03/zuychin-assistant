@@ -578,6 +578,30 @@ alter table memories drop constraint if exists memories_project_id_fkey;
 alter table memories add constraint memories_project_id_fkey
   foreign key (project_id) references projects(id) on delete set null;
 
+-- Skills the agent authors for itself. Saved as drafts via the save_skill
+-- tool; invisible to the agent until approved (status = 'active') in /admin.
+create table if not exists custom_skills (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null unique,
+  name text not null,
+  when_to_use text not null,
+  instructions text not null,
+  status text not null default 'draft' check (status in ('draft', 'active')),
+  created_by text not null default 'agent' check (created_by in ('agent', 'user')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_custom_skills_updated_at on custom_skills;
+create trigger trigger_custom_skills_updated_at
+  before update on custom_skills
+  for each row execute function update_updated_at();
+
+alter table custom_skills enable row level security;
+
+drop policy if exists "Allow all access to custom_skills" on custom_skills;
+create policy "Allow all access to custom_skills" on custom_skills for all using (true) with check (true);
+
 -- Default profile so the app has something to read on first run.
 insert into user_profiles (display_name, system_prompt)
 values (

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
+import SkillsPanel from "./skills-panel";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
     GitBranch, MessageSquare, RefreshCw, Save, ShieldCheck,
@@ -293,6 +294,10 @@ export default function AdminPage() {
 
                 <section style={styles.panel}>
                     <MemoriesPanel />
+                </section>
+
+                <section style={styles.panel}>
+                    <SkillsPanel />
                 </section>
             </div>
 

@@ -177,3 +177,26 @@ export function getSkillInstructions(id: string): string {
 export function buildSkillIndex(): string {
     return SKILLS.map((s) => `- ${s.id}: ${s.whenToUse}`).join("\n");
 }
+
+// Async variants include approved (active) custom skills from the DB.
+// Drafts never surface here — approval in /admin is the guardrail.
+export async function buildSkillIndexAsync(): Promise<string> {
+    const { getActiveCustomSkills } = await import("@/lib/ai/skills/custom-store");
+    const customs = await getActiveCustomSkills();
+    const lines = SKILLS.map((s) => `- ${s.id}: ${s.whenToUse}`);
+    for (const c of customs) lines.push(`- ${c.slug}: ${c.whenToUse} (custom)`);
+    return lines.join("\n");
+}
+
+export async function getSkillInstructionsAsync(id: string): Promise<string> {
+    const skill = SKILL_BY_ID.get(id);
+    if (skill) return `# Skill: ${skill.name}\n\n${skill.instructions}`;
+
+    const { getActiveCustomSkills } = await import("@/lib/ai/skills/custom-store");
+    const customs = await getActiveCustomSkills();
+    const custom = customs.find((c) => c.slug === id);
+    if (custom) return `# Skill: ${custom.name}\n\n${custom.instructions}`;
+
+    const known = [...SKILL_IDS, ...customs.map((c) => c.slug)];
+    return `No skill named "${id}". Available skills: ${known.join(", ")}. Proceed without a skill, or pick a valid one.`;
+}

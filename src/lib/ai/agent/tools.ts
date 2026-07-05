@@ -1,5 +1,4 @@
 import type { McpTool } from "@/lib/ai/mcp-service";
-import { SKILL_IDS } from "@/lib/ai/skills/registry";
 
 export const AGENT_TOOLS: McpTool[] = [
     {
@@ -49,7 +48,32 @@ export const AGENT_TOOLS: McpTool[] = [
                 type: "string",
                 description: "The id of the skill to load, from the skill index.",
                 required: true,
-                enum: SKILL_IDS,
+            },
+        },
+    },
+    {
+        name: "save_skill",
+        description: "Save a reusable skill playbook after completing a NOVEL multi-step procedure worth repeating. It is saved as a DRAFT for the user to review in the admin panel — it is NOT usable until approved. Only propose skills for genuinely repeatable procedures; never for one-offs, trivial tasks, or anything the skill index already covers.",
+        parameters: {
+            slug: {
+                type: "string",
+                description: "Short kebab-case id for the skill (e.g. 'summarize-invoices'). Must not collide with existing skills.",
+                required: true,
+            },
+            name: {
+                type: "string",
+                description: "Human-readable skill name.",
+                required: true,
+            },
+            when_to_use: {
+                type: "string",
+                description: "One sentence describing when this skill applies, written for the skill index.",
+                required: true,
+            },
+            instructions: {
+                type: "string",
+                description: "The full step-by-step playbook: numbered steps naming the exact tools to call and the expected deliverable.",
+                required: true,
             },
         },
     },

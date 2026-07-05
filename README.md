@@ -65,7 +65,10 @@ edited and deleted in place.
   and proactive check-ins
 - Export: save conversations to PDF or DOCX (Markdown-aware)
 - Admin dashboard: stats, a live personality/system-prompt editor, agent-run traces
-  (status, duration, tokens, expandable step timeline) and a fact-memory editor at `/admin`
+  (status, duration, tokens, expandable step timeline), a fact-memory editor and a
+  skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
+- Self-authoring skills: after a novel multi-step task the agent can save its procedure
+  as a draft skill; once approved in the admin panel it joins the skill index for future runs
 - Password auth: cookie-based access control via the auth proxy
 
 ## Tech Stack
@@ -154,7 +157,7 @@ Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
 extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
 `artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`,
-`projects`),
+`projects`, `custom_skills`),
 the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
@@ -225,6 +228,7 @@ npm run dev
 | PUT | `/api/admin/personality` | Update system prompt |
 | GET | `/api/admin/runs` | Agent-run traces (list, or `?id=` for the full event timeline) |
 | GET/POST/PUT/DELETE | `/api/admin/memories` | List / add / edit / delete extracted memory facts |
+| GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
 
 All routes except `/login`, `/api/auth`, `/api/cron`, `/api/chat` and `/api/telegram` require
 the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
@@ -297,7 +301,8 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
 (downloadable artifacts — generated documents are auto-embedded into the knowledge base),
-`update_plan` (live step tracker), `use_skill` (loads a skill's full instructions) and
+`update_plan` (live step tracker), `use_skill` (loads a skill's full instructions —
+built-in or approved custom), `save_skill` (files a new draft skill for review) and
 `run_subagents` (parallel workers on free fast models).
 
 ## Models on Discord / Telegram
@@ -446,7 +451,7 @@ src/
 │   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + run-trace and memory panels
+│   ├── admin/                          # Dashboard + run-trace, memory and skills panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── chat/route.ts               # RAG chat endpoint (+ chat/stream for SSE)
@@ -459,7 +464,7 @@ src/
 │       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / proactive / vault lint
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status, personality, run traces, memories
+│       └── admin/                      # Status, personality, run traces, memories, skills
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
@@ -477,7 +482,7 @@ src/
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
 │   │   ├── mcp-service.ts              # MCP tool definitions + executors
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
-│   │   └── skills/                     # Reusable skill registry (reports, code, second brain…)
+│   │   └── skills/                     # Skill registry: built-in playbooks + agent-authored custom skills
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail

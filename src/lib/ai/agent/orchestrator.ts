@@ -5,7 +5,8 @@ import { AGENT_TOOLS } from "@/lib/ai/agent/tools";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
 import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
-import { buildSkillIndex, getSkillInstructions } from "@/lib/ai/skills/registry";
+import { buildSkillIndexAsync, getSkillInstructionsAsync } from "@/lib/ai/skills/registry";
+import { createDraftSkill } from "@/lib/ai/skills/custom-store";
 import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
@@ -17,6 +18,7 @@ const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's req
 3. When subtasks are independent, call run_subagents to do them in parallel and save time. Sub-agents only gather information and return findings as text — they do NOT create files. You are the SOLE author of the deliverables: gather everything first, then synthesize it yourself.
 4. You alone produce the output files: use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) — never paste large file contents into the chat. Produce exactly what the user asked for and no more: if they asked for "a PDF report", create ONE document. Never create duplicate or overlapping files for the same deliverable.
 5. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
+6. If you just completed a novel multi-step procedure the user is likely to ask for again, you may call save_skill ONCE to save it as a draft playbook for review — never for one-offs or anything the skill index already covers.
 Be decisive and keep going until the task is fully resolved.`;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -115,9 +117,22 @@ export async function runAgent(opts: {
         }
         if (name === "use_skill") {
             onEvent?.({ type: "tool", name, phase: "start" });
-            const instructions = getSkillInstructions(String(args.skill_id ?? ""));
+            const instructions = await getSkillInstructionsAsync(String(args.skill_id ?? ""));
             onEvent?.({ type: "tool", name, phase: "done" });
             return instructions;
+        }
+        if (name === "save_skill") {
+            onEvent?.({ type: "tool", name, phase: "start" });
+            const result = await createDraftSkill({
+                slug: String(args.slug ?? ""),
+                name: String(args.name ?? ""),
+                whenToUse: String(args.when_to_use ?? ""),
+                instructions: String(args.instructions ?? ""),
+            });
+            onEvent?.({ type: "tool", name, phase: "done" });
+            return result.ok
+                ? `Draft skill saved. It will become usable once the user approves it in the admin panel — mention this in your final reply.`
+                : `Could not save the skill: ${result.reason}`;
         }
         onEvent?.({ type: "tool", name, phase: "start" });
         const result = await executeTool(name, args, rag.embRef, toolCtx);
@@ -126,10 +141,11 @@ export async function runAgent(opts: {
     };
 
     onEvent?.({ type: "status", message: "Planning…" });
+    const skillIndex = await buildSkillIndexAsync();
     try {
         const { text: reply, usage } = await runGeminiLoop({
             model,
-            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${buildSkillIndex()}\n\n${rag.contextBlock}`,
+            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
             userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
             toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
             dispatch,
