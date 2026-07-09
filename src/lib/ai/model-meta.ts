@@ -60,6 +60,16 @@ const GEMMA_4_31B: ModelMeta = {
     strengths: ["Multimodal", "Vision", "Coding", "Reasoning", "Multilingual", "Tool use"],
 };
 
+const GEMMA_4_26B_A4B: ModelMeta = {
+    developer: "Google DeepMind",
+    description:
+        "Instruction-tuned Gemma 4 MoE that reaches near-31B quality at a fraction of the compute through sparse activation. Handles text, image and video with native function calling and structured outputs over a 262K context.",
+    inputs: ["Text", "Image", "Video"],
+    context: "262K",
+    params: "25.2B total · 3.8B active (MoE)",
+    strengths: ["Efficient", "Multimodal", "Vision", "Tool use", "Reasoning", "Multilingual"],
+};
+
 const GPT_OSS_120B: ModelMeta = {
     developer: "OpenAI",
     description:
@@ -203,6 +213,7 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
     "poolside/laguna-m.1:free": LAGUNA_M1,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
+    "google/gemma-4-26b-a4b-it": GEMMA_4_26B_A4B,
     "openai/gpt-oss-120b:free": GPT_OSS_120B,
     "qwen/qwen3-next-80b-a3b-instruct:free": QWEN3_NEXT_80B,
     "minimaxai/minimax-m3": MINIMAX_M3,
