@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -26,6 +26,8 @@ interface ChatMessage {
   at?: string;
   /** Set on interruption notices: lets the user relaunch the agent run with prior progress. */
   resume?: { runId: string; text: string };
+  /** Quoted excerpt of the earlier message this one replies to. */
+  replyTo?: { role: "user" | "assistant"; content: string };
 }
 
 // Starter suggestions on the empty state. Each fills the input with a command
@@ -106,6 +108,7 @@ export default function Home() {
   const [cmdIndex, setCmdIndex] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
+  const [replyTo, setReplyTo] = useState<{ role: "user" | "assistant"; content: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
@@ -124,6 +127,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const headerLeftRef = useRef<HTMLDivElement>(null);
   const headerRightRef = useRef<HTMLDivElement>(null);
 
@@ -378,16 +382,18 @@ export default function Home() {
       const data = await res.json();
       if (data.messages) {
         setMessages(
-          data.messages.map((m: { id: string; role: string; content: string; createdAt?: string; metadata?: { artifacts?: ArtifactDescriptor[] } }) => ({
+          data.messages.map((m: { id: string; role: string; content: string; createdAt?: string; metadata?: { artifacts?: ArtifactDescriptor[]; replyTo?: { role: "user" | "assistant"; content: string } } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
             artifacts: m.metadata?.artifacts,
+            replyTo: m.metadata?.replyTo,
             at: m.createdAt,
           }))
         );
       }
       setActiveConversationId(convId);
+      setReplyTo(null);
       setSidebarOpen(false);
     } catch (err) {
       console.error("Failed to load conversation:", err);
@@ -406,6 +412,7 @@ export default function Home() {
       const data = await res.json();
       setActiveConversationId(data.id);
       setMessages([]);
+      setReplyTo(null);
       setSidebarOpen(false);
       await loadConversations();
     } catch (err) {
@@ -491,12 +498,14 @@ export default function Home() {
       }
     }
 
+    const replyToSend = resume ? null : replyTo;
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
       content: text || (pendingFile && !resume ? `[Sent ${pendingFile.name}]` : ""),
       fileName: resume ? undefined : pendingFile?.name,
       fileMimeType: resume ? undefined : pendingFile?.mimeType,
+      ...(replyToSend ? { replyTo: replyToSend } : {}),
     };
 
     const fileToSend = resume ? null : pendingFile;
@@ -504,6 +513,7 @@ export default function Home() {
     if (!resume) {
       setInput("");
       setPendingFile(null);
+      setReplyTo(null);
     }
     setIsLoading(true);
 
@@ -523,16 +533,21 @@ export default function Home() {
       inputRef.current.style.height = "auto";
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           message: userMessage.content,
           conversationId: convId,
           thinking: thinkingEnabled && canThink,
           agent: resume ? true : agentEnabled,
           ...(resume && { resumeRunId: resume.runId }),
+          ...(replyToSend && { replyTo: replyToSend }),
           genParams: {
             ...(genParams.temperature !== null && { temperature: genParams.temperature }),
             ...(genParams.topP !== null && { topP: genParams.topP }),
@@ -633,6 +648,12 @@ export default function Home() {
       await loadConversations();
       loadNotes();
     } catch (error: unknown) {
+      // A user-initiated cancel frees the composer without an error bubble;
+      // the server may still finish and save its reply to history.
+      if (error instanceof DOMException && error.name === "AbortError") {
+        loadConversations();
+        return;
+      }
       const errorMsg =
         error instanceof Error ? error.message : "Something went wrong.";
       const errorMessage: ChatMessage = {
@@ -642,9 +663,17 @@ export default function Home() {
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
+      abortRef.current = null;
       setIsLoading(false);
       setAgentRun(null);
     }
+  };
+
+  const handleCancel = () => abortRef.current?.abort();
+
+  const startReply = (msg: ChatMessage) => {
+    setReplyTo({ role: msg.role, content: msg.content });
+    inputRef.current?.focus();
   };
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1087,12 +1116,31 @@ export default function Home() {
                   <Bot size={14} color="var(--color-primary-foreground)" />
                 </div>
               )}
+              {msg.role === "user" && (
+                <button
+                  type="button"
+                  onClick={() => startReply(msg)}
+                  style={styles.replyMsgBtn}
+                  aria-label="Reply to this message"
+                  title="Reply to this message"
+                >
+                  <Reply size={15} />
+                </button>
+              )}
               <div
                 style={{
                   ...styles.bubble,
                   ...(msg.role === "user" ? styles.userBubble : styles.aiBubble),
                 }}
               >
+                {msg.replyTo && (
+                  <div style={styles.replyQuote}>
+                    <span style={styles.replyQuoteRole}>
+                      {msg.replyTo.role === "user" ? "You" : "Zuychin"}
+                    </span>
+                    <span style={styles.replyQuoteText}>{msg.replyTo.content}</span>
+                  </div>
+                )}
                 {msg.fileName && (
                   <div style={styles.fileTag}>
                     {getFileIcon(msg.fileMimeType)}
@@ -1171,6 +1219,17 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              {msg.role === "assistant" && !msg.resume && (
+                <button
+                  type="button"
+                  onClick={() => startReply(msg)}
+                  style={styles.replyMsgBtn}
+                  aria-label="Reply to this message"
+                  title="Reply to this message"
+                >
+                  <Reply size={15} />
+                </button>
+              )}
               {msg.role === "user" && (
                 <div style={{ ...styles.msgAvatar, ...styles.userAvatar }}>
                   <User size={14} color="var(--color-text-muted)" />
@@ -1310,6 +1369,23 @@ export default function Home() {
             </div>
           )}
 
+          {replyTo && (
+            <div style={styles.replyPreview} className="animate-fade-in">
+              <Reply size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />
+              <span style={styles.replyPreviewLabel}>
+                Replying to {replyTo.role === "user" ? "you" : "Zuychin"}
+              </span>
+              <span style={styles.replyPreviewText}>{replyTo.content}</span>
+              <button
+                onClick={() => setReplyTo(null)}
+                style={styles.filePreviewRemove}
+                aria-label="Cancel reply"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
           {pendingFile && (
             <div style={styles.filePreview} className="animate-fade-in">
               <div style={styles.filePreviewInfo}>
@@ -1397,17 +1473,29 @@ export default function Home() {
               rows={1}
               style={styles.textarea}
             />
-            <button
-              type="submit"
-              disabled={(!input.trim() && !pendingFile) || isLoading}
-              style={{
-                ...styles.sendButton,
-                opacity: (!input.trim() && !pendingFile) || isLoading ? 0.3 : 1,
-              }}
-              aria-label="Send message"
-            >
-              <Send size={20} color="var(--color-primary-foreground)" />
-            </button>
+            {isLoading ? (
+              <button
+                type="button"
+                onClick={handleCancel}
+                style={styles.sendButton}
+                aria-label="Stop generating"
+                title="Stop generating"
+              >
+                <Square size={16} color="var(--color-primary-foreground)" fill="var(--color-primary-foreground)" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim() && !pendingFile}
+                style={{
+                  ...styles.sendButton,
+                  opacity: !input.trim() && !pendingFile ? 0.3 : 1,
+                }}
+                aria-label="Send message"
+              >
+                <Send size={20} color="var(--color-primary-foreground)" />
+              </button>
+            )}
           </form>
         </footer>
       </div>

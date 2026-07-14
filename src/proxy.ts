@@ -7,6 +7,7 @@ const PUBLIC_PATHS = [
   "/api/cron",
   "/api/chat",
   "/api/telegram",
+  "/api/mcp",
 ];
 
 function isPublicPath(pathname: string): boolean {

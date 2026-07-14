@@ -18,7 +18,7 @@ import { expandSlashCommand } from "@/lib/commands";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
-import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor } from "@/lib/types";
+import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor, ReplyRef } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
 const RAG_CONFIG = {
@@ -460,11 +460,12 @@ export async function ragChat(params: {
     genParams?: GenParams;
     agent?: boolean;
     resumeRunId?: string;
+    replyTo?: ReplyRef;
 }, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
     const {
         message, channel, imageBase64, file, conversationId,
         thinking = false, search = false, provider, model, embeddingModel,
-        genParams = {}, agent = false,
+        genParams = {}, agent = false, replyTo,
     } = params;
 
     const profile = await getDefaultProfile();
@@ -481,7 +482,12 @@ export async function ragChat(params: {
 
     // Slash commands expand into a full prompt; history keeps the raw command.
     const slash = channel === "web" ? expandSlashCommand(message) : null;
-    const effectiveMessage = slash?.prompt ?? message;
+    // A reply quote is prepended for the model only; history keeps the raw
+    // message plus metadata.replyTo so the UI can render the quote.
+    const quotePrefix = replyTo
+        ? `[Replying to this earlier ${replyTo.role === "user" ? "user" : "assistant"} message:]\n> ${replyTo.content.slice(0, 600).replace(/\n/g, "\n> ")}\n\n`
+        : "";
+    const effectiveMessage = quotePrefix + (slash?.prompt ?? message);
 
     let userMsgId = "";
     try {
@@ -491,6 +497,7 @@ export async function ragChat(params: {
             channel,
             userProfileId: profile?.id,
             conversationId,
+            metadata: replyTo ? { replyTo } : undefined,
         });
     } catch (err) {
         console.error("[RAG] Failed to save user message:", err);

@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
-import type { FileAttachment, MessageChannel } from "@/lib/types";
+import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 
 export const maxDuration = 300;
@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     const channel = (body.channel as MessageChannel) ?? "web";
+    const replyTo = parseReplyTo(body.replyTo);
     const file = body.file as FileAttachment | undefined;
     if (file) {
         if (!isSupportedAttachment(file.mimeType, file.name)) {
@@ -65,6 +66,7 @@ export async function POST(req: NextRequest) {
                     search: !!body.search,
                     agent: !!body.agent,
                     resumeRunId: body.resumeRunId as string | undefined,
+                    replyTo,
                     provider: body.provider as string | undefined,
                     model: body.model as string | undefined,
                     embeddingModel: body.embeddingModel as string | undefined,
@@ -83,6 +85,15 @@ export async function POST(req: NextRequest) {
     });
 
     return new Response(stream, { headers: SSE_HEADERS });
+}
+
+function parseReplyTo(raw: unknown): ReplyRef | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const { role, content } = raw as Record<string, unknown>;
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string" || !content.trim()) {
+        return undefined;
+    }
+    return { role, content: content.slice(0, 2000) };
 }
 
 function oneShot(event: AgentEvent, status: number): Response {

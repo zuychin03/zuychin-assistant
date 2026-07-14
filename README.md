@@ -40,6 +40,13 @@ edited and deleted in place.
 - Email triggers: the inbox is scanned every few hours for concrete obligations (bills,
   deadlines, appointments, renewals) — each one becomes a todo with a due date, a calendar
   event when dated, and a digest message, with a dedup ledger so nothing fires twice
+- Shared MCP server: a real Model Context Protocol endpoint (`/api/mcp/mcp`) so your other
+  AI agents and chatbots can search and contribute to the same knowledge base and read the
+  second-brain vault, gated by a bearer token
+- Cancel in flight: the send button turns into a stop button while a reply streams — stop a
+  mistaken message and keep typing without waiting for the response
+- Reply to a message: quote any earlier message (yours or the assistant's) from the reply
+  arrow next to its bubble; the quote is shown in the thread and given to the model as context
 - Slash commands: type `/` in the message bar for a drop-up of 26 ready-made commands
   (`/plan_day`, `/weekly_review`, `/remind`, `/facts`, `/skill`, `/research`, `/code`,
   `/debug`, `/vault_save`, …) that expand into full prompts — skill-backed ones force
@@ -148,6 +155,8 @@ Optional auth, integrations, channels and cron:
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord channel |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
+| `MCP_API_KEY` | Read + write bearer for the shared MCP server (`/api/mcp/mcp`) |
+| `MCP_API_KEY_READONLY` | Read-only bearer for the shared MCP server; both unset = endpoint locked |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
 | `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
@@ -214,6 +223,7 @@ npm run dev
 | POST / DELETE | `/api/auth` | Login / logout |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
+| GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (Bearer `MCP_API_KEY`) |
 | GET | `/api/telegram/test` | Telegram connectivity / config check |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
 | POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
@@ -306,6 +316,45 @@ Agent runs additionally get `create_document` / `create_code_file` / `create_cod
 `update_plan` (live step tracker), `use_skill` (loads a skill's full instructions —
 built-in or approved custom), `save_skill` (files a new draft skill for review) and
 `run_subagents` (parallel workers on free fast models).
+
+## Shared MCP Server
+
+The tools above are the assistant's *internal* registry (passed to the model as function
+declarations). Separately, the app also runs a real [Model Context Protocol](https://modelcontextprotocol.io)
+server at **`/api/mcp/mcp`** (stateless Streamable HTTP, legacy SSE at `/api/mcp/sse`) so
+your **other AI agents and chatbots** can share the knowledge base:
+
+| MCP tool | Access | What it does |
+|----------|--------|--------------|
+| `search_knowledge` | read | Hybrid keyword + vector search over the shared knowledge base |
+| `vault_search` | read | Search the second-brain vault pages (uses the vault's dominant embedding partition) |
+| `vault_read` | read | Fetch a vault page's full Markdown by path |
+| `get_recent_conversations` | read | Recent messages across channels, for shared context on what you've been working on |
+| `save_note` | write | Store a note that becomes searchable by every connected agent and the assistant |
+
+Knowledge tools pin the default embedding partition and no user filter, so external agents
+read and write the **same global store** the assistant uses. Vault write tools
+(`vault_ingest`/`vault_write`/`vault_delete`) are deliberately not exposed.
+
+**Two access levels.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants read
+only (write tools return an error for a read-only key). Hand the read-only key to agents you
+only want to *query* the brain, the read-write key to ones you trust to add to it.
+
+Setup:
+
+1. Set `MCP_API_KEY` and/or `MCP_API_KEY_READONLY` in `.env.local` / Vercel (any long random
+   strings). While both are unset the endpoint answers 401 to everything.
+2. Point a client at `https://<your-app>/api/mcp/mcp` with header
+   `Authorization: Bearer <key>`. For example:
+
+```bash
+claude mcp add --transport http zuychin https://<your-app>/api/mcp/mcp \
+  --header "Authorization: Bearer <key>"
+```
+
+Or test locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
+"Streamable HTTP"). Note that anything saved through `save_note` later surfaces in the
+assistant's own context — only hand the key to agents you trust.
 
 ## Models on Discord / Telegram
 

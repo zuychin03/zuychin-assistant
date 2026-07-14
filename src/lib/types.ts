@@ -18,8 +18,15 @@ export interface ArtifactDescriptor {
     size: number;
 }
 
+/** Quoted excerpt of an earlier message the user is replying to. */
+export interface ReplyRef {
+    role: "user" | "assistant";
+    content: string;
+}
+
 export interface MessageMetadata {
     artifacts?: ArtifactDescriptor[];
+    replyTo?: ReplyRef;
     [key: string]: unknown;
 }
 
