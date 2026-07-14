@@ -43,8 +43,14 @@ edited and deleted in place.
 - Shared MCP server: a real Model Context Protocol endpoint (`/api/mcp/mcp`) so your other
   AI agents and chatbots can search and contribute to the same knowledge base and read the
   second-brain vault, gated by a bearer token
-- Cancel in flight: the send button turns into a stop button while a reply streams — stop a
-  mistaken message and keep typing without waiting for the response
+- Cancel in flight: a stop button appears while a reply streams. Stopping is a true drop —
+  it aborts the model work server-side, saves no reply, and removes the message you sent,
+  so a mistaken send leaves no trace (works for agent runs too)
+- Message queue: keep typing while a reply streams — each send queues (shown as dimmed
+  bubbles you can remove) and fires one at a time as responses complete; stop clears the
+  queue too
+- Mobile-friendly composer: on phones the Enter key inserts a newline and only the send
+  button submits; on desktop Enter sends and Shift+Enter breaks the line
 - Reply to a message: quote any earlier message (yours or the assistant's) from the reply
   arrow next to its bubble; the quote is shown in the thread and given to the model as context
 - Slash commands: type `/` in the message bar for a drop-up of 26 ready-made commands

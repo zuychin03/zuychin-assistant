@@ -294,6 +294,11 @@ export async function deleteConversation(id: string): Promise<void> {
     }
 }
 
+export async function deleteMessage(id: string): Promise<void> {
+    const { error } = await supabase.from("messages").delete().eq("id", id);
+    if (error) console.error("[DB] Failed to delete message:", error.message);
+}
+
 export async function getConversationMessages(
     conversationId: string
 ): Promise<Message[]> {

@@ -62,6 +62,7 @@ function stripThink(text: string): string {
 interface RequestOpts {
     thinking: boolean;
     genParams: GenParams;
+    signal?: AbortSignal;
 }
 
 export async function openaiCompatChat(params: {
@@ -78,6 +79,7 @@ export async function openaiCompatChat(params: {
     genParams?: GenParams;
     ctx?: ToolContext;
     onUsage?: (u: { promptTokens: number; outputTokens: number; totalTokens: number }) => void;
+    signal?: AbortSignal;
 }): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx } = params;
 
@@ -96,6 +98,7 @@ export async function openaiCompatChat(params: {
     const opts: RequestOpts = {
         thinking: !!params.thinking && model.supportsThinking,
         genParams: params.genParams ?? {},
+        signal: params.signal,
     };
 
     const isTextFile = !!file && isTextLikeAttachment(file.mimeType, file.name);
@@ -254,6 +257,9 @@ async function postChat(
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const onCallerAbort = () => controller.abort();
+    opts.signal?.addEventListener("abort", onCallerAbort);
+    if (opts.signal?.aborted) controller.abort();
     try {
         const res = await fetch(`${provider.baseUrl}/chat/completions`, {
             method: "POST",
@@ -278,11 +284,13 @@ async function postChat(
         return await accumulateStream(res.body, provider.label);
     } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
+            if (opts.signal?.aborted) throw err;
             throw new Error(`${provider.label}: request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
         }
         throw err;
     } finally {
         clearTimeout(timeout);
+        opts.signal?.removeEventListener("abort", onCallerAbort);
     }
 }
 

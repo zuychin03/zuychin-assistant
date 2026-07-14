@@ -18,6 +18,7 @@ export interface GeminiLoopOpts {
     dispatch: (name: string, args: Record<string, unknown>) => Promise<string>;
     maxRounds: number;
     thinking?: boolean;
+    signal?: AbortSignal;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -100,6 +101,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
     const config = {
         tools: [{ functionDeclarations: opts.toolDeclarations }],
         thinkingConfig: { thinkingLevel: opts.thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW },
+        ...(opts.signal ? { abortSignal: opts.signal } : {}),
     };
 
     const usage: LoopUsage = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0 };
@@ -118,6 +120,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
     trackUsage(response);
 
     for (let round = 0; round < opts.maxRounds; round++) {
+        opts.signal?.throwIfAborted();
         const calls = response.functionCalls;
         if (!calls || calls.length === 0) break;
 
@@ -166,7 +169,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
         response = await ai.models.generateContent({
             model,
             contents,
-            config: { thinkingConfig: config.thinkingConfig },
+            config: { thinkingConfig: config.thinkingConfig, ...(opts.signal ? { abortSignal: opts.signal } : {}) },
         });
         trackUsage(response);
     }

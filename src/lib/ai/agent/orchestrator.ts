@@ -26,7 +26,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
         const timer = setTimeout(() => resolve(fallback), ms);
         promise.then(
             (v) => { clearTimeout(timer); resolve(v); },
-            (e) => { clearTimeout(timer); console.warn("[Agent] subagent failed:", e); resolve(fallback); },
+            (e) => {
+                clearTimeout(timer);
+                if (!(e instanceof Error && e.name === "AbortError")) console.warn("[Agent] subagent failed:", e);
+                resolve(fallback);
+            },
         );
     });
 }
@@ -53,8 +57,9 @@ export async function runAgent(opts: {
     userProfileId?: string;
     onEvent?: AgentEventSink;
     resumePrefix?: string;
+    signal?: AbortSignal;
 }): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[] }> {
-    const { rag, message, conversationId, userProfileId, resumePrefix } = opts;
+    const { rag, message, conversationId, userProfileId, resumePrefix, signal } = opts;
 
     const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
     const runId = await createAgentRun({ message, conversationId, userProfileId, model });
@@ -93,7 +98,7 @@ export async function runAgent(opts: {
 
                 onEvent?.({ type: "subagent", objective, model: modelHint ?? "auto", phase: "start" });
                 const res = await withTimeout(
-                    runWorker({ objective, modelHint, needsTools, contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx }),
+                    runWorker({ objective, modelHint, needsTools, contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx, signal }),
                     AGENT_CONFIG.workerTimeoutMs,
                     { model: modelHint ?? "auto", output: "(this subtask timed out and produced no result)", tokens: 0 },
                 );
@@ -151,6 +156,7 @@ export async function runAgent(opts: {
             dispatch,
             maxRounds: AGENT_CONFIG.maxIterations,
             thinking: rag.allowThinking,
+            signal,
         });
         await runBuffer.finish({ status: "done", reply, usage: { ...usage, workerTokens } });
         return { reply, artifacts, steps };

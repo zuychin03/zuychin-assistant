@@ -13,6 +13,7 @@ export interface WorkerParams {
     contextBlock: string;
     embRef: ResolvedEmbedding;
     toolCtx: ToolContext;
+    signal?: AbortSignal;
 }
 
 const workerSystem = (contextBlock: string, hasTools: boolean) => {
@@ -53,6 +54,7 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
             toolDeclarations: workerTools(),
             dispatch: (name, args) => executeTool(name, args, p.embRef, p.toolCtx),
             maxRounds: AGENT_CONFIG.workerMaxRounds,
+            signal: p.signal,
         });
 
     for (const resolved of candidates) {
@@ -70,15 +72,19 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
                     embRef: p.embRef,
                     ctx: p.toolCtx,
                     onUsage: (u) => { compatTokens = u.totalTokens; },
+                    signal: p.signal,
                 });
                 if (!isEmptyReply(output)) return { model: resolved.model.id, output, tokens: compatTokens };
             }
             console.warn(`[Worker] ${resolved.model.id} returned nothing, trying next model`);
         } catch (err) {
+            // A cancel must abort the whole worker, not fall through to the next model.
+            if (p.signal?.aborted) throw err;
             console.warn(`[Worker] ${resolved.model.id} failed, trying next model:`, err);
         }
     }
 
+    p.signal?.throwIfAborted();
     const { text, usage } = await geminiRun();
     return { model: `${MODEL} (fallback)`, output: text, tokens: usage.totalTokens };
 }

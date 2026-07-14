@@ -1,6 +1,6 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
-import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences, listTodos, countUserMessagesSince } from "@/lib/db";
+import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, deleteMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences, listTodos, countUserMessagesSince } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
 import { classifyIntent } from "@/lib/ai/agent/router";
 import { runAgent } from "@/lib/ai/agent/orchestrator";
@@ -461,11 +461,12 @@ export async function ragChat(params: {
     agent?: boolean;
     resumeRunId?: string;
     replyTo?: ReplyRef;
+    signal?: AbortSignal;
 }, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
     const {
         message, channel, imageBase64, file, conversationId,
         thinking = false, search = false, provider, model, embeddingModel,
-        genParams = {}, agent = false, replyTo,
+        genParams = {}, agent = false, replyTo, signal,
     } = params;
 
     const profile = await getDefaultProfile();
@@ -517,44 +518,61 @@ export async function ragChat(params: {
     if (mode === "agent" && hasVisualAttachment) mode = "chat";
 
     let reply: string;
-    if (mode === "agent") {
-        const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
-            ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
-            : effectiveMessage;
-        onEvent?.({ type: "status", message: "Understanding your request…" });
-        const resumePrefix = params.resumeRunId ? await buildResumePrefix(params.resumeRunId) : undefined;
-        const res = await runAgent({
-            rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent, resumePrefix,
-        });
-        reply = res.reply;
-        artifacts.push(...res.artifacts);
-    } else {
-        const toolCtx: ToolContext = {
-            conversationId,
-            userProfileId: profile?.id,
-            onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
-        };
-        if (rag.chat.provider.kind === "gemini") {
-            reply = await generateGeminiReply({
-                contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
-                thinking: rag.allowThinking, search: rag.allowSearch,
-                model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx,
+    try {
+        if (mode === "agent") {
+            const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
+                ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
+                : effectiveMessage;
+            onEvent?.({ type: "status", message: "Understanding your request…" });
+            const resumePrefix = params.resumeRunId ? await buildResumePrefix(params.resumeRunId) : undefined;
+            const res = await runAgent({
+                rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent, resumePrefix, signal,
             });
+            reply = res.reply;
+            artifacts.push(...res.artifacts);
         } else {
-            reply = await openaiCompatChat({
-                provider: rag.chat.provider,
-                model: rag.chat.model,
-                systemText: rag.contextBlock.trim(),
-                userText: effectiveMessage,
-                imageBase64,
-                file,
-                embRef: rag.embRef,
-                thinking: rag.allowThinking,
-                search: rag.allowSearch,
-                genParams,
-                ctx: toolCtx,
-            });
+            const toolCtx: ToolContext = {
+                conversationId,
+                userProfileId: profile?.id,
+                onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
+            };
+            if (rag.chat.provider.kind === "gemini") {
+                reply = await generateGeminiReply({
+                    contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
+                    thinking: rag.allowThinking, search: rag.allowSearch,
+                    model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx, signal,
+                });
+            } else {
+                reply = await openaiCompatChat({
+                    provider: rag.chat.provider,
+                    model: rag.chat.model,
+                    systemText: rag.contextBlock.trim(),
+                    userText: effectiveMessage,
+                    imageBase64,
+                    file,
+                    embRef: rag.embRef,
+                    thinking: rag.allowThinking,
+                    search: rag.allowSearch,
+                    genParams,
+                    ctx: toolCtx,
+                    signal,
+                });
+            }
         }
+    } catch (err) {
+        // Full drop on cancel: remove the just-saved user message and save no
+        // reply, so a mistaken send leaves no trace. Re-throw so the route
+        // stays silent (the client already disconnected).
+        if (signal?.aborted) {
+            if (userMsgId) await deleteMessage(userMsgId).catch(() => { });
+            throw err;
+        }
+        throw err;
+    }
+
+    if (signal?.aborted) {
+        if (userMsgId) await deleteMessage(userMsgId).catch(() => { });
+        throw new DOMException("Chat request cancelled.", "AbortError");
     }
 
     reply += await dailyNotesReminder(userMsgId || undefined);
@@ -617,8 +635,9 @@ async function generateGeminiReply(opts: {
     embRef: ResolvedEmbedding;
     genParams: GenParams;
     ctx?: ToolContext;
+    signal?: AbortSignal;
 }): Promise<string> {
-    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx } = opts;
+    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx, signal } = opts;
 
     const genConfig: Record<string, number> = {};
     if (genParams.temperature !== undefined) genConfig.temperature = genParams.temperature;
@@ -643,7 +662,12 @@ async function generateGeminiReply(opts: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const contents: any[] = [{ role: "user", parts }];
 
-    const thinkingOpts = { thinkingConfig: { thinkingLevel: thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW } };
+    // abortSignal rides in the shared base so every generateContent config
+    // below (mcp/grounding/maps/wrap) is cancellable in one place.
+    const thinkingOpts = {
+        thinkingConfig: { thinkingLevel: thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW },
+        ...(signal ? { abortSignal: signal } : {}),
+    };
     const mcpConfig = { tools: [{ functionDeclarations: toolDeclarations }], ...thinkingOpts, ...genConfig };
     const groundingConfig = { tools: [{ googleSearch: {} }, { urlContext: {} }], ...thinkingOpts, ...genConfig };
     const mapsConfig = { tools: [{ googleMaps: {} }], ...thinkingOpts, ...genConfig };

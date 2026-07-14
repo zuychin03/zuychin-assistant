@@ -30,6 +30,13 @@ interface ChatMessage {
   replyTo?: { role: "user" | "assistant"; content: string };
 }
 
+interface OutgoingPayload {
+  text: string;
+  file: { name: string; mimeType: string; base64: string; size: number } | null;
+  replyTo: { role: "user" | "assistant"; content: string } | null;
+  resume?: { runId: string; text: string };
+}
+
 // Starter suggestions on the empty state. Each fills the input with a command
 // (trailing space keeps the slash menu closed so Enter sends right away).
 const STARTER_SUGGESTIONS: { icon: React.ReactNode; label: string; fill: string }[] = [
@@ -109,6 +116,7 @@ export default function Home() {
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [replyTo, setReplyTo] = useState<{ role: "user" | "assistant"; content: string } | null>(null);
+  const [queuedView, setQueuedView] = useState<{ id: string; payload: OutgoingPayload }[]>([]);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
@@ -128,6 +136,10 @@ export default function Home() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const queueRef = useRef<{ id: string; payload: OutgoingPayload }[]>([]);
+  // sendPayload runs from a drain in an old closure; the ref always has the
+  // current conversation so a queued send can't open a second conversation.
+  const activeConvIdRef = useRef<string | null>(null);
   const headerLeftRef = useRef<HTMLDivElement>(null);
   const headerRightRef = useRef<HTMLDivElement>(null);
 
@@ -137,6 +149,10 @@ export default function Home() {
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
+
+  useEffect(() => {
+    activeConvIdRef.current = activeConversationId;
+  }, [activeConversationId]);
 
   // The centered conversation title is absolutely positioned, so on narrow
   // screens it can overlap the model selectors / header buttons. Measure the
@@ -172,7 +188,7 @@ export default function Home() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, queuedView]);
 
   // Show the jump-to-bottom button once the user scrolls up during a long chat.
   const handleMessagesScroll = (e: React.UIEvent<HTMLElement>) => {
@@ -394,6 +410,8 @@ export default function Home() {
       }
       setActiveConversationId(convId);
       setReplyTo(null);
+      queueRef.current = [];
+      setQueuedView([]);
       setSidebarOpen(false);
     } catch (err) {
       console.error("Failed to load conversation:", err);
@@ -413,6 +431,8 @@ export default function Home() {
       setActiveConversationId(data.id);
       setMessages([]);
       setReplyTo(null);
+      queueRef.current = [];
+      setQueuedView([]);
       setSidebarOpen(false);
       await loadConversations();
     } catch (err) {
@@ -482,40 +502,63 @@ export default function Home() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent | null, resume?: { runId: string; text: string }) => {
+  const handleSubmit = (e: React.FormEvent | null, resume?: { runId: string; text: string }) => {
     e?.preventDefault();
     const text = resume?.text ?? input.trim();
-    if ((!text && !pendingFile) || isLoading) return;
+    if (!text && !pendingFile) return;
 
-    let convId = activeConversationId;
+    const payload: OutgoingPayload = {
+      text,
+      file: resume ? null : pendingFile,
+      replyTo: resume ? null : replyTo,
+      resume,
+    };
+    if (!resume) {
+      setInput("");
+      setPendingFile(null);
+      setReplyTo(null);
+      if (inputRef.current) inputRef.current.style.height = "auto";
+    }
+
+    // A send during an active stream queues; the queue drains one at a time
+    // as each response completes.
+    if (isLoading) {
+      queueRef.current.push({ id: Date.now().toString() + Math.random().toString(36).slice(2), payload });
+      setQueuedView([...queueRef.current]);
+      return;
+    }
+    void sendPayload(payload);
+  };
+
+  const removeQueued = (id: string) => {
+    queueRef.current = queueRef.current.filter((q) => q.id !== id);
+    setQueuedView([...queueRef.current]);
+  };
+
+  const sendPayload = async (p: OutgoingPayload) => {
+    setIsLoading(true);
+
+    let convId = activeConvIdRef.current;
     if (!convId) {
       try {
         const res = await fetch("/api/conversations", { method: "POST" });
         const data = await res.json();
         convId = data.id;
+        activeConvIdRef.current = data.id;
         setActiveConversationId(data.id);
       } catch {
       }
     }
 
-    const replyToSend = resume ? null : replyTo;
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
-      content: text || (pendingFile && !resume ? `[Sent ${pendingFile.name}]` : ""),
-      fileName: resume ? undefined : pendingFile?.name,
-      fileMimeType: resume ? undefined : pendingFile?.mimeType,
-      ...(replyToSend ? { replyTo: replyToSend } : {}),
+      content: p.text || (p.file ? `[Sent ${p.file.name}]` : ""),
+      fileName: p.file?.name,
+      fileMimeType: p.file?.mimeType,
+      ...(p.replyTo ? { replyTo: p.replyTo } : {}),
     };
-
-    const fileToSend = resume ? null : pendingFile;
     setMessages((prev) => [...prev, userMessage]);
-    if (!resume) {
-      setInput("");
-      setPendingFile(null);
-      setReplyTo(null);
-    }
-    setIsLoading(true);
 
     if (convId) {
       const bumpedId = convId;
@@ -527,10 +570,6 @@ export default function Home() {
         next.unshift({ ...conv, updatedAt: new Date().toISOString() });
         return next;
       });
-    }
-
-    if (inputRef.current) {
-      inputRef.current.style.height = "auto";
     }
 
     const controller = new AbortController();
@@ -545,9 +584,9 @@ export default function Home() {
           message: userMessage.content,
           conversationId: convId,
           thinking: thinkingEnabled && canThink,
-          agent: resume ? true : agentEnabled,
-          ...(resume && { resumeRunId: resume.runId }),
-          ...(replyToSend && { replyTo: replyToSend }),
+          agent: p.resume ? true : agentEnabled,
+          ...(p.resume && { resumeRunId: p.resume.runId }),
+          ...(p.replyTo && { replyTo: p.replyTo }),
           genParams: {
             ...(genParams.temperature !== null && { temperature: genParams.temperature }),
             ...(genParams.topP !== null && { topP: genParams.topP }),
@@ -558,12 +597,12 @@ export default function Home() {
             model: chatSel.split("::").slice(1).join("::"),
           }),
           ...(embedSel && { embeddingModel: embedSel }),
-          ...(fileToSend && {
+          ...(p.file && {
             file: {
-              name: fileToSend.name,
-              mimeType: fileToSend.mimeType,
-              base64: fileToSend.base64,
-              size: fileToSend.size,
+              name: p.file.name,
+              mimeType: p.file.mimeType,
+              base64: p.file.base64,
+              size: p.file.size,
             },
           }),
         }),
@@ -648,10 +687,10 @@ export default function Home() {
       await loadConversations();
       loadNotes();
     } catch (error: unknown) {
-      // A user-initiated cancel frees the composer without an error bubble;
-      // the server may still finish and save its reply to history.
+      // Full drop on cancel: the server deletes the errant user message and
+      // saves no reply, so remove the optimistic user bubble to match.
       if (error instanceof DOMException && error.name === "AbortError") {
-        loadConversations();
+        setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
         return;
       }
       const errorMsg =
@@ -664,12 +703,20 @@ export default function Home() {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       abortRef.current = null;
-      setIsLoading(false);
       setAgentRun(null);
+      const next = queueRef.current.shift();
+      setQueuedView([...queueRef.current]);
+      if (next) void sendPayload(next.payload);
+      else setIsLoading(false);
     }
   };
 
-  const handleCancel = () => abortRef.current?.abort();
+  const handleCancel = () => {
+    // Stop means stop everything: drop the in-flight turn and the queue.
+    queueRef.current = [];
+    setQueuedView([]);
+    abortRef.current?.abort();
+  };
 
   const startReply = (msg: ChatMessage) => {
     setReplyTo({ role: msg.role, content: msg.content });
@@ -729,7 +776,9 @@ export default function Home() {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Mobile keyboards use Enter as the newline key; only the send button
+    // submits there. Desktop keeps Enter-to-send, Shift+Enter for newline.
+    if (e.key === "Enter" && !e.shiftKey && isDesktop) {
       e.preventDefault();
       handleSubmit(e);
     }
@@ -1280,6 +1329,34 @@ export default function Home() {
             </div>
           )}
 
+          {queuedView.map((q) => (
+            <div
+              key={q.id}
+              style={{ ...styles.messageBubbleWrapper, justifyContent: "flex-end", opacity: 0.55 }}
+              className="animate-slide-right"
+            >
+              <button
+                type="button"
+                onClick={() => removeQueued(q.id)}
+                style={styles.replyMsgBtn}
+                aria-label="Remove queued message"
+                title="Remove queued message"
+              >
+                <X size={15} />
+              </button>
+              <div style={{ ...styles.bubble, ...styles.userBubble }}>
+                {q.payload.file && (
+                  <div style={styles.fileTag}>
+                    {getFileIcon(q.payload.file.mimeType)}
+                    <span style={styles.fileTagName}>{q.payload.file.name}</span>
+                  </div>
+                )}
+                <p style={styles.bubbleText}>{q.payload.text || (q.payload.file ? `[Sent ${q.payload.file.name}]` : "")}</p>
+                <div style={{ ...styles.msgMeta, color: "inherit", opacity: 0.75 }}>Queued</div>
+              </div>
+            </div>
+          ))}
+
           <div ref={messagesEndRef} />
         </main>
 
@@ -1473,29 +1550,29 @@ export default function Home() {
               rows={1}
               style={styles.textarea}
             />
-            {isLoading ? (
+            {isLoading && (
               <button
                 type="button"
                 onClick={handleCancel}
-                style={styles.sendButton}
+                style={{ ...styles.sendButton, background: "var(--color-surface)" }}
                 aria-label="Stop generating"
-                title="Stop generating"
+                title="Stop generating (also clears queued messages)"
               >
-                <Square size={16} color="var(--color-primary-foreground)" fill="var(--color-primary-foreground)" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!input.trim() && !pendingFile}
-                style={{
-                  ...styles.sendButton,
-                  opacity: !input.trim() && !pendingFile ? 0.3 : 1,
-                }}
-                aria-label="Send message"
-              >
-                <Send size={20} color="var(--color-primary-foreground)" />
+                <Square size={15} color="var(--color-text-primary)" fill="var(--color-text-primary)" />
               </button>
             )}
+            <button
+              type="submit"
+              disabled={!input.trim() && !pendingFile}
+              style={{
+                ...styles.sendButton,
+                opacity: !input.trim() && !pendingFile ? 0.3 : 1,
+              }}
+              aria-label={isLoading ? "Queue message" : "Send message"}
+              title={isLoading ? "Queue message (sends after the current reply)" : "Send message"}
+            >
+              <Send size={20} color="var(--color-primary-foreground)" />
+            </button>
           </form>
         </footer>
       </div>

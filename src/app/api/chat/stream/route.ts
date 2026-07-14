@@ -43,6 +43,12 @@ export async function POST(req: NextRequest) {
     }
 
     const encoder = new TextEncoder();
+    // Aborts when the client disconnects (stop button); ragChat propagates it
+    // to the model calls and drops the turn server-side.
+    const ac = new AbortController();
+    const onClientAbort = () => ac.abort();
+    req.signal.addEventListener("abort", onClientAbort);
+
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
             let closed = false;
@@ -71,16 +77,23 @@ export async function POST(req: NextRequest) {
                     model: body.model as string | undefined,
                     embeddingModel: body.embeddingModel as string | undefined,
                     genParams: sanitizeGenParams(body.genParams),
+                    signal: ac.signal,
                 }, send);
                 send({ type: "done", reply, messageId, artifacts });
             } catch (err) {
-                console.error("[Chat Stream Error]", err);
-                send({ type: "error", message: err instanceof Error ? err.message : "The agent failed." });
+                if (!ac.signal.aborted) {
+                    console.error("[Chat Stream Error]", err);
+                    send({ type: "error", message: err instanceof Error ? err.message : "The agent failed." });
+                }
             } finally {
                 closed = true;
                 clearInterval(heartbeat);
+                req.signal.removeEventListener("abort", onClientAbort);
                 try { controller.close(); } catch { }
             }
+        },
+        cancel() {
+            ac.abort();
         },
     });
 
