@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listMemories, insertMemory, updateMemoryFact, deleteMemory, type MemoryCategory } from "@/lib/ai/memory/store";
-import { getEmbeddingRef } from "@/lib/ai/embeddings";
 import { getDefaultProfile } from "@/lib/db";
 
 const CATEGORIES = ["identity", "preference", "relationship", "project", "routine", "fact", "other"];
@@ -31,7 +30,6 @@ export async function POST(req: NextRequest) {
             fact,
             category: normalizeCategory(body.category),
             source: "manual",
-            embRef: getEmbeddingRef(),
             userProfileId: profile?.id,
         });
         if (!id) return NextResponse.json({ error: "Failed to save memory." }, { status: 500 });
@@ -53,7 +51,6 @@ export async function PUT(req: NextRequest) {
             id,
             fact,
             category: body.category ? normalizeCategory(body.category) : undefined,
-            embRef: getEmbeddingRef(),
         });
         if (!ok) return NextResponse.json({ error: "Failed to update memory." }, { status: 500 });
         return NextResponse.json({ success: true });

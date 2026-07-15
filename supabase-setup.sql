@@ -319,6 +319,16 @@ drop policy if exists "Allow all access to memories" on memories;
 create policy "Allow all access to memories" on memories for all using (true) with check (true);
 
 -- filter_project null -> global facts only; set -> global + that project's facts.
+-- Work/study facts enter as invisible 'candidate' rows and are promoted to
+-- 'confirmed' once the same pattern repeats in a different conversation/day
+-- (tracked via evidence_count + last_evidence_key). Personal-life facts are
+-- confirmed immediately.
+alter table memories add column if not exists status text not null default 'confirmed'
+  check (status in ('candidate', 'confirmed'));
+alter table memories add column if not exists evidence_count int not null default 1;
+alter table memories add column if not exists last_evidence_key text;
+
+drop function if exists match_memories(vector, float, int, uuid, text, uuid);
 create or replace function match_memories(
   query_embedding vector,
   match_threshold float default 0.5,
@@ -332,20 +342,24 @@ returns table (
   fact text,
   category text,
   project_id uuid,
-  similarity float
+  similarity float,
+  status text,
+  evidence_count int
 )
 language plpgsql
 as $$
 begin
   return query
-  select q.id, q.fact, q.category, q.project_id, q.similarity
+  select q.id, q.fact, q.category, q.project_id, q.similarity, q.status, q.evidence_count
   from (
     select
       m.id,
       m.fact,
       m.category,
       m.project_id,
-      1 - (m.embedding <=> query_embedding) as similarity
+      1 - (m.embedding <=> query_embedding) as similarity,
+      m.status,
+      m.evidence_count
     from memories m
     where
       m.embedding_model = filter_model

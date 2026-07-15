@@ -49,7 +49,7 @@ export interface FileAttachment {
 
 export const SUPPORTED_MIME_TYPES: Record<string, string[]> = {
     images: ["image/jpeg", "image/png", "image/webp", "image/heic"],
-    audio: ["audio/mp3", "audio/mpeg", "audio/wav", "audio/flac", "audio/ogg", "audio/m4a", "audio/x-aac"],
+    audio: ["audio/mp3", "audio/mpeg", "audio/wav", "audio/flac", "audio/ogg", "audio/m4a", "audio/x-aac", "audio/webm", "audio/mp4"],
     video: ["video/mp4", "video/quicktime", "video/webm"],
     documents: ["application/pdf"],
     text: [

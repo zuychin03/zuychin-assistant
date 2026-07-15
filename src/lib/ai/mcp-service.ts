@@ -544,7 +544,7 @@ export async function executeTool(
             return executeManageScheduledTask(args, ctx);
 
         case "manage_memory_facts":
-            return executeManageMemoryFacts(args, embRef);
+            return executeManageMemoryFacts(args);
 
         default:
             return `Unknown tool: ${toolName}`;
@@ -1081,7 +1081,6 @@ async function executeManageScheduledTask(
 
 async function executeManageMemoryFacts(
     args: Record<string, unknown>,
-    embRef: ResolvedEmbedding
 ): Promise<string> {
     const action = (args.action as string) ?? "list";
     const factId = args.fact_id as string | undefined;
@@ -1093,7 +1092,7 @@ async function executeManageMemoryFacts(
                 const facts = await listMemories(50, category);
                 if (facts.length === 0) return category ? `No ${category} facts remembered yet.` : "No facts remembered yet.";
                 const formatted = facts
-                    .map((f) => `- [${f.category}${f.projectId ? ", project" : ""}] ${f.fact}\n  _ID: ${f.id}_`)
+                    .map((f) => `- [${f.category}${f.projectId ? ", project" : ""}${f.status === "candidate" ? `, unconfirmed pattern ${f.evidenceCount}/2` : ""}] ${f.fact}\n  _ID: ${f.id}_`)
                     .join("\n");
                 return `Known facts (${facts.length}):\n${formatted}`;
             }
@@ -1107,7 +1106,7 @@ async function executeManageMemoryFacts(
             case "correct": {
                 const fact = (args.fact as string | undefined)?.trim();
                 if (!factId || !fact) return "Error: fact_id and the corrected fact text are both required.";
-                const ok = await updateMemoryFact({ id: factId, fact, embRef });
+                const ok = await updateMemoryFact({ id: factId, fact });
                 return ok ? `✅ Fact updated to: "${fact}"` : "Failed to update — check the fact_id with action 'list'.";
             }
 

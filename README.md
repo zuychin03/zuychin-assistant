@@ -33,7 +33,10 @@ edited and deleted in place.
   UI offers a **Resume run** chip that continues from where it stopped
 - Fact memory: durable facts about you are extracted after each turn (Mem0-style
   add/update/delete consolidation) and injected as "Known Facts" alongside the raw-message
-  RAG memories; editable in the admin dashboard
+  RAG memories; editable in the admin dashboard. Personal-life facts are stored only when
+  you explicitly state them; work/study observations are tracked as unconfirmed patterns
+  and only become facts once they repeat across conversations. Facts live in one shared
+  embedding partition, so they're remembered no matter which embedding model a chat uses
 - Scheduled tasks: ask in chat for one-off or recurring jobs ("every weekday at 8am send me
   a workout reminder on telegram") — stored with a 5-field cron schedule, executed through
   the real chat pipeline and delivered to Telegram, Discord or a web conversation

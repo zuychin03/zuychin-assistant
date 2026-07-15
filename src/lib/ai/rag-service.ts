@@ -319,10 +319,16 @@ export async function buildRagContext(params: {
     thinking: boolean;
     search: boolean;
     profile: Profile;
+    hasAudioAttachment?: boolean;
 }): Promise<RagContext> {
     const { message, channel, conversationId, provider, model, embeddingModel, thinking, search, profile } = params;
 
-    const chat = resolveChatForRequest(channel, provider, model, profile);
+    let chat = resolveChatForRequest(channel, provider, model, profile);
+    // Only Gemini can hear: the OpenAI-compat client drops audio bytes, so an
+    // audio turn on a non-Gemini selection falls back to Gemini for this turn.
+    if (params.hasAudioAttachment && chat.provider.kind !== "gemini") {
+        chat = resolveChat();
+    }
     const embRef = embeddingModel
         ? getEmbeddingRef(embeddingModel)
         : channel !== "web"
@@ -335,14 +341,23 @@ export async function buildRagContext(params: {
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 
-    // Project lookup runs alongside the embed call: the project's id scopes
-    // the fact search below and its instructions join the prompt.
+    // Project lookup runs alongside the embed calls: the project's id scopes
+    // the fact search below and its instructions join the prompt. Facts live
+    // in the default embedding partition regardless of the turn's selection,
+    // so they need their own query vector when the selections differ.
+    const memoryRef = getEmbeddingRef();
     const [queryEmbedding, project] = await Promise.all([
         embedText(embRef, message),
         conversationId ? getConversationProject(conversationId) : Promise.resolve(null),
     ]);
+    const memoryQueryEmbedding = embRef.model.id === memoryRef.model.id
+        ? queryEmbedding
+        : await embedText(memoryRef, message, "query").catch((err) => {
+            console.warn("[RAG] Memory query embed failed:", err);
+            return null;
+        });
 
-    const [rawMatches, recentMessages, knownFacts] = await Promise.all([
+    const [rawMatches, recentMessages, factHits] = await Promise.all([
         searchEmbeddings({
             queryEmbedding,
             matchThreshold: RAG_CONFIG.matchThreshold,
@@ -354,14 +369,18 @@ export async function buildRagContext(params: {
             return [];
         }),
         getRecentMessages(RAG_CONFIG.historyFetchCount, channel, conversationId),
-        searchMemories({
-            queryEmbedding,
-            embeddingModel: embRef.model.id,
-            userId: profile?.id,
-            projectId: project?.id,
-            matchCount: RAG_CONFIG.factCount,
-        }),
+        memoryQueryEmbedding
+            ? searchMemories({
+                queryEmbedding: memoryQueryEmbedding,
+                userId: profile?.id,
+                projectId: project?.id,
+                matchThreshold: 0.35,
+                matchCount: RAG_CONFIG.factCount + 4,
+            })
+            : Promise.resolve([]),
     ]);
+    // Candidates (unconfirmed work/study patterns) never reach the prompt.
+    const knownFacts = factHits.filter((f) => f.status !== "candidate").slice(0, RAG_CONFIG.factCount);
 
     const rankedMatches = rerankResults(rawMatches, message, RAG_CONFIG.maxContextItems);
     const relevantContext = rankedMatches.length > 0
@@ -507,6 +526,7 @@ export async function ragChat(params: {
     const rag = await buildRagContext({
         message: effectiveMessage, channel, conversationId, provider, model,
         embeddingModel, thinking, search, profile,
+        hasAudioAttachment: !!file && file.mimeType.startsWith("audio/"),
     });
 
     const artifacts: ArtifactDescriptor[] = [];
@@ -601,8 +621,8 @@ export async function ragChat(params: {
         assistantReply: reply,
         channel,
         userProfileId: profile?.id,
-        embRef: rag.embRef,
         projectId: rag.projectId,
+        conversationId,
     });
     try {
         after(extraction);

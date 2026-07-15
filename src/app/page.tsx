@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -117,6 +117,7 @@ export default function Home() {
   const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
   const [replyTo, setReplyTo] = useState<{ role: "user" | "assistant"; content: string } | null>(null);
   const [queuedView, setQueuedView] = useState<{ id: string; payload: OutgoingPayload }[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
@@ -136,6 +137,8 @@ export default function Home() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<Blob[]>([]);
   const queueRef = useRef<{ id: string; payload: OutgoingPayload }[]>([]);
   // sendPayload runs from a drain in an old closure; the ref always has the
   // current conversation so a queued send can't open a second conversation.
@@ -795,6 +798,47 @@ export default function Home() {
     if (diffHours < 24) return `${diffHours}h ago`;
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays}d ago`;
+  };
+
+  const toggleRecording = async () => {
+    if (isRecording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordChunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setIsRecording(false);
+        recorderRef.current = null;
+        const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        recordChunksRef.current = [];
+        if (blob.size === 0) return;
+        if (blob.size > MAX_FILE_SIZE_BYTES) {
+          alert(`Recording too large (${(blob.size / 1024 / 1024).toFixed(1)} MB). Max ${MAX_FILE_SIZE_MB} MB.`);
+          return;
+        }
+        // Codec suffixes ("audio/webm;codecs=opus") fail the whitelist check.
+        const mimeType = (blob.type.split(";")[0] || "audio/webm").trim();
+        const ext = mimeType === "audio/mp4" ? "m4a" : mimeType.split("/")[1] || "webm";
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = (reader.result as string).split(",")[1] ?? "";
+          setPendingFile({ name: `voice-note.${ext}`, mimeType, base64, size: blob.size });
+          inputRef.current?.focus();
+        };
+        reader.readAsDataURL(blob);
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Mic capture failed:", err);
+      alert("Couldn't access the microphone. Check the browser permission.");
+    }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1514,6 +1558,16 @@ export default function Home() {
               aria-label="Attach file"
             >
               <Paperclip size={18} color="var(--color-text-muted)" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleRecording}
+              style={styles.attachBtn}
+              aria-label={isRecording ? "Stop recording" : "Record a voice note"}
+              title={isRecording ? "Stop recording" : "Record a voice note"}
+              className={isRecording ? "animate-fade-in" : undefined}
+            >
+              <Mic size={18} color={isRecording ? "#ef4444" : "var(--color-text-muted)"} />
             </button>
             {canThink && (
               <button

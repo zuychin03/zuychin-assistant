@@ -4,12 +4,20 @@ import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/emb
 export type MemoryCategory =
     | "identity" | "preference" | "relationship" | "project" | "routine" | "fact" | "other";
 
+export type MemoryStatus = "candidate" | "confirmed";
+
+// Work/study observations start as invisible candidates and only become
+// Known Facts once the same pattern repeats in a different conversation.
+export const PROMOTE_EVIDENCE_COUNT = 2;
+
 export interface MemoryFact {
     id: string;
     fact: string;
     category: MemoryCategory;
     projectId: string | null;
     source: string;
+    status: MemoryStatus;
+    evidenceCount: number;
     createdAt: string;
     updatedAt: string;
 }
@@ -20,52 +28,112 @@ export interface MemoryHit {
     category: MemoryCategory;
     projectId: string | null;
     similarity: number;
+    status: MemoryStatus;
+    evidenceCount: number;
+}
+
+// Fact memory always lives in the DEFAULT embedding partition, regardless of
+// the per-message embedding selection. Facts are one shared pool; splitting
+// them by partition made facts invisible whenever the selection changed.
+export function memoryEmbeddingRef(): ResolvedEmbedding {
+    return getEmbeddingRef();
+}
+
+// Column-missing errors (pre-DDL) get a legacy retry so memory keeps working
+// until supabase-setup.sql is re-run.
+function isMissingColumn(message: string): boolean {
+    return /column .* does not exist|could not find the .* column/i.test(message);
 }
 
 export async function insertMemory(params: {
     fact: string;
     category: MemoryCategory;
     source: string;
-    embRef: ResolvedEmbedding;
     userProfileId?: string;
     projectId?: string;
+    status?: MemoryStatus;
+    evidenceKey?: string;
 }): Promise<string | null> {
-    const embedding = await embedText(params.embRef, params.fact);
-    const { data, error } = await supabase
+    const embRef = memoryEmbeddingRef();
+    const embedding = await embedText(embRef, params.fact);
+    const base = {
+        fact: params.fact,
+        category: params.category,
+        source: params.source,
+        embedding: JSON.stringify(embedding),
+        embedding_model: embRef.model.id,
+        user_profile_id: params.userProfileId ?? null,
+        project_id: params.projectId ?? null,
+    };
+    let { data, error } = await supabase
         .from("memories")
         .insert({
-            fact: params.fact,
-            category: params.category,
-            source: params.source,
-            embedding: JSON.stringify(embedding),
-            embedding_model: params.embRef.model.id,
-            user_profile_id: params.userProfileId ?? null,
-            project_id: params.projectId ?? null,
+            ...base,
+            status: params.status ?? "confirmed",
+            evidence_count: 1,
+            last_evidence_key: params.evidenceKey ?? null,
         })
         .select("id")
         .single();
 
+    if (error && isMissingColumn(error.message)) {
+        ({ data, error } = await supabase.from("memories").insert(base).select("id").single());
+    }
     if (error) {
         console.warn("[Memory] Failed to insert fact:", error.message);
         return null;
     }
-    return data.id as string;
+    return data!.id as string;
+}
+
+/**
+ * Counts one more sighting of a candidate pattern. Evidence only accrues from
+ * a different conversation/day than the last one, and the fact is promoted to
+ * confirmed at PROMOTE_EVIDENCE_COUNT.
+ */
+export async function reinforceMemory(id: string, evidenceKey: string): Promise<boolean> {
+    const { data, error } = await supabase
+        .from("memories")
+        .select("status, evidence_count, last_evidence_key")
+        .eq("id", id)
+        .single();
+    if (error) {
+        if (!isMissingColumn(error.message)) console.warn("[Memory] Reinforce read failed:", error.message);
+        return false;
+    }
+    if (data.status !== "candidate") return true;
+    if (data.last_evidence_key && data.last_evidence_key === evidenceKey) return true;
+
+    const evidence = (data.evidence_count ?? 1) + 1;
+    const { error: upErr } = await supabase
+        .from("memories")
+        .update({
+            evidence_count: evidence,
+            last_evidence_key: evidenceKey,
+            ...(evidence >= PROMOTE_EVIDENCE_COUNT ? { status: "confirmed" } : {}),
+        })
+        .eq("id", id);
+    if (upErr) {
+        console.warn("[Memory] Reinforce failed:", upErr.message);
+        return false;
+    }
+    return true;
 }
 
 export async function updateMemoryFact(params: {
     id: string;
     fact: string;
     category?: MemoryCategory;
-    embRef: ResolvedEmbedding;
 }): Promise<boolean> {
-    const embedding = await embedText(params.embRef, params.fact);
+    const embRef = memoryEmbeddingRef();
+    const embedding = await embedText(embRef, params.fact);
     const { error } = await supabase
         .from("memories")
         .update({
             fact: params.fact,
             ...(params.category ? { category: params.category } : {}),
             embedding: JSON.stringify(embedding),
-            embedding_model: params.embRef.model.id,
+            embedding_model: embRef.model.id,
         })
         .eq("id", params.id);
 
@@ -88,7 +156,7 @@ export async function deleteMemory(id: string): Promise<boolean> {
 export async function listMemories(limit = 100, category?: string): Promise<MemoryFact[]> {
     let query = supabase
         .from("memories")
-        .select("id, fact, category, project_id, source, created_at, updated_at")
+        .select("*")
         .order("updated_at", { ascending: false })
         .limit(limit);
     if (category) query = query.eq("category", category);
@@ -104,6 +172,8 @@ export async function listMemories(limit = 100, category?: string): Promise<Memo
         category: row.category as MemoryCategory,
         projectId: row.project_id,
         source: row.source,
+        status: (row.status ?? "confirmed") as MemoryStatus,
+        evidenceCount: row.evidence_count ?? 1,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     }));
@@ -111,7 +181,6 @@ export async function listMemories(limit = 100, category?: string): Promise<Memo
 
 export async function searchMemories(params: {
     queryEmbedding: number[];
-    embeddingModel?: string;
     userId?: string;
     projectId?: string;
     matchThreshold?: number;
@@ -122,7 +191,7 @@ export async function searchMemories(params: {
         match_threshold: params.matchThreshold ?? 0.5,
         match_count: params.matchCount ?? 8,
         filter_user_id: params.userId ?? null,
-        filter_model: params.embeddingModel ?? getEmbeddingRef().model.id,
+        filter_model: memoryEmbeddingRef().model.id,
         filter_project: params.projectId ?? null,
     });
 
@@ -137,6 +206,8 @@ export async function searchMemories(params: {
         category: row.category,
         projectId: row.project_id,
         similarity: row.similarity,
+        status: (row.status ?? "confirmed") as MemoryStatus,
+        evidenceCount: row.evidence_count ?? 1,
     }));
     /* eslint-enable @typescript-eslint/no-explicit-any */
 }

@@ -9,6 +9,8 @@ interface MemoryFact {
     category: string;
     projectId: string | null;
     source: string;
+    status?: "candidate" | "confirmed";
+    evidenceCount?: number;
     updatedAt: string;
 }
 
@@ -135,9 +137,14 @@ export default function MemoriesPanel() {
                             </div>
                         ) : (
                             <>
-                                <div style={panelStyles.factText}>{m.fact}</div>
+                                <div style={{ ...panelStyles.factText, ...(m.status === "candidate" ? { opacity: 0.6 } : {}) }}>{m.fact}</div>
                                 <div style={panelStyles.rowFooter}>
                                     <span style={panelStyles.categoryChip}>{m.category}</span>
+                                    {m.status === "candidate" && (
+                                        <span style={{ ...panelStyles.categoryChip, borderStyle: "dashed" }} title="Unconfirmed work/study pattern — becomes a Known Fact when it repeats in another conversation">
+                                            pattern {m.evidenceCount ?? 1}/2
+                                        </span>
+                                    )}
                                     <span style={panelStyles.rowMeta}>
                                         {m.projectId ? "project · " : ""}{new Date(m.updatedAt).toLocaleDateString()}
                                     </span>

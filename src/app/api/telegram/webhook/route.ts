@@ -20,6 +20,12 @@ const MIME_MAP: Record<string, string> = {
     csv: "text/csv",
     txt: "text/plain",
     json: "application/json",
+    ogg: "audio/ogg",
+    oga: "audio/ogg",
+    mp3: "audio/mp3",
+    m4a: "audio/x-aac",
+    wav: "audio/wav",
+    flac: "audio/flac",
 };
 
 function getMimeType(filePath: string): string {
@@ -51,15 +57,12 @@ async function processUpdate(update: Record<string, unknown>) {
         text = commandMatch[1].trim();
     }
 
-    if (message.voice || message.audio) {
-        await sendTelegramMessage(chatId, "🎙️ Voice messages aren't supported yet. Please type your message instead!");
-        return;
-    }
-
     const photo = message.photo as unknown[] | undefined;
     const document = message.document as Record<string, unknown> | undefined;
     const video = message.video as Record<string, unknown> | undefined;
-    const hasAttachment = photo || document || video;
+    const voice = message.voice as Record<string, unknown> | undefined;
+    const audio = message.audio as Record<string, unknown> | undefined;
+    const hasAttachment = photo || document || video || voice || audio;
 
     if (!text && !hasAttachment) {
         console.log(`[Telegram] Skipping chat ${chatId} - empty message`);
@@ -76,6 +79,7 @@ async function processUpdate(update: Record<string, unknown>) {
             let fileId: string | undefined;
             let fileName = "attachment";
             let fileSize = 0;
+            let mimeOverride: string | undefined;
 
             if (photo) {
                 const largest = photo[photo.length - 1] as Record<string, unknown>;
@@ -90,12 +94,23 @@ async function processUpdate(update: Record<string, unknown>) {
                 fileId = video.file_id as string;
                 fileName = (video.file_name as string) || "video.mp4";
                 fileSize = (video.file_size as number) || 0;
+            } else if (voice) {
+                // Telegram voice notes are Opus-in-OGG regardless of file_path extension.
+                fileId = voice.file_id as string;
+                fileName = "voice.ogg";
+                fileSize = (voice.file_size as number) || 0;
+                mimeOverride = "audio/ogg";
+            } else if (audio) {
+                fileId = audio.file_id as string;
+                fileName = (audio.file_name as string) || "audio";
+                fileSize = (audio.file_size as number) || 0;
+                mimeOverride = (audio.mime_type as string) || undefined;
             }
 
             if (fileId && fileSize <= MAX_FILE_SIZE) {
                 const downloaded = await downloadTelegramFile(fileId);
                 if (downloaded) {
-                    const mimeType = getMimeType(downloaded.filePath);
+                    const mimeType = mimeOverride ?? getMimeType(downloaded.filePath);
                     file = {
                         name: fileName,
                         mimeType,
