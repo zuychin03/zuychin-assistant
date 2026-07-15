@@ -266,7 +266,7 @@ async function handleEmbedModelCommand(message: string, channel: MessageChannel,
     if (!saved) {
         return "Couldn't save the embedding choice. Please try again later.";
     }
-    return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: memories are stored per embedding model, so switching starts a fresh memory partition for this channel.`;
+    return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: the knowledge store now uses a single shared embedding partition, so this choice no longer affects how memories are stored or recalled.`;
 }
 
 function startOfTodayUtc(): Date {
@@ -321,7 +321,7 @@ export async function buildRagContext(params: {
     profile: Profile;
     hasAudioAttachment?: boolean;
 }): Promise<RagContext> {
-    const { message, channel, conversationId, provider, model, embeddingModel, thinking, search, profile } = params;
+    const { message, channel, conversationId, provider, model, thinking, search, profile } = params;
 
     let chat = resolveChatForRequest(channel, provider, model, profile);
     // Only Gemini can hear: the OpenAI-compat client drops audio bytes, so an
@@ -329,11 +329,10 @@ export async function buildRagContext(params: {
     if (params.hasAudioAttachment && chat.provider.kind !== "gemini") {
         chat = resolveChat();
     }
-    const embRef = embeddingModel
-        ? getEmbeddingRef(embeddingModel)
-        : channel !== "web"
-            ? (resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding())
-            : getEmbeddingRef();
+    // The knowledge store lives in ONE embedding partition (the default
+    // model), like fact memory: honoring per-turn/per-channel embedding
+    // selections fragmented recall across partitions, so they are ignored.
+    const embRef = getEmbeddingRef();
 
     const allowThinking = thinking && chat.model.supportsThinking;
     const allowSearch = search && chat.model.supportsSearch;
@@ -341,37 +340,36 @@ export async function buildRagContext(params: {
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 
-    // Project lookup runs alongside the embed calls: the project's id scopes
-    // the fact search below and its instructions join the prompt. Facts live
-    // in the default embedding partition regardless of the turn's selection,
-    // so they need their own query vector when the selections differ.
-    const memoryRef = getEmbeddingRef();
+    // Project lookup runs alongside the embed call: the project's id scopes
+    // the fact search below and its instructions join the prompt. One query
+    // vector serves message search, fact search, and the message save — all
+    // three live in the same default partition. If the embedding provider is
+    // down the turn continues on recent history alone rather than failing.
     const [queryEmbedding, project] = await Promise.all([
-        embedText(embRef, message),
+        embedText(embRef, message).catch((err): null => {
+            console.warn("[RAG] Query embed failed, continuing without vector recall:", err);
+            return null;
+        }),
         conversationId ? getConversationProject(conversationId) : Promise.resolve(null),
     ]);
-    const memoryQueryEmbedding = embRef.model.id === memoryRef.model.id
-        ? queryEmbedding
-        : await embedText(memoryRef, message, "query").catch((err) => {
-            console.warn("[RAG] Memory query embed failed:", err);
-            return null;
-        });
 
     const [rawMatches, recentMessages, factHits] = await Promise.all([
-        searchEmbeddings({
-            queryEmbedding,
-            matchThreshold: RAG_CONFIG.matchThreshold,
-            matchCount: RAG_CONFIG.matchCount,
-            userId: profile?.id,
-            embeddingModel: embRef.model.id,
-        }).catch((err) => {
-            console.warn("[RAG] Vector search failed:", err);
-            return [];
-        }),
+        queryEmbedding
+            ? searchEmbeddings({
+                queryEmbedding,
+                matchThreshold: RAG_CONFIG.matchThreshold,
+                matchCount: RAG_CONFIG.matchCount,
+                userId: profile?.id,
+                embeddingModel: embRef.model.id,
+            }).catch((err) => {
+                console.warn("[RAG] Vector search failed:", err);
+                return [];
+            })
+            : Promise.resolve([]),
         getRecentMessages(RAG_CONFIG.historyFetchCount, channel, conversationId),
-        memoryQueryEmbedding
+        queryEmbedding
             ? searchMemories({
-                queryEmbedding: memoryQueryEmbedding,
+                queryEmbedding,
                 userId: profile?.id,
                 projectId: project?.id,
                 matchThreshold: 0.35,
@@ -405,8 +403,7 @@ export async function buildRagContext(params: {
         historySection = `## Recent Conversation\n${historyText}`;
     }
 
-    const isDupe = await isDuplicateEmbedding(queryEmbedding, embRef, profile?.id);
-    if (!isDupe) {
+    if (queryEmbedding && !(await isDuplicateEmbedding(queryEmbedding, embRef, profile?.id))) {
         storeEmbedding({
             content: message,
             embedding: queryEmbedding,
@@ -769,9 +766,8 @@ export async function ingestKnowledge(params: {
     content: string;
     metadata?: Record<string, string>;
     userProfileId?: string;
-    embeddingModel?: string;
 }): Promise<string> {
-    const embRef = getEmbeddingRef(params.embeddingModel);
+    const embRef = getEmbeddingRef();
     const embedding = await embedText(embRef, params.content);
 
     const id = await storeEmbedding({

@@ -126,7 +126,10 @@ export function sanitizeGenParams(raw: unknown): GenParams {
 }
 
 export const DEFAULT_CHAT = { providerId: "gemini", modelId: "gemini-3-flash-preview" };
-export const DEFAULT_EMBEDDING = { providerId: "gemini", modelId: "gemini-embedding-2-preview" };
+// Owns the knowledge store's single embedding partition. Swapping it (here or
+// via the KNOWLEDGE_EMBEDDING_MODEL env override) requires re-embedding the
+// store: npx tsx --env-file=<env> scripts/reembed-knowledge.ts
+export const DEFAULT_EMBEDDING = { providerId: "nvidia-nim", modelId: "nvidia/llama-nemotron-embed-1b-v2" };
 
 export function getProvider(id: string): ProviderConfig | undefined {
     return PROVIDERS.find((p) => p.id === id);
@@ -259,12 +262,14 @@ export interface ResolvedEmbedding {
 }
 
 export function resolveEmbedding(modelId?: string): ResolvedEmbedding {
+    const wanted = modelId ?? process.env.KNOWLEDGE_EMBEDDING_MODEL;
     for (const provider of PROVIDERS) {
-        const model = provider.embeddingModels.find((m) => m.id === modelId);
+        const model = provider.embeddingModels.find((m) => m.id === wanted);
         if (model) return { provider, model };
     }
     const g = getProvider(DEFAULT_EMBEDDING.providerId)!;
-    return { provider: g, model: g.embeddingModels[0]! };
+    const model = g.embeddingModels.find((m) => m.id === DEFAULT_EMBEDDING.modelId) ?? g.embeddingModels[0]!;
+    return { provider: g, model };
 }
 
 export const MESSAGING_EMBEDDING_CHAIN: { providerId: string; modelId: string }[] = [

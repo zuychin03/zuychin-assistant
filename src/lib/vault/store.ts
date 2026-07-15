@@ -1,5 +1,5 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { embedText, type EmbedInputType, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { embedText, getEmbeddingRef, type EmbedInputType, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 
 export interface VaultPageHit {
     path: string;
@@ -67,6 +67,18 @@ export async function listVaultPages(): Promise<VaultPageRow[]> {
         embeddingModel: r.embedding_model,
         updatedAt: r.updated_at,
     }));
+}
+
+// Vault pages may live in a non-default partition (pages embed with whatever
+// model was active at ingest). Search and write with the majority partition
+// so new pages never fragment the vault.
+export async function vaultEmbeddingRef(): Promise<ResolvedEmbedding> {
+    const counts = new Map<string, number>();
+    for (const p of await listVaultPages()) {
+        counts.set(p.embeddingModel, (counts.get(p.embeddingModel) ?? 0) + 1);
+    }
+    const model = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    return getEmbeddingRef(model);
 }
 
 /** Stored vectors of one model partition — used for offline link suggestions. */

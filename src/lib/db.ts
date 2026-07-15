@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from "./supabase";
+import { resolveEmbedding } from "./ai/providers";
 import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
 
 export async function saveMessage(params: {
@@ -77,7 +78,7 @@ export async function getRecentMessages(
     }));
 }
 
-const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2-preview";
+const DEFAULT_EMBEDDING_MODEL = resolveEmbedding().model.id;
 
 export async function storeEmbedding(params: {
     content: string;
@@ -167,6 +168,90 @@ export async function hybridSearchKnowledge(params: {
         similarity: row.similarity,
         createdAt: "",
     }));
+}
+
+// Saved notes are the embeddings rows with this metadata source; the helpers
+// below refuse to touch other rows (user_message, generated_document).
+const NOTE_SOURCE = "mcp_save_note";
+
+export async function listKnowledgeNotes(params: {
+    category?: string;
+    limit?: number;
+}): Promise<KnowledgeItem[]> {
+    let query = supabase
+        .from("embeddings")
+        .select("id, content, metadata, created_at")
+        .eq("metadata->>source", NOTE_SOURCE);
+    if (params.category) query = query.eq("metadata->>category", params.category);
+
+    const { data, error } = await query
+        .order("created_at", { ascending: false })
+        .limit(params.limit ?? 20);
+
+    if (error) {
+        console.error("[DB] Failed to list notes:", error.message);
+        return [];
+    }
+
+    return (data ?? []).map((row) => ({
+        id: row.id,
+        content: row.content,
+        metadata: row.metadata,
+        createdAt: row.created_at,
+    }));
+}
+
+export async function updateKnowledgeNote(params: {
+    id: string;
+    content?: string;
+    embedding?: number[];
+    embeddingModel?: string;
+    category?: string;
+}): Promise<boolean> {
+    const { data: existing, error: fetchError } = await supabase
+        .from("embeddings")
+        .select("id, metadata")
+        .eq("id", params.id)
+        .eq("metadata->>source", NOTE_SOURCE)
+        .maybeSingle();
+
+    if (fetchError || !existing) {
+        if (fetchError) console.error("[DB] Failed to fetch note:", fetchError.message);
+        return false;
+    }
+
+    const update: Record<string, unknown> = {};
+    if (params.content !== undefined && params.embedding) {
+        update.content = params.content;
+        update.embedding = JSON.stringify(params.embedding);
+        update.embedding_model = params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+    }
+    if (params.category) {
+        update.metadata = { ...(existing.metadata ?? {}), category: params.category };
+    }
+    if (Object.keys(update).length === 0) return false;
+
+    const { error } = await supabase.from("embeddings").update(update).eq("id", params.id);
+    if (error) {
+        console.error("[DB] Failed to update note:", error.message);
+        return false;
+    }
+    return true;
+}
+
+export async function deleteKnowledgeNote(id: string): Promise<boolean> {
+    const { data, error } = await supabase
+        .from("embeddings")
+        .delete()
+        .eq("id", id)
+        .eq("metadata->>source", NOTE_SOURCE)
+        .select("id");
+
+    if (error) {
+        console.error("[DB] Failed to delete note:", error.message);
+        return false;
+    }
+    return (data ?? []).length > 0;
 }
 
 export async function getDefaultProfile() {

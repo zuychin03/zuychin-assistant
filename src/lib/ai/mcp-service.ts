@@ -450,14 +450,50 @@ export const MCP_TOOLS: McpTool[] = [
             },
         },
     },
+    {
+        name: "manage_notes",
+        description: "Manage saved knowledge-base notes (the ones created with save_note). Actions: 'list' (browse newest-first, optionally by category), 'update' (rewrite a note's text and/or re-categorize — use for stale plans or project info instead of saving a duplicate), 'delete' (remove a note). Only touches saved notes, never conversation history.",
+        parameters: {
+            action: {
+                type: "string",
+                description: "Action: 'list', 'update', or 'delete'.",
+                required: true,
+                enum: ["list", "update", "delete"],
+            },
+            category: {
+                type: "string",
+                description: "Filter for list: the category tag notes were saved with (e.g. project, plan, study, idea, general).",
+                required: false,
+            },
+            note_id: {
+                type: "string",
+                description: "Note ID (required for update/delete) — from a previous list result.",
+                required: false,
+            },
+            content: {
+                type: "string",
+                description: "Replacement note text (for update).",
+                required: false,
+            },
+            new_category: {
+                type: "string",
+                description: "New category tag (for update).",
+                required: false,
+            },
+        },
+    },
 ];
 
-import { searchEmbeddings, hybridSearchKnowledge, storeEmbedding, getRecentMessages, addTodo, listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
+import {
+    searchEmbeddings, hybridSearchKnowledge, storeEmbedding, getRecentMessages,
+    listKnowledgeNotes, updateKnowledgeNote, deleteKnowledgeNote,
+    addTodo, listTodos, updateTodoStatus, deleteTodo,
+} from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
 import { getFile, getVaultConfig } from "@/lib/vault/github";
-import { searchVaultPages } from "@/lib/vault/store";
+import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
 import { ingestToVault, writeVaultPage, type VaultCategory } from "@/lib/vault/ingest";
 import { lintVault, type LintMode } from "@/lib/vault/lint";
 import { deleteGraphPage } from "@/lib/vault/graph";
@@ -519,23 +555,26 @@ export async function executeTool(
         case "send_email":
             return executeSendEmail(args);
 
+        // Vault tools resolve the vault's majority partition instead of the
+        // turn ref: pages embed with whatever model was active at ingest, and
+        // searching or writing in another partition misses/fragments them.
         case "vault_search":
-            return executeVaultSearch(args.query as string, embRef);
+            return executeVaultSearch(args.query as string, await vaultEmbeddingRef());
 
         case "vault_read":
             return executeVaultRead(args.path as string);
 
         case "vault_ingest":
-            return executeVaultIngest(args, embRef);
+            return executeVaultIngest(args, await vaultEmbeddingRef());
 
         case "vault_write":
-            return executeVaultWrite(args, embRef);
+            return executeVaultWrite(args, await vaultEmbeddingRef());
 
         case "vault_delete":
             return executeVaultDelete(args.path as string);
 
         case "vault_lint":
-            return executeVaultLint(args.mode as LintMode | undefined, embRef);
+            return executeVaultLint(args.mode as LintMode | undefined, await vaultEmbeddingRef());
 
         case "manage_todo_list":
             return executeManageTodoList(args);
@@ -545,6 +584,9 @@ export async function executeTool(
 
         case "manage_memory_facts":
             return executeManageMemoryFacts(args);
+
+        case "manage_notes":
+            return executeManageNotes(args);
 
         default:
             return `Unknown tool: ${toolName}`;
@@ -1116,6 +1158,56 @@ async function executeManageMemoryFacts(
     } catch (error) {
         console.error("[MCP] Memory facts failed:", error);
         return "Failed to manage memory facts.";
+    }
+}
+
+async function executeManageNotes(args: Record<string, unknown>): Promise<string> {
+    const action = (args.action as string) ?? "list";
+    const noteId = args.note_id as string | undefined;
+
+    try {
+        switch (action) {
+            case "list": {
+                const category = args.category as string | undefined;
+                const notes = await listKnowledgeNotes({ category });
+                if (notes.length === 0) return category ? `No notes with category '${category}'.` : "No notes saved yet.";
+                const formatted = notes
+                    .map((n) => `- [${n.metadata?.category ?? "general"}, ${n.createdAt.slice(0, 10)}] ${n.content.slice(0, 300)}\n  _ID: ${n.id}_`)
+                    .join("\n");
+                return `Saved notes (${notes.length}):\n${formatted}`;
+            }
+
+            case "update": {
+                const content = (args.content as string | undefined)?.trim();
+                const newCategory = (args.new_category as string | undefined)?.trim();
+                if (!noteId) return "Error: note_id is required to update — list notes first.";
+                if (!content && !newCategory) return "Error: provide content and/or new_category to change.";
+                // Re-embed in the default partition so edited notes land in the
+                // shared store regardless of the turn's embedding selection.
+                const embRef = getEmbeddingRef();
+                const embedding = content ? await embedText(embRef, content) : undefined;
+                const ok = await updateKnowledgeNote({
+                    id: noteId,
+                    content,
+                    embedding,
+                    embeddingModel: embRef.model.id,
+                    category: newCategory,
+                });
+                return ok ? "✅ Note updated." : "Failed to update — check the note_id with action 'list'.";
+            }
+
+            case "delete": {
+                if (!noteId) return "Error: note_id is required to delete — list notes first.";
+                const ok = await deleteKnowledgeNote(noteId);
+                return ok ? "🗑️ Note deleted." : "Failed to delete — check the note_id with action 'list'.";
+            }
+
+            default:
+                return `Unknown action: ${action}. Use 'list', 'update', or 'delete'.`;
+        }
+    } catch (error) {
+        console.error("[MCP] Manage notes failed:", error);
+        return "Failed to manage notes.";
     }
 }
 

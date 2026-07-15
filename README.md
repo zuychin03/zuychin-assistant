@@ -149,8 +149,9 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 | `OPENROUTER_API_KEY` | OpenRouter key (Nemotron / Laguna / Gemma 4 chat) |
 | `OPENROUTER_SITE_URL` | Optional `HTTP-Referer` for OpenRouter rankings |
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
-| `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + the non-Gemini embedding models |
+| `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + Llama Nemotron, the default embedding model for the knowledge store |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
+| `KNOWLEDGE_EMBEDDING_MODEL` | Optional: swap the knowledge store to another registered embedding model (fallback if NIM is down). After changing it, run `npx tsx --env-file=<env> scripts/reembed-knowledge.ts` to re-embed the store |
 | `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
 
 Optional auth, integrations, channels and cron:
@@ -313,6 +314,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `manage_todo_list` | Add / list / complete / delete to-do items (feeds the web Notes checklist) |
 | `manage_scheduled_task` | Create / list / update / delete one-off or recurring scheduled tasks |
 | `manage_memory_facts` | List / forget / correct the extracted long-term Known Facts |
+| `manage_notes` | List / update / delete saved knowledge-base notes (by category) |
 | `vault_search` | Hybrid keyword + vector search over second-brain wiki pages |
 | `vault_read` | Read a wiki page from the vault |
 | `vault_ingest` | Full ingest pipeline: raw capture → authored page → links → verified commit |
@@ -335,15 +337,21 @@ your **other AI agents and chatbots** can share the knowledge base:
 
 | MCP tool | Access | What it does |
 |----------|--------|--------------|
-| `search_knowledge` | read | Hybrid keyword + vector search over the shared knowledge base |
+| `search_knowledge` | read | Hybrid keyword + vector search over the shared knowledge base (optional note-category filter) |
+| `list_notes` | read | Browse saved notes newest-first, optionally by category tag |
 | `vault_search` | read | Search the second-brain vault pages (uses the vault's dominant embedding partition) |
 | `vault_read` | read | Fetch a vault page's full Markdown by path |
 | `get_recent_conversations` | read | Recent messages across channels, for shared context on what you've been working on |
 | `save_note` | write | Store a note that becomes searchable by every connected agent and the assistant |
+| `update_note` | write | Rewrite a saved note's text and/or category (re-embedded; for correcting stale info) |
+| `delete_note` | write | Remove a saved note (never touches conversation history) |
+| `vault_ingest` | write | File durable knowledge (study notes, project docs, plans) through the full vault pipeline |
+| `vault_write` | write | Direct vault page create/overwrite with complete Markdown |
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
-read and write the **same global store** the assistant uses. Vault write tools
-(`vault_ingest`/`vault_write`/`vault_delete`) are deliberately not exposed.
+read and write the **same global store** the assistant uses. Vault writes pin the vault's
+dominant embedding partition so pages never fragment across models. `vault_delete` is
+deliberately not exposed — page removal stays with the assistant and the graph UI.
 
 **Two access levels.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants read
 only (write tools return an error for a read-only key). Hand the read-only key to agents you
