@@ -18,7 +18,8 @@ function escapeTelegramPlain(text: string): string {
 
 export async function sendTelegramMessage(
     chatId: string | number,
-    text: string
+    text: string,
+    options?: { replyMarkup?: unknown }
 ): Promise<boolean> {
     if (!TELEGRAM_BOT_TOKEN) {
         console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set, cannot send.");
@@ -29,7 +30,11 @@ export async function sendTelegramMessage(
     const chunks = formatted.length > 4096 ? splitMessage(formatted, 4096) : [formatted];
 
     try {
-        for (const chunk of chunks) {
+        for (const [i, chunk] of chunks.entries()) {
+            // Inline keyboards belong on the final chunk only.
+            const markup = i === chunks.length - 1 && options?.replyMarkup
+                ? { reply_markup: options.replyMarkup }
+                : {};
 
             let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
                 method: "POST",
@@ -38,6 +43,7 @@ export async function sendTelegramMessage(
                     chat_id: chatId,
                     text: chunk,
                     parse_mode: "MarkdownV2",
+                    ...markup,
                 }),
             });
 
@@ -49,6 +55,7 @@ export async function sendTelegramMessage(
                     body: JSON.stringify({
                         chat_id: chatId,
                         text: text.length > 4096 ? text.substring(0, 4096) : text,
+                        ...markup,
                     }),
                 });
             }
@@ -65,6 +72,38 @@ export async function sendTelegramMessage(
         console.error("[Telegram] sendMessage error:", error);
         return false;
     }
+}
+
+export async function answerTelegramCallbackQuery(
+    callbackQueryId: string,
+    text?: string
+): Promise<void> {
+    if (!TELEGRAM_BOT_TOKEN) return;
+
+    await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: callbackQueryId, ...(text ? { text } : {}) }),
+    }).catch(() => { });
+}
+
+/** Omitting replyMarkup strips the message's inline keyboard. */
+export async function editTelegramMessageReplyMarkup(
+    chatId: string | number,
+    messageId: number,
+    replyMarkup?: unknown
+): Promise<void> {
+    if (!TELEGRAM_BOT_TOKEN) return;
+
+    await fetch(`${TELEGRAM_API}/editMessageReplyMarkup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        }),
+    }).catch(() => { });
 }
 
 export async function sendTelegramDocument(

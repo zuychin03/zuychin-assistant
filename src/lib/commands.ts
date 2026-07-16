@@ -94,6 +94,15 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) => (args ? `Save this note for me: ${args}` : "I want to save a note — ask me what to remember."),
     },
     {
+        id: "history",
+        usage: "/history <query>",
+        description: "Search past conversations for a topic",
+        build: (args) =>
+            args
+                ? `Search my past conversations with the search_history tool for "${args}" and show me what you find, keeping the [open](...) links so I can jump to a conversation.`
+                : "I want to search my past conversations — ask me what to look for.",
+    },
+    {
         id: "facts",
         usage: "/facts [category]",
         description: "Review what the assistant remembers about you",

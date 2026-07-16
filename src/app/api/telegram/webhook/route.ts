@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
-import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile } from "@/lib/messaging/telegram-service";
+import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
+import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
+import { getVoicePrefs, synthesizeSpeech } from "@/lib/ai/tts";
+import { getDefaultProfile } from "@/lib/db";
 import type { FileAttachment } from "@/lib/types";
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -33,7 +36,61 @@ function getMimeType(filePath: string): string {
     return MIME_MAP[ext] || "application/octet-stream";
 }
 
+// Best-effort: the text reply is already delivered, so a TTS failure or
+// timeout must never take down the turn. sendVoice/sendAudio both reject WAV;
+// a document attachment still plays inline in Telegram.
+async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean) {
+    if (!reply) return;
+    try {
+        const profile = await getDefaultProfile();
+        const voice = getVoicePrefs(profile?.preferences);
+        if (voice.replyWithVoice === "off") return;
+        if (voice.replyWithVoice === "onVoiceInput" && !audioTurn) return;
+
+        await sendTelegramChatAction(chatId, "upload_document");
+        const { buffer, mimeType } = await synthesizeSpeech(reply, voice.voiceName);
+        const ok = await sendTelegramDocument(chatId, {
+            filename: "reply.wav",
+            mimeType,
+            body: buffer,
+        });
+        console.log(`[Telegram] Voice reply ${ok ? "sent" : "failed"}.`);
+    } catch (err) {
+        console.warn("[Telegram] Voice reply skipped:", err);
+    }
+}
+
+// Feedback taps on initiative messages: callback_data is `ini:<uuid>:1|-1`.
+// Record the vote, toast an ack, and strip the buttons so it reads as done.
+async function handleCallbackQuery(cb: Record<string, unknown>) {
+    const cbId = cb.id as string;
+    const data = (cb.data as string | undefined) ?? "";
+
+    const match = /^ini:([0-9a-f-]{36}):(1|-1)$/.exec(data);
+    if (!match) {
+        console.log(`[Telegram] Ignoring unknown callback_data: ${data.slice(0, 64)}`);
+        await answerTelegramCallbackQuery(cbId);
+        return;
+    }
+
+    const ok = await setInitiativeFeedback(match[1], Number(match[2]) as 1 | -1);
+    await answerTelegramCallbackQuery(cbId, ok ? "Noted, thanks!" : "Couldn't record that.");
+
+    const msg = cb.message as Record<string, unknown> | undefined;
+    const chatId = (msg?.chat as Record<string, unknown> | undefined)?.id as number | undefined;
+    const messageId = msg?.message_id as number | undefined;
+    if (ok && chatId !== undefined && messageId !== undefined) {
+        await editTelegramMessageReplyMarkup(chatId, messageId);
+    }
+}
+
 async function processUpdate(update: Record<string, unknown>) {
+    const callbackQuery = update.callback_query as Record<string, unknown> | undefined;
+    if (callbackQuery) {
+        await handleCallbackQuery(callbackQuery);
+        return;
+    }
+
     const message = (update.message ?? update.channel_post) as Record<string, unknown> | undefined;
     if (!message) {
         console.log("[Telegram] No message/channel_post in update:", JSON.stringify(update).substring(0, 200));
@@ -150,6 +207,8 @@ async function processUpdate(update: Record<string, unknown>) {
         });
         console.log(`[Telegram] Document ${stored.name} ${ok ? "sent" : "failed"}.`);
     }
+
+    await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"));
     console.log(`[Telegram] Reply sent to chat ${chatId}.`);
 }
 

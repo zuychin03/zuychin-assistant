@@ -21,8 +21,10 @@ edited and deleted in place.
   instructions injected into every chat inside it; extracted facts can be scoped to a
   project so they only surface in that project's chats
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 20 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+- MCP tools: 22 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   the second-brain vault, scheduled tasks, current time and recent conversations
+- Voice input: send a Telegram voice note or record with the web composer's mic button —
+  the audio is passed to the model natively, so it hears you rather than a transcript
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
@@ -265,8 +267,8 @@ so add models or providers there.
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
 | Google Gemini | native | `gemini-3.5-flash`, `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free`, `nousresearch/hermes-3-llama-3.1-405b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
-| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `qwen/qwen3-next-80b-a3b-instruct`, `stockmark/stockmark-2-100b-instruct` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free`, `openai/gpt-oss-120b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
+| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.2`, `qwen/qwen3-next-80b-a3b-instruct` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
 | OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free` | Chat only |
 
 How it works:

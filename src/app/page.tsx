@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic, Volume2, VolumeX } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -28,6 +28,31 @@ interface ChatMessage {
   resume?: { runId: string; text: string };
   /** Quoted excerpt of the earlier message this one replies to. */
   replyTo?: { role: "user" | "assistant"; content: string };
+}
+
+interface TodayData {
+  dueTodos: { id: string; title: string; priority: string; dueDate: string | null }[];
+  todos: { id: string; title: string; priority: string; dueDate: string | null }[];
+  events: { id?: string; summary: string; start: string; end?: string; location?: string }[];
+}
+
+// Returns an ArrayBuffer-backed view: pushManager.subscribe's BufferSource
+// type rejects the default Uint8Array<ArrayBufferLike>.
+function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(new ArrayBuffer(raw.length));
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+// Date-only strings (all-day events, bare due dates) skip the time part.
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const dayPart = d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+  if (!iso.includes("T")) return dayPart;
+  return `${dayPart}, ${d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`;
 }
 
 interface OutgoingPayload {
@@ -118,6 +143,10 @@ export default function Home() {
   const [replyTo, setReplyTo] = useState<{ role: "user" | "assistant"; content: string } | null>(null);
   const [queuedView, setQueuedView] = useState<{ id: string; payload: OutgoingPayload }[]>([]);
   const [isRecording, setIsRecording] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [today, setToday] = useState<TodayData | null>(null);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushSupported, setPushSupported] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
@@ -139,6 +168,10 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Guards a stale TTS fetch from playing over a newer one.
+  const speakSeqRef = useRef(0);
+  const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
   const queueRef = useRef<{ id: string; payload: OutgoingPayload }[]>([]);
   // sendPayload runs from a drain in an old closure; the ref always has the
   // current conversation so a queued send can't open a second conversation.
@@ -156,6 +189,76 @@ export default function Home() {
   useEffect(() => {
     activeConvIdRef.current = activeConversationId;
   }, [activeConversationId]);
+
+  useEffect(() => {
+    fetch("/api/tts")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.voice) voicePrefsRef.current = d.voice; })
+      .catch(() => { });
+  }, []);
+
+  // The service worker only handles push (no offline caching); register it
+  // unconditionally so subscriptions created elsewhere keep delivering.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then((reg) => {
+        if ("PushManager" in window && process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
+          setPushSupported(true);
+          return reg.pushManager.getSubscription();
+        }
+        return null;
+      })
+      .then((sub) => { if (sub) setPushEnabled(true); })
+      .catch((err) => console.warn("SW registration failed:", err));
+  }, []);
+
+  const togglePush = async () => {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (pushEnabled) {
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await fetch("/api/push/subscribe", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ endpoint: sub.endpoint }),
+          });
+          await sub.unsubscribe();
+        }
+        setPushEnabled(false);
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!),
+      });
+      const res = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub),
+      });
+      if (!res.ok) throw new Error(`Subscribe failed (${res.status})`);
+      setPushEnabled(true);
+    } catch (err) {
+      console.error("Push toggle failed:", err);
+      alert("Couldn't change the notification setting.");
+    }
+  };
+
+  // Today card on the empty state; dismissing it lasts for the browser session.
+  useEffect(() => {
+    if (sessionStorage.getItem("zuychin-today-dismissed") === "1") return;
+    fetch("/api/today")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: TodayData | null) => {
+        if (d && (d.dueTodos.length > 0 || d.todos.length > 0 || d.events.length > 0)) setToday(d);
+      })
+      .catch(() => { });
+  }, []);
 
   // The centered conversation title is absolutely positioned, so on narrow
   // screens it can overlap the model selectors / header buttons. Measure the
@@ -419,6 +522,25 @@ export default function Home() {
     } catch (err) {
       console.error("Failed to load conversation:", err);
     }
+  };
+
+  // /?c=<id> deep links (e.g. from search_history results) open that
+  // conversation. Ref-guarded instead of []-depped: loadConversation isn't a
+  // stable reference.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current) return;
+    deepLinkDone.current = true;
+    const c = new URLSearchParams(window.location.search).get("c");
+    if (c) {
+      void loadConversation(c);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  });
+
+  const dismissToday = () => {
+    sessionStorage.setItem("zuychin-today-dismissed", "1");
+    setToday(null);
   };
 
   const handleNewChat = async (projectId?: string) => {
@@ -687,6 +809,11 @@ export default function Home() {
         at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
+      // A mic-recorded turn gets its reply spoken back automatically.
+      const micTurn = !!p.file && p.file.name.startsWith("voice-note.") && p.file.mimeType.startsWith("audio/");
+      if (micTurn && voicePrefsRef.current.replyWithVoice !== "off" && done.reply) {
+        void toggleSpeak(assistantMessage);
+      }
       await loadConversations();
       loadNotes();
     } catch (error: unknown) {
@@ -798,6 +925,51 @@ export default function Home() {
     if (diffHours < 24) return `${diffHours}h ago`;
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays}d ago`;
+  };
+
+  const stopSpeaking = () => {
+    speakSeqRef.current++;
+    ttsAudioRef.current?.pause();
+    ttsAudioRef.current = null;
+    setSpeakingId(null);
+  };
+
+  const toggleSpeak = async (msg: ChatMessage) => {
+    if (speakingId === msg.id) {
+      stopSpeaking();
+      return;
+    }
+    stopSpeaking();
+    const seq = speakSeqRef.current;
+    setSpeakingId(msg.id);
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: msg.content }),
+      });
+      if (!res.ok) throw new Error(`TTS failed (${res.status})`);
+      const url = URL.createObjectURL(await res.blob());
+      if (seq !== speakSeqRef.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      const finish = () => {
+        URL.revokeObjectURL(url);
+        if (ttsAudioRef.current === audio) {
+          ttsAudioRef.current = null;
+          setSpeakingId(null);
+        }
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
+      await audio.play();
+    } catch (err) {
+      console.error("TTS playback failed:", err);
+      if (seq === speakSeqRef.current) setSpeakingId(null);
+    }
   };
 
   const toggleRecording = async () => {
@@ -1176,19 +1348,72 @@ export default function Home() {
               <p style={styles.emptySubtitle}>
                 Your personal AI assistant for research, coding and planning.
               </p>
-              <div style={styles.suggestionRow}>
-                {STARTER_SUGGESTIONS.map((s) => (
-                  <button
-                    key={s.label}
-                    type="button"
-                    style={styles.suggestionChip}
-                    onClick={() => applySuggestion(s.fill)}
-                  >
-                    <span style={styles.suggestionIcon}>{s.icon}</span>
-                    {s.label}
-                  </button>
-                ))}
-              </div>
+              {today ? (
+                <div style={styles.todayCard} className="animate-fade-in-scale">
+                  <div style={styles.todayHeader}>
+                    <span style={styles.todayTitle}>
+                      <CalendarDays size={15} color="var(--color-primary)" />
+                      Today
+                    </span>
+                    <button
+                      type="button"
+                      onClick={dismissToday}
+                      style={styles.todayDismiss}
+                      aria-label="Dismiss the Today card"
+                      title="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {today.dueTodos.length > 0 && (
+                    <>
+                      <span style={styles.todaySectionLabel}>Due soon</span>
+                      {today.dueTodos.map((t) => (
+                        <div key={t.id} style={styles.todayItem}>
+                          <span>⚠️ {t.title}</span>
+                          {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {today.events.length > 0 && (
+                    <>
+                      <span style={styles.todaySectionLabel}>Next 48 hours</span>
+                      {today.events.map((e, i) => (
+                        <div key={e.id ?? i} style={styles.todayItem}>
+                          <span>{e.summary}</span>
+                          <span style={styles.todayItemMeta}>{fmtWhen(e.start)}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {today.todos.length > 0 && (
+                    <>
+                      <span style={styles.todaySectionLabel}>Pending</span>
+                      {today.todos.map((t) => (
+                        <div key={t.id} style={styles.todayItem}>
+                          <span>• {t.title}</span>
+                          {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div style={styles.suggestionRow}>
+                  {STARTER_SUGGESTIONS.map((s) => (
+                    <button
+                      key={s.label}
+                      type="button"
+                      style={styles.suggestionChip}
+                      onClick={() => applySuggestion(s.fill)}
+                    >
+                      <span style={styles.suggestionIcon}>{s.icon}</span>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <p style={styles.emptyHint}>
                 Type <code style={styles.hintKbd}>/</code> for {`all commands · attach files up to ${MAX_FILE_SIZE_MB} MB · switch models from the header`}
               </p>
@@ -1313,15 +1538,28 @@ export default function Home() {
                 )}
               </div>
               {msg.role === "assistant" && !msg.resume && (
-                <button
-                  type="button"
-                  onClick={() => startReply(msg)}
-                  style={styles.replyMsgBtn}
-                  aria-label="Reply to this message"
-                  title="Reply to this message"
-                >
-                  <Reply size={15} />
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <button
+                    type="button"
+                    onClick={() => startReply(msg)}
+                    style={styles.replyMsgBtn}
+                    aria-label="Reply to this message"
+                    title="Reply to this message"
+                  >
+                    <Reply size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleSpeak(msg)}
+                    style={styles.replyMsgBtn}
+                    aria-label={speakingId === msg.id ? "Stop reading" : "Read aloud"}
+                    title={speakingId === msg.id ? "Stop reading" : "Read aloud"}
+                  >
+                    {speakingId === msg.id
+                      ? <VolumeX size={15} color="var(--color-primary)" />
+                      : <Volume2 size={15} />}
+                  </button>
+                </div>
               )}
               {msg.role === "user" && (
                 <div style={{ ...styles.msgAvatar, ...styles.userAvatar }}>
@@ -1463,6 +1701,30 @@ export default function Home() {
                         }))}
                     />
                   </>
+                )}
+                {pushSupported && (
+                  <div style={styles.agentSwitchWrap}>
+                    <span style={styles.settingsEmbedLabel}>Notifications</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={pushEnabled}
+                      onClick={togglePush}
+                      style={{
+                        ...styles.switchTrack,
+                        ...(pushEnabled ? styles.switchTrackOn : {}),
+                      }}
+                      aria-label={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
+                      title={pushEnabled ? "Push notifications ON for this browser" : "Get reminders and nudges as push notifications"}
+                    >
+                      <span
+                        style={{
+                          ...styles.switchKnob,
+                          transform: pushEnabled ? "translateX(16px)" : "translateX(0)",
+                        }}
+                      />
+                    </button>
+                  </div>
                 )}
                 <div style={styles.agentSwitchWrap}>
                   <span style={styles.settingsEmbedLabel}>Agent mode</span>

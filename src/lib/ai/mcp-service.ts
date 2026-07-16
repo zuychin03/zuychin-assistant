@@ -67,6 +67,17 @@ export const MCP_TOOLS: McpTool[] = [
         },
     },
     {
+        name: "search_history",
+        description: "Search the user's past chat messages semantically (\"when did we talk about X?\", \"what did I say about Y?\"). Returns matching message snippets with links that open the conversation. Use search_knowledge for saved notes and documents instead.",
+        parameters: {
+            query: {
+                type: "string",
+                description: "What to look for in past conversations.",
+                required: true,
+            },
+        },
+    },
+    {
         name: "save_note",
         description: "Save a note or piece of information for the user to remember later. For actionable tasks or reminders use manage_todo_list instead — those show up in the user's Notes checklist where they can tick them off.",
         parameters: {
@@ -523,6 +534,8 @@ export async function executeTool(
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef);
+        case "search_history":
+            return executeSearchHistory(args.query as string, embRef);
 
         case "save_note":
             return executeSaveNote(
@@ -624,6 +637,46 @@ async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding):
     } catch (error) {
         console.error("[MCP] Knowledge search failed:", error);
         return "Knowledge search is temporarily unavailable.";
+    }
+}
+
+async function executeSearchHistory(query: string, embRef: ResolvedEmbedding): Promise<string> {
+    try {
+        const embedding = await embedText(embRef, query, "query");
+        // The store mixes notes/documents in; overfetch then keep messages only.
+        const results = await hybridSearchKnowledge({
+            queryEmbedding: embedding,
+            queryText: query,
+            matchCount: 20,
+            embeddingModel: embRef.model.id,
+        }) ?? await searchEmbeddings({
+            queryEmbedding: embedding,
+            matchThreshold: 0.5,
+            matchCount: 20,
+            embeddingModel: embRef.model.id,
+        });
+
+        const hits = results
+            .filter((r) => r.metadata?.source === "user_message")
+            .slice(0, 5);
+
+        if (hits.length === 0) {
+            return "No matching past messages found.";
+        }
+
+        // Rows embedded before conversation linking exist without a link.
+        return hits
+            .map((r, i) => {
+                const channel = r.metadata?.channel ? ` (${r.metadata.channel})` : "";
+                const link = r.metadata?.conversationId
+                    ? ` [open](/?c=${r.metadata.conversationId})`
+                    : "";
+                return `[${i + 1}]${channel} ${r.content.slice(0, 300)}${link}`;
+            })
+            .join("\n");
+    } catch (error) {
+        console.error("[MCP] History search failed:", error);
+        return "History search is temporarily unavailable.";
     }
 }
 

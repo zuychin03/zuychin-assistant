@@ -320,6 +320,8 @@ export async function buildRagContext(params: {
     search: boolean;
     profile: Profile;
     hasAudioAttachment?: boolean;
+    /** Row id of the already-saved user message; links its embedding for history search. */
+    userMessageId?: string;
 }): Promise<RagContext> {
     const { message, channel, conversationId, provider, model, thinking, search, profile } = params;
 
@@ -408,7 +410,12 @@ export async function buildRagContext(params: {
             content: message,
             embedding: queryEmbedding,
             embeddingModel: embRef.model.id,
-            metadata: { source: "user_message", channel },
+            metadata: {
+                source: "user_message",
+                channel,
+                ...(conversationId ? { conversationId } : {}),
+                ...(params.userMessageId ? { messageId: params.userMessageId } : {}),
+            },
             userProfileId: profile?.id,
         }).catch((err) => console.warn("[RAG] Failed to store embedding:", err));
     }
@@ -524,6 +531,7 @@ export async function ragChat(params: {
         message: effectiveMessage, channel, conversationId, provider, model,
         embeddingModel, thinking, search, profile,
         hasAudioAttachment: !!file && file.mimeType.startsWith("audio/"),
+        userMessageId: userMsgId || undefined,
     });
 
     const artifacts: ArtifactDescriptor[] = [];

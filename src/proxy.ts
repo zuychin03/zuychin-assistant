@@ -8,6 +8,11 @@ const PUBLIC_PATHS = [
   "/api/chat",
   "/api/telegram",
   "/api/mcp",
+  // Browsers fetch the manifest and service worker without cookies; gating
+  // them silently breaks PWA install.
+  "/manifest.webmanifest",
+  "/sw.js",
+  "/icons",
 ];
 
 function isPublicPath(pathname: string): boolean {

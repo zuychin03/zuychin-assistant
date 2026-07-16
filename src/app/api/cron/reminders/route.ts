@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { listUpcomingEvents, formatEventsSummary } from "@/lib/integrations/calendar-service";
 import { sendDiscordMessage } from "@/lib/messaging/discord-service";
 import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
+import { broadcastPush } from "@/lib/messaging/push-service";
 import { listDueTodos, markTodosReminded } from "@/lib/db";
 import { APP_TIMEZONE } from "@/lib/datetime";
 
@@ -11,9 +12,11 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const LOOKAHEAD_MINUTES = 15;
 
 async function broadcast(msg: string): Promise<void> {
-    const sends: Promise<boolean>[] = [];
+    const sends: Promise<unknown>[] = [];
     if (DISCORD_CHANNEL_ID) sends.push(sendDiscordMessage(DISCORD_CHANNEL_ID, msg));
     if (TELEGRAM_CHAT_ID) sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, msg));
+    // Push bodies are plain text; strip the markdown emphasis.
+    sends.push(broadcastPush({ title: "Zuychin reminder", body: msg.replace(/\*\*/g, "") }));
     await Promise.all(sends);
 }
 

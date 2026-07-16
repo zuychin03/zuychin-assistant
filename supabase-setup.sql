@@ -623,3 +623,60 @@ values (
   'You are Zuychin, a helpful, warm, and intelligent personal AI assistant. You have long-term memory and can remember past conversations. Be concise but thorough. Use a friendly, natural tone.'
 )
 on conflict do nothing;
+
+-- ===== V5 wave =====
+
+-- Every initiative-engine decision, sent or suppressed. Feedback comes from
+-- the Telegram 👍/👎 inline keyboard (1 / -1).
+create table if not exists initiative_log (
+  id uuid primary key default gen_random_uuid(),
+  decided_at timestamptz not null default now(),
+  should_send boolean not null,
+  category text not null,
+  reason text,
+  message text,
+  feedback smallint
+);
+
+create index if not exists idx_initiative_log_decided
+  on initiative_log (decided_at desc);
+
+create index if not exists idx_initiative_log_category
+  on initiative_log (category, decided_at desc);
+
+alter table initiative_log enable row level security;
+
+drop policy if exists "Allow all access to initiative_log" on initiative_log;
+create policy "Allow all access to initiative_log" on initiative_log for all using (true) with check (true);
+
+-- Shared k/v state for crons (e.g. the run-review high-water mark). Kept out
+-- of user_profiles.preferences: that bag is replaced whole on write.
+create table if not exists cron_state (
+  key text primary key,
+  value jsonb not null default '{}',
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_cron_state_updated_at on cron_state;
+create trigger trigger_cron_state_updated_at
+  before update on cron_state
+  for each row execute function update_updated_at();
+
+alter table cron_state enable row level security;
+
+drop policy if exists "Allow all access to cron_state" on cron_state;
+create policy "Allow all access to cron_state" on cron_state for all using (true) with check (true);
+
+-- Web-push subscriptions (one row per browser). keys = {p256dh, auth}.
+create table if not exists push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  endpoint text not null unique,
+  keys jsonb not null,
+  user_agent text,
+  created_at timestamptz not null default now()
+);
+
+alter table push_subscriptions enable row level security;
+
+drop policy if exists "Allow all access to push_subscriptions" on push_subscriptions;
+create policy "Allow all access to push_subscriptions" on push_subscriptions for all using (true) with check (true);
