@@ -12,6 +12,7 @@ import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
 import { expandSlashCommand } from "@/lib/commands";
@@ -34,9 +35,15 @@ const RAG_CONFIG = {
 };
 
 function addCitations(response: GenerateContentResponse): string {
-    let text = response.text ?? "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const candidate = response.candidates?.[0] as any;
+    return addCitationsText(response.text ?? "", response.candidates?.[0] as any);
+}
+
+// Split from addCitations so streamed replies (full text assembled from
+// deltas + grounding metadata off the final chunk) can be cited too.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addCitationsText(initial: string, candidate: any): string {
+    let text = initial;
     const supports = candidate?.groundingMetadata?.groundingSupports;
     const chunks = candidate?.groundingMetadata?.groundingChunks;
 
@@ -331,6 +338,9 @@ export async function buildRagContext(params: {
     if (params.hasAudioAttachment && chat.provider.kind !== "gemini") {
         chat = resolveChat();
     }
+    // A cold lambda must learn the runtime partition override before any
+    // embed/search below, or this turn reads and writes the wrong partition.
+    await refreshEmbeddingOverride();
     // The knowledge store lives in ONE embedding partition (the default
     // model), like fact memory: honoring per-turn/per-channel embedding
     // selections fragmented recall across partitions, so they are ignored.
@@ -561,11 +571,17 @@ export async function ragChat(params: {
                 userProfileId: profile?.id,
                 onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
             };
+            // Chat-path replies stream to the client as they generate; the
+            // done event still carries the authoritative final text.
+            const onToken: TokenSink | undefined = onEvent
+                ? (text, reset) => onEvent({ type: "token", text, ...(reset ? { reset: true } : {}) })
+                : undefined;
             if (rag.chat.provider.kind === "gemini") {
                 reply = await generateGeminiReply({
                     contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
                     thinking: rag.allowThinking, search: rag.allowSearch,
                     model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx, signal,
+                    onToken,
                 });
             } else {
                 reply = await openaiCompatChat({
@@ -581,6 +597,7 @@ export async function ragChat(params: {
                     genParams,
                     ctx: toolCtx,
                     signal,
+                    onToken,
                 });
             }
         }
@@ -648,6 +665,36 @@ export async function ragChat(params: {
     return { reply, messageId: userMsgId, artifacts };
 }
 
+export type TokenSink = (text: string, reset?: boolean) => void;
+
+// Streams one grounded model turn, emitting text deltas. Only used with
+// configs that carry NO functionDeclarations (googleSearch/urlContext/maps
+// run server-side), so chunks can never contain client function calls.
+async function streamGeminiText(
+    model: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    contents: any[],
+    config: Record<string, unknown>,
+    onToken?: TokenSink
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ text: string; candidate: any }> {
+    const stream = await ai.models.generateContentStream({ model, contents, config });
+    let text = "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let candidate: any;
+    for await (const chunk of stream) {
+        const delta = chunk.text;
+        if (delta) {
+            text += delta;
+            onToken?.(delta);
+        }
+        // Grounding metadata rides the trailing chunks; keep the richest one.
+        const c = chunk.candidates?.[0];
+        if (c?.groundingMetadata || (!candidate && c)) candidate = c;
+    }
+    return { text, candidate };
+}
+
 async function generateGeminiReply(opts: {
     contextBlock: string;
     message: string;
@@ -661,8 +708,9 @@ async function generateGeminiReply(opts: {
     genParams: GenParams;
     ctx?: ToolContext;
     signal?: AbortSignal;
+    onToken?: TokenSink;
 }): Promise<string> {
-    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx, signal } = opts;
+    const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx, signal, onToken } = opts;
 
     const genConfig: Record<string, number> = {};
     if (genParams.temperature !== undefined) genConfig.temperature = genParams.temperature;
@@ -703,8 +751,8 @@ async function generateGeminiReply(opts: {
     };
 
     if (search) {
-        const response = await ai.models.generateContent({ model, contents, config: groundingConfig });
-        return channel === "telegram" ? (response.text ?? "") : addCitations(response);
+        const { text, candidate } = await streamGeminiText(model, contents, groundingConfig, onToken);
+        return channel === "telegram" ? text : addCitationsText(text, candidate);
     }
 
     let response = await ai.models.generateContent({ model, contents, config: mcpConfig });
@@ -755,19 +803,29 @@ async function generateGeminiReply(opts: {
     }
 
     if (!usedTool) {
+        // The grounded re-run REPLACES the first response when it has text, so
+        // this — the common path — is the turn that streams to the client.
         const fallbackConfig = isLocationQuery(message) ? mapsConfig : groundingConfig;
         const label = isLocationQuery(message) ? "Maps" : "Search";
         try {
-            const groundingResponse = await ai.models.generateContent({ model, contents, config: fallbackConfig });
-            if (groundingResponse.text) {
-                response = groundingResponse;
+            const { text, candidate } = await streamGeminiText(model, contents, fallbackConfig, onToken);
+            if (text) {
+                return channel === "telegram" ? text : addCitationsText(text, candidate);
             }
         } catch (err) {
             console.warn(`[RAG] Grounding fallback failed (${label}):`, err);
         }
+        // Grounding failed or came back empty: partial deltas may already be
+        // on screen — reset the forming bubble to the first response's text.
+        const fallbackText = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+        onToken?.(fallbackText, true);
+        return fallbackText;
     }
 
-    return channel === "telegram" ? (response.text ?? "") : addCitations(response);
+    // Tool turns finish non-streamed; surface the text in one late chunk.
+    const finalText = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+    onToken?.(finalText, true);
+    return finalText;
 }
 
 export async function ingestKnowledge(params: {
@@ -775,6 +833,7 @@ export async function ingestKnowledge(params: {
     metadata?: Record<string, string>;
     userProfileId?: string;
 }): Promise<string> {
+    await refreshEmbeddingOverride();
     const embRef = getEmbeddingRef();
     const embedding = await embedText(embRef, params.content);
 

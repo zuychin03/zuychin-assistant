@@ -168,6 +168,42 @@ export const SKILLS: Skill[] = [
 5. If the user commits to new tasks or reminders during the review, add them via manage_todo_list or manage_scheduled_task.
 6. Report compactly in four blocks: Done / Stalled / Next week's anchors / Top-3 focus. End with the single most important thing to start Monday with.`,
     },
+    {
+        id: "new-app-kickoff",
+        name: "New App Kickoff",
+        whenToUse: "The user pitches an idea for a NEW app ('I want to build...', 'I have an idea for...') or asks for research, brainstorming, or a spec for an app that has no repo yet.",
+        instructions: `Take a raw app idea to an approved spec document a coding agent can build from. No code is written here — the point of the phases is to make decisions cheap to reverse while they are still words. Each phase ends with a short summary and the user's explicit go-ahead; he steers between phases by design.
+
+Phase 0 — Capture: restate the idea in your own words (what, who for, why, app type, initial features, non-goals, constraints — free tiers unless said otherwise). Ask only about gaps that change the research direction.
+
+Phase 1 — Research: search_web the space before proposing anything (run_subagents for independent threads): what the best existing apps do well and what users complain about; table-stakes vs delighter features; technical approaches worth stealing; where a small personal app beats incumbents (privacy, intimacy, no ads, built-for-two). Also vault_search / search_knowledge for anything already known about sibling apps or the domain. Summarize with sources.
+
+Phase 2 — Brainstorm: expand the feature set (core / nice-to-have / future), challenge assumptions the research undermined, and name the hard problems early. Resolve ambiguity with concrete either/or questions, batched.
+
+Phase 3 — Architecture: propose the stack with reasoning, starting from the Zuychin ecosystem defaults and calling out every deviation and why. Defaults: Vercel free tier; subdomains of zuychin.me (shared-cookie SSO via NEXT_PUBLIC_COOKIE_DOMAIN=.zuychin.me); ONE shared Supabase project (prefixed additive tables, re-runnable setup SQL, RLS; new apps must add their auth callback to the Redirect URLs allowlist); Cloudinary for images, Resend for email, cron-job.org for schedulers (Bearer CRON_SECRET, exact production host); Next.js App Router + TypeScript + Tailwind v4 CSS-variable tokens + lucide-react (SvelteKit/Expo when the app type calls for it); glassmorphism cards, per-app accent color, Fraunces display + Geist body, shared Zuychin logo/favicon tinted to the accent; every third-party optional and gracefully degrading. Include a data-model sketch (prefixed tables, ownership, RLS shape), client/server boundaries, every env var and its service, risks with fallbacks, and integration opportunities with sibling apps (gallery, photobooth, assistant, ustime, arcade).
+
+Phase 4 — Spec: after the go-ahead, consolidate EVERYTHING into one Markdown spec via create_document (one call). Sections: Vision (incl. non-goals) / Feature set (core, nice-to-have, future) / Tech stack (choice + reason per layer) / Development decisions (every consequential decision WITH the reasoning and rejected alternatives) / Design / Data model / Routes & API / Environment & services (each env var + degradation when unset) / Staged build plan (stages that each end runnable, riskiest unknowns proven first) / Out of scope. The bar: a fresh coding agent with no memory of this conversation could build the app from the spec alone.
+
+End by telling the user the spec is ready for a coding agent to execute stage by stage. Standing rules woven into the spec: he commits himself, no AI-attribution trailers, LF endings, terse necessary-only comments, ask before extras.`,
+    },
+    {
+        id: "update-kickoff",
+        name: "Update Kickoff",
+        whenToUse: "The user wants to plan the next version, wave, or major feature batch of an EXISTING app ('plan V5', 'add these features to <app>'). Not for apps with no repo yet — that's new-app-kickoff.",
+        instructions: `Take an update idea for an existing app to an approved versioned plan a coding agent can execute. Sibling of new-app-kickoff: same gates (no code before the plan is approved) but grounded in the current app instead of a blank slate. Each phase ends with a summary and the user's go-ahead.
+
+Phase 0 — Ground: before reacting to the idea, learn the current state — search_knowledge and vault_search for what is known about the app (stage status, architecture, quirks, pending activation work), and ask the user for anything load-bearing you cannot find (current version, uncommitted work in flight). Restate: current version, what this wave is, the feature list, non-goals. Flag conflicts with the existing architecture or roadmap now, while they are cheap.
+
+Phase 1 — Research: only where the wave breaks new ground (the web-push or TTS of the wave): prior art, common pitfalls, the approach worth stealing, via search_web / run_subagents. Features that extend existing patterns need no research pass — say so and move on.
+
+Phase 2 — Scope: expand and challenge the list; split into this wave vs deferred (a wave should ship as one version bump). New features must look native — reuse the app's existing UX patterns, tokens, and conventions. Name the hard problems early. Resolve ambiguity with concrete either/or questions.
+
+Phase 3 — Architecture within constraints: the existing stack is the default; replacing any part is its own decision with migration cost stated. DB changes are additive re-runnable migrations, prefixed on the shared Supabase project, RLS updated alongside, never destructive to sibling apps. Backward compatibility is a requirement: existing rows, deep links, and users mid-flow must survive. New env vars/services stay optional and gracefully degrading. State risks and fallbacks.
+
+Phase 4 — Plan document: after the go-ahead, consolidate into one Markdown plan via create_document (one call), titled like "<App> V<N> Plan". Sections: Wave summary (incl. non-goals) / Features by part (P1, P2, ...) / Decisions (with reasoning and rejected alternatives) / Design (only what changes) / Data model changes (exact re-runnable scripts) / Routes & API changes (incl. backward-compat notes) / Environment & services added / Part plan (each part ends runnable and verifiable, riskiest unknowns first) / Activation checklist / Deferred. The activation checklist is non-negotiable: everything only the user can do to take built code live (SQL in the Supabase dashboard, Vercel env vars, cron-job.org jobs with exact URLs, auth allowlist entries, DNS) listed separately with exact values, so "built" and "activated" never blur.
+
+End by telling the user the plan is ready for a coding agent to execute part by part.`,
+    },
 ];
 
 const SKILL_BY_ID = new Map(SKILLS.map((s) => [s.id, s]));

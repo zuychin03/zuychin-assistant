@@ -1,5 +1,5 @@
 import { supabaseAdmin as supabase } from "./supabase";
-import { resolveEmbedding } from "./ai/providers";
+import { getEmbeddingRef } from "./ai/embeddings";
 import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
 
 export async function saveMessage(params: {
@@ -78,7 +78,9 @@ export async function getRecentMessages(
     }));
 }
 
-const DEFAULT_EMBEDDING_MODEL = resolveEmbedding().model.id;
+// Call-time, not module-load: the active partition can change at runtime via
+// the admin re-embed flow.
+const DEFAULT_EMBEDDING_MODEL = () => getEmbeddingRef().model.id;
 
 export async function storeEmbedding(params: {
     content: string;
@@ -94,7 +96,7 @@ export async function storeEmbedding(params: {
             embedding: JSON.stringify(params.embedding),
             metadata: params.metadata ?? {},
             user_profile_id: params.userProfileId ?? null,
-            embedding_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
+            embedding_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL(),
         })
         .select("id")
         .single();
@@ -119,7 +121,7 @@ export async function searchEmbeddings(params: {
         match_threshold: params.matchThreshold ?? 0.7,
         match_count: params.matchCount ?? 5,
         filter_user_id: params.userId ?? null,
-        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
+        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL(),
     });
 
     if (error) {
@@ -153,7 +155,7 @@ export async function hybridSearchKnowledge(params: {
         query_text: params.queryText,
         match_count: params.matchCount ?? 5,
         filter_user_id: params.userId ?? null,
-        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
+        filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL(),
     });
 
     if (error) {
@@ -224,7 +226,7 @@ export async function updateKnowledgeNote(params: {
     if (params.content !== undefined && params.embedding) {
         update.content = params.content;
         update.embedding = JSON.stringify(params.embedding);
-        update.embedding_model = params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+        update.embedding_model = params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL();
     }
     if (params.category) {
         update.metadata = { ...(existing.metadata ?? {}), category: params.category };

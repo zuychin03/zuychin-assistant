@@ -34,6 +34,7 @@ export const AGENT_TOOLS: McpTool[] = [
                     properties: {
                         objective: { type: "string", description: "A clear, self-contained instruction for the worker.", required: true },
                         needs_tools: { type: "boolean", description: "Whether the subtask needs tool calls (web search, email, calendar, vault…). Set false for pure writing/summarizing/reformatting of material already in the objective — those run on an even faster model. Default true.", required: false },
+                        complexity: { type: "string", enum: ["simple", "complex"], description: "How demanding the subtask is. 'complex' = multi-step reasoning, synthesis across many sources, or tricky analysis; 'simple' (default) = lookups, summaries, straightforward drafting. Only affects which paid fallback runs if all free models fail — free fast models are always tried first.", required: false },
                         model: { type: "string", description: "Optional model hint — a short name like 'deepseek-v4-flash', 'step-3.7-flash', 'minimax-m3', 'gemma-4', or 'mimo'. Omit to auto-pick a fast free model.", required: false },
                     },
                 },

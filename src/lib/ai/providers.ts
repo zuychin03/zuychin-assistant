@@ -179,6 +179,13 @@ const WORKER_PREFERRED: { providerId: string; modelId: string }[] = [
 // Tried first for no-tool subtasks; cannot call functions.
 export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "google/diffusiongemma-26b-a4b-it" };
 
+// Paid Gemini fallback when every free candidate errored or returned nothing,
+// sized to the subtask's declared complexity.
+export const WORKER_GEMINI_FALLBACK = {
+    simple: "gemini-3-flash-preview",
+    complex: "gemini-3.5-flash",
+} as const;
+
 export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
     const out: ResolvedChat[] = [];
     const seen = new Set<string>();

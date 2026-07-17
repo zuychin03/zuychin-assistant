@@ -2,8 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic, Volume2, VolumeX } from "lucide-react";
-import { SelectMenu, ParamRow, ModelInfoModal, type ProviderInfo } from "./home/controls";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
+import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
@@ -34,6 +34,18 @@ interface TodayData {
   dueTodos: { id: string; title: string; priority: string; dueDate: string | null }[];
   todos: { id: string; title: string; priority: string; dueDate: string | null }[];
   events: { id?: string; summary: string; start: string; end?: string; location?: string }[];
+}
+
+// Minimal surface of the (webkit-prefixed) SpeechRecognition API used for the
+// voice-loop stop phrase; lib.dom has no types for it.
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((e: { resultIndex: number; results: { length: number; [i: number]: { 0: { transcript: string } } } }) => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
 }
 
 // Returns an ArrayBuffer-backed view: pushManager.subscribe's BufferSource
@@ -147,6 +159,8 @@ export default function Home() {
   const [today, setToday] = useState<TodayData | null>(null);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushSupported, setPushSupported] = useState(false);
+  // status: "confirm" shows the warning buttons; anything else is progress text.
+  const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
@@ -168,9 +182,15 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
-  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsPlayerRef = useRef<{ stop: () => void } | null>(null);
   // Guards a stale TTS fetch from playing over a newer one.
   const speakSeqRef = useRef(0);
+  // Hands-free voice conversation mode (see startVoiceRecording).
+  const [voiceLoop, setVoiceLoop] = useState(false);
+  const voiceLoopRef = useRef(false);
+  const srRef = useRef<SpeechRecognitionLike | null>(null);
+  const vadCleanupRef = useRef<(() => void) | null>(null);
+  const discardRecordingRef = useRef(false);
   const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
   const queueRef = useRef<{ id: string; payload: OutgoingPayload }[]>([]);
   // sendPayload runs from a drain in an old closure; the ref always has the
@@ -422,13 +442,15 @@ export default function Home() {
           setChatSel(`${data.defaults.chat.providerId}::${data.defaults.chat.modelId}`);
         }
 
-        const embedProviders = avail.filter((p) => p.embeddingModels.length > 0);
-        const savedEmbed = localStorage.getItem("zuychin-embed-model");
-        const validEmbed = embedProviders.some((p) => p.embeddingModels.some((m) => m.id === savedEmbed));
-        if (validEmbed && savedEmbed) {
-          setEmbedSel(savedEmbed);
-        } else if (data.defaults?.embedding) {
-          setEmbedSel(data.defaults.embedding.modelId);
+        // The selector mirrors the server's ACTIVE knowledge partition (which
+        // the re-embed flow can change at runtime) — never a local preference.
+        try {
+          const activeRes = await fetch("/api/admin/reembed");
+          const active = activeRes.ok ? (await activeRes.json()).active : null;
+          if (active) setEmbedSel(active);
+          else if (data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
+        } catch {
+          if (data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
         }
       } catch (err) {
         console.error("Failed to load providers:", err);
@@ -440,9 +462,37 @@ export default function Home() {
     setChatSel(val);
     localStorage.setItem("zuychin-chat-model", val);
   };
+  // Switching the embedding model re-embeds the whole knowledge store, so it
+  // goes through a confirm modal + chunked /api/admin/reembed loop; embedSel
+  // only flips once the server has fully migrated.
   const handleEmbedSelChange = (val: string) => {
-    setEmbedSel(val);
-    localStorage.setItem("zuychin-embed-model", val);
+    if (val === embedSel) return;
+    setEmbedModal({ target: val, status: "confirm" });
+  };
+
+  const runReembed = async (target: string) => {
+    setEmbedModal({ target, status: "Starting…" });
+    try {
+      for (let round = 0; round < 100; round++) {
+        const res = await fetch("/api/admin/reembed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error ?? `Re-embed failed (${res.status})`);
+        if (data.done) {
+          setEmbedSel(target);
+          setEmbedModal(null);
+          return;
+        }
+        setEmbedModal({ target, status: `Re-embedding… ${data.remaining} rows left` });
+      }
+      throw new Error("Still not finished after many rounds — confirm again to resume.");
+    } catch (err) {
+      setEmbedModal(null);
+      alert(`Embedding switch failed: ${err instanceof Error ? err.message : err}\n\nProgress is kept — confirming again resumes where it stopped.`);
+    }
   };
 
   useEffect(() => {
@@ -519,6 +569,7 @@ export default function Home() {
       queueRef.current = [];
       setQueuedView([]);
       setSidebarOpen(false);
+      exitVoiceLoop();
     } catch (err) {
       console.error("Failed to load conversation:", err);
     }
@@ -559,6 +610,7 @@ export default function Home() {
       queueRef.current = [];
       setQueuedView([]);
       setSidebarOpen(false);
+      exitVoiceLoop();
       await loadConversations();
     } catch (err) {
       console.error("Failed to create conversation:", err);
@@ -699,6 +751,9 @@ export default function Home() {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    // Placeholder bubble that forms from streamed token events; replaced by
+    // the authoritative done.reply (or removed on error/abort).
+    let streamId = "";
 
     try {
       const res = await fetch("/api/chat/stream", {
@@ -721,7 +776,6 @@ export default function Home() {
             provider: chatSel.split("::")[0],
             model: chatSel.split("::").slice(1).join("::"),
           }),
-          ...(embedSel && { embeddingModel: embedSel }),
           ...(p.file && {
             file: {
               name: p.file.name,
@@ -777,6 +831,17 @@ export default function Home() {
             }
           } else if (evt.type === "artifact") {
             setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `Created ${evt.artifact.name}`] }));
+          } else if (evt.type === "token") {
+            if (!streamId) {
+              streamId = `stream-${Date.now()}`;
+              const sid = streamId;
+              const text = evt.text;
+              setMessages((prev) => [...prev, { id: sid, role: "assistant", content: text }]);
+            } else {
+              const sid = streamId;
+              const { text, reset } = evt;
+              setMessages((prev) => prev.map((m) => (m.id === sid ? { ...m, content: reset ? text : m.content + text } : m)));
+            }
           } else if (evt.type === "done") {
             done = { reply: evt.reply, artifacts: evt.artifacts };
           } else if (evt.type === "error") {
@@ -795,7 +860,7 @@ export default function Home() {
           content: streamError ? `⚠️ ${streamError}` : "⚠️ The run was interrupted before finishing.",
           ...(runId ? { resume: { runId, text: userMessage.content } } : {}),
         };
-        setMessages((prev) => [...prev, notice]);
+        setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), notice]);
         await loadConversations();
         return;
       }
@@ -808,19 +873,27 @@ export default function Home() {
         modelLabel: currentChatModel?.label,
         at: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, assistantMessage]);
-      // A mic-recorded turn gets its reply spoken back automatically.
+      // The forming bubble becomes the final message in place (citations and
+      // server post-processing can differ from the streamed text).
+      setMessages((prev) =>
+        streamId && prev.some((m) => m.id === streamId)
+          ? prev.map((m) => (m.id === streamId ? assistantMessage : m))
+          : [...prev, assistantMessage]
+      );
+      // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
+      // toggleSpeak's completion restarts the mic while the loop is active.
       const micTurn = !!p.file && p.file.name.startsWith("voice-note.") && p.file.mimeType.startsWith("audio/");
-      if (micTurn && voicePrefsRef.current.replyWithVoice !== "off" && done.reply) {
+      if (micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
         void toggleSpeak(assistantMessage);
       }
       await loadConversations();
       loadNotes();
     } catch (error: unknown) {
       // Full drop on cancel: the server deletes the errant user message and
-      // saves no reply, so remove the optimistic user bubble to match.
+      // saves no reply, so remove the optimistic user bubble (and any
+      // partially streamed reply) to match.
       if (error instanceof DOMException && error.name === "AbortError") {
-        setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+        setMessages((prev) => prev.filter((m) => m.id !== userMessage.id && (!streamId || m.id !== streamId)));
         return;
       }
       const errorMsg =
@@ -830,7 +903,7 @@ export default function Home() {
         role: "assistant",
         content: `⚠️ ${errorMsg}`,
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), errorMessage]);
     } finally {
       abortRef.current = null;
       setAgentRun(null);
@@ -842,9 +915,11 @@ export default function Home() {
   };
 
   const handleCancel = () => {
-    // Stop means stop everything: drop the in-flight turn and the queue.
+    // Stop means stop everything: drop the in-flight turn, the queue, and
+    // any running voice conversation.
     queueRef.current = [];
     setQueuedView([]);
+    exitVoiceLoop();
     abortRef.current?.abort();
   };
 
@@ -929,11 +1004,14 @@ export default function Home() {
 
   const stopSpeaking = () => {
     speakSeqRef.current++;
-    ttsAudioRef.current?.pause();
-    ttsAudioRef.current = null;
+    ttsPlayerRef.current?.stop();
+    ttsPlayerRef.current = null;
     setSpeakingId(null);
   };
 
+  // Streams raw PCM from /api/tts into the Web Audio API, scheduling each
+  // chunk sample-accurately after the last — sound starts ~2.5s after the
+  // click instead of waiting for the whole clip to be synthesized.
   const toggleSpeak = async (msg: ChatMessage) => {
     if (speakingId === msg.id) {
       stopSpeaking();
@@ -942,55 +1020,207 @@ export default function Home() {
     stopSpeaking();
     const seq = speakSeqRef.current;
     setSpeakingId(msg.id);
+
+    const abort = new AbortController();
+    let ctx: AudioContext | null = null;
+    ttsPlayerRef.current = {
+      stop: () => {
+        abort.abort();
+        if (ctx) void ctx.close().catch(() => { });
+      },
+    };
+
     try {
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: msg.content }),
+        body: JSON.stringify({ text: msg.content, stream: true }),
+        signal: abort.signal,
       });
-      if (!res.ok) throw new Error(`TTS failed (${res.status})`);
-      const url = URL.createObjectURL(await res.blob());
-      if (seq !== speakSeqRef.current) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      const audio = new Audio(url);
-      ttsAudioRef.current = audio;
-      const finish = () => {
-        URL.revokeObjectURL(url);
-        if (ttsAudioRef.current === audio) {
-          ttsAudioRef.current = null;
-          setSpeakingId(null);
-        }
+      if (!res.ok || !res.body) throw new Error(`TTS failed (${res.status})`);
+      if (seq !== speakSeqRef.current) return;
+
+      const sampleRate = Number(res.headers.get("X-Sample-Rate") ?? 24000);
+      ctx = new AudioContext();
+      if (ctx.state === "suspended") await ctx.resume();
+      let playhead = ctx.currentTime + 0.1;
+
+      // Coalesce tiny network chunks into ≥0.2s buffers (first one smaller so
+      // sound starts immediately); PCM is 16-bit so buffers must stay even.
+      const scheduleChunk = (bytes: Uint8Array) => {
+        if (!ctx || bytes.length < 2) return;
+        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.length / 2));
+        const buf = ctx.createBuffer(1, int16.length, sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 32768;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        if (playhead < ctx.currentTime + 0.05) playhead = ctx.currentTime + 0.05;
+        src.start(playhead);
+        playhead += buf.duration;
       };
-      audio.onended = finish;
-      audio.onerror = finish;
-      await audio.play();
+
+      const reader = res.body.getReader();
+      let pending: Uint8Array[] = [];
+      let pendingBytes = 0;
+      let started = false;
+      const flush = () => {
+        const even = pendingBytes - (pendingBytes % 2);
+        if (even === 0) return;
+        const merged = new Uint8Array(pendingBytes);
+        let off = 0;
+        for (const p of pending) { merged.set(p, off); off += p.length; }
+        scheduleChunk(merged.subarray(0, even));
+        pending = pendingBytes > even ? [merged.subarray(even)] : [];
+        pendingBytes -= even;
+        started = true;
+      };
+      const minBytes = () => (started ? sampleRate * 0.4 : sampleRate * 0.1); // 0.2s / 50ms of 16-bit audio
+
+      for (; ;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (seq !== speakSeqRef.current) return;
+        pending.push(value);
+        pendingBytes += value.length;
+        if (pendingBytes >= minBytes()) flush();
+      }
+      flush();
+
+      // The last buffer is scheduled but still playing; hold the state until then.
+      const remainingMs = Math.max(0, (playhead - ctx.currentTime) * 1000);
+      await new Promise((r) => setTimeout(r, remainingMs + 150));
+      if (seq === speakSeqRef.current) {
+        setSpeakingId(null);
+        ttsPlayerRef.current = null;
+        void ctx.close().catch(() => { });
+        // Voice conversation: the reply has been spoken — listen again.
+        if (voiceLoopRef.current) void startVoiceRecording();
+      }
     } catch (err) {
-      console.error("TTS playback failed:", err);
-      if (seq === speakSeqRef.current) setSpeakingId(null);
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        console.error("TTS playback failed:", err);
+      }
+      if (seq === speakSeqRef.current) {
+        setSpeakingId(null);
+        ttsPlayerRef.current = null;
+        if (ctx) void ctx.close().catch(() => { });
+        // A TTS hiccup must not kill the conversation loop.
+        if (voiceLoopRef.current) void startVoiceRecording();
+      }
     }
   };
 
-  const toggleRecording = async () => {
-    if (isRecording) {
-      recorderRef.current?.stop();
-      return;
+  // ---- Voice conversation mode ----
+  // The mic button starts a hands-free loop: record → silence auto-sends →
+  // reply is spoken → recording restarts. Saying "Zuychin, stop" (detected
+  // via SpeechRecognition where available), tapping the chip's ✕, or leaving
+  // the conversation ends it.
+
+  const exitVoiceLoop = () => {
+    voiceLoopRef.current = false;
+    setVoiceLoop(false);
+    try { srRef.current?.stop(); } catch { }
+    srRef.current = null;
+    if (recorderRef.current) {
+      discardRecordingRef.current = true;
+      recorderRef.current.stop();
     }
+    stopSpeaking();
+  };
+
+  const startVoiceRecording = async () => {
+    if (recorderRef.current) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceLoopRef.current = true;
+      setVoiceLoop(true);
+
       const recorder = new MediaRecorder(stream);
       recordChunksRef.current = [];
       recorder.ondataavailable = (e) => { if (e.data.size > 0) recordChunksRef.current.push(e.data); };
+
+      // Voice activity detection: a stretch of silence after speech sends the
+      // note; sustained silence with no speech at all ends the loop.
+      const ac = new AudioContext();
+      // Loop restarts run outside a user gesture; a suspended context would
+      // read silence forever and false-trigger the no-speech exit.
+      if (ac.state === "suspended") void ac.resume().catch(() => { });
+      const source = ac.createMediaStreamSource(stream);
+      const analyser = ac.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      let spoke = false;
+      let silenceSince = 0;
+      const startedAt = Date.now();
+      const SPEECH_RMS = 0.02;
+      const SILENCE_RMS = 0.012;
+      const SILENCE_SEND_MS = 1800;
+      const NO_SPEECH_EXIT_MS = 10000;
+      const vadTimer = setInterval(() => {
+        analyser.getFloatTimeDomainData(samples);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+        const rms = Math.sqrt(sum / samples.length);
+        if (rms > SPEECH_RMS) {
+          spoke = true;
+          silenceSince = 0;
+        } else if (spoke && rms < SILENCE_RMS) {
+          if (!silenceSince) silenceSince = Date.now();
+          else if (Date.now() - silenceSince > SILENCE_SEND_MS) recorder.stop();
+        }
+        if (!spoke && Date.now() - startedAt > NO_SPEECH_EXIT_MS) exitVoiceLoop();
+      }, 150);
+      vadCleanupRef.current = () => {
+        clearInterval(vadTimer);
+        void ac.close().catch(() => { });
+      };
+
+      // Best-effort stop-phrase watcher (Chrome). Without it the chip ✕ and
+      // the no-speech timeout still end the loop.
+      const w = window as unknown as {
+        SpeechRecognition?: new () => SpeechRecognitionLike;
+        webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+      };
+      const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+      if (SR) {
+        try {
+          const rec = new SR();
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.lang = "en-AU";
+          rec.onresult = (e) => {
+            let transcript = "";
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+              transcript += e.results[i][0].transcript;
+            }
+            if (/zuychin[\s,.!]*stop/i.test(transcript)) exitVoiceLoop();
+          };
+          rec.onerror = () => { };
+          rec.start();
+          srRef.current = rec;
+        } catch { }
+      }
+
       recorder.onstop = () => {
+        vadCleanupRef.current?.();
+        vadCleanupRef.current = null;
+        try { srRef.current?.stop(); } catch { }
+        srRef.current = null;
         stream.getTracks().forEach((t) => t.stop());
         setIsRecording(false);
         recorderRef.current = null;
+
+        const discard = discardRecordingRef.current;
+        discardRecordingRef.current = false;
         const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || "audio/webm" });
         recordChunksRef.current = [];
-        if (blob.size === 0) return;
+        if (discard || blob.size === 0) return;
         if (blob.size > MAX_FILE_SIZE_BYTES) {
           alert(`Recording too large (${(blob.size / 1024 / 1024).toFixed(1)} MB). Max ${MAX_FILE_SIZE_MB} MB.`);
+          exitVoiceLoop();
           return;
         }
         // Codec suffixes ("audio/webm;codecs=opus") fail the whitelist check.
@@ -999,18 +1229,36 @@ export default function Home() {
         const reader = new FileReader();
         reader.onload = () => {
           const base64 = (reader.result as string).split(",")[1] ?? "";
-          setPendingFile({ name: `voice-note.${ext}`, mimeType, base64, size: blob.size });
-          inputRef.current?.focus();
+          const file = { name: `voice-note.${ext}`, mimeType, base64, size: blob.size };
+          if (voiceLoopRef.current) {
+            void sendPayload({ text: "", file, replyTo: null });
+          } else {
+            setPendingFile(file);
+            inputRef.current?.focus();
+          }
         };
         reader.readAsDataURL(blob);
       };
+
       recorder.start();
       recorderRef.current = recorder;
       setIsRecording(true);
     } catch (err) {
       console.error("Mic capture failed:", err);
+      voiceLoopRef.current = false;
+      setVoiceLoop(false);
       alert("Couldn't access the microphone. Check the browser permission.");
     }
+  };
+
+  const toggleRecording = () => {
+    // Tapping mid-recording sends what's captured so far (the loop continues);
+    // the chip's ✕ or "Zuychin, stop" ends the conversation.
+    if (recorderRef.current) {
+      recorderRef.current.stop();
+      return;
+    }
+    void startVoiceRecording();
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1172,6 +1420,17 @@ export default function Home() {
           model={currentChatModel}
           providerLabel={currentChatProvider?.label ?? ""}
           onClose={() => setModelInfoOpen(false)}
+        />
+      )}
+
+      {embedModal && (
+        <ConfirmModal
+          title="Switch embedding model?"
+          body={`This re-embeds the ENTIRE knowledge store — every message, note, document and remembered fact — with ${providers.flatMap((p) => p.embeddingModels).find((m) => m.id === embedModal.target)?.label ?? embedModal.target}. It runs in batches, can take a few minutes and uses embedding API quota. Keep this tab open until it finishes.`}
+          confirmLabel="Re-embed everything"
+          busyText={embedModal.status === "confirm" ? undefined : embedModal.status}
+          onConfirm={() => void runReembed(embedModal.target)}
+          onCancel={() => setEmbedModal(null)}
         />
       )}
 
@@ -1538,28 +1797,15 @@ export default function Home() {
                 )}
               </div>
               {msg.role === "assistant" && !msg.resume && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <button
-                    type="button"
-                    onClick={() => startReply(msg)}
-                    style={styles.replyMsgBtn}
-                    aria-label="Reply to this message"
-                    title="Reply to this message"
-                  >
-                    <Reply size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => toggleSpeak(msg)}
-                    style={styles.replyMsgBtn}
-                    aria-label={speakingId === msg.id ? "Stop reading" : "Read aloud"}
-                    title={speakingId === msg.id ? "Stop reading" : "Read aloud"}
-                  >
-                    {speakingId === msg.id
-                      ? <VolumeX size={15} color="var(--color-primary)" />
-                      : <Volume2 size={15} />}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => startReply(msg)}
+                  style={styles.replyMsgBtn}
+                  aria-label="Reply to this message"
+                  title="Reply to this message"
+                >
+                  <Reply size={15} />
+                </button>
               )}
               {msg.role === "user" && (
                 <div style={{ ...styles.msgAvatar, ...styles.userAvatar }}>
@@ -1682,26 +1928,27 @@ export default function Home() {
               <p style={styles.settingsNote}>
                 Unset = provider default. Applied to the selected model where supported.
               </p>
-              <div style={styles.settingsEmbedRow}>
-                {providers.some((p) => p.embeddingModels.length > 0) && (
-                  <>
-                    <span style={styles.settingsEmbedLabel}>Embedding</span>
-                    <SelectMenu
-                      dropUp
-                      wide
-                      ariaLabel="Embedding model"
-                      icon={<Database size={14} color="var(--color-text-muted)" />}
-                      value={embedSel}
-                      onChange={handleEmbedSelChange}
-                      groups={providers
-                        .filter((p) => p.embeddingModels.length > 0)
-                        .map((p) => ({
-                          label: p.label,
-                          options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
-                        }))}
-                    />
-                  </>
-                )}
+              {providers.some((p) => p.embeddingModels.length > 0) && (
+                <div style={styles.settingsEmbedRow}>
+                  <span style={styles.settingsEmbedLabel}>Embedding</span>
+                  <SelectMenu
+                    dropUp
+                    wide
+                    compact
+                    ariaLabel="Embedding model"
+                    icon={<Database size={14} color="var(--color-text-muted)" />}
+                    value={embedSel}
+                    onChange={handleEmbedSelChange}
+                    groups={providers
+                      .filter((p) => p.embeddingModels.length > 0)
+                      .map((p) => ({
+                        label: p.label,
+                        options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
+                      }))}
+                  />
+                </div>
+              )}
+              <div style={styles.settingsToggleRow}>
                 {pushSupported && (
                   <div style={styles.agentSwitchWrap}>
                     <span style={styles.settingsEmbedLabel}>Notifications</span>
@@ -1749,6 +1996,26 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {voiceLoop && (
+            <div style={styles.replyPreview} className="animate-fade-in">
+              {isRecording
+                ? <Mic size={14} color="#ef4444" style={{ flexShrink: 0 }} />
+                : <Volume2 size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
+              <span style={styles.replyPreviewLabel}>
+                Voice chat{isRecording ? " — listening" : speakingId ? " — speaking" : isLoading ? " — thinking" : ""}
+              </span>
+              <span style={styles.replyPreviewText}>say &ldquo;Zuychin, stop&rdquo; to end</span>
+              <button
+                onClick={exitVoiceLoop}
+                style={styles.filePreviewRemove}
+                aria-label="End voice chat"
+                title="End voice chat"
+              >
+                <X size={14} />
+              </button>
             </div>
           )}
 
@@ -1825,8 +2092,8 @@ export default function Home() {
               type="button"
               onClick={toggleRecording}
               style={styles.attachBtn}
-              aria-label={isRecording ? "Stop recording" : "Record a voice note"}
-              title={isRecording ? "Stop recording" : "Record a voice note"}
+              aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
+              title={isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat — replies are spoken, say “Zuychin, stop” to end"}
               className={isRecording ? "animate-fade-in" : undefined}
             >
               <Mic size={18} color={isRecording ? "#ef4444" : "var(--color-text-muted)"} />

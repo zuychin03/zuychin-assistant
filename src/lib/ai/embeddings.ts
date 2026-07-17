@@ -3,11 +3,14 @@ import {
     resolveEmbedding, getProviderApiKey,
     type ResolvedEmbedding,
 } from "@/lib/ai/providers";
+import { cachedEmbeddingOverride } from "@/lib/ai/embedding-override";
 
 export type { ResolvedEmbedding };
 
+// Precedence: explicit model arg > runtime override (set by the admin
+// re-embed flow) > KNOWLEDGE_EMBEDDING_MODEL env > DEFAULT_EMBEDDING.
 export function getEmbeddingRef(modelId?: string): ResolvedEmbedding {
-    return resolveEmbedding(modelId);
+    return resolveEmbedding(modelId ?? cachedEmbeddingOverride() ?? undefined);
 }
 
 export type EmbedInputType = "query" | "passage";

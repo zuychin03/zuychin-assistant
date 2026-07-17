@@ -253,6 +253,69 @@ export function ModelInfoModal({
   );
 }
 
+export function ConfirmModal({
+  title, body, confirmLabel, busyText, onConfirm, onCancel,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  /** When set, the modal is locked into a progress view (no buttons, no dismiss). */
+  busyText?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={modal.overlay} className="animate-overlay-in" onClick={busyText ? undefined : onCancel}>
+      <div style={modal.card} className="animate-fade-in-scale" onClick={(e) => e.stopPropagation()}>
+        <div style={modal.header}>
+          <h2 style={modal.title}>{title}</h2>
+          {!busyText && (
+            <button onClick={onCancel} style={styles.iconBtn} aria-label="Close">
+              <X size={18} color="var(--color-text-muted)" />
+            </button>
+          )}
+        </div>
+        <p style={modal.desc}>{body}</p>
+        {busyText ? (
+          <p style={{ ...modal.desc, color: "var(--color-primary)", fontWeight: 600 }}>{busyText}</p>
+        ) : (
+          <div style={confirmRow}>
+            <button onClick={onCancel} style={confirmCancelBtn}>Cancel</button>
+            <button onClick={onConfirm} style={confirmDangerBtn}>{confirmLabel}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const confirmRow: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  gap: 10,
+  marginTop: 16,
+};
+const confirmBtnBase: React.CSSProperties = {
+  padding: "8px 16px",
+  borderRadius: 10,
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+  fontFamily: "var(--font-family)",
+};
+const confirmCancelBtn: React.CSSProperties = {
+  ...confirmBtnBase,
+  border: "1px solid var(--color-border)",
+  background: "transparent",
+  color: "var(--color-text-primary)",
+};
+const confirmDangerBtn: React.CSSProperties = {
+  ...confirmBtnBase,
+  border: "none",
+  background: "#ef4444",
+  color: "#fff",
+};
+
 const dropdown: Record<string, React.CSSProperties> = {
   wrap: {
     position: "relative",

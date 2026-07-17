@@ -4,6 +4,7 @@ import { sanitizeGenParams } from "@/lib/ai/providers";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
+import { broadcastPush } from "@/lib/messaging/push-service";
 
 export const maxDuration = 300;
 
@@ -52,7 +53,11 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
             let closed = false;
+            // Agent-mode turns emit a run event; those are the long ones worth
+            // a push when the user has tabbed away (sw.js skips focused tabs).
+            let sawAgentRun = false;
             const send = (e: AgentEvent) => {
+                if (e.type === "run") sawAgentRun = true;
                 if (closed) return;
                 try { controller.enqueue(encoder.encode(sseFormat(e))); } catch { }
             };
@@ -80,6 +85,14 @@ export async function POST(req: NextRequest) {
                     signal: ac.signal,
                 }, send);
                 send({ type: "done", reply, messageId, artifacts });
+                if (sawAgentRun && reply) {
+                    const convId = body.conversationId as string | undefined;
+                    await broadcastPush({
+                        title: "Zuychin finished your task",
+                        body: reply.slice(0, 180),
+                        url: convId ? `/?c=${convId}` : "/",
+                    });
+                }
             } catch (err) {
                 if (!ac.signal.aborted) {
                     console.error("[Chat Stream Error]", err);

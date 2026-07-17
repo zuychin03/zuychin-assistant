@@ -1,15 +1,16 @@
-import { MODEL } from "@/lib/gemini";
 import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
-import { resolveChatModelByName, resolveWorkerChain, type ResolvedChat } from "@/lib/ai/providers";
+import { resolveChatModelByName, resolveWorkerChain, WORKER_GEMINI_FALLBACK, type ResolvedChat } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 
 export interface WorkerParams {
     objective: string;
     modelHint?: string;
     needsTools?: boolean;
+    /** Sizes the paid Gemini fallback only; free fast models always run first. */
+    complexity?: "simple" | "complex";
     contextBlock: string;
     embRef: ResolvedEmbedding;
     toolCtx: ToolContext;
@@ -85,6 +86,9 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
     }
 
     p.signal?.throwIfAborted();
-    const { text, usage } = await geminiRun();
-    return { model: `${MODEL} (fallback)`, output: text, tokens: usage.totalTokens };
+    // Paid last resort, sized to the subtask: 3-flash for simple work,
+    // 3.5-flash where weak reasoning would just waste the retry.
+    const fallbackModel = p.complexity === "complex" ? WORKER_GEMINI_FALLBACK.complex : WORKER_GEMINI_FALLBACK.simple;
+    const { text, usage } = await geminiRun(fallbackModel);
+    return { model: `${fallbackModel} (fallback)`, output: text, tokens: usage.totalTokens };
 }

@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 
 export type MemoryCategory =
     | "identity" | "preference" | "relationship" | "project" | "routine" | "fact" | "other";
@@ -7,8 +8,9 @@ export type MemoryCategory =
 export type MemoryStatus = "candidate" | "confirmed";
 
 // Work/study observations start as invisible candidates and only become
-// Known Facts once the same pattern repeats in a different conversation.
-export const PROMOTE_EVIDENCE_COUNT = 2;
+// Known Facts once the same pattern repeats across distinct conversations.
+export { PROMOTE_EVIDENCE_COUNT } from "@/lib/types";
+import { PROMOTE_EVIDENCE_COUNT } from "@/lib/types";
 
 export interface MemoryFact {
     id: string;
@@ -35,7 +37,9 @@ export interface MemoryHit {
 // Fact memory always lives in the DEFAULT embedding partition, regardless of
 // the per-message embedding selection. Facts are one shared pool; splitting
 // them by partition made facts invisible whenever the selection changed.
-export function memoryEmbeddingRef(): ResolvedEmbedding {
+// Async so a cold lambda picks up the runtime partition override first.
+export async function memoryEmbeddingRef(): Promise<ResolvedEmbedding> {
+    await refreshEmbeddingOverride();
     return getEmbeddingRef();
 }
 
@@ -54,7 +58,7 @@ export async function insertMemory(params: {
     status?: MemoryStatus;
     evidenceKey?: string;
 }): Promise<string | null> {
-    const embRef = memoryEmbeddingRef();
+    const embRef = await memoryEmbeddingRef();
     const embedding = await embedText(embRef, params.fact);
     const base = {
         fact: params.fact,
@@ -125,7 +129,7 @@ export async function updateMemoryFact(params: {
     fact: string;
     category?: MemoryCategory;
 }): Promise<boolean> {
-    const embRef = memoryEmbeddingRef();
+    const embRef = await memoryEmbeddingRef();
     const embedding = await embedText(embRef, params.fact);
     const { error } = await supabase
         .from("memories")
@@ -191,7 +195,7 @@ export async function searchMemories(params: {
         match_threshold: params.matchThreshold ?? 0.5,
         match_count: params.matchCount ?? 8,
         filter_user_id: params.userId ?? null,
-        filter_model: memoryEmbeddingRef().model.id,
+        filter_model: (await memoryEmbeddingRef()).model.id,
         filter_project: params.projectId ?? null,
     });
 

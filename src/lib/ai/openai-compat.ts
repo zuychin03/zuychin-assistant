@@ -63,6 +63,8 @@ interface RequestOpts {
     thinking: boolean;
     genParams: GenParams;
     signal?: AbortSignal;
+    /** Emits text deltas as they arrive; the reply is still assembled whole. */
+    onToken?: (text: string) => void;
 }
 
 export async function openaiCompatChat(params: {
@@ -80,6 +82,7 @@ export async function openaiCompatChat(params: {
     ctx?: ToolContext;
     onUsage?: (u: { promptTokens: number; outputTokens: number; totalTokens: number }) => void;
     signal?: AbortSignal;
+    onToken?: (text: string, reset?: boolean) => void;
 }): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx } = params;
 
@@ -99,6 +102,18 @@ export async function openaiCompatChat(params: {
         thinking: !!params.thinking && model.supportsThinking,
         genParams: params.genParams ?? {},
         signal: params.signal,
+    };
+
+    // Each model turn gets a fresh sink whose first delta resets the client's
+    // forming bubble — a tool round's preamble text must not prefix the final
+    // answer. Set on opts right before every postChat below.
+    const nextTurnSink = () => {
+        if (!params.onToken) return undefined;
+        let first = true;
+        return (text: string) => {
+            params.onToken!(text, first);
+            first = false;
+        };
     };
 
     const isTextFile = !!file && isTextLikeAttachment(file.mimeType, file.name);
@@ -142,11 +157,12 @@ export async function openaiCompatChat(params: {
 
     let data: ChatCompletion;
     try {
+        opts.onToken = nextTurnSink();
         data = await postChat(provider, apiKey, model.id, messages, tools, opts, forceSearch);
     } catch (err) {
         if (tools || opts.thinking) {
             console.warn(`[${provider.id}] request failed, retrying without tools/reasoning:`, err);
-            data = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false });
+            data = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
         } else {
             throw err;
         }
@@ -175,6 +191,7 @@ export async function openaiCompatChat(params: {
             messages.push({ role: "tool", tool_call_id: r.id, name: r.name, content: r.result });
         }
 
+        opts.onToken = nextTurnSink();
         data = await postChat(provider, apiKey, model.id, messages, tools, opts);
         trackUsage(data);
     }
@@ -183,7 +200,7 @@ export async function openaiCompatChat(params: {
 
     if (!reply) {
         try {
-            const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false });
+            const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
             trackUsage(plain);
             reply = extractContent(plain);
         } catch (err) {
@@ -281,7 +298,7 @@ async function postChat(
             throw new Error(`${provider.label}: empty stream body.`);
         }
 
-        return await accumulateStream(res.body, provider.label);
+        return await accumulateStream(res.body, provider.label, opts.onToken);
     } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
             if (opts.signal?.aborted) throw err;
@@ -296,7 +313,8 @@ async function postChat(
 
 async function accumulateStream(
     stream: ReadableStream<Uint8Array>,
-    providerLabel: string
+    providerLabel: string,
+    onToken?: (text: string) => void
 ): Promise<ChatCompletion> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -325,7 +343,10 @@ async function accumulateStream(
             if (choice?.finish_reason) finishReason = choice.finish_reason;
             return;
         }
-        if (typeof delta.content === "string") content += delta.content;
+        if (typeof delta.content === "string") {
+            content += delta.content;
+            if (delta.content) onToken?.(delta.content);
+        }
         if (typeof delta.reasoning_content === "string") reasoning += delta.reasoning_content;
         if (typeof delta.reasoning === "string") reasoning += delta.reasoning;
         if (Array.isArray(delta.tool_calls)) {

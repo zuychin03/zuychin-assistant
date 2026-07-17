@@ -501,6 +501,7 @@ import {
     addTodo, listTodos, updateTodoStatus, deleteTodo,
 } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
 import { getFile, getVaultConfig } from "@/lib/vault/github";
@@ -513,14 +514,18 @@ import {
     type ScheduledTask, type TaskChannel,
 } from "@/lib/tasks/store";
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
-import { listMemories, deleteMemory, updateMemoryFact } from "@/lib/ai/memory/store";
+import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
 
 export async function executeTool(
     toolName: string,
     args: Record<string, unknown>,
-    embRef: ResolvedEmbedding = getEmbeddingRef(),
+    embRef?: ResolvedEmbedding,
     ctx?: ToolContext
 ): Promise<string> {
+    // Resolve the default ref only after the runtime partition override is
+    // known — a default-param getEmbeddingRef() would run before the await.
+    await refreshEmbeddingOverride();
+    embRef = embRef ?? getEmbeddingRef();
 
     const artifactResult = await executeArtifactTool(toolName, args, ctx, embRef);
     if (artifactResult !== null) return artifactResult;
@@ -1187,7 +1192,7 @@ async function executeManageMemoryFacts(
                 const facts = await listMemories(50, category);
                 if (facts.length === 0) return category ? `No ${category} facts remembered yet.` : "No facts remembered yet.";
                 const formatted = facts
-                    .map((f) => `- [${f.category}${f.projectId ? ", project" : ""}${f.status === "candidate" ? `, unconfirmed pattern ${f.evidenceCount}/2` : ""}] ${f.fact}\n  _ID: ${f.id}_`)
+                    .map((f) => `- [${f.category}${f.projectId ? ", project" : ""}${f.status === "candidate" ? `, unconfirmed pattern ${f.evidenceCount}/${PROMOTE_EVIDENCE_COUNT}` : ""}] ${f.fact}\n  _ID: ${f.id}_`)
                     .join("\n");
                 return `Known facts (${facts.length}):\n${formatted}`;
             }

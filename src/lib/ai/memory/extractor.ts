@@ -44,7 +44,7 @@ export async function extractMemories(params: {
         // "repeated on another day" count as fresh pattern evidence there.
         const evidenceKey = conversationId ?? `${channel}:${new Date().toISOString().slice(0, 10)}`;
 
-        const embRef = memoryEmbeddingRef();
+        const embRef = await memoryEmbeddingRef();
         const queryEmbedding = await embedText(embRef, trimmed, "query");
         const existing = await searchMemories({
             queryEmbedding,

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Brain, Check, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { PROMOTE_EVIDENCE_COUNT } from "@/lib/types";
 
 interface MemoryFact {
     id: string;
@@ -142,7 +143,7 @@ export default function MemoriesPanel() {
                                     <span style={panelStyles.categoryChip}>{m.category}</span>
                                     {m.status === "candidate" && (
                                         <span style={{ ...panelStyles.categoryChip, borderStyle: "dashed" }} title="Unconfirmed work/study pattern — becomes a Known Fact when it repeats in another conversation">
-                                            pattern {m.evidenceCount ?? 1}/2
+                                            pattern {m.evidenceCount ?? 1}/{PROMOTE_EVIDENCE_COUNT}
                                         </span>
                                     )}
                                     <span style={panelStyles.rowMeta}>

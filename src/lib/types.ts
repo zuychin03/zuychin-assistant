@@ -119,3 +119,8 @@ export interface KnowledgeItem {
     similarity?: number;
     createdAt: string;
 }
+
+// Candidate work/study facts need this many distinct-conversation sightings
+// before they surface as Known Facts. Client-safe home so the admin panel can
+// show it without pulling in the server-side memory store.
+export const PROMOTE_EVIDENCE_COUNT = 3;

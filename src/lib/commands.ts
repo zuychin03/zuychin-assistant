@@ -94,6 +94,26 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) => (args ? `Save this note for me: ${args}` : "I want to save a note — ask me what to remember."),
     },
     {
+        id: "new_app",
+        usage: "/new_app <idea>",
+        description: "Kick off a new app: research, brainstorm, architecture, then a spec doc",
+        agent: true,
+        build: (args) =>
+            args
+                ? `I have an idea for a new app (follow the new-app-kickoff skill, phase by phase with my go-ahead between phases): ${args}`
+                : "I want to kick off a new app idea (follow the new-app-kickoff skill) — ask me what the idea is first.",
+    },
+    {
+        id: "update_app",
+        usage: "/update_app <app + features>",
+        description: "Plan the next version of an existing app, ending in a versioned plan doc",
+        agent: true,
+        build: (args) =>
+            args
+                ? `Plan the next version of one of my existing apps (follow the update-kickoff skill, phase by phase with my go-ahead between phases): ${args}`
+                : "I want to plan the next version of one of my apps (follow the update-kickoff skill) — ask me which app and what the wave should contain.",
+    },
+    {
         id: "history",
         usage: "/history <query>",
         description: "Search past conversations for a topic",

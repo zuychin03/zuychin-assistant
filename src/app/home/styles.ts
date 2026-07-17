@@ -745,7 +745,8 @@ export const styles: Record<string, CSSProperties> = {
     cursor: "pointer",
     padding: 4,
     display: "flex",
-    alignSelf: "center",
+    alignSelf: "flex-end",
+    marginBottom: 4,
     color: "var(--color-text-muted)",
     opacity: 0.45,
     flexShrink: 0,
@@ -1024,11 +1025,19 @@ export const styles: Record<string, CSSProperties> = {
     color: "var(--color-text-muted)",
     flexShrink: 0,
   },
+  // Own row under the embedding select: sharing one row squeezed the select
+  // to nothing on narrow screens.
+  settingsToggleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 24,
+    marginTop: 12,
+  },
   agentSwitchWrap: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    marginLeft: 22,
     flexShrink: 0,
   },
   switchTrack: {

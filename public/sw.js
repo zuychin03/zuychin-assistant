@@ -7,12 +7,18 @@ self.addEventListener("push", (event) => {
     } catch {
         data = { body: event.data ? event.data.text() : "" };
     }
+    // Skip the notification when the app is focused — the reply is already on
+    // screen; buzzing the same device is noise.
     event.waitUntil(
-        self.registration.showNotification(data.title || "Zuychin", {
-            body: data.body || "",
-            icon: "/icons/icon-192.png",
-            badge: "/icons/icon-192.png",
-            data: { url: data.url || "/" },
+        clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+            const focused = list.some((c) => c.focused || c.visibilityState === "visible");
+            if (focused) return undefined;
+            return self.registration.showNotification(data.title || "Zuychin", {
+                body: data.body || "",
+                icon: "/icons/icon-192.png",
+                badge: "/icons/icon-192.png",
+                data: { url: data.url || "/" },
+            });
         })
     );
 });

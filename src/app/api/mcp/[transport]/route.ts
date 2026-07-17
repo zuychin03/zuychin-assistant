@@ -4,6 +4,7 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { embedText, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import {
     hybridSearchKnowledge, searchEmbeddings, storeEmbedding, getRecentMessages,
     listKnowledgeNotes, updateKnowledgeNote, deleteKnowledgeNote,
@@ -47,6 +48,7 @@ const handler = createMcpHandler(
             },
             async ({ query, category }) => {
                 try {
+                    await refreshEmbeddingOverride();
                     const embRef = getEmbeddingRef();
                     const embedding = await embedText(embRef, query, "query");
                     // Category is a post-hoc metadata filter, so overfetch to keep ~5 survivors.
@@ -96,6 +98,7 @@ const handler = createMcpHandler(
                 const denied = requireWrite(extra);
                 if (denied) return denied;
                 try {
+                    await refreshEmbeddingOverride();
                     const embRef = getEmbeddingRef();
                     const embedding = await embedText(embRef, content);
                     const id = await storeEmbedding({
@@ -163,6 +166,7 @@ const handler = createMcpHandler(
                     return { isError: true, content: [{ type: "text" as const, text: "Provide content and/or category to change." }] };
                 }
                 try {
+                    await refreshEmbeddingOverride();
                     const embRef = getEmbeddingRef();
                     const embedding = content ? await embedText(embRef, content) : undefined;
                     const ok = await updateKnowledgeNote({
