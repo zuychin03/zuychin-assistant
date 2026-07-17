@@ -10,7 +10,7 @@ import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 
 // Auto-link proposal: pgvector proposes generously, the LLM curator selects
 // (agents.md INGEST step 3). Measured doc↔doc cosines (Nemotron embeddings):
-// same topic 0.7–0.8, related cross-topic 0.45–0.6, unrelated <0.4 — the
+// same topic 0.7–0.8, related cross-topic 0.45–0.6, unrelated <0.4; the
 // threshold only cuts noise.
 const LINK_THRESHOLD = 0.4;
 const MAX_LINK_CANDIDATES = 6;
@@ -310,7 +310,7 @@ export async function ingestToVault(params: {
         const changes: CommitFileChange[] = [];
         const backlinked: VaultPageHit[] = [];
 
-        // Immutable raw capture — only on first ingest of this page.
+        // Immutable raw capture, written only on first ingest of this page.
         if (!existing) {
             changes.push({
                 path: rawPath,

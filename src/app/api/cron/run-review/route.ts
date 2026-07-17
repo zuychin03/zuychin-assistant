@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { Type } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { getCronState, setCronState } from "@/lib/cron-state";
@@ -13,7 +14,7 @@ import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
 const CRON_SECRET = process.env.CRON_SECRET;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const STATE_KEY = "run_review";
 const MIN_NEW_RUNS = 3;
@@ -93,6 +94,21 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ drafts: 0, reviewed: newRuns.length, outliers: 0 });
     }
 
+    // The model call + draft filing can outlast the cron client's timeout
+    // (cron-job.org caps at 30s), so respond now and review after. The mark
+    // only advances on success, so a failed review retries next night.
+    after(() => reviewOutliers(candidates, newestStartedAt, newRuns.length));
+    return NextResponse.json(
+        { accepted: true, reviewed: newRuns.length, outliers: candidates.length },
+        { status: 202 }
+    );
+}
+
+async function reviewOutliers(
+    candidates: AgentRunSummary[],
+    newestStartedAt: string,
+    reviewedCount: number
+) {
     const excerpts = (await Promise.all(candidates.map((r) => formatRunExcerpt(r.id))))
         .filter((x): x is string => !!x);
 
@@ -148,7 +164,7 @@ ${excerpts.join("\n\n")}`;
     } catch (err) {
         // Mark not advanced: the same runs get another chance next night.
         console.error("[RunReview] Draft call failed:", err);
-        return NextResponse.json({ error: "Draft call failed." }, { status: 500 });
+        return;
     }
 
     const filed: string[] = [];
@@ -178,11 +194,8 @@ ${excerpts.join("\n\n")}`;
         );
     }
 
-    return NextResponse.json({
-        drafts: filed.length,
-        filed,
-        rejected,
-        reviewed: newRuns.length,
-        outliers: candidates.length,
-    });
+    console.log(
+        `[RunReview] Done: filed=${JSON.stringify(filed)} rejected=${JSON.stringify(rejected)} ` +
+        `reviewed=${reviewedCount} outliers=${candidates.length}`
+    );
 }

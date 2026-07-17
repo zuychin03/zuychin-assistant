@@ -50,7 +50,7 @@ export interface VaultPageRow extends VaultPageMeta {
     updatedAt: string | null;
 }
 
-/** All indexed pages (no vectors) — used by lint to reconcile repo vs index. */
+/** All indexed pages (no vectors); used by lint to reconcile repo vs index. */
 export async function listVaultPages(): Promise<VaultPageRow[]> {
     const { data, error } = await supabase
         .from("vault_pages")
@@ -81,7 +81,7 @@ export async function vaultEmbeddingRef(): Promise<ResolvedEmbedding> {
     return getEmbeddingRef(model);
 }
 
-/** Stored vectors of one model partition — used for offline link suggestions. */
+/** Stored vectors of one model partition; used for offline link suggestions. */
 export async function listVaultEmbeddings(model: string): Promise<{ path: string; embedding: number[] }[]> {
     const { data, error } = await supabase
         .from("vault_pages")
@@ -115,7 +115,7 @@ export async function searchVaultPages(params: {
     // against stored pages (symmetric doc↔doc scores run notably higher).
     inputType?: EmbedInputType;
     // BM25 + vector RRF via hybrid_match_vault_pages. Keyword hits carry
-    // similarity 0, so matchThreshold does not apply — leave this off for
+    // similarity 0, so matchThreshold does not apply; leave this off for
     // threshold-driven callers (ingest link candidates).
     hybrid?: boolean;
 }): Promise<VaultPageHit[]> {

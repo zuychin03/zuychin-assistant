@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { Type } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { listUnreadEmails, formatEmailSummary, type EmailThread } from "@/lib/integrations/gmail-service";
@@ -9,6 +10,8 @@ import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
 const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+export const maxDuration = 300;
 
 const MAX_HIGHLIGHTS = 6;
 
@@ -123,6 +126,18 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "No messaging channel configured." }, { status: 500 });
         }
 
+        // Gmail/Calendar fetches + the triage model call can outlast the cron
+        // client's timeout (cron-job.org caps at 30s): respond now, send after.
+        after(() => buildAndSendBriefing());
+        return NextResponse.json({ accepted: true }, { status: 202 });
+    } catch (error) {
+        console.error("[Briefing] Error:", error);
+        return NextResponse.json({ error: "Daily briefing failed." }, { status: 500 });
+    }
+}
+
+async function buildAndSendBriefing() {
+    try {
         const [emails, events] = await Promise.all([
             listUnreadEmails(50).catch((err) => {
                 console.warn("[Briefing] Gmail fetch failed:", err);
@@ -171,15 +186,7 @@ export async function POST(req: NextRequest) {
         await Promise.all(sends);
 
         console.log(`[Briefing] Sent daily briefing: ${highlights === null ? "triage failed, " : `${highlights.length} highlighted of `}${emails.length} emails, ${events.length} events.`);
-
-        return NextResponse.json({
-            message: "Daily briefing sent.",
-            emails: emails.length,
-            highlighted: highlights === null ? null : highlights.length,
-            events: events.length,
-        });
     } catch (error) {
         console.error("[Briefing] Error:", error);
-        return NextResponse.json({ error: "Daily briefing failed." }, { status: 500 });
     }
 }

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { Type } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { listRecentEmails, getEmailContent, type EmailThread } from "@/lib/integrations/gmail-service";
 import { createCalendarEvent } from "@/lib/integrations/calendar-service";
-import { addTodo } from "@/lib/db";
+import { addTodo, listTodos } from "@/lib/db";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { sendDiscordMessage } from "@/lib/messaging/discord-service";
 import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
@@ -29,6 +30,15 @@ interface Obligation {
     dueDate: string | null;
     amount: string | null;
     summary: string;
+}
+
+interface SourcedObligation extends Obligation {
+    from: string;
+    subject: string;
+}
+
+interface FinalObligation extends Obligation {
+    sources: { from: string; subject: string }[];
 }
 
 /** Stage 1 (snippets, cheap): which emails contain a real obligation? Null = call failed, retry next run. */
@@ -134,6 +144,96 @@ ${email.body.slice(0, BODY_CHARS)}`,
     }
 }
 
+/**
+ * Stage 3: one batch-wide pass that merges obligations describing the same
+ * underlying issue (repeat notifications, reminders, updates) and drops ones
+ * an existing pending todo already covers. Null = call failed; the caller
+ * leaves the candidate emails unmarked so they retry next run.
+ */
+async function consolidateObligations(
+    extracted: SourcedObligation[],
+    pendingTodos: { title: string; dueDate?: string | null }[]
+): Promise<FinalObligation[] | null> {
+    const listing = extracted.map((o, i) => ({
+        index: i,
+        title: o.title,
+        kind: o.kind,
+        dueDate: o.dueDate,
+        amount: o.amount,
+        summary: o.summary,
+        from: o.from,
+        subject: o.subject,
+    }));
+    const todoLines = pendingTodos
+        .map((t) => `- ${t.title}${t.dueDate ? ` (due ${t.dueDate})` : ""}`)
+        .join("\n") || "(none)";
+
+    try {
+        const res = await ai.models.generateContent({
+            model: MODEL,
+            contents: `You deduplicate obligations extracted from a batch of emails BEFORE they become todo items and calendar events. The user often receives several emails about the same issue and hates duplicate entries.
+
+Extracted obligations (JSON; index identifies each):
+${JSON.stringify(listing)}
+
+The user's existing pending todos:
+${todoLines}
+
+Rules:
+- Obligations that refer to the SAME underlying obligation (the same bill, job, deadline, appointment — including reminders, updates, or re-sends worded differently) MERGE into ONE entry: keep the clearest title, the most complete amount/summary, the LATEST stated due date, and list every contributing source index.
+- DROP any obligation an existing pending todo already covers — match on the underlying issue, not exact wording. The user already knows about those.
+- Genuinely distinct obligations stay separate entries.
+An empty list is valid when everything is a duplicate.`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        entries: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    title: { type: Type.STRING },
+                                    kind: { type: Type.STRING, enum: [...OBLIGATION_KINDS] },
+                                    due_date: { type: Type.STRING, description: "ISO 8601; omit when unknown." },
+                                    amount: { type: Type.STRING, description: "Omit if not a payment." },
+                                    summary: { type: Type.STRING, description: "One sentence." },
+                                    source_indexes: {
+                                        type: Type.ARRAY,
+                                        items: { type: Type.INTEGER },
+                                        description: "Indexes of every merged input obligation.",
+                                    },
+                                },
+                                required: ["title", "kind", "summary", "source_indexes"],
+                            },
+                        },
+                    },
+                    required: ["entries"],
+                },
+            },
+        });
+
+        const parsed = JSON.parse(res.text ?? "") as {
+            entries: { title: string; kind: string; due_date?: string; amount?: string; summary: string; source_indexes: number[] }[];
+        };
+        return parsed.entries
+            .filter((e) => e.title?.trim())
+            .map((e) => ({
+                title: e.title.trim(),
+                kind: (OBLIGATION_KINDS as readonly string[]).includes(e.kind) ? (e.kind as ObligationKind) : "other",
+                dueDate: e.due_date && !isNaN(Date.parse(e.due_date)) ? e.due_date : null,
+                amount: e.amount?.trim() || null,
+                summary: e.summary?.trim() ?? "",
+                sources: [...new Set((e.source_indexes ?? []).filter((i) => Number.isInteger(i) && i >= 0 && i < extracted.length))]
+                    .map((i) => ({ from: extracted[i].from, subject: extracted[i].subject })),
+            }));
+    } catch (err) {
+        console.warn("[EmailTriggers] Consolidation failed:", err);
+        return null;
+    }
+}
+
 function formatDue(dueDate: string): string {
     return new Date(dueDate).toLocaleString("en-AU", {
         timeZone: APP_TIMEZONE,
@@ -171,10 +271,28 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ message: "All recent emails already processed.", scanned: emails.length, skipped: emails.length });
         }
 
+        // Triage + bodies + extraction + consolidation can outlast the cron
+        // client's timeout (cron-job.org caps at 30s), so respond now and
+        // process after. Failure semantics inside are unchanged: unmarked
+        // emails retry next run.
+        after(() => processBatch(fresh, emails.length));
+        return NextResponse.json(
+            { accepted: true, scanned: emails.length, skipped: emails.length - fresh.length },
+            { status: 202 }
+        );
+    } catch (error) {
+        console.error("[EmailTriggers] Error:", error);
+        return NextResponse.json({ error: "Email trigger scan failed." }, { status: 500 });
+    }
+}
+
+async function processBatch(fresh: EmailThread[], scanned: number) {
+    try {
         const candidates = await pickCandidates(fresh);
         if (candidates === null) {
             // Nothing marked processed — the whole batch retries next run.
-            return NextResponse.json({ error: "Candidate triage failed — retrying next run." }, { status: 500 });
+            console.warn("[EmailTriggers] Candidate triage failed — batch retries next run.");
+            return;
         }
         const candidateIndexes = new Set(candidates.map((c) => c.index));
 
@@ -182,6 +300,10 @@ export async function POST(req: NextRequest) {
         let todosCreated = 0;
         let eventsCreated = 0;
         const processedRows: { gmail_message_id: string; outcome: Record<string, unknown> }[] = [];
+        // Candidate emails only join processedRows once consolidation succeeds,
+        // so a failed consolidation call retries them next run.
+        const candidateRows: { gmail_message_id: string; outcome: Record<string, unknown> }[] = [];
+        const extracted: SourcedObligation[] = [];
 
         for (const [index, email] of fresh.entries()) {
             if (!candidateIndexes.has(index)) {
@@ -197,40 +319,56 @@ export async function POST(req: NextRequest) {
             }
 
             const obligations = await extractObligations(content);
-            const outcome: Record<string, unknown> = { obligations: obligations.length, created: [] as string[] };
+            extracted.push(...obligations.map((o) => ({ ...o, from: email.from, subject: email.subject })));
+            candidateRows.push({ gmail_message_id: email.id, outcome: { obligations: obligations.length } });
+        }
 
-            for (const o of obligations) {
-                try {
-                    await addTodo({
-                        title: o.title,
-                        description: `From: ${email.from} — ${email.subject}\n${o.summary}${o.amount ? `\nAmount: ${o.amount}` : ""}`,
-                        priority: o.dueDate && new Date(o.dueDate).getTime() - Date.now() < 3 * 86_400_000 ? "high" : "medium",
-                        dueDate: o.dueDate ?? undefined,
-                    });
-                    todosCreated++;
-                    (outcome.created as string[]).push(`todo: ${o.title}`);
-                } catch (err) {
-                    console.warn(`[EmailTriggers] addTodo failed for "${o.title}":`, err);
-                }
+        // Stage 3: batch-wide merge and dedup against pending todos.
+        let finalEntries: FinalObligation[] = [];
+        let consolidationFailed = false;
+        if (extracted.length > 0) {
+            const pendingTodos = await listTodos("pending", 50).catch(() => [] as Awaited<ReturnType<typeof listTodos>>);
+            const consolidated = await consolidateObligations(extracted, pendingTodos);
+            if (consolidated === null) consolidationFailed = true;
+            else finalEntries = consolidated;
+        }
+        if (!consolidationFailed) {
+            processedRows.push(...candidateRows);
+        }
 
-                if (o.dueDate) {
-                    try {
-                        await createCalendarEvent({
-                            summary: `📌 ${o.title}`,
-                            start: o.dueDate,
-                            description: `${o.summary}${o.amount ? ` (${o.amount})` : ""}\nFrom email: ${email.from} — ${email.subject}`,
-                        });
-                        eventsCreated++;
-                        (outcome.created as string[]).push(`event: ${o.title}`);
-                    } catch (err) {
-                        console.warn(`[EmailTriggers] createCalendarEvent failed for "${o.title}":`, err);
-                    }
-                }
+        for (const o of finalEntries) {
+            const sourceLines = o.sources.length > 1
+                ? `From ${o.sources.length} emails:\n${o.sources.map((s) => `- ${s.from} — ${s.subject}`).join("\n")}`
+                : o.sources.length === 1
+                    ? `From: ${o.sources[0].from} — ${o.sources[0].subject}`
+                    : "";
 
-                digest.push(`- **${o.title}**${o.dueDate ? ` (due ${formatDue(o.dueDate)})` : ""}${o.amount ? ` — ${o.amount}` : ""}\n  _${o.summary}_`);
+            try {
+                await addTodo({
+                    title: o.title,
+                    description: `${sourceLines ? `${sourceLines}\n` : ""}${o.summary}${o.amount ? `\nAmount: ${o.amount}` : ""}`,
+                    priority: o.dueDate && new Date(o.dueDate).getTime() - Date.now() < 3 * 86_400_000 ? "high" : "medium",
+                    dueDate: o.dueDate ?? undefined,
+                });
+                todosCreated++;
+            } catch (err) {
+                console.warn(`[EmailTriggers] addTodo failed for "${o.title}":`, err);
             }
 
-            processedRows.push({ gmail_message_id: email.id, outcome });
+            if (o.dueDate) {
+                try {
+                    await createCalendarEvent({
+                        summary: `📌 ${o.title}`,
+                        start: o.dueDate,
+                        description: `${o.summary}${o.amount ? ` (${o.amount})` : ""}${sourceLines ? `\n${sourceLines}` : ""}`,
+                    });
+                    eventsCreated++;
+                } catch (err) {
+                    console.warn(`[EmailTriggers] createCalendarEvent failed for "${o.title}":`, err);
+                }
+            }
+
+            digest.push(`- **${o.title}**${o.dueDate ? ` (due ${formatDue(o.dueDate)})` : ""}${o.amount ? ` — ${o.amount}` : ""}${o.sources.length > 1 ? ` _(merged from ${o.sources.length} emails)_` : ""}\n  _${o.summary}_`);
         }
 
         if (processedRows.length > 0) {
@@ -258,16 +396,13 @@ export async function POST(req: NextRequest) {
             .delete()
             .lt("processed_at", new Date(Date.now() - 90 * 86_400_000).toISOString());
 
-        console.log(`[EmailTriggers] Scanned ${fresh.length} new of ${emails.length}, ${digest.length} obligation(s), ${todosCreated} todo(s), ${eventsCreated} event(s).`);
-        return NextResponse.json({
-            scanned: emails.length,
-            skipped: emails.length - fresh.length,
-            obligations: digest.length,
-            todos: todosCreated,
-            events: eventsCreated,
-        });
+        if (consolidationFailed) {
+            console.warn(`[EmailTriggers] Consolidation failed for ${extracted.length} obligation(s) — candidate emails retry next run.`);
+            return;
+        }
+
+        console.log(`[EmailTriggers] Scanned ${fresh.length} new of ${scanned}, ${extracted.length} extracted → ${finalEntries.length} after consolidation, ${todosCreated} todo(s), ${eventsCreated} event(s).`);
     } catch (error) {
-        console.error("[EmailTriggers] Error:", error);
-        return NextResponse.json({ error: "Email trigger scan failed." }, { status: 500 });
+        console.error("[EmailTriggers] Background processing failed:", error);
     }
 }

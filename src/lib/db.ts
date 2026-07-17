@@ -548,7 +548,7 @@ export async function deleteTodo(id: string): Promise<boolean> {
 
 /**
  * Open todos due within `hoursAhead` that haven't been nagged in the last
- * `renagHours` — so overdue tasks re-nag roughly daily, not every cron tick.
+ * `renagHours`, so overdue tasks re-nag roughly daily, not every cron tick.
  */
 export async function listDueTodos(
     hoursAhead: number = 24,

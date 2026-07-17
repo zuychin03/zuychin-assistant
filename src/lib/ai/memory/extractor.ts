@@ -25,7 +25,7 @@ interface ExtractOp {
 
 // Post-turn fact extraction with Mem0-style consolidation: one structured call
 // decides ADD/UPDATE/DELETE/CONFIRM/NOOP against the nearest existing facts, so
-// contradictions get resolved instead of accumulating. Never throws — memory
+// contradictions get resolved instead of accumulating. Never throws: memory
 // is best-effort and must not affect the reply path.
 export async function extractMemories(params: {
     userMessage: string;

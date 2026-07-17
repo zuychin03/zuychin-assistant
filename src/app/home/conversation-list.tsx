@@ -1,8 +1,8 @@
 "use client";
 
 // Sidebar conversation list with project grouping: collapsible project
-// sections above the flat "Ungrouped" rows. Purely presentational — all
-// fetching lives in the page; this component only holds menu/edit UI state.
+// sections above the flat "Ungrouped" rows. Purely presentational; all
+// fetching lives in the page, this component only holds menu/edit UI state.
 
 import { useState, useRef, useEffect } from "react";
 import { MessageSquare, Trash2, Folder, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X } from "lucide-react";

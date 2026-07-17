@@ -1,4 +1,3 @@
-// Styles for the Home chat page (page.tsx).
 import type { CSSProperties } from "react";
 
 export const styles: Record<string, CSSProperties> = {

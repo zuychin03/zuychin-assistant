@@ -19,7 +19,7 @@ export type LintMode = "suggest" | "auto";
 export interface LintResult {
     mode: LintMode;
     fixes: string[];      // applied (auto) or auto-fixable (suggest)
-    warnings: string[];   // need judgement — never auto-fixed
+    warnings: string[];   // need judgement; never auto-fixed
     commit?: string;
     report: string;
 }
@@ -214,7 +214,7 @@ export async function lintVault(params: {
             }
         };
 
-        // 1. Frontmatter sanity (warn only — rewriting content is not low-risk).
+        // 1. Frontmatter sanity (warn only; rewriting content is not low-risk).
         for (const p of pages) {
             if (!p.text.startsWith("---") || !/^title:/m.test(p.text) || !/^category:/m.test(p.text)) {
                 warnings.push(`${p.path}: missing or malformed frontmatter (needs title/category/created/updated).`);
@@ -252,7 +252,7 @@ export async function lintVault(params: {
             }
         }
 
-        // 4. Orphans (no inbound links) — judgement call, warn only.
+        // 4. Orphans (no inbound links): judgement call, warn only.
         if (pages.length > 1) {
             const inbound = new Set(pages.flatMap((p) => p.outbound));
             for (const p of pages) {
@@ -293,7 +293,7 @@ export async function lintVault(params: {
             warnings.push(`semantic index: pages are split across ${models.size} embedding models (${[...models].join(", ")}) — vault_search only sees the active model's partition. Re-ingest the minority pages with one model.`);
         }
 
-        // 7. Content review (contradictions / staleness / duplicates) — warnings only.
+        // 7. Content review (contradictions / staleness / duplicates): warnings only.
         warnings.push(...await reviewContent(pages));
 
         if (mode === "suggest") {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { Type } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { APP_TIMEZONE, currentDateTimeContext } from "@/lib/datetime";
@@ -21,7 +22,7 @@ const CRON_SECRET = process.env.CRON_SECRET;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 // The external job fires every 2h; these gates own the real cadence.
 const QUIET_START_HOUR = 22;
@@ -95,6 +96,13 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ skipped: true, gate: "user_active" });
     }
 
+    // The decide call + sends can outlast the cron client's timeout
+    // (cron-job.org caps at 30s), so respond now and decide after.
+    after(() => decideAndSend(recentMessages));
+    return NextResponse.json({ accepted: true }, { status: 202 });
+}
+
+async function decideAndSend(recentMessages: Awaited<ReturnType<typeof getRecentMessages>>) {
     // --- Gather context. Each source degrades to empty on failure. ---
 
     const [todos, events, memories, pastDecisions, feedbackStats] = await Promise.all([
@@ -178,12 +186,13 @@ If shouldSend is true, write "message" as Zuychin speaking directly to the user:
         };
     } catch (err) {
         console.error("[Initiative] Decision call failed:", err);
-        return NextResponse.json({ error: "Decision call failed." }, { status: 500 });
+        return;
     }
 
     if (!decision.shouldSend || !decision.message) {
         await logInitiativeDecision({ shouldSend: false, category: decision.category, reason: decision.reason });
-        return NextResponse.json({ sent: false, category: decision.category, reason: decision.reason });
+        console.log(`[Initiative] Silent: [${decision.category}] ${decision.reason}`);
+        return;
     }
 
     // Log before sending so the Telegram feedback buttons can carry the id.
@@ -211,12 +220,7 @@ If shouldSend is true, write "message" as Zuychin speaking directly to the user:
     sends.push(broadcastPush({ title: "Zuychin", body: decision.message }).then((n) => n > 0));
     const delivered = (await Promise.all(sends)).some((r) => r);
 
-    return NextResponse.json({
-        sent: true,
-        delivered,
-        id: decisionId,
-        category: decision.category,
-        reason: decision.reason,
-        message: decision.message,
-    });
+    console.log(
+        `[Initiative] Sent id=${decisionId} category=${decision.category} delivered=${delivered}: ${decision.message.slice(0, 120)}`
+    );
 }

@@ -26,6 +26,8 @@ interface ChatMessage {
   at?: string;
   /** Set on interruption notices: lets the user relaunch the agent run with prior progress. */
   resume?: { runId: string; text: string };
+  /** Set on interruption notices without a resumable run: re-sends the original payload. */
+  retry?: { payload: OutgoingPayload; userMsgId: string };
   /** Quoted excerpt of the earlier message this one replies to. */
   replyTo?: { role: "user" | "assistant"; content: string };
 }
@@ -73,6 +75,24 @@ interface OutgoingPayload {
   replyTo: { role: "user" | "assistant"; content: string } | null;
   resume?: { runId: string; text: string };
 }
+
+interface ServerMessage {
+  id: string;
+  role: string;
+  content: string;
+  createdAt?: string;
+  metadata?: { artifacts?: ArtifactDescriptor[]; replyTo?: { role: "user" | "assistant"; content: string } };
+}
+
+const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
+  msgs.map((m) => ({
+    id: m.id,
+    role: m.role as "user" | "assistant",
+    content: m.content,
+    artifacts: m.metadata?.artifacts,
+    replyTo: m.metadata?.replyTo,
+    at: m.createdAt,
+  }));
 
 // Starter suggestions on the empty state. Each fills the input with a command
 // (trailing space keeps the slash menu closed so Enter sends right away).
@@ -443,7 +463,7 @@ export default function Home() {
         }
 
         // The selector mirrors the server's ACTIVE knowledge partition (which
-        // the re-embed flow can change at runtime) — never a local preference.
+        // the re-embed flow can change at runtime), never a local preference.
         try {
           const activeRes = await fetch("/api/admin/reembed");
           const active = activeRes.ok ? (await activeRes.json()).active : null;
@@ -553,16 +573,7 @@ export default function Home() {
       const res = await fetch(`/api/conversations?id=${convId}`);
       const data = await res.json();
       if (data.messages) {
-        setMessages(
-          data.messages.map((m: { id: string; role: string; content: string; createdAt?: string; metadata?: { artifacts?: ArtifactDescriptor[]; replyTo?: { role: "user" | "assistant"; content: string } } }) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            artifacts: m.metadata?.artifacts,
-            replyTo: m.metadata?.replyTo,
-            at: m.createdAt,
-          }))
-        );
+        setMessages(mapServerMessages(data.messages));
       }
       setActiveConversationId(convId);
       setReplyTo(null);
@@ -852,13 +863,15 @@ export default function Home() {
 
       // A dead stream without a done event (e.g. the serverless function was
       // killed mid-run) gets an interruption notice with a Resume affordance
-      // when we know the run id.
+      // when we know the run id, or a Retry affordance when we don't.
       if (streamError || !done) {
         const notice: ChatMessage = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
           content: streamError ? `⚠️ ${streamError}` : "⚠️ The run was interrupted before finishing.",
-          ...(runId ? { resume: { runId, text: userMessage.content } } : {}),
+          ...(runId
+            ? { resume: { runId, text: userMessage.content } }
+            : streamError ? {} : { retry: { payload: p, userMsgId: userMessage.id } }),
         };
         setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), notice]);
         await loadConversations();
@@ -896,12 +909,18 @@ export default function Home() {
         setMessages((prev) => prev.filter((m) => m.id !== userMessage.id && (!streamId || m.id !== streamId)));
         return;
       }
-      const errorMsg =
-        error instanceof Error ? error.message : "Something went wrong.";
+      // Network drops (mobile browsers kill the fetch when the app is
+      // backgrounded) surface as TypeErrors; the server saw a disconnect and
+      // dropped the turn, so offer a clean re-send.
+      const netDrop = error instanceof TypeError;
+      const errorMsg = netDrop
+        ? "Connection lost before the reply arrived (this can happen when the app goes to the background)."
+        : error instanceof Error ? error.message : "Something went wrong.";
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: `⚠️ ${errorMsg}`,
+        retry: { payload: p, userMsgId: userMessage.id },
       };
       setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), errorMessage]);
     } finally {
@@ -912,6 +931,30 @@ export default function Home() {
       if (next) void sendPayload(next.payload);
       else setIsLoading(false);
     }
+  };
+
+  const handleRetry = async (msg: ChatMessage) => {
+    if (!msg.retry || isLoading) return;
+    const { payload, userMsgId } = msg.retry;
+    // The reply may have landed server-side before the connection dropped;
+    // refetch first and only re-send when the turn really was lost.
+    const convId = activeConvIdRef.current;
+    if (convId) {
+      try {
+        const res = await fetch(`/api/conversations?id=${convId}`);
+        const data = await res.json();
+        if (Array.isArray(data.messages) && data.messages.length >= 2) {
+          const sent = payload.text || (payload.file ? `[Sent ${payload.file.name}]` : "");
+          const [prev, last] = data.messages.slice(-2) as ServerMessage[];
+          if (last.role === "assistant" && prev.role === "user" && prev.content === sent) {
+            setMessages(mapServerMessages(data.messages));
+            return;
+          }
+        }
+      } catch { }
+    }
+    setMessages((prevMsgs) => prevMsgs.filter((m) => m.id !== msg.id && m.id !== userMsgId));
+    void sendPayload(payload);
   };
 
   const handleCancel = () => {
@@ -1010,7 +1053,7 @@ export default function Home() {
   };
 
   // Streams raw PCM from /api/tts into the Web Audio API, scheduling each
-  // chunk sample-accurately after the last — sound starts ~2.5s after the
+  // chunk sample-accurately after the last: sound starts ~2.5s after the
   // click instead of waiting for the whole clip to be synthesized.
   const toggleSpeak = async (msg: ChatMessage) => {
     if (speakingId === msg.id) {
@@ -1762,7 +1805,20 @@ export default function Home() {
                     </button>
                   </div>
                 )}
-                {msg.role === "assistant" && msg.content.length > 80 && (
+                {msg.role === "assistant" && msg.retry && (
+                  <div style={styles.exportRow}>
+                    <button
+                      onClick={() => void handleRetry(msg)}
+                      style={{ ...styles.exportBtn, opacity: isLoading ? 0.5 : 1 }}
+                      disabled={isLoading}
+                      title="Send this message again"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Retry</span>
+                    </button>
+                  </div>
+                )}
+                {msg.role === "assistant" && !msg.retry && msg.content.length > 80 && (
                   <div style={styles.exportRow}>
                     <button
                       onClick={() => handleExport(msg.content, "docx")}
@@ -1796,7 +1852,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {msg.role === "assistant" && !msg.resume && (
+              {msg.role === "assistant" && !msg.resume && !msg.retry && (
                 <button
                   type="button"
                   onClick={() => startReply(msg)}

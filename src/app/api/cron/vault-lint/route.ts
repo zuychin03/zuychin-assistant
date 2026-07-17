@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { getVaultConfig } from "@/lib/vault/github";
 import { lintVault } from "@/lib/vault/lint";
 
@@ -19,16 +20,31 @@ export async function POST(req: NextRequest) {
         }
 
         const mode = req.nextUrl.searchParams.get("mode") === "suggest" ? "suggest" : "auto";
-        const result = await lintVault({ mode });
-        console.log(`[VaultLint] ${result.report.split("\n")[0]}`);
 
-        return NextResponse.json({
-            mode: result.mode,
-            fixed: result.fixes.length,
-            warnings: result.warnings,
-            commit: result.commit ?? null,
-            report: result.report,
+        // Suggest mode is a manual diagnostic — the caller wants the report
+        // back, so it stays synchronous. Auto is the scheduled path and runs
+        // far past the cron client's timeout (cron-job.org caps at 30s).
+        if (mode === "suggest") {
+            const result = await lintVault({ mode });
+            console.log(`[VaultLint] ${result.report.split("\n")[0]}`);
+            return NextResponse.json({
+                mode: result.mode,
+                fixed: result.fixes.length,
+                warnings: result.warnings,
+                commit: result.commit ?? null,
+                report: result.report,
+            });
+        }
+
+        after(async () => {
+            try {
+                const result = await lintVault({ mode: "auto" });
+                console.log(`[VaultLint] ${result.report.split("\n")[0]} — fixed=${result.fixes.length}${result.commit ? ` commit=${result.commit}` : ""}`);
+            } catch (error) {
+                console.error("[VaultLint] Error:", error);
+            }
         });
+        return NextResponse.json({ accepted: true, mode: "auto" }, { status: 202 });
     } catch (error) {
         console.error("[VaultLint] Error:", error);
         return NextResponse.json({ error: "Vault lint failed." }, { status: 500 });

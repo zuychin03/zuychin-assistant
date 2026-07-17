@@ -108,7 +108,7 @@ export async function setInitiativeFeedback(id: string, feedback: 1 | -1): Promi
 /**
  * Send-gate facts for the cron. Throws when the log is unreadable (e.g. table
  * missing pre-DDL): without the ledger the rate gates can't hold, and sending
- * blind every tick would spam — same hard-abort stance as email-triggers dedup.
+ * blind every tick would spam; same hard-abort stance as email-triggers dedup.
  */
 export async function getInitiativeSendGateInfo(): Promise<{
     lastSentAt: string | null;
