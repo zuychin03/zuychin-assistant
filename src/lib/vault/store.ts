@@ -1,5 +1,7 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { embedText, getEmbeddingRef, type EmbedInputType, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { indexKnowledgeDocument, recallKnowledge } from "@/lib/knowledge/store";
+import type { KnowledgeScoreBreakdown } from "@/lib/knowledge/types";
 
 export interface VaultPageHit {
     path: string;
@@ -7,6 +9,10 @@ export interface VaultPageHit {
     summary: string;
     category: string;
     similarity: number;
+    documentId?: string;
+    chunkId?: string;
+    heading?: string;
+    score?: KnowledgeScoreBreakdown;
 }
 
 export interface VaultPageMeta {
@@ -43,6 +49,14 @@ export async function upsertVaultPage(
         console.error("[Vault] Failed to upsert page index:", error.message);
         throw new Error("Failed to index vault page.");
     }
+    await indexKnowledgeDocument({
+        path: meta.path,
+        title: meta.title,
+        summary: meta.summary,
+        category: meta.category,
+        markdown,
+        embRef,
+    });
 }
 
 export interface VaultPageRow extends VaultPageMeta {
@@ -122,15 +136,23 @@ export async function searchVaultPages(params: {
     const embedding = await embedText(params.embRef, params.query, params.inputType ?? "query");
 
     if (params.hybrid) {
-        const { data, error } = await supabase.rpc("hybrid_match_vault_pages", {
-            query_embedding: JSON.stringify(embedding),
-            query_text: params.query,
-            match_count: params.matchCount ?? 8,
-            filter_model: params.embRef.model.id,
+        const hits = await recallKnowledge({
+            query: params.query,
+            queryEmbedding: embedding,
+            embRef: params.embRef,
+            matchCount: params.matchCount ?? 8,
         });
-        if (!error) return (data ?? []).map(mapPageHit);
-        // Missing RPC (DDL not applied yet) degrades to pure vector.
-        console.warn("[Vault] Hybrid search unavailable, falling back to vector:", error.message);
+        if (hits) return hits.map((hit) => ({
+            path: hit.path,
+            title: hit.title,
+            summary: hit.excerpt.slice(0, 240),
+            category: hit.category,
+            similarity: hit.score.semantic,
+            documentId: hit.documentId,
+            chunkId: hit.chunkId,
+            heading: hit.heading,
+            score: hit.score,
+        }));
     }
 
     const { data, error } = await supabase.rpc("match_vault_pages", {

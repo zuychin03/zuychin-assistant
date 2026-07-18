@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "knowledge:eval": "node --no-warnings --experimental-strip-types scripts/evaluate-knowledge.ts"
   },
   "dependencies": {
     "@google/genai": "^1.42.0",

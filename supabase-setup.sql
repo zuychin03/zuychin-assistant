@@ -868,3 +868,121 @@ alter table knowledge_suggestions enable row level security;
 drop policy if exists "Allow all access to embeddings" on embeddings;
 drop policy if exists "Allow all access to vault_pages" on vault_pages;
 drop policy if exists "Allow all access to memories" on memories;
+
+-- Atomic chunk replacement: failures roll back the delete and preserve the prior index.
+create or replace function replace_knowledge_chunks(
+  p_document_id text,
+  p_chunks jsonb
+)
+returns integer
+language plpgsql
+as $$
+declare
+  inserted_count integer;
+begin
+  delete from knowledge_chunks where document_id = p_document_id;
+
+  insert into knowledge_chunks (
+    id, document_id, heading, heading_path, ordinal, content, content_hash,
+    token_count, embedding, embedding_model
+  )
+  select
+    item->>'id',
+    p_document_id,
+    coalesce(item->>'heading', ''),
+    coalesce(array(select jsonb_array_elements_text(item->'heading_path')), '{}'),
+    (item->>'ordinal')::integer,
+    item->>'content',
+    item->>'content_hash',
+    coalesce((item->>'token_count')::integer, 0),
+    (item->>'embedding')::vector,
+    item->>'embedding_model'
+  from jsonb_array_elements(coalesce(p_chunks, '[]'::jsonb)) item;
+
+  get diagnostics inserted_count = row_count;
+  return inserted_count;
+end;
+$$;
+
+create or replace function hybrid_recall_knowledge_chunks(
+  query_embedding vector,
+  query_text text default '',
+  match_count integer default 20,
+  filter_model text default 'gemini-embedding-2-preview',
+  filter_project uuid default null
+)
+returns table (
+  document_id text,
+  chunk_id text,
+  path text,
+  title text,
+  heading text,
+  content text,
+  category text,
+  kind text,
+  trust text,
+  provenance jsonb,
+  updated_at timestamptz,
+  semantic_score float,
+  lexical_score float
+)
+language plpgsql
+as $$
+declare
+  q tsquery := websearch_to_tsquery('english', coalesce(query_text, ''));
+begin
+  return query
+  with eligible as (
+    select c.*, d.path, d.title, d.category, d.kind, d.trust, d.provenance,
+           d.updated_at as document_updated_at
+    from knowledge_chunks c
+    join knowledge_documents d on d.id = c.document_id
+    where c.embedding_model = filter_model
+      and d.status = 'active'
+      and (d.scope <> 'project' or d.project_id = filter_project)
+  ),
+  vec as (
+    select e.id,
+           row_number() over (order by e.embedding <=> query_embedding) as rank,
+           greatest(0, 1 - (e.embedding <=> query_embedding))::float as score
+    from eligible e
+    where e.embedding is not null
+    order by e.embedding <=> query_embedding
+    limit greatest(match_count * 2, 40)
+  ),
+  kw as (
+    select e.id,
+           row_number() over (order by ts_rank_cd(e.fts, q) desc) as rank,
+           least(1, ts_rank_cd(e.fts, q) * 4)::float as score
+    from eligible e
+    where numnode(q) > 0 and e.fts @@ q
+    order by ts_rank_cd(e.fts, q) desc
+    limit greatest(match_count * 2, 40)
+  ),
+  fused as (
+    select coalesce(vec.id, kw.id) as id,
+           coalesce(vec.score, 0)::float as semantic_score,
+           coalesce(kw.score, 0)::float as lexical_score,
+           (coalesce(1.0 / (60 + vec.rank), 0)
+             + coalesce(1.0 / (60 + kw.rank), 0))::float as rrf
+    from vec full outer join kw on vec.id = kw.id
+  )
+  select
+    e.document_id,
+    e.id,
+    e.path,
+    e.title,
+    e.heading,
+    e.content,
+    e.category,
+    e.kind,
+    e.trust,
+    e.provenance,
+    e.document_updated_at,
+    f.semantic_score,
+    f.lexical_score
+  from fused f
+  join eligible e on e.id = f.id
+  order by f.rrf desc
+  limit match_count;
+end;
