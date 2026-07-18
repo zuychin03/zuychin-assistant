@@ -202,6 +202,7 @@ export default function AdminPage() {
                 </div>
                 <div style={{ ...styles.quickActions, ...(isNarrow ? { justifyContent: "flex-start" } : {}) }}>
                     <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
+                    <Link href="/knowledge" style={styles.quickLink}><Brain size={15} /> Knowledge</Link>
                     <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
                     <a href="/api/vault/health" style={styles.quickLink}><ShieldCheck size={15} /> Vault health</a>
                     <a href="/api/telegram/test" style={styles.quickLink}><Activity size={15} /> Telegram test</a>

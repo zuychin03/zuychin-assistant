@@ -1411,13 +1411,13 @@ export default function Home() {
     providers.length > 0 ? (
       <>
         <Link
-          href="/graph"
+          href="/knowledge"
           style={{ ...styles.graphBtn, flexShrink: 0 }}
-          aria-label="Knowledge graph"
-          title="Knowledge graph"
+          aria-label="Knowledge workspace"
+          title="Knowledge workspace"
         >
           <Waypoints size={14} color="var(--color-text-muted)" />
-          <span>Knowledge Graph</span>
+          <span>Knowledge</span>
         </Link>
         <SelectMenu
           compact={compact}
