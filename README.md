@@ -5,7 +5,9 @@ switch chat model providers per message (Google Gemini, OpenRouter, NVIDIA NIM, 
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
 grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
-and remember durable facts about you across conversations. Its second-brain wiki vault comes
+and remember durable facts about you across conversations. It installs as a PWA with push
+notifications, holds hands-free voice conversations (replies are spoken back), and can decide
+on its own when something is worth reaching out about. Its second-brain wiki vault comes
 with an interactive Obsidian-style 3D graph view where pages and links can be inspected,
 edited and deleted in place.
 
@@ -21,24 +23,48 @@ edited and deleted in place.
   instructions injected into every chat inside it; extracted facts can be scoped to a
   project so they only surface in that project's chats
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 22 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
-  the second-brain vault, scheduled tasks, current time and recent conversations
-- Voice input: send a Telegram voice note or record with the web composer's mic button —
-  the audio is passed to the model natively, so it hears you rather than a transcript
+- MCP tools: 23 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+  message-history search, the second-brain vault, scheduled tasks, current time and recent
+  conversations
+- Voice conversations: send a Telegram voice note or tap the web mic — the audio is passed
+  to the model natively (it hears you, not a transcript) and the reply is spoken back with
+  Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
+  hands-free loop: silence auto-sends, the reply plays, the mic reopens — say
+  "Zuychin, stop" (or tap the ✕ chip) to end it. Telegram voice notes are answered with a
+  voice note too. Spoken replies fire only on voice input
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
   free fast models (DeepSeek V4 Flash, Step 3.7 Flash, any Fast-tagged tool-capable model)
-  with Gemini only as the fallback
+  with Gemini only as the fallback — 3 Flash for simple subtasks, 3.5 Flash for complex ones
 - Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
   token usage); long runs self-compact their context, and if a stream dies mid-run the web
-  UI offers a **Resume run** chip that continues from where it stopped
+  UI offers a **Resume run** chip that continues from where it stopped. Interrupted plain
+  chat turns (e.g. the phone backgrounds the app mid-reply) recover the saved reply from the
+  server, or offer a one-tap **Retry** instead of a raw fetch error
+- Streaming replies: chat responses form token-by-token in the bubble as the model
+  generates them (Gemini and OpenAI-compatible providers alike); agent runs stream their
+  plan and step events the same way
+- Initiative engine: a cron where the agent *decides* whether anything is worth proactively
+  messaging you about (overdue todos, calendar conflicts, forgotten follow-ups) — hard code
+  gates run before any model call (quiet hours, ≥3 h spacing, ≤3/day, skips while you're
+  active), and Telegram nudges carry 👍/👎 buttons whose feedback steers future decisions
+- Nightly run review: a cron inspects failed or expensive agent runs and files draft skills
+  for approval in the admin panel — it can propose improvements but never self-approve
+- History search: `/history <query>` (backed by the `search_history` tool) semantically
+  searches your own past messages across channels, with links that jump to the conversation
+- Today card: the empty chat state shows a dismissible digest of the next 48 hours — due
+  todos, calendar events and pending tasks
+- PWA + push: installable app (manifest + service worker) with web-push notifications for
+  reminders, email-trigger digests, initiative nudges and agent-run completion — suppressed
+  while the app is focused
 - Fact memory: durable facts about you are extracted after each turn (Mem0-style
   add/update/delete consolidation) and injected as "Known Facts" alongside the raw-message
   RAG memories; editable in the admin dashboard. Personal-life facts are stored only when
   you explicitly state them; work/study observations are tracked as unconfirmed patterns
-  and only become facts once they repeat across conversations. Facts live in one shared
-  embedding partition, so they're remembered no matter which embedding model a chat uses
+  and only become facts once the same pattern repeats 3 times across different
+  conversations. Facts live in one shared embedding partition, so they're remembered no
+  matter which embedding model a chat uses
 - Scheduled tasks: ask in chat for one-off or recurring jobs ("every weekday at 8am send me
   a workout reminder on telegram") — stored with a 5-field cron schedule, executed through
   the real chat pipeline and delivered to Telegram, Discord or a web conversation
@@ -55,13 +81,14 @@ edited and deleted in place.
   bubbles you can remove) and fires one at a time as responses complete; stop clears the
   queue too
 - Mobile-friendly composer: on phones the Enter key inserts a newline and only the send
-  button submits; on desktop Enter sends and Shift+Enter breaks the line
+  button submits; on desktop Enter sends and Shift+Enter breaks the line. Ctrl/Cmd+Enter
+  always sends, whatever the window size
 - Reply to a message: quote any earlier message (yours or the assistant's) from the reply
   arrow next to its bubble; the quote is shown in the thread and given to the model as context
-- Slash commands: type `/` in the message bar for a drop-up of 26 ready-made commands
-  (`/plan_day`, `/weekly_review`, `/remind`, `/facts`, `/skill`, `/research`, `/code`,
-  `/debug`, `/vault_save`, …) that expand into full prompts — skill-backed ones force
-  the agent loop
+- Slash commands: type `/` in the message bar for a drop-up of 29 ready-made commands
+  (`/plan_day`, `/weekly_review`, `/remind`, `/history`, `/new_app`, `/update_app`,
+  `/facts`, `/skill`, `/research`, `/code`, `/debug`, `/vault_save`, …) that expand into
+  full prompts — skill-backed ones force the agent loop
 - Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
   completes the task and the agent never reminds you about it again. Pending undated tasks
   are surfaced once a day, at the end of the first reply
@@ -80,9 +107,13 @@ edited and deleted in place.
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
 - Cron jobs: daily briefing (LLM-triaged inbox — only the emails that matter, icon-coded
-  by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers
-  and proactive check-ins
-- Export: save conversations to PDF or DOCX (Markdown-aware)
+  by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
+  initiative decisions, the nightly run review and proactive check-ins
+- Export: every long reply gets a collapsed **Generate ▾** menu for a DOCX / PDF / MD
+  download; whole conversations export to PDF or DOCX (Markdown-aware)
+- Live embedding switcher: changing the embedding model in settings (behind a confirm
+  modal) re-embeds the entire knowledge store in resumable batches and flips the active
+  partition at runtime — no script run or redeploy needed
 - Admin dashboard: stats, a live personality/system-prompt editor, agent-run traces
   (status, duration, tokens, expandable step timeline), a fact-memory editor and a
   skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
@@ -98,6 +129,8 @@ edited and deleted in place.
 | Chat models | Gemini 3.5 / 3 Flash, OpenRouter (Nemotron, Laguna M.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Gemma 4), OpenCode Zen (MiMo, DeepSeek) |
 | Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
+| Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
+| Push | web-push (VAPID) + service worker (PWA) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | 3D graph | 3d-force-graph (three.js + d3-force-3d), three-spritetext |
 | Integrations | Google Calendar API, Gmail API |
@@ -167,6 +200,9 @@ Optional auth, integrations, channels and cron:
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord channel |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); both unset = push disabled |
+| `VAPID_SUBJECT` | `mailto:` contact sent to the push service (falls back to a baked-in address) |
+| `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `MCP_API_KEY` | Read + write bearer for the shared MCP server (`/api/mcp/mcp`) |
 | `MCP_API_KEY_READONLY` | Read-only bearer for the shared MCP server; both unset = endpoint locked |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
@@ -179,7 +215,7 @@ Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
 extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
 `artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`,
-`projects`, `custom_skills`),
+`projects`, `custom_skills`, `initiative_log`, `cron_state`, `push_subscriptions`),
 the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
@@ -210,6 +246,8 @@ npm run dev
   message; off = auto-detect).
 - Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
+- Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
+  and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
 - The checklist icon in the header opens the **Notes** panel — undated tasks the agent has
   remembered. Ticking one completes it for good.
 - Toggle dark/light mode, start a new conversation, or open history from the header buttons.
@@ -230,6 +268,9 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/conversations` | Conversation list / create (optionally in a project) / move between projects / delete |
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
+| GET | `/api/today` | Today-card digest: next-48 h events + due and pending todos |
+| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM) |
+| POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
 | POST / DELETE | `/api/auth` | Login / logout |
@@ -241,6 +282,8 @@ npm run dev
 | POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
 | POST | `/api/cron/scheduled-tasks` | Run due user-scheduled tasks (claims up to 3 per invocation) |
 | POST | `/api/cron/email-triggers` | Scan inbox for bills/deadlines → todos + calendar events |
+| POST | `/api/cron/initiative` | Agent-initiated outreach: gated decide-then-maybe-message pass |
+| POST | `/api/cron/run-review` | Nightly review of failed/expensive agent runs → draft skills |
 | POST | `/api/cron/proactive` | Proactive check-ins |
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
@@ -252,14 +295,16 @@ npm run dev
 | GET | `/api/admin/runs` | Agent-run traces (list, or `?id=` for the full event timeline) |
 | GET/POST/PUT/DELETE | `/api/admin/memories` | List / add / edit / delete extracted memory facts |
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
+| GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
 
 All routes except `/login`, `/api/auth`, `/api/cron`, `/api/chat` and `/api/telegram` require
 the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
 
 ## Providers & Models
 
-The chat model is chosen per message from the header dropdown (saved in `localStorage`). A
-second dropdown picks the embedding model, and a settings panel tunes hyperparameters. Only
+The chat model is chosen per message from the header dropdown (saved in `localStorage`). The
+settings drop-up picks the embedding model — changing it (behind a confirm modal) migrates
+the whole knowledge store to the new partition — and tunes hyperparameters. Only
 providers whose API key is set show up in the UI. Discord/Telegram and cron always use the
 default (Gemini Flash). The registry lives in [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts),
 so add models or providers there.
@@ -292,8 +337,9 @@ How it works:
   MiniMax M3 always get a token budget.
 - Embeddings are model-aware: each embedding model writes and reads its own partition of the
   vector store, because vectors from different models (and dimensions) aren't comparable.
-  Switching the embedding model switches which memories are visible; it doesn't corrupt the
-  existing ones.
+  Switching the embedding model in settings runs a real migration: `/api/admin/reembed`
+  re-embeds the store in resumable 20-row batches (embeddings + memories) and flips the
+  active partition only once nothing is left, so a mid-migration failure never strands you.
 
 ## MCP Tools
 
@@ -304,6 +350,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `get_current_time` | Current date/time in a given timezone |
 | `search_web` | Real-time internet search (OpenAI-compatible models only; Gemini grounds natively) |
 | `search_knowledge` | Hybrid keyword + vector search over the pgvector knowledge base |
+| `search_history` | Semantic search over your own past messages across channels, with links that open the conversation |
 | `save_note` | Persist a note as an embedding for later recall |
 | `get_recent_conversations` | Summary of recent messages across channels |
 | `manage_calendar_event` | Create or delete a Google Calendar event |
@@ -447,6 +494,8 @@ channels (Discord + Telegram).
 | `/api/cron/reminders` | Every 15 min | `{}` |
 | `/api/cron/scheduled-tasks` | Every 5–15 min | `{}` |
 | `/api/cron/email-triggers` | Every 4 h | `{}` |
+| `/api/cron/initiative` | Every 1–2 h | `{}` |
+| `/api/cron/run-review` | Daily (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
 
@@ -455,7 +504,11 @@ Proactive types: `morning_briefing`, `daily_check`, `reminder`.
 The reminders job covers imminent calendar events and todos due within 24 h (re-nagged
 roughly daily while overdue). Scheduled-tasks is the dispatcher for user-created tasks
 (`manage_scheduled_task`); email-triggers turns bills/deadlines found in the inbox into
-todos and calendar events, deduplicated via the `processed_emails` ledger.
+todos and calendar events, deduplicated via the `processed_emails` ledger. Initiative asks
+the agent whether anything warrants reaching out — code gates (quiet hours, spacing, daily
+cap, user-active skip) run before any model call, so most invocations cost nothing.
+Run-review reads the previous day's agent runs and files draft skills for anything that
+failed or ran expensive; drafts wait for approval in `/admin`.
 
 ## Second Brain (optional)
 
@@ -515,6 +568,7 @@ Markdown + wikilinks.
 src/
 ├── app/
 │   ├── page.tsx                        # Chat UI (state, handlers, layout)
+│   ├── manifest.ts                     # PWA manifest
 │   ├── home/
 │   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
 │   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
@@ -529,9 +583,12 @@ src/
 │       ├── conversations/route.ts      # Conversation CRUD + move between projects
 │       ├── projects/route.ts           # Project CRUD
 │       ├── todos/route.ts              # Notes checklist backend
+│       ├── today/route.ts              # Today-card digest (events + todos)
+│       ├── tts/route.ts                # Voice-reply synthesis (blocking or streamed PCM)
+│       ├── push/subscribe/route.ts     # Web-push subscription registry
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
-│       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / proactive / vault lint
+│       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
 │       └── admin/                      # Status, personality, run traces, memories, skills
@@ -542,6 +599,7 @@ src/
 │   ├── projects.ts                     # Project CRUD + conversation→project resolution
 │   ├── types.ts                        # Shared types + MIME/size constants
 │   ├── commands.ts                     # Slash-command registry (shared client/server)
+│   ├── speech.ts                       # Markdown → speakable text (shared client/server)
 │   ├── datetime.ts                     # Current date/time context injected on every request
 │   ├── google-auth.ts                  # Google OAuth2 client
 │   ├── ai/
@@ -551,13 +609,17 @@ src/
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
 │   │   ├── mcp-service.ts              # MCP tool definitions + executors
+│   │   ├── tts.ts                      # Gemini TTS pipeline (streamed PCM → WAV)
+│   │   ├── initiative-store.ts         # Initiative decision log + send gates + feedback
+│   │   ├── embedding-override.ts       # Runtime knowledge-store partition override
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
 │   │   └── skills/                     # Skill registry: built-in playbooks + agent-authored custom skills
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
-│   └── messaging/                      # Discord + Telegram services
+│   └── messaging/                      # Discord + Telegram + web-push services
 ├── proxy.ts                            # Cookie auth proxy (Next 16 middleware convention)
+public/sw.js                            # Service worker: push display + click-through
 discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
 └── Procfile                            # Render deployment

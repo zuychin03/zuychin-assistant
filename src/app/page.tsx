@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronDown, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -194,6 +194,8 @@ export default function Home() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  // Message id whose export formats (DOCX/PDF/MD) are expanded.
+  const [exportMenuFor, setExportMenuFor] = useState<string | null>(null);
   const [convosLoaded, setConvosLoaded] = useState(false);
   const [convTitleSpace, setConvTitleSpace] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1026,7 +1028,9 @@ export default function Home() {
     }
     // Mobile keyboards use Enter as the newline key; only the send button
     // submits there. Desktop keeps Enter-to-send, Shift+Enter for newline.
-    if (e.key === "Enter" && !e.shiftKey && isDesktop) {
+    // Ctrl/Cmd+Enter always sends: the chord implies a physical keyboard,
+    // even in a sub-768px window where the mobile layout kicks in.
+    if (e.key === "Enter" && !e.shiftKey && (isDesktop || e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSubmit(e);
     }
@@ -1821,29 +1825,35 @@ export default function Home() {
                 {msg.role === "assistant" && !msg.retry && msg.content.length > 80 && (
                   <div style={styles.exportRow}>
                     <button
-                      onClick={() => handleExport(msg.content, "docx")}
+                      onClick={() => setExportMenuFor(exportMenuFor === msg.id ? null : msg.id)}
                       style={styles.exportBtn}
-                      title="Download as DOCX"
+                      title="Download this reply as a document"
+                      aria-expanded={exportMenuFor === msg.id}
                     >
-                      <Download size={12} />
-                      <span>DOCX</span>
+                      <span>Generate</span>
+                      <ChevronDown
+                        size={12}
+                        style={{
+                          transform: exportMenuFor === msg.id ? "rotate(180deg)" : "none",
+                          transition: "transform 0.15s ease",
+                        }}
+                      />
                     </button>
-                    <button
-                      onClick={() => handleExport(msg.content, "pdf")}
-                      style={styles.exportBtn}
-                      title="Download as PDF"
-                    >
-                      <Download size={12} />
-                      <span>PDF</span>
-                    </button>
-                    <button
-                      onClick={() => handleExport(msg.content, "md")}
-                      style={styles.exportBtn}
-                      title="Download as Markdown"
-                    >
-                      <Download size={12} />
-                      <span>MD</span>
-                    </button>
+                    {exportMenuFor === msg.id &&
+                      (["docx", "pdf", "md"] as const).map((fmt) => (
+                        <button
+                          key={fmt}
+                          onClick={() => {
+                            handleExport(msg.content, fmt);
+                            setExportMenuFor(null);
+                          }}
+                          style={styles.exportBtn}
+                          title={`Download as ${fmt.toUpperCase()}`}
+                        >
+                          <Download size={12} />
+                          <span>{fmt.toUpperCase()}</span>
+                        </button>
+                      ))}
                   </div>
                 )}
                 {msg.role === "assistant" && (msg.modelLabel || msgClock(msg.at)) && (
