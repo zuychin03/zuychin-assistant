@@ -91,6 +91,31 @@
 .maintenance h3 { margin: 18px 0 8px; }
 .maintenance p { flex: 1; color: var(--color-text-muted); font-size: 12px; line-height: 1.6; }
 .maintenance button, .maintenance a { margin-top: 18px; }
+.suggestionHeader { margin: 36px 0 14px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.suggestionHeader h3 { margin-top: 5px; font-size: 22px; }
+.suggestionHeader small { max-width: 430px; color: var(--color-text-muted); text-align: right; line-height: 1.5; }
+.suggestionList { display: grid; gap: 12px; }
+.suggestionList > article { padding: 18px; border: 1px solid var(--color-border); border-left: 3px solid var(--color-primary); border-radius: 13px; }
+.suggestionList > article[data-severity="warning"] { border-left-color: #f59e0b; }
+.suggestionList > article[data-severity="critical"] { border-left-color: #ef4444; }
+.suggestionList header, .suggestionList footer, .suggestionMeta { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.suggestionList header span { color: var(--color-text-muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+.suggestionList header h3 { margin-top: 4px; }
+.suggestionList header > strong { font-size: 20px; }
+.suggestionList article > p { margin: 12px 0; color: var(--color-text-muted); font-size: 13px; line-height: 1.6; }
+.suggestionList blockquote { margin: 10px 0; padding: 10px 13px; border-left: 2px solid var(--color-border); color: var(--color-text-muted); font-size: 12px; }
+.suggestionMeta { justify-content: flex-start; color: var(--color-text-muted); }
+.suggestionList footer { justify-content: flex-start; margin-top: 14px; flex-wrap: wrap; }
+.emptySuggestions { padding: 30px; display: grid; place-items: center; gap: 5px; border: 1px dashed var(--color-border); border-radius: 13px; color: var(--color-text-muted); }
+.emptySuggestions p { font-size: 12px; }
+.mergeReview { margin-top: 18px; padding: 20px; border: 1px solid var(--color-primary); border-radius: 14px; background: var(--color-surface); }
+.mergeReview header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.mergeReview header h3 { margin-top: 5px; }
+.mergeReview label { margin: 18px 0 8px; display: grid; gap: 6px; color: var(--color-text-muted); font-size: 11px; font-weight: 700; }
+.mergeReview select { height: 38px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-background); color: inherit; }
+.mergeReview textarea { width: 100%; min-height: 380px; padding: 16px; resize: vertical; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-background); color: inherit; font: 12px/1.6 var(--font-mono); }
+.mergeReview > p { margin: 10px 0; color: var(--color-text-muted); font-size: 11px; }
+
 .importPlan { margin-top: 18px; padding: 20px; border: 1px solid var(--color-border); border-radius: 14px; }
 .importPlan p { margin: 6px 0; color: var(--color-text-muted); font-size: 12px; }
 .importPlan button, .importPlan code { margin-top: 12px; }

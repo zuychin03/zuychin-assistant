@@ -5,9 +5,9 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-    Archive, ArrowLeft, BookOpen, CheckCircle2, Clock3, Download, ExternalLink,
-    FileText, GitBranch, History, Import, Loader2, RefreshCw, RotateCcw, Search,
-    ShieldCheck, Sparkles, Upload, XCircle,
+    Archive, ArrowLeft, BookOpen, CheckCircle2, Clock3, Download,
+    ExternalLink, FileText, GitBranch, History, Import, Loader2, Merge,
+    RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, XCircle,
 } from "lucide-react";
 import styles from "./knowledge.module.css";
 
@@ -38,6 +38,12 @@ interface ImportPlan {
     files: number; changed: number; created: number; updated: number; unchanged: number;
     missingStableIds: string[]; dryRun: boolean; commit?: string;
 }
+interface Suggestion {
+    id: string; kind: string; status: string; severity: string; document_ids: string[];
+    title: string; detail: string; confidence: number; created_at: string;
+    evidence: { source?: string; advisory?: boolean; excerpt?: string; paths?: string[] };
+}
+
 
 const TABS: { id: Tab; label: string; icon: typeof BookOpen }[] = [
     { id: "library", label: "Library", icon: BookOpen },
@@ -62,6 +68,10 @@ export default function KnowledgePage() {
     const [markdown, setMarkdown] = useState("");
     const [importFile, setImportFile] = useState<File>();
     const [importPlan, setImportPlan] = useState<ImportPlan>();
+    const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+    const [mergeSuggestion, setMergeSuggestion] = useState<Suggestion>();
+    const [mergeTarget, setMergeTarget] = useState("");
+    const [mergeMarkdown, setMergeMarkdown] = useState("");
     const fileInput = useRef<HTMLInputElement>(null);
     const obsidianVault = process.env.NEXT_PUBLIC_OBSIDIAN_VAULT_NAME;
 
@@ -79,8 +89,16 @@ export default function KnowledgePage() {
         setEvents(payload.events ?? []);
     }, []);
 
+
+    const loadSuggestions = useCallback(async () => {
+        const response = await fetch("/api/knowledge/suggestions");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Failed to load suggestions.");
+        setSuggestions(payload.suggestions ?? []);
+    }, []);
     useEffect(() => { loadDocuments().catch((reason) => setError(String(reason.message ?? reason))); }, [loadDocuments]);
     useEffect(() => { if (tab === "timeline") loadEvents().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadEvents]);
+    useEffect(() => { if (tab === "maintenance") loadSuggestions().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadSuggestions]);
 
     async function selectDocument(id: string) {
         setBusy("document"); setError("");
@@ -156,6 +174,73 @@ export default function KnowledgePage() {
         } catch (reason) { setError(reason instanceof Error ? reason.message : "Import failed."); }
         finally { setBusy(""); }
     }
+
+    async function scanMaintenance() {
+        setBusy("maintenance"); setError("");
+        try {
+            const response = await fetch("/api/knowledge/suggestions", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "scan", includeAssisted: true }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Maintenance scan failed.");
+            setSuggestions(payload.suggestions ?? []);
+        } catch (reason) { setError(reason instanceof Error ? reason.message : "Maintenance scan failed."); }
+        finally { setBusy(""); }
+    }
+
+    async function dismissSuggestion(id: string) {
+        setBusy(id); setError("");
+        try {
+            const response = await fetch("/api/knowledge/suggestions", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "dismiss", suggestionId: id }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Could not dismiss suggestion.");
+            setSuggestions((items) => items.filter((item) => item.id !== id));
+        } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not dismiss suggestion."); }
+        finally { setBusy(""); }
+    }
+
+    async function prepareMerge(suggestion: Suggestion, targetId = suggestion.document_ids[0]) {
+        setBusy("merge-preview"); setError("");
+        try {
+            const response = await fetch(`/api/knowledge/documents?id=${encodeURIComponent(targetId)}`);
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Could not load the merge target.");
+            setMergeSuggestion(suggestion); setMergeTarget(targetId); setMergeMarkdown(payload.markdown);
+        } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load the merge target."); }
+        finally { setBusy(""); }
+    }
+
+
+    async function applyMerge() {
+        if (!mergeSuggestion || !mergeTarget || !mergeMarkdown.trim()) return;
+        if (!window.confirm("Merge these pages and mark the source pages as superseded?")) return;
+        setBusy("merge-apply"); setError("");
+        try {
+            const response = await fetch("/api/knowledge/suggestions", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "merge",
+                    suggestionId: mergeSuggestion.id,
+                    targetId: mergeTarget,
+                    mergedMarkdown: mergeMarkdown,
+                }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Merge failed.");
+            setMergeSuggestion(undefined); setMergeTarget(""); setMergeMarkdown("");
+            await Promise.all([loadSuggestions(), loadDocuments()]);
+        } catch (reason) { setError(reason instanceof Error ? reason.message : "Merge failed."); }
+        finally { setBusy(""); }
+    }
+
+    async function openSuggestionDocument(id: string) {
+        setStatus("all"); setTab("library"); await selectDocument(id);
+    }
+
 
     const obsidianHref = detail && obsidianVault
         ? `obsidian://open?vault=${encodeURIComponent(obsidianVault)}&file=${encodeURIComponent(detail.document.path.replace(/\.md$/i, ""))}`
@@ -244,11 +329,45 @@ export default function KnowledgePage() {
         {tab === "maintenance" && <section className={styles.panel}>
             <div className={styles.intro}><span>Portability and health</span><h2>Vault maintenance</h2><p>Rebuild indexes safely and keep stable identity in Markdown.</p></div>
             <div className={styles.maintenance}>
+                <article><Sparkles /><h3>Governed curator</h3><p>Find duplicates, contradictions, stale episodes, broken links, orphans, and consolidation opportunities. Every result requires review.</p><button className={styles.primary} onClick={scanMaintenance} disabled={!!busy}>{busy === "maintenance" && <Loader2 className={styles.spin} size={15} />} Scan knowledge</button></article>
                 <article><RefreshCw /><h3>Complete reconciliation</h3><p>Hash every Markdown file and infer deletions only after a complete scan.</p><button onClick={() => syncVault()}>Run reconciliation</button></article>
                 <article><ShieldCheck /><h3>Stable identities</h3><p>Add missing <code>zuychin_id</code> properties in one Git commit.</p><button onClick={() => syncVault(true)}>Add missing IDs</button></article>
                 <article><Download /><h3>Obsidian export</h3><p>Download Markdown, attachments, settings, and checksums without conversion.</p><a href="/api/knowledge/export">Download ZIP</a></article>
                 <article><Import /><h3>Obsidian import</h3><p>Inspect first, then accept the dry-run plan before overwriting files.</p><button onClick={() => fileInput.current?.click()}>Choose ZIP</button></article>
             </div>
+            <div className={styles.suggestionHeader}>
+                <div><span className={styles.eyebrow}>Review queue</span><h3>{suggestions.length} open suggestions</h3></div>
+                <small>Assistant findings are advisory and never change the vault automatically.</small>
+            </div>
+            <div className={styles.suggestionList}>
+                {!suggestions.length && <div className={styles.emptySuggestions}><CheckCircle2 /><strong>No open findings</strong><p>Run a scan to refresh the queue.</p></div>}
+                {suggestions.map((suggestion) => <article key={suggestion.id} data-severity={suggestion.severity}>
+                    <header><div><span>{suggestion.kind.replace("_", " ")}</span><h3>{suggestion.title}</h3></div><strong>{percent(suggestion.confidence)}</strong></header>
+                    <p>{suggestion.detail}</p>
+                    {!!suggestion.evidence.excerpt && <blockquote>{suggestion.evidence.excerpt}</blockquote>}
+                    <div className={styles.suggestionMeta}>
+                        <small>{suggestion.evidence.source === "assistant-review" ? "Advisory review" : "Deterministic check"}</small>
+                        <small>{suggestion.document_ids.length} document{suggestion.document_ids.length === 1 ? "" : "s"}</small>
+                    </div>
+                    <footer>
+                        <button onClick={() => openSuggestionDocument(suggestion.document_ids[0])}><FileText size={14} /> Open</button>
+                        {["duplicate", "merge"].includes(suggestion.kind) && suggestion.document_ids.length > 1 &&
+                            <button className={styles.primary} onClick={() => prepareMerge(suggestion)}><Merge size={14} /> Review merge</button>}
+                        <button className={styles.danger} onClick={() => dismissSuggestion(suggestion.id)} disabled={busy === suggestion.id}><Trash2 size={14} /> Dismiss</button>
+                    </footer>
+                </article>)}
+            </div>
+
+            {mergeSuggestion && <div className={styles.mergeReview}>
+                <header><div><span className={styles.eyebrow}>Human-approved consolidation</span><h3>Review merged Markdown</h3></div><button onClick={() => setMergeSuggestion(undefined)}><XCircle size={14} /> Close</button></header>
+                <label>Canonical page<select value={mergeTarget} onChange={(event) => prepareMerge(mergeSuggestion, event.target.value)}>
+                    {mergeSuggestion.document_ids.map((id) => <option key={id} value={id}>{documents.find((item) => item.id === id)?.path ?? id}</option>)}
+                </select></label>
+                <textarea value={mergeMarkdown} onChange={(event) => setMergeMarkdown(event.target.value)} />
+                <p>Only the canonical page receives this content. Source pages remain in Git and are marked superseded.</p>
+                <button className={styles.primary} onClick={applyMerge} disabled={!!busy}><Merge size={15} /> Apply reviewed merge</button>
+            </div>}
+
             {importPlan && <div className={styles.importPlan}><strong>{importPlan.dryRun ? "Import preview" : "Import complete"}</strong>
                 <p>{importPlan.changed} changes / {importPlan.created} new / {importPlan.updated} updated / {importPlan.unchanged} unchanged.</p>
                 {!!importPlan.missingStableIds.length && <p>{importPlan.missingStableIds.length} files need stable IDs.</p>}

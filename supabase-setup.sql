@@ -855,6 +855,41 @@ create table if not exists knowledge_suggestions (
 create index if not exists idx_knowledge_suggestions_status
   on knowledge_suggestions (status, created_at desc);
 
+-- Curator scans replace only open generated findings and never partially clear the queue.
+create or replace function replace_open_knowledge_suggestions(
+  p_kinds text[],
+  p_suggestions jsonb
+)
+returns integer
+language plpgsql
+as $$
+declare
+  inserted_count integer;
+begin
+  delete from knowledge_suggestions
+  where status = 'open' and kind = any(p_kinds);
+
+  insert into knowledge_suggestions (
+    kind, status, severity, document_ids, title, detail, evidence, confidence
+  )
+  select
+    item->>'kind',
+    'open',
+    coalesce(item->>'severity', 'info'),
+    array(select jsonb_array_elements_text(coalesce(item->'document_ids', '[]'::jsonb))),
+    item->>'title',
+    item->>'detail',
+    coalesce(item->'evidence', '{}'::jsonb),
+    least(1, greatest(0, coalesce((item->>'confidence')::real, 0.5)))
+  from jsonb_array_elements(coalesce(p_suggestions, '[]'::jsonb)) item
+  where item->>'kind' = any(p_kinds);
+
+  get diagnostics inserted_count = row_count;
+  return inserted_count;
+end;
+$$;
+
+
 alter table knowledge_documents enable row level security;
 alter table knowledge_chunks enable row level security;
 alter table knowledge_links enable row level security;
