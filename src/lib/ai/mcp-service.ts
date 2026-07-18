@@ -148,7 +148,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "list_calendar_events",
-        description: "List upcoming Google Calendar events. Returns events within the next N hours. Each event includes its Event ID, which you can use with manage_calendar_event action='delete' to delete it.",
+        description: "List upcoming Google Calendar events. Returns events within the next N hours. Each event includes its Event ID, which you can use with manage_calendar_event action='delete' to delete it. Event IDs are internal — never include them when relaying events to the user.",
         parameters: {
             hours_ahead: {
                 type: "number",
@@ -758,7 +758,7 @@ async function executeManageCalendarEvent(
             ? new Date(created.start).toLocaleString("en-AU", { timeZone: "Australia/Sydney" })
             : created.start;
 
-        return `✅ Event created: "${created.summary}" on ${timeStr}${created.location ? ` at ${created.location}` : ""}. Event ID: ${created.id}`;
+        return `✅ Event created: "${created.summary}" on ${timeStr}${created.location ? ` at ${created.location}` : ""}.`;
     } catch (error) {
         console.error("[MCP] Calendar event failed:", error);
         return "Failed to manage calendar event. Check Google API credentials.";
@@ -771,7 +771,7 @@ async function executeListCalendarEvents(
     try {
         const events = await listUpcomingEvents(hoursAhead ?? 24);
         if (events.length === 0) return "No upcoming events in the next " + (hoursAhead ?? 24) + " hours.";
-        return "Upcoming events:\n" + formatEventsSummary(events);
+        return "Upcoming events:\n" + formatEventsSummary(events, { withIds: true });
     } catch (error) {
         console.error("[MCP] List calendar events failed:", error);
         return "Failed to list calendar events. Check Google API credentials.";

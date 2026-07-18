@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronDown, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -1826,12 +1826,15 @@ export default function Home() {
                   <div style={styles.exportRow}>
                     <button
                       onClick={() => setExportMenuFor(exportMenuFor === msg.id ? null : msg.id)}
-                      style={styles.exportBtn}
+                      style={{
+                        ...styles.exportBtn,
+                        ...(exportMenuFor === msg.id ? styles.exportBtnActive : {}),
+                      }}
                       title="Download this reply as a document"
                       aria-expanded={exportMenuFor === msg.id}
                     >
                       <span>Generate</span>
-                      <ChevronDown
+                      <ChevronRight
                         size={12}
                         style={{
                           transform: exportMenuFor === msg.id ? "rotate(180deg)" : "none",

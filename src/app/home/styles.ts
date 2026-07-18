@@ -873,7 +873,13 @@ export const styles: Record<string, CSSProperties> = {
     border: "1px solid var(--color-border)",
     borderRadius: 6,
     cursor: "pointer",
-    transition: "background 0.15s ease, color 0.15s ease",
+    transition: "background 0.15s ease, color 0.15s ease, border-color 0.15s ease",
+  },
+  // Expanded state of the Generate toggle.
+  exportBtnActive: {
+    color: "var(--color-primary)",
+    border: "1px solid color-mix(in srgb, var(--color-primary) 45%, var(--color-border))",
+    background: "color-mix(in srgb, var(--color-primary) 10%, var(--color-background))",
   },
 
   artifactRow: {

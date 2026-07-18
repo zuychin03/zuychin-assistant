@@ -89,7 +89,9 @@ export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
     }
 }
 
-export function formatEventsSummary(events: CalendarEvent[]): string {
+// withIds is for model-facing tool results only (delete needs the id);
+// user-facing messages (crons) must stay id-free.
+export function formatEventsSummary(events: CalendarEvent[], opts?: { withIds?: boolean }): string {
     if (events.length === 0) return "No upcoming events.";
 
     return events.map((e) => {
@@ -109,6 +111,6 @@ export function formatEventsSummary(events: CalendarEvent[]): string {
                 day: "numeric",
             }) + " (all day)";
 
-        return `• **${e.summary}** — ${time}${e.location ? ` 📍 ${e.location}` : ""}\n  _Event ID: ${e.id}_`;
+        return `• **${e.summary}** — ${time}${e.location ? ` 📍 ${e.location}` : ""}${opts?.withIds ? `\n  _Event ID: ${e.id}_` : ""}`;
     }).join("\n");
 }
