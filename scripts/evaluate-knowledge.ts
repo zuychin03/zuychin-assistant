@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chunkMarkdown } from "../src/lib/knowledge/chunker.ts";
 import { computeKnowledgeScore, groundRecall } from "../src/lib/knowledge/recall.ts";
 import type { KnowledgeRecallHit } from "../src/lib/knowledge/types.ts";
+import { parseFrontmatter, serializeFrontmatter } from "../src/lib/knowledge/markdown.ts";
 import { safeVaultPath } from "../src/lib/knowledge/paths.ts";
 
 const markdown = `---
@@ -83,6 +84,31 @@ const hit: KnowledgeRecallHit = {
     score: evergreen,
     provenance: [],
 };
+
+const obsidian = parseFrontmatter(`---
+title: Portable Note
+aliases:
+  - Portable
+plugin_data:
+  nested: true
+tags:
+  - knowledge
+  - obsidian
+---
+
+# Portable Note
+`);
+assert.deepEqual(obsidian.attributes.aliases, ["Portable"]);
+assert.deepEqual(obsidian.attributes.tags, ["knowledge", "obsidian"]);
+obsidian.attributes.zuychin_id = "zuychin-portable";
+obsidian.attributes.status = "active";
+const portable = serializeFrontmatter(obsidian);
+assert.match(portable, /aliases:\n  - Portable/);
+assert.match(portable, /plugin_data:\n  nested: true/);
+assert.match(portable, /tags: \[knowledge, obsidian\]/);
+assert.match(portable, /zuychin_id: zuychin-portable/);
+
+
 assert.equal(groundRecall("How does semantic retrieval work?", [hit]).supported, true);
 const unrelated = { ...hit, score: { ...hit.score, semantic: 0.1 } };
 assert.equal(groundRecall("What is the payroll password?", [unrelated], 0.8).supported, false);

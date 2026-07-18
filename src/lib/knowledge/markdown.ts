@@ -7,6 +7,7 @@ import type {
 export interface FrontmatterDocument {
     attributes: Record<string, string | string[]>;
     body: string;
+    rawFrontmatter?: string[];
 }
 
 const ARRAY_VALUE = /^\[(.*)]$/;
@@ -26,17 +27,39 @@ export function parseFrontmatter(markdown: string): FrontmatterDocument {
     if (end === -1) return { attributes: {}, body: normalized };
 
     const attributes: Record<string, string | string[]> = {};
-    for (const line of normalized.slice(4, end).split("\n")) {
-        const separator = line.indexOf(":");
-        if (separator <= 0) continue;
-        const key = line.slice(0, separator).trim();
-        const value = line.slice(separator + 1).trim();
-        const array = value.match(ARRAY_VALUE);
-        attributes[key] = array
-            ? array[1].split(",").map((item) => unquote(item.trim())).filter(Boolean)
-            : unquote(value);
+    const rawFrontmatter = normalized.slice(4, end).split("\n");
+    for (let index = 0; index < rawFrontmatter.length; index++) {
+        const line = rawFrontmatter[index];
+        const field = line.match(/^([A-Za-z0-9_-]+):(?:\s*(.*))?$/);
+        if (!field) continue;
+        const [, key, rawValue = ""] = field;
+        const value = rawValue.trim();
+        const inlineArray = value.match(ARRAY_VALUE);
+        if (inlineArray) {
+            attributes[key] = inlineArray[1]
+                .split(",")
+                .map((item) => unquote(item.trim()))
+                .filter(Boolean);
+            continue;
+        }
+        if (value) {
+            attributes[key] = unquote(value);
+            continue;
+        }
+
+        const items: string[] = [];
+        for (let child = index + 1; child < rawFrontmatter.length; child++) {
+            if (/^[A-Za-z0-9_-]+:/.test(rawFrontmatter[child])) break;
+            const item = rawFrontmatter[child].match(/^\s+-\s+(.+)$/);
+            if (item) items.push(unquote(item[1].trim()));
+        }
+        attributes[key] = items.length ? items : "";
     }
-    return { attributes, body: normalized.slice(end + 5) };
+    return {
+        attributes,
+        body: normalized.slice(end + 5),
+        rawFrontmatter,
+    };
 }
 
 function unquote(value: string): string {
@@ -64,11 +87,34 @@ export function serializeFrontmatter(document: FrontmatterDocument): string {
         "sensitivity", "project_id", "supersedes", "valid_from", "valid_to",
         "created", "updated", "sources", "tags",
     ];
+    const managed = new Set(preferred);
+    const raw = document.rawFrontmatter ?? [];
+    const rawKeys = new Set<string>();
+    const passthrough: string[] = [];
+
+    for (let index = 0; index < raw.length;) {
+        const field = raw[index].match(/^([A-Za-z0-9_-]+):/);
+        if (!field) {
+            passthrough.push(raw[index]);
+            index++;
+            continue;
+        }
+        const start = index;
+        const key = field[1];
+        rawKeys.add(key);
+        index++;
+        while (index < raw.length && !/^[A-Za-z0-9_-]+:/.test(raw[index])) index++;
+        if (!managed.has(key)) passthrough.push(...raw.slice(start, index));
+    }
+
     const keys = [
         ...preferred.filter((key) => document.attributes[key] !== undefined),
-        ...Object.keys(document.attributes).filter((key) => !preferred.includes(key)).sort(),
+        ...Object.keys(document.attributes)
+            .filter((key) => !managed.has(key) && !rawKeys.has(key))
+            .sort(),
     ];
-    const yaml = keys.map((key) => `${key}: ${formatAttribute(document.attributes[key])}`).join("\n");
+    const generated = keys.map((key) => `${key}: ${formatAttribute(document.attributes[key])}`);
+    const yaml = [...generated, ...passthrough].join("\n").trimEnd();
     return `---\n${yaml}\n---\n\n${document.body.replace(/^\n+/, "")}`;
 }
 
