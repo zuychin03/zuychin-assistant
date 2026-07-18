@@ -1021,3 +1021,4 @@ begin
   order by f.rrf desc
   limit match_count;
 end;
+$$;
