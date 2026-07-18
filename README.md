@@ -92,6 +92,13 @@ edited and deleted in place.
 - Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
   completes the task and the agent never reminds you about it again. Pending undated tasks
   are surfaced once a day, at the end of the first reply
+- Unified knowledge workspace: `/knowledge` provides a searchable document library,
+  chunk inspection, explainable hybrid recall, grounded answers with abstention, a lifecycle
+  timeline, safe corrections/promotions/archives/merges, and a governed maintenance queue
+- Obsidian portability: lossless ZIP import/export preserves Markdown, frontmatter,
+  wikilinks, attachments and `.obsidian` settings; stable `zuychin_id` properties survive
+  renames, while signed GitHub webhooks support incremental synchronization
+
 - Second brain: a Karpathy-style LLM-wiki in a private GitHub repo — the agent ingests
   research into interlinked Markdown pages (auto-linked via pgvector + LLM curation,
   verified before every commit) and a lint curator keeps the graph healthy
@@ -193,7 +200,7 @@ Optional auth, integrations, channels and cron:
 
 | Variable | Description |
 |----------|-------------|
-| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key for server writes (falls back to the anon key) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key for server-only knowledge writes; required in production |
 | `APP_TIMEZONE` | Timezone for the date/time the model is given each request (default `Australia/Sydney`) |
 | `ACCESS_PASSWORD` | Password for web UI access (leave empty to disable auth) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
@@ -208,18 +215,27 @@ Optional auth, integrations, channels and cron:
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
 | `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
+| `GITHUB_VAULT_WEBHOOK_SECRET` | HMAC secret for incremental GitHub push webhooks |
+| `NEXT_PUBLIC_OBSIDIAN_VAULT_NAME` | Optional vault name used by `obsidian://` open links |
 
 ### 3. Database
 
 Open your Supabase project, go to the SQL Editor, and run the contents of
 [`supabase-setup.sql`](supabase-setup.sql). It creates everything in one go: the pgvector
-extension, all tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
+extension, core tables (`user_profiles`, `conversations`, `messages`, `embeddings`, `todos`,
 `artifacts`, `vault_pages`, `agent_runs`, `memories`, `scheduled_tasks`, `processed_emails`,
 `projects`, `custom_skills`, `initiative_log`, `cron_state`, `push_subscriptions`),
 the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
 is safe to run more than once — re-run it after upgrading to pick up new tables and columns.
+
+The same script creates the unified knowledge domain (`knowledge_documents`,
+`knowledge_chunks`, `knowledge_links`, `knowledge_assertions`,
+`knowledge_events`, `knowledge_sync_state` and `knowledge_suggestions`) plus atomic
+replacement RPCs and chunk-level hybrid recall. Knowledge tables are server-only under
+RLS, so production requires `SUPABASE_SERVICE_ROLE_KEY`.
+
 
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
@@ -239,8 +255,8 @@ npm run dev
 
 ## Using the app
 
-- Pick the chat model from the header dropdown. The **Graph** button next to it opens the
-  3D knowledge-graph view of the second-brain vault.
+- Pick the chat model from the header dropdown. **Knowledge** opens the unified workspace;
+  its Graph action opens the 3D vault view.
 - Open the sliders in the message bar for temperature / top-p / max-tokens, the embedding
   model picker and the **Agent mode** switch (forces the multi-step agent loop for every
   message; off = auto-detect).
@@ -534,6 +550,44 @@ bidirectional `[[wikilinks]]` → catalogue/log update → independent verificat
 page, every inbound wikilink, the `index.md` entry and the pgvector row in one commit) and
 `vault_lint` (suggest/auto curator — also runs on the weekly cron above with `curator:`
 commits). Every change is a Git commit, so any bad write is one revert away.
+
+### Knowledge workspace
+
+Open `/knowledge` for the primary knowledge interface:
+
+- **Library** reads the GitHub Markdown source and shows indexed chunks, links, trust,
+  sensitivity, scope and lifecycle status. Corrections create Git commits; archive,
+  restore, retire and promote update frontmatter without deleting history.
+- **Recall** exposes semantic, lexical, graph, authority, freshness and importance
+  components for every result. Answers are extractive and abstain below the support
+  threshold.
+- **Timeline** records indexing, imports, corrections, promotions, merges and retirement.
+- **Maintenance** runs deterministic checks for duplicates, stale episodic knowledge,
+  orphans and broken links, then optionally adds clearly labelled advisory findings for
+  contradictions, consolidation, links and promotions. Nothing is applied automatically.
+  A merge requires selecting the canonical page and reviewing its complete Markdown.
+
+GitHub Markdown remains the source of truth. PostgreSQL stores lifecycle metadata,
+derived chunks, links, vectors, events and suggestions; a full reconciliation can rebuild
+that derived state. Stable `zuychin_id` frontmatter keeps identity independent of path.
+Unknown and nested Obsidian/plugin YAML is retained when managed frontmatter changes.
+
+#### Obsidian round trip
+
+- **Export** downloads every repository file as bytes, including attachments and
+  `.obsidian`, plus `.zuychin/manifest.json` checksums.
+- **Import** accepts a ZIP and always presents a dry-run create/update/unchanged plan
+  before the apply step. Paths and archive sizes are validated.
+- Set `NEXT_PUBLIC_OBSIDIAN_VAULT_NAME` to show direct `obsidian://` links.
+- For incremental sync, create a GitHub **push** webhook pointing to
+  `https://<host>/api/knowledge/webhook`, choose `application/json`, and use the same
+  value for the webhook secret and `GITHUB_VAULT_WEBHOOK_SECRET`.
+
+Relevant server routes are `/api/knowledge/documents`, `recall`, `events`,
+`suggestions`, `sync`, `import`, `export` and the signed `webhook`. The import,
+export and synchronization paths are repository adapters, so a future local-filesystem
+Obsidian adapter can be added without changing lifecycle or retrieval services.
+
 
 ### 3D graph view
 
