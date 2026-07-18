@@ -680,3 +680,191 @@ alter table push_subscriptions enable row level security;
 
 drop policy if exists "Allow all access to push_subscriptions" on push_subscriptions;
 create policy "Allow all access to push_subscriptions" on push_subscriptions for all using (true) with check (true);
+-- Unified knowledge domain. Markdown remains canonical; these rows are rebuildable
+-- metadata, search indexes, temporal assertions and audit records.
+create table if not exists knowledge_documents (
+  id text primary key,
+  path text not null unique,
+  title text not null,
+  summary text not null default '',
+  category text not null default 'concepts',
+  kind text not null default 'semantic'
+    check (kind in ('document', 'semantic', 'episodic', 'procedural', 'working')),
+  scope text not null default 'user'
+    check (scope in ('user', 'project', 'repository', 'session')),
+  status text not null default 'active'
+    check (status in ('active', 'suggested', 'superseded', 'archived', 'deleted')),
+  trust text not null default 'reviewed'
+    check (trust in ('trusted', 'reviewed', 'untrusted')),
+  sensitivity text not null default 'private'
+    check (sensitivity in ('normal', 'private', 'secret')),
+  user_profile_id uuid references user_profiles(id) on delete set null,
+  project_id uuid references projects(id) on delete set null,
+  supersedes_id text references knowledge_documents(id) on delete set null,
+  valid_from timestamptz,
+  valid_to timestamptz,
+  content_hash text not null,
+  provenance jsonb not null default '[]',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_knowledge_documents_updated_at on knowledge_documents;
+create trigger trigger_knowledge_documents_updated_at
+  before update on knowledge_documents
+  for each row execute function update_updated_at();
+
+create index if not exists idx_knowledge_documents_scope
+  on knowledge_documents (scope, project_id, status);
+create index if not exists idx_knowledge_documents_hash
+  on knowledge_documents (content_hash);
+
+create table if not exists knowledge_chunks (
+  id text primary key,
+  document_id text not null references knowledge_documents(id) on delete cascade,
+  heading text not null default '',
+  heading_path text[] not null default '{}',
+  ordinal integer not null,
+  content text not null,
+  content_hash text not null,
+  token_count integer not null default 0,
+  embedding vector,
+  embedding_model text not null default 'gemini-embedding-2-preview',
+  fts tsvector generated always as (
+    to_tsvector('english', coalesce(heading, '') || ' ' || content)
+  ) stored,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (document_id, ordinal)
+);
+
+drop trigger if exists trigger_knowledge_chunks_updated_at on knowledge_chunks;
+create trigger trigger_knowledge_chunks_updated_at
+  before update on knowledge_chunks
+  for each row execute function update_updated_at();
+
+create index if not exists idx_knowledge_chunks_document
+  on knowledge_chunks (document_id, ordinal);
+create index if not exists idx_knowledge_chunks_model
+  on knowledge_chunks (embedding_model);
+create index if not exists idx_knowledge_chunks_fts
+  on knowledge_chunks using gin (fts);
+
+create table if not exists knowledge_links (
+  id uuid primary key default gen_random_uuid(),
+  source_document_id text not null references knowledge_documents(id) on delete cascade,
+  source_chunk_id text references knowledge_chunks(id) on delete set null,
+  target_document_id text references knowledge_documents(id) on delete cascade,
+  target_ref text not null,
+  relation text not null default 'related',
+  rationale text,
+  created_at timestamptz not null default now(),
+  unique (source_document_id, target_ref, relation)
+);
+
+create index if not exists idx_knowledge_links_target
+  on knowledge_links (target_document_id);
+
+create table if not exists knowledge_assertions (
+  id uuid primary key default gen_random_uuid(),
+  assertion text not null,
+  kind text not null default 'semantic'
+    check (kind in ('semantic', 'episodic', 'procedural', 'working')),
+  scope text not null default 'user'
+    check (scope in ('user', 'project', 'repository', 'session')),
+  status text not null default 'active'
+    check (status in ('active', 'suggested', 'superseded', 'archived', 'deleted')),
+  trust text not null default 'untrusted'
+    check (trust in ('trusted', 'reviewed', 'untrusted')),
+  confidence real not null default 0.5 check (confidence >= 0 and confidence <= 1),
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  project_id uuid references projects(id) on delete set null,
+  source_document_id text references knowledge_documents(id) on delete set null,
+  source_chunk_id text references knowledge_chunks(id) on delete set null,
+  supersedes_id uuid references knowledge_assertions(id) on delete set null,
+  valid_from timestamptz,
+  valid_to timestamptz,
+  observed_at timestamptz not null default now(),
+  retired_at timestamptz,
+  provenance jsonb not null default '[]',
+  embedding vector,
+  embedding_model text not null default 'gemini-embedding-2-preview',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_knowledge_assertions_updated_at on knowledge_assertions;
+create trigger trigger_knowledge_assertions_updated_at
+  before update on knowledge_assertions
+  for each row execute function update_updated_at();
+
+create index if not exists idx_knowledge_assertions_scope
+  on knowledge_assertions (scope, project_id, status);
+create index if not exists idx_knowledge_assertions_model
+  on knowledge_assertions (embedding_model);
+
+create table if not exists knowledge_events (
+  id uuid primary key default gen_random_uuid(),
+  document_id text references knowledge_documents(id) on delete set null,
+  assertion_id uuid references knowledge_assertions(id) on delete set null,
+  action text not null check (action in (
+    'created', 'updated', 'corrected', 'promoted', 'merged', 'archived',
+    'restored', 'deleted', 'indexed', 'imported'
+  )),
+  actor text not null check (actor in ('user', 'assistant', 'system')),
+  detail jsonb not null default '{}',
+  occurred_at timestamptz not null default now()
+);
+
+create index if not exists idx_knowledge_events_document
+  on knowledge_events (document_id, occurred_at desc);
+
+create table if not exists knowledge_sync_state (
+  source text primary key,
+  cursor text,
+  last_complete_scan_at timestamptz,
+  last_success_at timestamptz,
+  last_error text,
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trigger_knowledge_sync_state_updated_at on knowledge_sync_state;
+create trigger trigger_knowledge_sync_state_updated_at
+  before update on knowledge_sync_state
+  for each row execute function update_updated_at();
+
+create table if not exists knowledge_suggestions (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in (
+    'duplicate', 'contradiction', 'stale', 'orphan', 'broken_link',
+    'missing_identity', 'merge', 'link', 'promotion'
+  )),
+  status text not null default 'open'
+    check (status in ('open', 'accepted', 'dismissed')),
+  severity text not null default 'info'
+    check (severity in ('info', 'warning', 'critical')),
+  document_ids text[] not null default '{}',
+  title text not null,
+  detail text not null,
+  evidence jsonb not null default '{}',
+  confidence real not null default 0.5 check (confidence >= 0 and confidence <= 1),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+
+create index if not exists idx_knowledge_suggestions_status
+  on knowledge_suggestions (status, created_at desc);
+
+alter table knowledge_documents enable row level security;
+alter table knowledge_chunks enable row level security;
+alter table knowledge_links enable row level security;
+alter table knowledge_assertions enable row level security;
+alter table knowledge_events enable row level security;
+alter table knowledge_sync_state enable row level security;
+alter table knowledge_suggestions enable row level security;
+
+-- Knowledge data is server-only. The service role bypasses RLS; the anon key
+-- receives no direct table policy and must use authenticated application routes.
+drop policy if exists "Allow all access to embeddings" on embeddings;
+drop policy if exists "Allow all access to vault_pages" on vault_pages;
+drop policy if exists "Allow all access to memories" on memories;

@@ -7,6 +7,7 @@ import {
 import { searchVaultPages, upsertVaultPage, type VaultPageHit } from "@/lib/vault/store";
 import { withVaultLock } from "@/lib/vault/lock";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { knowledgeService } from "@/lib/knowledge/service";
 
 // Auto-link proposal: pgvector proposes generously, the LLM curator selects
 // (agents.md INGEST step 3). Measured doc↔doc cosines (Nemotron embeddings):
@@ -40,6 +41,12 @@ const PAGE_CONVENTIONS = `Every wiki page starts with YAML frontmatter:
 ---
 title: <Human-readable title>
 category: sources | concepts | entities | synthesis
+type: document | semantic | procedural
+scope: user | project | repository
+status: active
+trust: trusted | reviewed | untrusted
+sensitivity: normal | private | secret
+zuychin_id: <stable id, preserve it when updating>
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources: [<raw file path or URL>]   # only for sources/synthesis pages
@@ -296,7 +303,7 @@ export async function ingestToVault(params: {
             })
         ).filter((c) => c.path !== pagePath).slice(0, MAX_LINK_CANDIDATES);
 
-        const authored = await authorPage({
+        const authoredDraft = await authorPage({
             title: params.title,
             category,
             pagePath,
@@ -306,6 +313,16 @@ export async function ingestToVault(params: {
             existing: existing?.text,
             candidates,
         });
+        const prepared = knowledgeService.prepareDocument({
+            path: pagePath,
+            markdown: authoredDraft.markdown,
+            title: params.title,
+            category,
+            summary: authoredDraft.summary,
+            source: params.source ?? rawPath,
+            trust: "reviewed",
+        });
+        const authored = { ...authoredDraft, markdown: prepared.markdown };
 
         const changes: CommitFileChange[] = [];
         const backlinked: VaultPageHit[] = [];
@@ -372,6 +389,14 @@ export async function ingestToVault(params: {
                 params.embRef,
             );
         }
+        await knowledgeService.upsertDocument(prepared.meta);
+        await knowledgeService.recordEvent({
+            documentId: prepared.meta.id,
+            action: existing ? "updated" : "created",
+            actor: "assistant",
+            detail: { path: pagePath, commit, source: params.source ?? rawPath },
+        });
+
 
         return {
             pagePath,
@@ -427,13 +452,21 @@ export async function writeVaultPage(params: {
         const title = parseTitle(params.markdown, path.split("/").pop()!.replace(/\.md$/, ""));
         const summary = (params.summary ?? "").replace(/\s+/g, " ").trim() || `${title} (updated ${today()})`;
 
+        const prepared = knowledgeService.prepareDocument({
+            path,
+            markdown: params.markdown,
+            title,
+            category,
+            summary,
+            trust: "reviewed",
+        });
         const [indexFile, logFile] = await Promise.all([
             getFile(cfg, "index.md"),
             getFile(cfg, "log.md"),
         ]);
 
         const changes: CommitFileChange[] = [
-            { path, content: params.markdown },
+            { path, content: prepared.markdown },
             {
                 path: "index.md",
                 content: updateIndex(indexFile?.text ?? "# Index\n", category, path, summary),
@@ -450,7 +483,14 @@ export async function writeVaultPage(params: {
             `learn: ${existing ? "update" : "write"} ${title}`,
         );
 
-        await upsertVaultPage({ path, title, summary, category }, params.markdown, params.embRef);
+        await upsertVaultPage({ path, title, summary, category }, prepared.markdown, params.embRef);
+        await knowledgeService.upsertDocument(prepared.meta);
+        await knowledgeService.recordEvent({
+            documentId: prepared.meta.id,
+            action: existing ? "updated" : "created",
+            actor: "assistant",
+            detail: { path, commit },
+        });
 
         return { pagePath: path, commit, created: !existing };
     });

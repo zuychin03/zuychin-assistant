@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { getDefaultProfile } from "@/lib/db";
 import { DEFAULT_CHAT } from "@/lib/ai/providers";
 
