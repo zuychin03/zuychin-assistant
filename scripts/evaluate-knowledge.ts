@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chunkMarkdown } from "../src/lib/knowledge/chunker.ts";
 import { computeKnowledgeScore, groundRecall } from "../src/lib/knowledge/recall.ts";
 import type { KnowledgeRecallHit } from "../src/lib/knowledge/types.ts";
+import { safeVaultPath } from "../src/lib/knowledge/paths.ts";
 
 const markdown = `---
 title: Retrieval Test
@@ -85,5 +86,9 @@ const hit: KnowledgeRecallHit = {
 assert.equal(groundRecall("How does semantic retrieval work?", [hit]).supported, true);
 const unrelated = { ...hit, score: { ...hit.score, semantic: 0.1 } };
 assert.equal(groundRecall("What is the payroll password?", [unrelated], 0.8).supported, false);
+assert.equal(safeVaultPath("Notes\\Research.md"), "Notes/Research.md");
+assert.throws(() => safeVaultPath("../secrets.md"));
+assert.throws(() => safeVaultPath(".git/config"));
+
 
 console.log(`Knowledge evaluation passed: ${chunks.length} chunks, grounding and decay checks verified.`);

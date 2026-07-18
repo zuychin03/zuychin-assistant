@@ -24,7 +24,8 @@ export interface VaultEntry {
 export interface CommitFileChange {
     path: string;
     /** Ignored when delete is true. */
-    content: string;
+    content?: string;
+    contentBase64?: string;
     delete?: boolean;
 }
 
@@ -107,6 +108,32 @@ export async function getFile(cfg: VaultConfig, path: string): Promise<VaultFile
     const data = (await res.json()) as { content?: string; sha: string; type: string };
     return { path, text: fromBase64(data.content ?? ""), sha: data.sha };
 }
+export async function getBinaryFile(
+    cfg: VaultConfig,
+    path: string,
+): Promise<{ path: string; content: Buffer; sha: string } | null> {
+    const res = await githubFetch(
+        cfg,
+        repoPath(cfg, `/contents/${encodePath(path)}?ref=${encodeURIComponent(cfg.branch)}`),
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(`GitHub ${res.status} reading ${path}: ${detail.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as { content?: string; sha: string };
+    let encoded = data.content;
+    if (!encoded) {
+        const blob = await githubJson<{ content: string; encoding: string }>(
+            cfg,
+            repoPath(cfg, `/git/blobs/${data.sha}`),
+        );
+        if (blob.encoding !== "base64") throw new Error(`Unexpected blob encoding for ${path}.`);
+        encoded = blob.content;
+    }
+    return { path, content: Buffer.from(encoded.replace(/\n/g, ""), "base64"), sha: data.sha };
+}
+
 
 export async function putFile(
     cfg: VaultConfig,
@@ -149,6 +176,31 @@ export async function listDir(cfg: VaultConfig, dir: string): Promise<VaultEntry
         sha: e.sha,
     }));
 }
+export async function listAllFiles(cfg: VaultConfig): Promise<VaultEntry[]> {
+    const head = await getBranchHead(cfg);
+    const result = await githubJson<{
+        truncated: boolean;
+        tree: { path: string; type: string; sha: string }[];
+    }>(cfg, repoPath(cfg, `/git/trees/${head}?recursive=1`));
+    if (result.truncated) {
+        throw new Error("The vault tree is too large for a complete safe scan.");
+    }
+    return result.tree.filter((entry) => entry.type === "blob").map((entry) => ({
+        path: entry.path,
+        name: entry.path.split("/").pop() ?? entry.path,
+        type: "file",
+        sha: entry.sha,
+    }));
+}
+
+export async function getBranchHead(cfg: VaultConfig): Promise<string> {
+    const ref = await githubJson<{ object: { sha: string } }>(
+        cfg,
+        repoPath(cfg, `/git/ref/heads/${encodeURIComponent(cfg.branch)}`),
+    );
+    return ref.object.sha;
+}
+
 
 export async function commitFiles(
     cfg: VaultConfig,
@@ -169,16 +221,28 @@ export async function commitFiles(
     );
     const baseTree = headCommit.tree.sha;
 
+    const entries = await Promise.all(changes.map(async (change) => {
+        if (change.delete) {
+            return { path: change.path, mode: "100644", type: "blob", sha: null };
+        }
+        if (change.contentBase64 !== undefined) {
+            const blob = await githubJson<{ sha: string }>(cfg, repoPath(cfg, "/git/blobs"), {
+                method: "POST",
+                body: JSON.stringify({ content: change.contentBase64, encoding: "base64" }),
+            });
+            return { path: change.path, mode: "100644", type: "blob", sha: blob.sha };
+        }
+        if (change.content === undefined) {
+            throw new Error(`No content supplied for ${change.path}.`);
+        }
+        return { path: change.path, mode: "100644", type: "blob", content: change.content };
+    }));
+
     const tree = await githubJson<{ sha: string }>(cfg, repoPath(cfg, "/git/trees"), {
         method: "POST",
         body: JSON.stringify({
             base_tree: baseTree,
-            // sha: null removes the path from the tree (GitHub delete semantics).
-            tree: changes.map((c) =>
-                c.delete
-                    ? { path: c.path, mode: "100644", type: "blob", sha: null }
-                    : { path: c.path, mode: "100644", type: "blob", content: c.content },
-            ),
+            tree: entries,
         }),
     });
 

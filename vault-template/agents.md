@@ -33,6 +33,12 @@ Every wiki page starts with frontmatter:
 ```markdown
 ---
 title: <Human-readable title>
+zuychin_id: zuychin-<stable UUID>
+type: document | semantic | procedural
+scope: user | project | repository
+status: active
+trust: trusted | reviewed | untrusted
+sensitivity: normal | private | secret
 category: sources | concepts | entities | synthesis
 created: YYYY-MM-DD
 updated: YYYY-MM-DD

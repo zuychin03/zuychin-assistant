@@ -17,7 +17,7 @@ function deterministicLegacyId(path: string): string {
     return `zuychin-legacy-${hash}`;
 }
 
-function documentMeta(params: {
+export function documentMeta(params: {
     path: string;
     title: string;
     summary: string;
