@@ -23,6 +23,7 @@ export interface ReconcileResult {
     unchanged: string[];
     deleted: string[];
     identitiesAdded: string[];
+    linksRepaired: number;
     fullScan: boolean;
 }
 
@@ -34,8 +35,51 @@ function titleAndCategory(path: string, markdown: string): { title: string; cate
         title: (Array.isArray(titleValue) ? titleValue[0] : titleValue)
             || parsed.body.match(/^#\s+(.+)$/m)?.[1]
             || path.split("/").pop()!.replace(/\.md$/i, ""),
-        category: (Array.isArray(categoryValue) ? categoryValue[0] : categoryValue) || "notes",
+        category: (Array.isArray(categoryValue) ? categoryValue[0] : categoryValue)
+            || (path.startsWith("raw/") ? "sources" : "notes"),
     };
+}
+
+async function repairKnowledgeLinkTargets(): Promise<number> {
+    const [{ data: documents, error: documentError }, { data: links, error: linkError }] = await Promise.all([
+        supabase.from("knowledge_documents").select("id, path").neq("status", "deleted"),
+        supabase.from("knowledge_links").select("id, target_document_id, target_ref"),
+    ]);
+    if (documentError) throw new Error(`Failed to resolve knowledge links: ${documentError.message}`);
+    if (linkError) throw new Error(`Failed to read knowledge links: ${linkError.message}`);
+
+    const exact = new Map<string, string>();
+    const basenameCandidates = new Map<string, string[]>();
+    for (const document of documents ?? []) {
+        const path = String(document.path).replace(/\\/g, "/").replace(/^\/+/, "");
+        exact.set(path.toLowerCase(), document.id as string);
+        const basename = path.split("/").pop()!.toLowerCase();
+        const candidates = basenameCandidates.get(basename) ?? [];
+        candidates.push(document.id as string);
+        basenameCandidates.set(basename, candidates);
+    }
+
+    const repairs: { id: string; targetId: string }[] = [];
+    for (const link of links ?? []) {
+        const targetRef = String(link.target_ref).replace(/\\/g, "/").replace(/^\/+/, "");
+        const basename = targetRef.split("/").pop()!.toLowerCase();
+        const candidates = basenameCandidates.get(basename) ?? [];
+        const targetId = exact.get(targetRef.toLowerCase())
+            ?? (candidates.length === 1 ? candidates[0] : undefined);
+        if (targetId && targetId !== link.target_document_id) {
+            repairs.push({ id: link.id as string, targetId });
+        }
+    }
+
+    for (let index = 0; index < repairs.length; index += 20) {
+        await Promise.all(repairs.slice(index, index + 20).map(async (repair) => {
+            const { error } = await supabase.from("knowledge_links")
+                .update({ target_document_id: repair.targetId })
+                .eq("id", repair.id);
+            if (error) throw new Error(`Failed to repair a knowledge link: ${error.message}`);
+        }));
+    }
+    return repairs.length;
 }
 
 async function updateSyncState(patch: Record<string, unknown>): Promise<void> {
@@ -98,17 +142,35 @@ export async function reconcileKnowledge(options: {
         await commitFiles(cfg, identityChanges, `curator: add stable ids to ${identityChanges.length} pages`);
     }
 
+    // Remove path-derived IDs first so later cascades cannot delete newly rebuilt links.
+    for (const file of materialized) {
+        const current = indexedByPath.get(file.path);
+        if (!current) continue;
+        const { title, category } = titleAndCategory(file.path, file.markdown);
+        const meta = documentMeta({ path: file.path, title, summary: "", category, markdown: file.markdown });
+        if (current.id === meta.id) continue;
+        const { error: identityError } = await supabase
+            .from("knowledge_documents")
+            .delete()
+            .eq("id", current.id);
+        if (identityError) {
+            throw new Error(`Failed to adopt the stable identity for ${file.path}: ${identityError.message}`);
+        }
+        indexedByPath.delete(file.path);
+    }
+
     const embRef = await vaultEmbeddingRef();
     const indexed: string[] = [];
     const unchanged: string[] = [];
     for (const file of materialized) {
         const contentHash = hashContent(file.markdown);
         const current = indexedByPath.get(file.path);
+        const { title, category } = titleAndCategory(file.path, file.markdown);
+        const meta = documentMeta({ path: file.path, title, summary: "", category, markdown: file.markdown });
         if (current?.content_hash === contentHash && current.status === "active") {
             unchanged.push(file.path);
             continue;
         }
-        const { title, category } = titleAndCategory(file.path, file.markdown);
         await indexKnowledgeDocument({
             path: file.path,
             title,
@@ -117,7 +179,6 @@ export async function reconcileKnowledge(options: {
             markdown: file.markdown,
             embRef,
         });
-        const meta = documentMeta({ path: file.path, title, summary: "", category, markdown: file.markdown });
         await knowledgeService.recordEvent({
             documentId: meta.id,
             action: current ? "indexed" : "created",
@@ -126,6 +187,8 @@ export async function reconcileKnowledge(options: {
         });
         indexed.push(file.path);
     }
+
+    const linksRepaired = await repairKnowledgeLinkTargets();
 
     const deletedSet = new Set(
         (options.deletedPaths ?? []).map(safeVaultPath)
@@ -189,6 +252,7 @@ export async function reconcileKnowledge(options: {
         unchanged,
         deleted,
         identitiesAdded,
+        linksRepaired,
         fullScan,
     };
 }
