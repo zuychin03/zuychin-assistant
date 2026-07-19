@@ -2,13 +2,12 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
     Archive, ArrowLeft, BookOpen, CheckCircle2, Clock3, Download,
     ExternalLink, FileText, GitBranch, History, Import, Loader2, Merge,
     RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, XCircle,
 } from "lucide-react";
+import { MarkdownReader } from "./markdown-reader";
 import styles from "./knowledge.module.css";
 
 type Tab = "library" | "recall" | "timeline" | "maintenance";
@@ -242,6 +241,24 @@ export default function KnowledgePage() {
     }
 
 
+    async function openVaultReference(reference: string) {
+        setBusy("vault-link"); setError("");
+        try {
+            const response = await fetch("/api/knowledge/documents?status=all");
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Failed to resolve the linked page.");
+            const normalize = (value: string) => value.split("#")[0].replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+            const linked = (payload.documents as DocumentSummary[]).find((item) => normalize(item.path) === normalize(reference));
+            if (!linked) throw new Error(`The linked page "${reference}" is not indexed yet.`);
+            setDocuments(payload.documents); setStatus("all"); setTab("library");
+            await selectDocument(linked.id);
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : "Failed to resolve the linked page.");
+        } finally {
+            setBusy("");
+        }
+    }
+
     const obsidianHref = detail && obsidianVault
         ? `obsidian://open?vault=${encodeURIComponent(obsidianVault)}&file=${encodeURIComponent(detail.document.path.replace(/\.md$/i, ""))}`
         : undefined;
@@ -263,7 +280,7 @@ export default function KnowledgePage() {
             </div>
         </header>
         <nav className={styles.tabs}>{TABS.map(({ id, label, icon: Icon }) =>
-            <button key={id} className={tab === id ? styles.activeTab : ""} onClick={() => setTab(id)}><Icon size={16} /> {label}</button>,
+            <button key={id} className={tab === id ? styles.activeTab : ""} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}><Icon size={16} /> {label}</button>,
         )}</nav>
         {error && <div className={styles.error}><XCircle size={16} /> {error}</div>}
 
@@ -275,22 +292,29 @@ export default function KnowledgePage() {
                     </select>
                 </div>
                 <small className={styles.count}>{visibleDocuments.length} documents</small>
-                <div className={styles.documentList}>{visibleDocuments.map((item) =>
-                    <button key={item.id} className={detail?.document.id === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
-                        <FileText size={15} /><span><strong>{item.title}</strong><small>{item.path}</small><em>{item.kind} / {item.scope}</em></span>
-                    </button>,
-                )}</div>
+                <div className={styles.documentList}>
+                    {!visibleDocuments.length && <div className={styles.emptyList}>
+                        <BookOpen size={20} /><strong>{documents.length ? "No matching pages" : "No indexed pages yet"}</strong>
+                        <p>{documents.length ? "Try another filter or status." : "Reconcile the workspace or import an Obsidian vault."}</p>
+                        {!documents.length && <button onClick={() => syncVault()} disabled={!!busy}><RefreshCw size={13} /> Reconcile now</button>}
+                    </div>}
+                    {visibleDocuments.map((item) =>
+                        <button key={item.id} className={detail?.document.id === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
+                            <FileText size={15} /><span><strong>{item.title}</strong><small>{item.path}</small><em>{item.kind} / {item.scope}</em></span>
+                        </button>,
+                    )}
+                </div>
             </aside>
             <div className={styles.detail}>
                 {busy === "document" && <div className={styles.blank}><Loader2 className={styles.spin} /> Loading page</div>}
-                {!detail && busy !== "document" && <div className={styles.blank}><BookOpen size={34} /><h2>Select a page</h2><p>Inspect source, chunks, links, and lifecycle.</p></div>}
+                {!detail && busy !== "document" && <div className={styles.blank}><BookOpen size={30} /><h2>{documents.length ? "Choose a page to read" : "Your knowledge library is empty"}</h2><p>{documents.length ? "Open a page to read its formatted Markdown and inspect its sources." : "Import your Obsidian vault or reconcile the workspace to begin."}</p></div>}
                 {detail && <>
                     <div className={styles.detailHeader}><div><div className={styles.badges}>
                         {[detail.document.status, detail.document.kind, detail.document.trust, detail.document.sensitivity].map((value) => <span key={value}>{value}</span>)}
                     </div><h2>{detail.document.title}</h2><code>{detail.document.path}</code></div>
                     <div className={styles.actions}>
                         {obsidianHref && <a href={obsidianHref}><ExternalLink size={14} /> Obsidian</a>}
-                        <button onClick={() => setEditing((value) => !value)}><FileText size={14} /> {editing ? "Preview" : "Edit"}</button>
+                        <button onClick={() => setEditing((value) => !value)}><FileText size={14} /> {editing ? "Reader" : "Source"}</button>
                         {detail.document.status === "active"
                             ? <button onClick={() => lifecycle("archive")}><Archive size={14} /> Archive</button>
                             : <button onClick={() => lifecycle("restore")}><RotateCcw size={14} /> Restore</button>}
@@ -299,7 +323,9 @@ export default function KnowledgePage() {
                         <button className={styles.primary} onClick={() => lifecycle("correct")} disabled={!!busy}><CheckCircle2 size={15} /> Save correction</button>
                         <button onClick={() => lifecycle("promote")} disabled={!!busy}><Sparkles size={15} /> Promote</button>
                         <button className={styles.danger} onClick={() => lifecycle("forget")} disabled={!!busy}>Retire</button>
-                    </div></div> : <article className={`${styles.markdown} markdown-body`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.markdown}</ReactMarkdown></article>}
+                    </div></div> : <div className={styles.markdown}>
+                        <MarkdownReader markdown={detail.markdown} onVaultLink={openVaultReference} />
+                    </div>}
                     <div className={styles.metrics}><div><strong>{detail.chunks.length}</strong><span>chunks</span></div><div><strong>{detail.links.length}</strong><span>links</span></div><div><strong>{detail.document.scope}</strong><span>scope</span></div><div><strong>{new Date(detail.document.updated_at).toLocaleDateString()}</strong><span>indexed</span></div></div>
                     <details className={styles.chunks}><summary>Indexed chunks</summary>{detail.chunks.map((chunk) =>
                         <div key={chunk.id}><strong>{chunk.heading || "Document"}</strong><small>{chunk.token_count} tokens</small><p>{chunk.content}</p></div>,
@@ -309,16 +335,28 @@ export default function KnowledgePage() {
         </section>}
 
         {tab === "recall" && <section className={styles.panel}>
-            <div className={styles.intro}><span>Retrieval lab</span><h2>Ask the vault directly</h2><p>Inspect evidence and every component of the ranking.</p></div>
-            <form className={styles.recallForm} onSubmit={runRecall}><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What does my knowledge base say about..." /><button className={styles.primary}>Recall</button></form>
-            {recall && <><div className={recall.grounded.supported ? styles.grounded : styles.abstained}>
-                {recall.grounded.supported ? <CheckCircle2 /> : <ShieldCheck />}<div><strong>{recall.grounded.supported ? "Grounded answer" : "Abstained"}</strong><p>{recall.grounded.answer}</p><small>Support {percent(recall.grounded.support)}</small></div>
-            </div><div className={styles.hits}>{recall.hits.map((hit) => <article key={hit.chunkId}>
-                <header><div><small>{hit.category}</small><h3>{hit.title}</h3><code>{hit.path}{hit.heading ? `#${hit.heading}` : ""}</code></div><strong>{percent(hit.score.final)}</strong></header>
-                <p>{hit.excerpt}</p><div className={styles.scores}>{Object.entries(hit.score).filter(([key]) => key !== "final").map(([key, value]) =>
-                    <div key={key}><span>{key}</span><i><b style={{ width: percent(value) }} /></i><em>{percent(value)}</em></div>,
-                )}</div>
-            </article>)}</div></>}
+            <div className={styles.intro}><span>Knowledge recall</span><h2>Ask your knowledge</h2><p>Get a readable answer grounded in your indexed Markdown, with sources you can inspect.</p></div>
+            <form className={styles.recallForm} onSubmit={runRecall}><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What does my knowledge base say about..." /><button className={styles.primary} disabled={busy === "recall"}>{busy === "recall" && <Loader2 className={styles.spin} size={14} />} Ask</button></form>
+            {recall && <div className={styles.recallResults}>
+                <section className={styles.answerCard} data-supported={recall.grounded.supported}>
+                    <header className={styles.answerHeader}>
+                        <div>{recall.grounded.supported ? <CheckCircle2 size={18} /> : <ShieldCheck size={18} />}<div><span>Answer</span><strong>{recall.grounded.supported ? "Grounded in your library" : "Not enough evidence"}</strong></div></div>
+                        <span className={styles.supportBadge}>{percent(recall.grounded.support)} support</span>
+                    </header>
+                    <div className={styles.answerBody}><MarkdownReader variant="answer" markdown={recall.grounded.answer} onVaultLink={openVaultReference} /></div>
+                </section>
+                {!!recall.hits.length && <><div className={styles.sourcesHeader}><div><span className={styles.eyebrow}>Evidence</span><h3>Sources</h3></div><small>{recall.hits.length} ranked passage{recall.hits.length === 1 ? "" : "s"}</small></div>
+                    <div className={styles.hits}>{recall.hits.map((hit, index) => <article key={hit.chunkId}>
+                        <header><button className={styles.sourceTitle} onClick={() => openSuggestionDocument(hit.documentId)}>
+                            <span>{index + 1}</span><div><small>{hit.category}{hit.heading ? ` / ${hit.heading}` : ""}</small><h3>{hit.title}</h3><code>{hit.path}</code></div>
+                        </button><strong className={styles.scoreBadge}>{percent(hit.score.final)}</strong></header>
+                        <div className={styles.excerpt}><MarkdownReader variant="excerpt" markdown={hit.excerpt} onVaultLink={openVaultReference} /></div>
+                        <details className={styles.scoreDetails}><summary>Why this source ranked here</summary><div className={styles.scores}>{Object.entries(hit.score).filter(([key]) => key !== "final").map(([key, value]) =>
+                            <div key={key}><span>{key}</span><i><b style={{ width: percent(value) }} /></i><em>{percent(value)}</em></div>,
+                        )}</div></details>
+                    </article>)}</div>
+                </>}
+            </div>}
         </section>}
 
         {tab === "timeline" && <section className={styles.panel}>
