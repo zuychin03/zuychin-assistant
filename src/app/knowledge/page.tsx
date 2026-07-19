@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
     Archive, ArrowLeft, BookOpen, CheckCircle2, Clock3, Download,
     ExternalLink, FileText, GitBranch, History, Import, Loader2, Merge,
-    RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, XCircle,
+    RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, Wrench, XCircle,
 } from "lucide-react";
 import { MarkdownReader } from "./markdown-reader";
 import styles from "./knowledge.module.css";
@@ -367,7 +367,7 @@ export default function KnowledgePage() {
         {tab === "maintenance" && <section className={styles.panel}>
             <div className={styles.intro}><span>Portability and health</span><h2>Vault maintenance</h2><p>Rebuild indexes safely and keep stable identity in Markdown.</p></div>
             <div className={styles.maintenance}>
-                <article><Sparkles /><h3>Governed curator</h3><p>Find duplicates, contradictions, stale episodes, broken links, orphans, and consolidation opportunities. Every result requires review.</p><button className={styles.primary} onClick={scanMaintenance} disabled={!!busy}>{busy === "maintenance" && <Loader2 className={styles.spin} size={15} />} Scan knowledge</button></article>
+                <article><Wrench /><h3>Governed curator</h3><p>Find duplicates, contradictions, stale episodes, broken links, orphans, and consolidation opportunities. Every result requires review.</p><button className={styles.primary} onClick={scanMaintenance} disabled={!!busy}>{busy === "maintenance" && <Loader2 className={styles.spin} size={15} />} Scan knowledge</button></article>
                 <article><RefreshCw /><h3>Complete reconciliation</h3><p>Hash every Markdown file and infer deletions only after a complete scan.</p><button onClick={() => syncVault()}>Run reconciliation</button></article>
                 <article><ShieldCheck /><h3>Stable identities</h3><p>Add missing <code>zuychin_id</code> properties in one Git commit.</p><button onClick={() => syncVault(true)}>Add missing IDs</button></article>
                 <article><Download /><h3>Obsidian export</h3><p>Download Markdown, attachments, settings, and checksums without conversion.</p><a href="/api/knowledge/export">Download ZIP</a></article>
