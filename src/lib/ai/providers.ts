@@ -37,8 +37,8 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
         chatModels: [
-            { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", name: "gemini-3.5-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", name: "gemini-3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", name: "gemini-3.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [
             { id: "gemini-embedding-2-preview", label: "Gemini Embedding 2 (768d)", name: "gemini-embedding-2", dimension: 768 },
@@ -57,6 +57,7 @@ export const PROVIDERS: ProviderConfig[] = [
         chatModels: [
             { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "poolside/laguna-m.1:free", label: "Laguna M.1 (free)", name: "laguna-m.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { id: "openai/gpt-oss-120b:free", label: "GPT-OSS 120B (free)", name: "gpt-oss-120b", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
@@ -125,7 +126,17 @@ export function sanitizeGenParams(raw: unknown): GenParams {
     return out;
 }
 
-export const DEFAULT_CHAT = { providerId: "gemini", modelId: "gemini-3-flash-preview" };
+export const DEFAULT_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-lite" };
+
+const LEGACY_GEMINI_MODEL_IDS: Record<string, string> = {
+    "gemini-3-flash-preview": "gemini-3.5-flash-lite",
+    "gemini-3.5-flash": "gemini-3.6-flash",
+};
+
+function canonicalChatModelId(providerId: string, modelId?: string): string | undefined {
+    if (providerId !== "gemini" || !modelId) return modelId;
+    return LEGACY_GEMINI_MODEL_IDS[modelId] ?? modelId;
+}
 // Owns the knowledge store's single embedding partition. Swapping it (here or
 // via the KNOWLEDGE_EMBEDDING_MODEL env override) requires re-embedding the
 // store: npx tsx --env-file=<env> scripts/reembed-knowledge.ts
@@ -151,21 +162,25 @@ export interface ResolvedChat {
 export function resolveChat(providerId?: string, modelId?: string): ResolvedChat {
     let provider = (providerId && getProvider(providerId)) || getProvider(DEFAULT_CHAT.providerId)!;
     if (!provider.chatModels.length) provider = getProvider(DEFAULT_CHAT.providerId)!;
-    const model = provider.chatModels.find((m) => m.id === modelId) ?? provider.chatModels[0]!;
+    const requestedModelId = modelId
+        ?? (provider.id === DEFAULT_CHAT.providerId ? DEFAULT_CHAT.modelId : undefined);
+    const canonicalModelId = canonicalChatModelId(provider.id, requestedModelId);
+    const model = provider.chatModels.find((m) => m.id === canonicalModelId) ?? provider.chatModels[0]!;
     return { provider, model };
 }
 
 function resolveAvailable(providerId: string, modelId: string): ResolvedChat | null {
     const provider = getProvider(providerId);
     if (!provider || !isProviderAvailable(provider)) return null;
-    const model = provider.chatModels.find((m) => m.id === modelId);
+    const canonicalModelId = canonicalChatModelId(provider.id, modelId);
+    const model = provider.chatModels.find((m) => m.id === canonicalModelId);
     return model ? { provider, model } : null;
 }
 
 export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
     { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
     { providerId: "nvidia-nim", modelId: "google/gemma-4-31b-it" },
-    { providerId: "gemini", modelId: "gemini-3.5-flash" },
+    { providerId: "gemini", modelId: "gemini-3.6-flash" },
 ];
 
 // Sub-agent pool: preferred models first, then any free "Fast"-tagged model
@@ -182,8 +197,8 @@ export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "googl
 // Paid Gemini fallback when every free candidate errored or returned nothing,
 // sized to the subtask's declared complexity.
 export const WORKER_GEMINI_FALLBACK = {
-    simple: "gemini-3-flash-preview",
-    complex: "gemini-3.5-flash",
+    simple: "gemini-3.5-flash-lite",
+    complex: "gemini-3.6-flash",
 } as const;
 
 export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
@@ -236,7 +251,7 @@ function findAvailableProvider(arg: string): ProviderConfig | undefined {
 export function resolveChatByName(providerArg: string, modelArg: string): ResolvedChat | null {
     const provider = findAvailableProvider(providerArg);
     if (!provider) return null;
-    const m = modelArg.trim().toLowerCase();
+    const m = canonicalChatModelId(provider.id, modelArg.trim().toLowerCase()) ?? "";
     const model = provider.chatModels.find(
         (mod) => mod.name.toLowerCase() === m || mod.id.toLowerCase() === m
     );
@@ -247,7 +262,10 @@ export function resolveChatModelByName(name: string): ResolvedChat | null {
     const n = name.trim().toLowerCase();
     for (const provider of PROVIDERS) {
         if (!isProviderAvailable(provider)) continue;
-        const model = provider.chatModels.find((m) => m.name.toLowerCase() === n || m.id.toLowerCase() === n);
+        const canonicalName = canonicalChatModelId(provider.id, n);
+        const model = provider.chatModels.find(
+            (m) => m.name.toLowerCase() === canonicalName || m.id.toLowerCase() === canonicalName,
+        );
         if (model) return { provider, model };
     }
     return null;

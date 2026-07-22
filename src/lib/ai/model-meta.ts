@@ -8,20 +8,20 @@ export interface ModelMeta {
     strengths: string[];
 }
 
-const GEMINI_35_FLASH: ModelMeta = {
+const GEMINI_36_FLASH: ModelMeta = {
     developer: "Google DeepMind",
     description:
-        "Google's fastest frontier thinking model. Optimized for coding and parallel agentic loops, with leading multimodal understanding and explicit thinking levels that trade quality for latency.",
+        "Google's latest Flash model, balancing speed and sustained frontier intelligence for coding, agentic execution, spatial reasoning, and multimodal tasks.",
     inputs: ["Text", "Image", "Audio", "Video", "PDF"],
     context: "1M",
     maxOutput: "64K",
     strengths: ["Coding", "Agentic", "Multimodal", "Reasoning", "Tool use", "Fast"],
 };
 
-const GEMINI_3_FLASH: ModelMeta = {
+const GEMINI_35_FLASH_LITE: ModelMeta = {
     developer: "Google DeepMind",
     description:
-        "High-speed thinking model for agentic workflows, multi-turn chat and coding, delivering near-Pro reasoning and tool use at much lower latency.",
+        "Google's fastest and most cost-effective Gemini 3.5 model, optimized for low-latency, high-throughput multimodal execution.",
     inputs: ["Text", "Image", "Audio", "Video", "PDF"],
     context: "1M",
     maxOutput: "64K",
@@ -48,6 +48,16 @@ const LAGUNA_M1: ModelMeta = {
     maxOutput: "32K",
     params: "225B total · 23B active (MoE)",
     strengths: ["Coding", "Agentic", "Tool use", "Reasoning"],
+};
+
+const LAGUNA_S_21: ModelMeta = {
+    developer: "Poolside",
+    description:
+        "Poolside's efficient coding-agent model for software engineering and terminal-driven workflows, scoring 70.2% on Terminal-Bench 2.1 and 40.4% on DeepSWE.",
+    inputs: ["Text"],
+    context: "262K",
+    params: "118B total ? 8B active",
+    strengths: ["Coding", "Agentic", "Tool use", "Terminal", "Reasoning"],
 };
 
 const GEMMA_4_31B: ModelMeta = {
@@ -207,11 +217,12 @@ const QWEN3_NEXT_80B: ModelMeta = {
 };
 
 export const MODEL_META: Record<string, ModelMeta> = {
-    "gemini-3.5-flash": GEMINI_35_FLASH,
-    "gemini-3-flash-preview": GEMINI_3_FLASH,
+    "gemini-3.6-flash": GEMINI_36_FLASH,
+    "gemini-3.5-flash-lite": GEMINI_35_FLASH_LITE,
     "gemini-embedding-2-preview": GEMINI_EMBED_2,
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
     "poolside/laguna-m.1:free": LAGUNA_M1,
+    "poolside/laguna-s-2.1:free": LAGUNA_S_21,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
     "google/gemma-4-26b-a4b-it": GEMMA_4_26B_A4B,
     "openai/gpt-oss-120b:free": GPT_OSS_120B,

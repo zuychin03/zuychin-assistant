@@ -327,8 +327,8 @@ so add models or providers there.
 
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
-| Google Gemini | native | `gemini-3.5-flash`, `gemini-3-flash-preview` | Full features: grounding, thinking, vision, function calling |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `google/gemma-4-31b-it:free`, `openai/gpt-oss-120b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
+| Google Gemini | native | `gemini-3.6-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `openai/gpt-oss-120b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
 | NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.2`, `qwen/qwen3-next-80b-a3b-instruct` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
 | OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free` | Chat only |
 
@@ -445,7 +445,7 @@ first one whose provider key is set, in this order:
 
 1. DeepSeek V4 Flash (NVIDIA NIM, then OpenCode Zen)
 2. MiMo V2.5 (OpenCode Zen)
-3. Gemini 3.5 Flash (always available)
+3. Gemini 3.6 Flash (always available)
 
 Switch the model from inside a chat with the `/model` command. The choice is saved per channel
 and reused until you change it again. Every command also accepts a `!` prefix (e.g. `!model`)
@@ -453,7 +453,7 @@ since Discord reserves `/` for its own slash-command UI:
 
 - `/model` (or `/model list`) shows the current model and every available provider + model.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
-  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.5-flash`.
+  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.6-flash`.
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
   memory partition the channel uses (memories are stored per embedding model).
 
