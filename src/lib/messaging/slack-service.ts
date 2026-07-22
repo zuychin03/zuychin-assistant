@@ -122,10 +122,14 @@ export function listAgents(): SlackAgent[] {
 }
 
 // Returns the agent label for an event's author, or null for humans/unknown.
+// A bot user's message carries user = its bot user id, so matching on mentionId
+// alone is enough — no need to also capture app_id/bot_id.
 export function identifyAgent(event: SlackMessageEvent): string | null {
-    if (!event.app_id && !event.bot_id) return null;
     const found = getAgents().find(
-        (a) => (a.appId && a.appId === event.app_id) || (a.botId && a.botId === event.bot_id),
+        (a) =>
+            (a.mentionId && a.mentionId === event.user) ||
+            (a.appId && a.appId === event.app_id) ||
+            (a.botId && a.botId === event.bot_id),
     );
     return found?.label ?? null;
 }
