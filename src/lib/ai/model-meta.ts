@@ -56,7 +56,7 @@ const LAGUNA_S_21: ModelMeta = {
         "Poolside's efficient coding-agent model for software engineering and terminal-driven workflows, scoring 70.2% on Terminal-Bench 2.1 and 40.4% on DeepSWE.",
     inputs: ["Text"],
     context: "262K",
-    params: "118B total ? 8B active",
+    params: "118B total · 8B active",
     strengths: ["Coding", "Agentic", "Tool use", "Terminal", "Reasoning"],
 };
 
