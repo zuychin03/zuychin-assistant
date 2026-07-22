@@ -6,16 +6,12 @@ import { listRecentEmails, getEmailContent, type EmailThread } from "@/lib/integ
 import { createCalendarEvent } from "@/lib/integrations/calendar-service";
 import { addTodo, listTodos } from "@/lib/db";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { sendDiscordMessage } from "@/lib/messaging/discord-service";
-import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
-import { broadcastPush } from "@/lib/messaging/push-service";
+import { notify } from "@/lib/messaging/router";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
 
 export const maxDuration = 300;
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const SCAN_LIMIT = 30;
 const MAX_CANDIDATES = 5;
@@ -380,14 +376,10 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
 
         if (digest.length > 0) {
             const msg = `📬 **Found in your inbox** (added to your todo list${eventsCreated ? " + calendar" : ""} — delete anything that's off):\n\n${digest.join("\n")}`;
-            const sends: Promise<unknown>[] = [];
-            if (DISCORD_CHANNEL_ID) sends.push(sendDiscordMessage(DISCORD_CHANNEL_ID, msg));
-            if (TELEGRAM_CHAT_ID) sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, msg));
-            sends.push(broadcastPush({
-                title: "Zuychin found obligations in your inbox",
-                body: msg.replace(/\*\*|_/g, "").slice(0, 500),
-            }));
-            await Promise.all(sends);
+            await notify("email_obligation", msg, {
+                pushTitle: "Zuychin found obligations in your inbox",
+                pushBody: msg.replace(/\*\*|_/g, "").slice(0, 500),
+            });
         }
 
         // Keep the ledger from growing forever.

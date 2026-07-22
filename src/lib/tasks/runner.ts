@@ -1,11 +1,10 @@
 import { ragChat } from "@/lib/ai/rag-service";
 import { getArtifact } from "@/lib/artifacts/store";
 import { sendTelegramMessage, sendTelegramDocument } from "@/lib/messaging/telegram-service";
-import { sendDiscordMessage } from "@/lib/messaging/discord-service";
+import { notify } from "@/lib/messaging/router";
 import { recordTaskResult, type ScheduledTask } from "@/lib/tasks/store";
 
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 
 export interface TaskRunResult {
     id: string;
@@ -46,14 +45,11 @@ export async function runScheduledTask(task: ScheduledTask): Promise<TaskRunResu
                 }
             }
         } else if (task.channel === "discord") {
-            if (!DISCORD_CHANNEL_ID) {
-                delivered = false;
-            } else {
-                const note = artifacts.length
-                    ? `\n\n(${artifacts.length} file(s) generated — download from the web app.)`
-                    : "";
-                delivered = await sendDiscordMessage(DISCORD_CHANNEL_ID, `🕑 **${task.title}**\n\n${reply}${note}`);
-            }
+            const note = artifacts.length
+                ? `\n\n(${artifacts.length} file(s) generated — download from the web app.)`
+                : "";
+            const sent = await notify("scheduled_task", `🕑 **${task.title}**\n\n${reply}${note}`);
+            delivered = sent.discord;
         }
 
         if (!delivered) {

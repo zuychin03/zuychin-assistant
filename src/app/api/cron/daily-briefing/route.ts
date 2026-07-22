@@ -4,11 +4,10 @@ import { Type } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { listUnreadEmails, formatEmailSummary, type EmailThread } from "@/lib/integrations/gmail-service";
 import { listUpcomingEvents, formatEventsSummary } from "@/lib/integrations/calendar-service";
-import { sendDiscordMessage } from "@/lib/messaging/discord-service";
-import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
+import { notify } from "@/lib/messaging/router";
+import { hasAnyDiscordChannel } from "@/lib/messaging/channels";
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export const maxDuration = 300;
@@ -122,7 +121,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        if (!DISCORD_CHANNEL_ID && !TELEGRAM_CHAT_ID) {
+        if (!hasAnyDiscordChannel() && !TELEGRAM_CHAT_ID) {
             return NextResponse.json({ error: "No messaging channel configured." }, { status: 500 });
         }
 
@@ -180,10 +179,7 @@ async function buildAndSendBriefing() {
 
         const msg = parts.join("\n");
 
-        const sends: Promise<boolean>[] = [];
-        if (DISCORD_CHANNEL_ID) sends.push(sendDiscordMessage(DISCORD_CHANNEL_ID, msg));
-        if (TELEGRAM_CHAT_ID) sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, msg));
-        await Promise.all(sends);
+        await notify("daily_briefing", msg);
 
         console.log(`[Briefing] Sent daily briefing: ${highlights === null ? "triage failed, " : `${highlights.length} highlighted of `}${emails.length} emails, ${events.length} events.`);
     } catch (error) {

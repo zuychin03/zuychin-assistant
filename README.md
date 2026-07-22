@@ -204,7 +204,9 @@ Optional auth, integrations, channels and cron:
 | `APP_TIMEZONE` | Timezone for the date/time the model is given each request (default `Australia/Sydney`) |
 | `ACCESS_PASSWORD` | Password for web UI access (leave empty to disable auth) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
-| `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord channel |
+| `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord: bot token + legacy single channel (fallback for the per-purpose ids below) |
+| `DISCORD_ASK_CHANNEL_ID` | The one Discord channel the bot converses in (`#ask-zuychin`) |
+| `DISCORD_CH_BRIEFING` / `_REMINDERS` / `_TASKS` / `_CALENDAR` / `_BILLS` / `_COWORKING` / `_SYSTEM` | Per-purpose notification channels; each falls back to `DISCORD_CHANNEL_ID` (`_SYSTEM` stays silent unless set) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); both unset = push disabled |
@@ -501,8 +503,11 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<y
 ## Cron Jobs (optional)
 
 Point an external scheduler (for example cron-job.org) at these endpoints with the header
-`Authorization: Bearer <CRON_SECRET>`. Proactive and reminder messages go to all configured
-channels (Discord + Telegram).
+`Authorization: Bearer <CRON_SECRET>`. Delivery is centralized in the notification router
+(`src/lib/messaging/router.ts`): each notification type routes to its dedicated Discord
+channel, with push mirrored only for time-sensitive types and Telegram reserved for
+conversational chat plus initiative nudges. See `docs/messaging-redesign.md` for the routing
+table.
 
 | Endpoint | Schedule | Body |
 |----------|----------|------|
@@ -514,6 +519,8 @@ channels (Discord + Telegram).
 | `/api/cron/run-review` | Daily (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
+| `/api/cron/slack-watchdog` | Every 15–30 min | `{}` |
+| `/api/cron/agent-standup` | Daily | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
 

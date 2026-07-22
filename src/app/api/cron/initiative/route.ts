@@ -6,9 +6,7 @@ import { APP_TIMEZONE, currentDateTimeContext } from "@/lib/datetime";
 import { getRecentMessages, listTodos, type Todo } from "@/lib/db";
 import { listMemories } from "@/lib/ai/memory/store";
 import { listUpcomingEvents, type CalendarEvent } from "@/lib/integrations/calendar-service";
-import { sendDiscordMessage } from "@/lib/messaging/discord-service";
-import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
-import { broadcastPush } from "@/lib/messaging/push-service";
+import { notify } from "@/lib/messaging/router";
 import {
     INITIATIVE_CATEGORIES,
     getInitiativeFeedbackStats,
@@ -19,8 +17,6 @@ import {
 } from "@/lib/ai/initiative-store";
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export const maxDuration = 300;
 
@@ -203,22 +199,17 @@ If shouldSend is true, write "message" as Zuychin speaking directly to the user:
         message: decision.message,
     });
 
-    const sends: Promise<boolean>[] = [];
-    if (TELEGRAM_CHAT_ID) {
-        sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, decision.message, decisionId ? {
-            replyMarkup: {
-                inline_keyboard: [[
-                    { text: "👍", callback_data: `ini:${decisionId}:1` },
-                    { text: "👎", callback_data: `ini:${decisionId}:-1` },
-                ]],
-            },
-        } : undefined));
-    }
-    if (DISCORD_CHANNEL_ID) {
-        sends.push(sendDiscordMessage(DISCORD_CHANNEL_ID, decision.message));
-    }
-    sends.push(broadcastPush({ title: "Zuychin", body: decision.message }).then((n) => n > 0));
-    const delivered = (await Promise.all(sends)).some((r) => r);
+    // Initiative nudges are spontaneous, so they live on Telegram (+ push), not
+    // the structured Discord dashboard. Feedback buttons ride the Telegram send.
+    const sent = await notify("initiative_nudge", decision.message, {
+        telegramReplyMarkup: decisionId ? {
+            inline_keyboard: [[
+                { text: "👍", callback_data: `ini:${decisionId}:1` },
+                { text: "👎", callback_data: `ini:${decisionId}:-1` },
+            ]],
+        } : undefined,
+    });
+    const delivered = sent.telegram || sent.push > 0;
 
     console.log(
         `[Initiative] Sent id=${decisionId} category=${decision.category} delivered=${delivered}: ${decision.message.slice(0, 120)}`

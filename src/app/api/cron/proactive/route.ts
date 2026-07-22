@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
-import { sendDiscordMessage } from "@/lib/messaging/discord-service";
-import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
+import { notify, type NotificationType } from "@/lib/messaging/router";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Each proactive subtype lands in its role-appropriate channel.
+const PROACTIVE_ROUTE: Record<string, NotificationType> = {
+    morning_briefing: "daily_briefing",
+    reminder: "event_reminder",
+    daily_check: "proactive_checkin",
+};
 
 export async function POST(req: NextRequest) {
     try {
@@ -77,23 +81,19 @@ Be friendly and concise.`;
         });
         const proactiveMessage = result.text ?? "";
 
-        let delivered = false;
-        const sends: Promise<boolean>[] = [];
-
-        const targetDiscordChannel = body.channelId ?? DISCORD_CHANNEL_ID;
-        if (targetDiscordChannel) sends.push(sendDiscordMessage(targetDiscordChannel, proactiveMessage));
-        if (TELEGRAM_CHAT_ID) sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, proactiveMessage));
-
-        const results = await Promise.all(sends);
-        delivered = results.some((r) => r);
+        const routed = PROACTIVE_ROUTE[type] ?? "proactive_checkin";
+        const sent = await notify(routed, proactiveMessage, {
+            discordChannelId: body.channelId,
+        });
 
         const channels: string[] = [];
-        if (targetDiscordChannel) channels.push("discord");
-        if (TELEGRAM_CHAT_ID) channels.push("telegram");
+        if (sent.discord) channels.push("discord");
+        if (sent.telegram) channels.push("telegram");
+        if (sent.push > 0) channels.push("push");
 
         return NextResponse.json({
             message: proactiveMessage,
-            delivered,
+            delivered: sent.discord || sent.telegram || sent.push > 0,
             channels,
             type,
         });

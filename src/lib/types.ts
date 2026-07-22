@@ -30,7 +30,7 @@ export interface MessageMetadata {
     [key: string]: unknown;
 }
 
-export type MessageChannel = "web" | "discord" | "telegram";
+export type MessageChannel = "web" | "discord" | "telegram" | "slack";
 
 export interface ChatRequest {
     message: string;

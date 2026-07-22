@@ -9,10 +9,9 @@ import { listAgentRuns, getAgentRun, type AgentRunSummary } from "@/lib/ai/agent
 // function (or passing a status) would let the cron self-approve its skills.
 import { createDraftSkill, listCustomSkills } from "@/lib/ai/skills/custom-store";
 import { SKILL_IDS } from "@/lib/ai/skills/registry";
-import { sendTelegramMessage } from "@/lib/messaging/telegram-service";
+import { notify } from "@/lib/messaging/router";
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export const maxDuration = 300;
 
@@ -187,9 +186,12 @@ ${excerpts.join("\n\n")}`;
 
     await setCronState(STATE_KEY, { lastRunStartedAt: newestStartedAt });
 
-    if (filed.length > 0 && TELEGRAM_CHAT_ID) {
-        await sendTelegramMessage(
-            TELEGRAM_CHAT_ID,
+    // Admin-only by default: approval already lives in /admin. Only surfaces in
+    // chat if a dedicated #system channel is configured (run_review disables the
+    // Discord fallback), keeping this off Telegram entirely.
+    if (filed.length > 0) {
+        await notify(
+            "run_review",
             `🧠 Nightly run review filed ${filed.length} skill draft${filed.length > 1 ? "s" : ""} for approval in /admin: ${filed.join(", ")}`
         );
     }
