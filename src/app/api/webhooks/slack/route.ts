@@ -3,6 +3,7 @@ import { after } from "next/server";
 import {
     verifySlackSignature,
     isOwnMessage,
+    identifyAgent,
     type SlackMessageEvent,
 } from "@/lib/messaging/slack-service";
 import {
@@ -66,6 +67,14 @@ function stripLeadingMentions(text: string): string {
 async function handleEvent(event: SlackMessageEvent) {
     if (!event) return;
     if (isOwnMessage(event)) return; // never react to our own posts
+
+    // Roster discovery: log the ids of any unmapped agent author so SLACK_AGENTS
+    // can be filled in. Self-silences per author once it is in the roster.
+    if ((event.app_id || event.bot_id) && !identifyAgent(event)) {
+        console.log(
+            `[Slack] Unmapped author — app_id=${event.app_id ?? "?"} bot_id=${event.bot_id ?? "?"} user=${event.user ?? "?"} text="${(event.text ?? "").slice(0, 60)}"`,
+        );
+    }
 
     // A reply inside a tracked co-working thread drives the next turn.
     if (event.thread_ts && (await isTrackedThread(event.thread_ts))) {
