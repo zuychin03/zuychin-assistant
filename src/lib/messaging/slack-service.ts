@@ -140,6 +140,17 @@ export function mentionFor(label: string): string {
     return agent?.mentionId ? `<@${agent.mentionId}>` : `@${label}`;
 }
 
+// Turn raw <@U…> mentions of known agents into plain @label text. Relayed
+// content passes through this so only Zuychin's deliberate mentionFor() pings an
+// agent, never an id echoed from the task or another agent's message.
+export function humanizeMentions(text: string): string {
+    const agents = getAgents();
+    return text.replace(/<@([A-Z0-9]+)>/g, (full, id) => {
+        const a = agents.find((ag) => ag.mentionId === id);
+        return a ? `@${a.label}` : full;
+    });
+}
+
 // Whether Zuychin itself authored the event; used to break echo loops.
 export function isOwnMessage(event: SlackMessageEvent): boolean {
     const selfApp = process.env.SLACK_APP_ID;

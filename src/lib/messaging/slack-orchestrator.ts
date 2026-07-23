@@ -10,6 +10,7 @@ import {
     listAgents,
     mentionFor,
     identifyAgent,
+    humanizeMentions,
     type SlackMessageEvent,
 } from "./slack-service";
 
@@ -17,8 +18,9 @@ import {
 // the reply via the Slack webhook, and decides the next step. Loop guards are
 // non-negotiable with several autonomous agents in one room.
 
-const MAX_TURNS = 12;              // hard cap per thread
-const MAX_MENTIONS_PER_AGENT = 5;  // per-agent cap
+const MAX_TURNS = 12;              // hard ceiling per thread
+const MAX_MENTIONS_PER_AGENT = 8;  // per-agent cap (loose; MAX_TURNS is the real bound)
+const MIN_EXCHANGES = 4;           // keep a discussion going for at least this many replies
 
 interface ThreadEntry {
     from: string;
@@ -134,21 +136,28 @@ interface Decision {
 async function decideNext(state: ThreadState): Promise<Decision> {
     const roster = listAgents().map((a) => a.label);
     const transcript = state.transcript.map((e) => `${e.from}: ${e.text}`).join("\n") || "(no replies yet)";
+    const balance = roster.map((l) => `${l}: ${state.mentionsByAgent[l] ?? 0}`).join(", ") || "(none)";
 
-    const prompt = `You are Zuychin, orchestrating a team of AI coding agents in a Slack thread to accomplish a task. Decide the single next step.
+    const prompt = `You are Zuychin, moderating a live multi-agent conversation in a Slack thread. You address ONE agent per turn; that agent replies; you decide who speaks next.
 
-Task:
+User's request:
 ${state.task}
 
-Available agents: ${roster.join(", ") || "(none configured)"}
+Agents available: ${roster.join(", ") || "(none configured)"}
+Times each has been addressed: ${balance}
+Exchanges so far: ${state.turns} (aim for at least ${MIN_EXCHANGES}, hard stop near ${MAX_TURNS}).
 
-Thread so far:
+Conversation so far:
 ${transcript}
 
-Rules:
-- Address ONE agent at a time. Give a clear, self-contained instruction that references prior work by pointer (a PR, a file path, a vault page), never by pasting large content.
-- Choose "complete" when the task is finished or no further agent work would help, and give a one-paragraph summary of the outcome.
-- Keep messages concise and action-oriented.`;
+How to moderate:
+- Keep a genuine back-and-forth going: when you address an agent, explicitly relay or react to what the PREVIOUS agent said so they build on each other, not just answer you.
+- Rotate — bring in the agent addressed least; don't ping the same one twice in a row.
+- Refer to other agents by name in plain text (e.g. "Cursor suggested X"). Do NOT try to @mention them in your message; the system adds the one mention for you.
+- If the request is a concrete task rather than a discussion, delegate and iterate to completion instead.
+- Do NOT choose "complete" before ~${MIN_EXCHANGES} exchanges unless the conversation has genuinely reached its end.
+- When it has run its course (or you are near the limit), choose "complete" and write a concise summary of what was discussed or decided.
+- Keep each message short and conversational.`;
 
     const res = await ai.models.generateContent({
         model: MODEL,
@@ -179,7 +188,7 @@ export async function startCoworkingThread(channel: string, task: string, rootTs
     const state: ThreadState = {
         channel,
         threadTs: rootTs,
-        task: task.trim(),
+        task: humanizeMentions(task.trim()),
         status: "active",
         turns: 0,
         mentionsByAgent: {},
@@ -214,7 +223,7 @@ export async function handleThreadReply(event: SlackMessageEvent): Promise<void>
     const agent = identifyAgent(event);
     if (!agent) return; // only agent replies drive turns
 
-    state.transcript.push({ from: agent, text: (event.text ?? "").slice(0, 2000) });
+    state.transcript.push({ from: agent, text: humanizeMentions((event.text ?? "").slice(0, 2000)) });
     state.turns += 1;
     state.awaiting = null;
 
