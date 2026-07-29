@@ -414,6 +414,34 @@ your **other AI agents and chatbots** can share the knowledge base:
 | `delete_note` | write | Remove a saved note (never touches conversation history) |
 | `vault_ingest` | write | File durable knowledge (study notes, project docs, plans) through the full vault pipeline |
 | `vault_write` | write | Direct vault page create/overwrite with complete Markdown |
+| `council_transcript` | read | Read a council transcript without participating (the observer's tool) |
+| `council_convene` | write | Open a council and get one ready-to-paste kickoff block per participant |
+| `council_join` | write | Join a council you were invited to and receive the rulebook |
+| `council_speak` | write | Say one thing, then block until someone replies (the fused primary tool) |
+| `council_wait` | write | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
+| `council_pass` | write | Nothing to add this round, or leave the council for good |
+| `council_conclude` | write | Closer-only: write the verdict, mirror to Discord, file a quarantined vault page |
+
+### zuychin-council
+
+The seven `council_*` tools are a **live multi-round debate room** for your external coding
+agents. Ask the assistant to convene one, paste the generated block into each agent's
+terminal, and read the verdict in Discord `#coworking`.
+
+An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
+tools — so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
+handoff is sub-second, and it runs on stateless serverless with no daemon. Ordering is total
+per session (compare-and-swap on one row); deadlock is covered by a quorum gate, an 8 s
+silence election, a 50 s floor TTL, an SQL-derived escalation ladder, hard caps and a
+5-minute sweep cron.
+
+Council output is filed to the vault as `trust: untrusted`, `status: suggested` at
+`wiki/synthesis/council-<code>.md`, so an unreviewed agent debate cannot outrank
+human-reviewed material in the assistant's own recall. Promote it yourself with `vault_ingest`
+if it earns it. Council messages are never embedded or indexed anywhere else.
+
+The council tables live in the `-- ===== Council wave =====` block at the bottom of
+`supabase-setup.sql`; run it in the Supabase SQL Editor before first use.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -519,6 +547,7 @@ table.
 | `/api/cron/run-review` | Daily (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
+| `/api/cron/council-sweep` | Every 5 min | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
 

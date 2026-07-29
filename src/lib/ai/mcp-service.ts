@@ -49,7 +49,52 @@ export const WEB_SEARCH_TOOL: McpTool = {
     },
 };
 
+export const COUNCIL_TOOLS: McpTool[] = [
+    {
+        name: "council_convene",
+        description:
+            "Open a council: a live multi-round debate between Duy's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use when he asks to convene a council, get his agents to debate or decide something together, or wants disagreement rather than a single answer. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
+        parameters: {
+            topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
+            brief: { type: "string", description: "Context every participant needs: constraints, what has been tried, what a good answer looks like.", required: true },
+            participants: {
+                type: "array",
+                description: "2-5 agents to invite. Short lowercase handles he will type into each agent.",
+                required: true,
+                items: {
+                    type: "object",
+                    description: "One participant.",
+                    properties: {
+                        name: { type: "string", description: "Agent handle, e.g. 'codex'." },
+                        expertise: { type: "string", description: "One line on what it brings." },
+                    },
+                },
+            },
+            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names.", required: true },
+            maxRounds: { type: "number", description: "Rounds before it must conclude (default 6).", required: false },
+        },
+    },
+    {
+        name: "council_status",
+        description:
+            "Check on running councils. With no sessionCode, lists every open council with who it is waiting on and how long they have been quiet. With one, gives that council's state and recent transcript. Use when Duy asks how a council is going or what his agents are up to.",
+        parameters: {
+            sessionCode: { type: "string", description: "Optional session code, e.g. 'CN-4KQ2'. Omit to list all open councils.", required: false },
+        },
+    },
+    {
+        name: "council_close",
+        description:
+            "Duy's override: force a council closed and file the outcome, even if its closer never concluded. Writes a verdict from the transcript when none is supplied. Use when he says to close, stop, kill or retire a council.",
+        parameters: {
+            sessionCode: { type: "string", description: "Session code to close, e.g. 'CN-4KQ2'.", required: true },
+            verdict: { type: "string", description: "Optional verdict text. Omitted, one is written from the transcript.", required: false },
+        },
+    },
+];
+
 export const MCP_TOOLS: McpTool[] = [
+    ...COUNCIL_TOOLS,
     {
         name: "get_current_time",
         description: "Get the current date and time in the user's timezone.",
@@ -542,6 +587,13 @@ export async function executeTool(
 
         case "search_web":
             return runWebSearch(args.query as string, args.depth === "thorough" ? "thorough" : "quick");
+
+        case "council_convene":
+            return executeCouncilConvene(args);
+        case "council_status":
+            return executeCouncilStatus(args.sessionCode as string | undefined);
+        case "council_close":
+            return executeCouncilClose(args.sessionCode as string, args.verdict as string | undefined);
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef);
@@ -1381,4 +1433,117 @@ export function buildToolSystemPrompt(): string {
 You have access to these tools:
 ${toolList}
 `.trim();
+}
+
+// --- zuychin-council: Duy convenes and closes from chat, so he never needs to
+// learn a session code from an agent's terminal. ---
+
+async function executeCouncilConvene(args: Record<string, unknown>): Promise<string> {
+    const {
+        createCouncilSession, listOpenCouncils, listParticipants,
+    } = await import("@/lib/council/store");
+    const { renderConveneResult } = await import("@/lib/council/render");
+    const { MAX_OPEN_COUNCILS, MODERATOR_NAME } = await import("@/lib/council/protocol");
+
+    const raw = (args.participants ?? []) as { name?: string; expertise?: string }[];
+    const participants = raw
+        .filter((p) => p && typeof p.name === "string" && p.name.trim())
+        .map((p) => ({ name: p.name!.trim(), expertise: (p.expertise ?? "").trim() || "unspecified" }));
+    const closerName = String(args.closerName ?? "").trim();
+    const names = participants.map((p) => p.name);
+
+    if (participants.length < 2) return "A council needs at least 2 participants. Nothing was created.";
+    if (participants.length > 5) return "A council takes at most 5 participants. Nothing was created.";
+    if (new Set(names).size !== names.length) return `Participant names must be unique; got ${names.join(", ")}. Nothing was created.`;
+    if (names.includes(MODERATOR_NAME)) return `"${MODERATOR_NAME}" is reserved for the moderator. Nothing was created.`;
+    if (!names.includes(closerName)) return `closerName "${closerName}" is not one of ${names.join(", ")}. Nothing was created.`;
+
+    const open = await listOpenCouncils();
+    if (open.length >= MAX_OPEN_COUNCILS) {
+        return `${open.length} councils are already open (${open.map((s) => s.code).join(", ")}). Close one first.`;
+    }
+
+    const session = await createCouncilSession({
+        topic: String(args.topic ?? "").trim(),
+        brief: String(args.brief ?? "").trim(),
+        closerName,
+        participants,
+        maxRounds: typeof args.maxRounds === "number" ? args.maxRounds : undefined,
+    });
+    const roster = await listParticipants(session.id);
+    return renderConveneResult(session, roster);
+}
+
+function quietFor(iso: string): string {
+    const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+async function executeCouncilStatus(sessionCode?: string): Promise<string> {
+    const {
+        getSessionByCode, listOpenCouncils, listParticipants, readTranscript,
+    } = await import("@/lib/council/store");
+
+    if (!sessionCode) {
+        const open = await listOpenCouncils();
+        if (open.length === 0) return "No councils are open.";
+        const lines: string[] = [];
+        for (const s of open) {
+            const parts = await listParticipants(s.id);
+            const waiting = parts
+                .filter((p) => p.kind === "agent" && p.status !== "left" && p.postsThisRound === 0)
+                .map((p) => p.name);
+            lines.push(
+                `${s.code} · round ${s.round}/${s.maxRounds} · ${waiting.length ? `waiting on ${waiting.join(", ")}` : "all posted this round"}`
+                + ` (quiet ${quietFor(s.lastMessageAt)}) · ${s.lastSeq} msgs · ${s.topic}`,
+            );
+        }
+        return lines.join("\n");
+    }
+
+    const session = await getSessionByCode(sessionCode);
+    if (!session) return `No council found with code "${sessionCode}".`;
+    const [parts, messages] = await Promise.all([
+        listParticipants(session.id),
+        readTranscript({ sessionId: session.id, limit: 12 }),
+    ]);
+    const roster = parts
+        .filter((p) => p.kind === "agent")
+        .map((p) => `${p.name} (${p.status}, ${p.postsTotal} posts, seen ${quietFor(p.lastSeenAt)} ago)`)
+        .join("\n");
+    const recent = messages.map((m) => `[${m.seq}] ${m.speaker} → ${m.addressedTo} (${m.intent}): ${m.body.slice(0, 300)}`).join("\n");
+    return `${session.code} — ${session.topic}\nStatus ${session.status}, round ${session.round}/${session.maxRounds}, ${session.lastSeq} messages, quiet ${quietFor(session.lastMessageAt)}.\n\nParticipants:\n${roster}\n\nRecent:\n${recent || "(nothing yet)"}`
+        + (session.verdict ? `\n\nVERDICT (${session.closerName}):\n${session.verdict}` : "");
+}
+
+async function executeCouncilClose(sessionCode: string, verdict?: string): Promise<string> {
+    const { getSessionByCode, readTranscript } = await import("@/lib/council/store");
+    const { closeCouncil } = await import("@/lib/council/close");
+
+    const session = await getSessionByCode(sessionCode);
+    if (!session) return `No council found with code "${sessionCode}".`;
+    if (session.status === "closed") {
+        return `${session.code} is already closed.\n\nVERDICT (${session.closerName}):\n${session.verdict ?? "(none recorded)"}`;
+    }
+
+    let text = (verdict ?? "").trim();
+    if (!text) {
+        const messages = await readTranscript({ sessionId: session.id, limit: 200 });
+        const speakers = [...new Set(messages.filter((m) => m.role === "agent").map((m) => m.speaker))];
+        text = messages.length
+            ? `Closed by Duy before the council concluded on its own. ${speakers.join(", ")} exchanged `
+              + `${messages.length} messages over ${session.round} round(s) on "${session.topic}". `
+              + `No agent verdict was written; read the transcript before relying on this.`
+            : `Closed by Duy. Nothing was said in this council.`;
+    }
+
+    // closer = "zuychin" is the human override running the same single-writer CAS.
+    const outcome = await closeCouncil({
+        session, closer: "zuychin", verdict: text, openQuestions: [],
+    });
+    if (!outcome.changed) {
+        return `${session.code} was already concluded by ${outcome.closer}.\n\n${outcome.verdict}`;
+    }
+    return `Closed ${session.code}. The agents will see "=== COUNCIL CLOSED ===" on their next call.\n\n`
+        + (outcome.vaultPath ? `Filed (unreviewed draft): ${outcome.vaultPath}` : `Vault filing failed: ${outcome.archiveError}`);
 }

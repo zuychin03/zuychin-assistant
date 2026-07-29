@@ -1022,3 +1022,426 @@ begin
   limit match_count;
 end;
 $$;
+
+-- ===== Council wave =====
+
+-- zuychin-council: a debate channel for the user's external coding agents,
+-- which connect as MCP clients and hold rounds by appending here while a
+-- long-poll tool tails the log. An MCP server cannot wake an idle agent, so
+-- every mechanism below is something a participant's own tool call discovers
+-- and executes for everyone, made exactly-once by compare-and-swap on this row.
+create table if not exists council_sessions (
+  id uuid primary key default gen_random_uuid(),
+  -- Retyped by the human into 3 terminals: no 0/O/1/I in the alphabet.
+  code text not null unique,
+  user_profile_id uuid references user_profiles(id) on delete cascade,
+  topic text not null,
+  brief text not null default '',
+  closer_name text not null,
+  -- 'concluding' still accepts final positions; only 'closed' refuses appends.
+  -- Every non-'closed' state must remain concludeable or a council that spends
+  -- its round budget can never record the verdict it reached.
+  status text not null default 'open'
+    check (status in ('open', 'concluding', 'closed', 'expired')),
+  round integer not null default 1,
+  max_rounds integer not null default 6,
+  max_messages integer not null default 60,
+  -- Allocated by append_council_message as last_seq = last_seq + 1 in the same
+  -- transaction as the insert, so allocation happens under this row's write
+  -- lock: seq order == commit order, which is the only reason a seq > cursor
+  -- poll can never skip a message. A Postgres sequence would break this
+  -- (nextval takes no row lock, so a lower seq can commit second).
+  last_seq integer not null default 0,
+  last_message_at timestamptz not null default now(),
+  -- Set by the join that first brings 2 live participants together. No floor is
+  -- granted before this, or the first agent to arrive monologues alone.
+  quorum_at timestamptz,
+  floor_holder text,
+  floor_granted_at timestamptz,
+  -- CAS token for floor election: a waiter installs a grant only if neither the
+  -- epoch nor last_seq moved since it observed silence.
+  floor_epoch integer not null default 0,
+  silent_grants integer not null default 0,
+  verdict text,
+  open_questions jsonb not null default '[]',
+  archive_status text not null default 'pending'
+    check (archive_status in ('pending', 'filed', 'failed', 'skipped')),
+  vault_path text,
+  expires_at timestamptz not null default now() + interval '90 minutes',
+  closed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (last_seq >= 0)
+);
+
+drop trigger if exists trigger_council_sessions_updated_at on council_sessions;
+create trigger trigger_council_sessions_updated_at
+  before update on council_sessions
+  for each row execute function update_updated_at();
+
+create index if not exists idx_council_sessions_status
+  on council_sessions (status, expires_at);
+
+-- append_council_message is the SOLE writer of seq. A direct insert here breaks
+-- the gapless-cursor invariant with no error, and neither tsc nor eslint can
+-- see it.
+create table if not exists council_messages (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  seq integer not null check (seq > 0),
+  round integer not null,
+  speaker text not null,
+  role text not null default 'agent'
+    check (role in ('agent', 'moderator', 'system')),
+  addressed_to text not null default 'all',
+  intent text not null check (intent in (
+    'propose', 'challenge', 'answer', 'concede', 'refine', 'ask',
+    'pass', 'moderate', 'verdict', 'system'
+  )),
+  reply_to_seq integer,
+  body text not null check (char_length(body) <= 6000),
+  -- A client tool-call timeout does not stop the server-side insert, so a
+  -- retried council_speak arrives twice. Caller-supplied key first; the hash is
+  -- the fallback for an LLM that regenerates a fresh key on retry.
+  client_key text not null,
+  body_hash text not null,
+  answered boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique (session_id, seq),
+  unique (session_id, speaker, client_key)
+);
+
+-- unique (session_id, seq) already builds the btree the poll cursor uses; this
+-- one serves the dedupe lookup and the "what did X say" read.
+create index if not exists idx_council_messages_speaker
+  on council_messages (session_id, speaker, seq desc);
+
+create table if not exists council_participants (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  name text not null,
+  kind text not null default 'agent' check (kind in ('agent', 'moderator')),
+  expertise text not null default '',
+  status text not null default 'invited'
+    check (status in ('invited', 'active', 'passed', 'left')),
+  posts_total integer not null default 0,
+  posts_this_round integer not null default 0,
+  -- ACKNOWLEDGED read watermark. Never derived from the speaker's own new seq:
+  -- doing so acks peer messages it never read and silently drops them forever.
+  cursor_seq integer not null default 0,
+  -- Two-phase ack. A delivered batch lands here; the arrival of this
+  -- participant's NEXT call is the proof the response reached it, and promotes
+  -- it into cursor_seq. Survives an LLM that forgets to echo sinceSeq.
+  pending_ack_seq integer not null default 0,
+  expired_grants integer not null default 0,
+  wait_calls integer not null default 0,
+  joined_seq integer not null default 0,
+  joined_at timestamptz,
+  -- Refreshed every 10s from inside the poll loop, not at its edges: a 30s
+  -- window would otherwise make a healthy waiter look dead for 30s at a time.
+  last_seen_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (session_id, name)
+);
+
+create index if not exists idx_council_participants_live
+  on council_participants (session_id, status, last_seen_at desc);
+
+-- Server-only, same stance as the knowledge_* tables: the service role bypasses
+-- RLS and the anon key receives no table policy.
+alter table council_sessions enable row level security;
+alter table council_messages enable row level security;
+alter table council_participants enable row level security;
+
+-- Every council utterance in one transaction: idempotency, quota, gapless seq,
+-- floor consumption, round advance and lifecycle. Returns jsonb (not the house
+-- returns integer) because the caller needs seq + round + the quota verdict to
+-- render its reply, and a second read would double write latency.
+-- Correctness depends on READ COMMITTED: at REPEATABLE READ the blocked
+-- transaction would keep its stale snapshot. Do not raise
+-- default_transaction_isolation on this project.
+create or replace function append_council_message(
+  p_session_id uuid,
+  p_speaker text,
+  p_role text,
+  p_intent text,
+  p_body text,
+  p_client_key text,
+  p_addressed_to text default 'all',
+  p_reply_to_seq integer default null,
+  p_ack_seq integer default null,
+  p_posts_per_round integer default 2,
+  p_stale_seconds integer default 180
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_status text; v_max_msgs integer; v_floor text; v_granted timestamptz;
+  v_rnd integer; v_posts integer; v_kind text; v_seq integer; v_hash text;
+  v_pending integer; v_advanced boolean := false; v_existing integer;
+begin
+  -- FOR UPDATE, not FOR SHARE: share locks are mutually compatible, so two
+  -- concurrent appends would both pass and collide on unique(session_id, seq).
+  select status, round, max_messages, floor_holder, floor_granted_at
+    into v_status, v_rnd, v_max_msgs, v_floor, v_granted
+  from council_sessions where id = p_session_id for update;
+  if v_status is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session');
+  end if;
+
+  -- Dedupe BEFORE quota: a retry of a message that already committed must
+  -- report success, not "nothing was recorded" about something that was.
+  v_hash := md5(v_rnd || ':' || p_intent || ':' || p_body);
+  select seq into v_existing from council_messages
+   where session_id = p_session_id and speaker = p_speaker
+     and (client_key = p_client_key or body_hash = v_hash)
+   order by seq desc limit 1;
+  if v_existing is not null then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'seq', v_existing, 'round', v_rnd);
+  end if;
+
+  if v_status = 'closed' then
+    return jsonb_build_object('ok', false, 'reason', 'closed', 'round', v_rnd);
+  end if;
+  if p_role = 'agent' then
+    select posts_this_round, kind into v_posts, v_kind
+    from council_participants where session_id = p_session_id and name = p_speaker;
+    if v_kind is null then
+      return jsonb_build_object('ok', false, 'reason', 'not_a_participant');
+    end if;
+    -- The floor grant carries a quota override. Without it a stuck round hands
+    -- the floor to an agent whose every post is then rejected on quota, and
+    -- since only a successful append clears floor_holder the floor is never
+    -- released: the exact deadlock the grant exists to break.
+    if p_intent <> 'pass' and v_posts >= p_posts_per_round
+       and coalesce(v_floor, '') <> p_speaker then
+      return jsonb_build_object('ok', false, 'reason', 'quota', 'round', v_rnd, 'posts', v_posts);
+    end if;
+    if v_status = 'expired' then
+      return jsonb_build_object('ok', false, 'reason', 'expired', 'round', v_rnd);
+    end if;
+  end if;
+
+  update council_sessions
+     set last_seq = last_seq + 1,
+         last_message_at = now(),
+         floor_holder = null,
+         floor_granted_at = null,
+         -- Only a real agent turn resets the stall counter. A moderator nudge
+         -- resetting it would restart the escalation ladder that fired it.
+         silent_grants = case when p_role = 'agent' then 0 else silent_grants end
+   where id = p_session_id and last_seq < v_max_msgs
+  returning last_seq into v_seq;
+  if v_seq is null then
+    return jsonb_build_object('ok', false, 'reason', 'message_cap', 'round', v_rnd);
+  end if;
+
+  insert into council_messages (
+    session_id, seq, round, speaker, role, addressed_to, intent,
+    reply_to_seq, body, client_key, body_hash
+  ) values (
+    p_session_id, v_seq, v_rnd, p_speaker, p_role, coalesce(p_addressed_to, 'all'),
+    p_intent, p_reply_to_seq, left(p_body, 6000), p_client_key, v_hash
+  );
+
+  if p_reply_to_seq is not null and p_intent in ('answer', 'concede') then
+    update council_messages set answered = true
+     where session_id = p_session_id and seq = p_reply_to_seq;
+  end if;
+
+  if p_role = 'agent' then
+    update council_participants
+       set posts_total = posts_total + 1,
+           posts_this_round = posts_this_round + 1,
+           expired_grants = 0,
+           last_seen_at = now(),
+           status = case when p_intent = 'pass' then 'passed' else 'active' end,
+           -- Explicit ack only. greatest() keeps it monotonic and idempotent.
+           cursor_seq = greatest(cursor_seq, coalesce(p_ack_seq, pending_ack_seq, cursor_seq))
+     where session_id = p_session_id and name = p_speaker;
+
+    -- Round advances when every LIVE agent has used its full allowance or
+    -- passed. Stale and never-joined participants are excluded, or one absent
+    -- agent blocks the advance forever and everyone starves on quota.
+    -- The condition is posts_this_round < p_posts_per_round, not = 0: a = 0
+    -- quorum flips the round after one pass around the table and silently
+    -- evaporates everyone's second slot.
+    select count(*) into v_pending
+      from council_participants
+     where session_id = p_session_id and kind = 'agent'
+       and status in ('invited', 'active')
+       and posts_this_round < p_posts_per_round
+       and last_seen_at > now() - make_interval(secs => p_stale_seconds);
+    if v_pending = 0 then
+      v_advanced := true;
+      update council_participants
+         set posts_this_round = 0,
+             status = case when status = 'passed' then 'active' else status end
+       where session_id = p_session_id and status <> 'left';
+      update council_sessions
+         set round = round + 1,
+             status = case when round + 1 > max_rounds and status = 'open'
+                           then 'concluding' else status end
+       where id = p_session_id;
+    end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'duplicate', false, 'seq', v_seq,
+                            'round', v_rnd, 'advanced', v_advanced);
+end;
+$$;
+
+-- Election runs server-side so N racing waiters cannot compute different
+-- winners. The (floor_epoch, last_seq) guards refuse a grant if a message
+-- landed or another waiter already won between observation and claim. The
+-- caller need not be the winner: whoever ticks first grants on everyone's
+-- behalf and the winner reads it on its next tick, <=3s later.
+create or replace function elect_council_floor(
+  p_session_id uuid,
+  p_expected_epoch integer,
+  p_expected_last_seq integer,
+  p_silence_seconds integer default 8,
+  p_floor_ttl_seconds integer default 50,
+  p_waiter_fresh_seconds integer default 30
+)
+returns jsonb
+language plpgsql
+as $$
+declare v_addressed text; v_prev text; v_winner text; v_epoch integer; v_live integer;
+begin
+  select floor_holder into v_prev
+    from council_sessions where id = p_session_id;
+
+  select count(*) into v_live from council_participants
+   where session_id = p_session_id and kind = 'agent' and status <> 'left'
+     and last_seen_at > now() - make_interval(secs => p_waiter_fresh_seconds);
+  if v_live < 1 then
+    return jsonb_build_object('granted', false, 'reason', 'no_fresh_waiter');
+  end if;
+
+  -- A direct handoff skips the silence timer, so the named target sorts first.
+  select m.addressed_to into v_addressed from council_messages m
+   where m.session_id = p_session_id and m.seq = p_expected_last_seq
+     and m.addressed_to <> 'all';
+
+  select p.name into v_winner from council_participants p
+   where p.session_id = p_session_id and p.kind = 'agent' and p.status <> 'left'
+     and p.last_seen_at > now() - make_interval(secs => p_waiter_fresh_seconds)
+     and p.expired_grants < 2
+   order by (p.name is distinct from v_addressed), p.posts_total asc, p.joined_seq asc
+   limit 1;
+  if v_winner is null then
+    return jsonb_build_object('granted', false, 'reason', 'no_eligible_waiter');
+  end if;
+
+  update council_sessions
+     set floor_holder = v_winner, floor_granted_at = now(),
+         floor_epoch = floor_epoch + 1, silent_grants = silent_grants + 1
+   where id = p_session_id
+     and status in ('open', 'concluding')
+     and expires_at > now()
+     and quorum_at is not null
+     and floor_epoch = p_expected_epoch
+     and last_seq = p_expected_last_seq
+     -- Reclaimable when the previous grant aged out. Vercel hard-kills at
+     -- maxDuration without running finally blocks, so a grant is never released
+     -- by cleanup, only by an append or by age.
+     and (floor_holder is null
+          or floor_granted_at < now() - make_interval(secs => p_floor_ttl_seconds))
+     and (v_winner = v_addressed
+          or greatest(last_message_at, coalesce(floor_granted_at, last_message_at))
+              < now() - make_interval(secs => p_silence_seconds))
+  returning floor_epoch into v_epoch;
+  if v_epoch is null then
+    return jsonb_build_object('granted', false, 'reason', 'stale_observation');
+  end if;
+
+  if v_prev is not null and v_prev <> v_winner then
+    update council_participants set expired_grants = expired_grants + 1
+     where session_id = p_session_id and name = v_prev;
+  end if;
+  return jsonb_build_object('granted', true, 'holder', v_winner, 'epoch', v_epoch);
+end;
+$$;
+
+-- Called at the top of every council tool and every ~10s inside the poll loop.
+-- returns boolean so a misspelled agentName is a loud "you are not a
+-- participant" instead of a silent zero-row no-op that makes the agent
+-- permanently invisible to election while it polls happily to expiry.
+create or replace function touch_council_participant(
+  p_session_id uuid, p_agent_name text,
+  p_pending_ack integer default null, p_count_wait boolean default false
+)
+returns boolean
+language plpgsql
+as $$
+declare v_id uuid;
+begin
+  update council_participants
+     set last_seen_at = now(),
+         wait_calls = wait_calls + case when p_count_wait then 1 else 0 end,
+         -- Promote the previous window's delivery: this call proves it landed.
+         cursor_seq = greatest(cursor_seq, pending_ack_seq),
+         pending_ack_seq = greatest(pending_ack_seq, coalesce(p_pending_ack, 0))
+   where session_id = p_session_id and name = p_agent_name and status <> 'left'
+  returning id into v_id;
+  return v_id is not null;
+end;
+$$;
+
+-- Idempotent join; sets quorum_at on the join that first brings two live agents
+-- together, which is what gates the very first floor grant.
+create or replace function join_council(
+  p_session_id uuid, p_agent_name text, p_expertise text default ''
+)
+returns jsonb
+language plpgsql
+as $$
+declare v_kind text; v_live integer;
+begin
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_agent_name;
+  if v_kind is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_on_roster');
+  end if;
+  update council_participants
+     set status = case when status = 'invited' then 'active' else status end,
+         expertise = case when p_expertise <> '' then p_expertise else expertise end,
+         joined_at = coalesce(joined_at, now()), last_seen_at = now()
+   where session_id = p_session_id and name = p_agent_name;
+  select count(*) into v_live from council_participants
+   where session_id = p_session_id and kind = 'agent' and joined_at is not null;
+  if v_live >= 2 then
+    update council_sessions set quorum_at = coalesce(quorum_at, now())
+     where id = p_session_id;
+  end if;
+  return jsonb_build_object('ok', true, 'live', v_live);
+end;
+$$;
+
+-- Single-writer close. Accepts every non-closed state, including 'expired': a
+-- council that spent its round budget or ran out the clock is the NORMAL
+-- ending, and gating the CAS on 'open' would make its verdict unwritable.
+create or replace function conclude_council(
+  p_session_id uuid, p_closer text, p_verdict text, p_open_questions jsonb default '[]'
+)
+returns jsonb
+language plpgsql
+as $$
+declare v_row council_sessions;
+begin
+  update council_sessions
+     set status = 'closed', verdict = p_verdict,
+         open_questions = coalesce(p_open_questions, '[]'::jsonb),
+         closed_at = now(), floor_holder = null, floor_granted_at = null
+   where id = p_session_id and status in ('open', 'concluding', 'expired')
+  returning * into v_row;
+  if v_row.id is null then
+    select * into v_row from council_sessions where id = p_session_id;
+    return jsonb_build_object('changed', false, 'verdict', v_row.verdict,
+                              'closer', v_row.closer_name, 'vault_path', v_row.vault_path);
+  end if;
+  return jsonb_build_object('changed', true, 'round', v_row.round, 'messages', v_row.last_seq);
+end;
+$$;

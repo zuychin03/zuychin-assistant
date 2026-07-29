@@ -431,6 +431,11 @@ export async function writeVaultPage(params: {
     markdown: string;
     summary?: string;
     embRef: ResolvedEmbedding;
+    // Defaults preserve today's behaviour; the council passes untrusted +
+    // suggested so agent-authored text cannot outrank human-reviewed material in
+    // recall and reads as proposed rather than accepted.
+    trust?: "trusted" | "reviewed" | "untrusted";
+    status?: "active" | "suggested" | "superseded" | "archived" | "deleted";
 }): Promise<WriteResult> {
     return withVaultLock(async () => {
         const cfg = requireVaultConfig();
@@ -458,7 +463,8 @@ export async function writeVaultPage(params: {
             title,
             category,
             summary,
-            trust: "reviewed",
+            trust: params.trust ?? "reviewed",
+            ...(params.status ? { status: params.status } : {}),
         });
         const [indexFile, logFile] = await Promise.all([
             getFile(cfg, "index.md"),

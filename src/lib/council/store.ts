@@ -1,0 +1,629 @@
+import { supabaseAdmin as supabase } from "@/lib/supabase";
+import {
+    MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
+    PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
+    SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
+    CODE_ALPHABET, generateCouncilCode,
+    type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
+} from "./protocol";
+
+export type { CouncilStatus, CouncilStatusKeyword };
+
+export interface CouncilSession {
+    id: string; code: string; topic: string; brief: string; closerName: string;
+    status: CouncilStatus; round: number; maxRounds: number; maxMessages: number;
+    lastSeq: number; lastMessageAt: string; quorumAt: string | null;
+    floorHolder: string | null; floorGrantedAt: string | null; floorEpoch: number;
+    silentGrants: number; verdict: string | null; openQuestions: string[];
+    archiveStatus: "pending" | "filed" | "failed" | "skipped";
+    vaultPath: string | null; expiresAt: string; closedAt: string | null; createdAt: string;
+}
+
+// Exactly the columns one poll tick reads: a ~180-byte primary-key point read.
+export interface CouncilTick {
+    lastSeq: number; round: number; status: CouncilStatus; lastMessageAt: string;
+    floorHolder: string | null; floorGrantedAt: string | null; floorEpoch: number;
+    silentGrants: number; quorumAt: string | null; expiresAt: string;
+}
+
+export interface CouncilMessage {
+    seq: number; round: number; speaker: string; role: CouncilRole;
+    addressedTo: string; intent: string; replyToSeq: number | null;
+    body: string; answered: boolean; createdAt: string;
+}
+
+export interface CouncilParticipant {
+    name: string; kind: "agent" | "moderator"; expertise: string;
+    status: "invited" | "active" | "passed" | "left";
+    postsTotal: number; postsThisRound: number; cursorSeq: number;
+    expiredGrants: number; waitCalls: number; joinedSeq: number; lastSeenAt: string;
+}
+
+// Everything render.ts needs, assembled once per tool call.
+export interface CouncilView {
+    session: CouncilSession; participants: CouncilParticipant[]; you: CouncilParticipant | null;
+    fresh: CouncilMessage[]; openToYou: CouncilMessage[];
+    cursor: number; omittedBefore: number | null; keyword: CouncilStatusKeyword;
+}
+
+interface SessionRow {
+    id: string; code: string; topic: string; brief: string; closer_name: string;
+    status: CouncilStatus; round: number; max_rounds: number; max_messages: number;
+    last_seq: number; last_message_at: string; quorum_at: string | null;
+    floor_holder: string | null; floor_granted_at: string | null; floor_epoch: number;
+    silent_grants: number; verdict: string | null; open_questions: string[] | null;
+    archive_status: "pending" | "filed" | "failed" | "skipped";
+    vault_path: string | null; expires_at: string; closed_at: string | null; created_at: string;
+}
+
+interface MessageRow {
+    seq: number; round: number; speaker: string; role: CouncilRole;
+    addressed_to: string; intent: string; reply_to_seq: number | null;
+    body: string; answered: boolean; created_at: string;
+}
+
+interface ParticipantRow {
+    name: string; kind: "agent" | "moderator"; expertise: string;
+    status: "invited" | "active" | "passed" | "left";
+    posts_total: number; posts_this_round: number; cursor_seq: number;
+    expired_grants: number; wait_calls: number; joined_seq: number; last_seen_at: string;
+}
+
+const SESSION_COLUMNS =
+    "id, code, topic, brief, closer_name, status, round, max_rounds, max_messages, last_seq, " +
+    "last_message_at, quorum_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, " +
+    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at";
+
+const MESSAGE_COLUMNS =
+    "seq, round, speaker, role, addressed_to, intent, reply_to_seq, body, answered, created_at";
+
+const PARTICIPANT_COLUMNS =
+    "name, kind, expertise, status, posts_total, posts_this_round, cursor_seq, " +
+    "expired_grants, wait_calls, joined_seq, last_seen_at";
+
+function mapSession(row: SessionRow): CouncilSession {
+    return {
+        id: row.id,
+        code: row.code,
+        topic: row.topic,
+        brief: row.brief,
+        closerName: row.closer_name,
+        status: row.status,
+        round: row.round,
+        maxRounds: row.max_rounds,
+        maxMessages: row.max_messages,
+        lastSeq: row.last_seq,
+        lastMessageAt: row.last_message_at,
+        quorumAt: row.quorum_at,
+        floorHolder: row.floor_holder,
+        floorGrantedAt: row.floor_granted_at,
+        floorEpoch: row.floor_epoch,
+        silentGrants: row.silent_grants,
+        verdict: row.verdict,
+        openQuestions: row.open_questions ?? [],
+        archiveStatus: row.archive_status,
+        vaultPath: row.vault_path,
+        expiresAt: row.expires_at,
+        closedAt: row.closed_at,
+        createdAt: row.created_at,
+    };
+}
+
+function mapMessage(row: MessageRow): CouncilMessage {
+    return {
+        seq: row.seq,
+        round: row.round,
+        speaker: row.speaker,
+        role: row.role,
+        addressedTo: row.addressed_to,
+        intent: row.intent,
+        replyToSeq: row.reply_to_seq,
+        body: row.body,
+        answered: row.answered,
+        createdAt: row.created_at,
+    };
+}
+
+function mapParticipant(row: ParticipantRow): CouncilParticipant {
+    return {
+        name: row.name,
+        kind: row.kind,
+        expertise: row.expertise,
+        status: row.status,
+        postsTotal: row.posts_total,
+        postsThisRound: row.posts_this_round,
+        cursorSeq: row.cursor_seq,
+        expiredGrants: row.expired_grants,
+        waitCalls: row.wait_calls,
+        joinedSeq: row.joined_seq,
+        lastSeenAt: row.last_seen_at,
+    };
+}
+
+function schemaUnavailable(message: string): boolean {
+    return /does not exist|schema cache|could not find the table|could not find the function/i.test(message);
+}
+
+export class CouncilSchemaError extends Error {
+    constructor() {
+        super(
+            "The council tables are not installed. Run the Council wave block at the bottom of " +
+            "supabase-setup.sql in the Supabase SQL Editor.",
+        );
+        this.name = "CouncilSchemaError";
+    }
+}
+
+// A swallowed council write silently corrupts a debate, so write paths throw
+// while read paths degrade to empty.
+function throwWrite(scope: string, err: unknown): never {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Council] ${scope} failed:`, message);
+    if (schemaUnavailable(message)) throw new CouncilSchemaError();
+    throw new Error("Council message could not be recorded; nothing was said.");
+}
+
+export async function createCouncilSession(params: {
+    topic: string;
+    brief: string;
+    closerName: string;
+    participants: { name: string; expertise: string }[];
+    maxRounds?: number;
+    maxMessages?: number;
+    ttlMinutes?: number;
+    userProfileId?: string;
+}): Promise<CouncilSession> {
+    const ttl = params.ttlMinutes ?? SESSION_TTL_MINUTES;
+    const expiresAt = new Date(Date.now() + ttl * 60_000).toISOString();
+
+    // Retry only the code collision; anything else is a real failure.
+    let row: SessionRow | null = null;
+    for (let attempt = 0; attempt < 5 && !row; attempt++) {
+        const { data, error } = await supabase
+            .from("council_sessions")
+            .insert({
+                code: generateCouncilCode(),
+                user_profile_id: params.userProfileId ?? null,
+                topic: params.topic,
+                brief: params.brief,
+                closer_name: params.closerName,
+                max_rounds: params.maxRounds ?? MAX_ROUNDS,
+                max_messages: params.maxMessages ?? MAX_MESSAGES,
+                expires_at: expiresAt,
+            })
+            .select(SESSION_COLUMNS)
+            .single();
+        if (!error) {
+            row = data as unknown as SessionRow;
+            break;
+        }
+        if (error.code !== "23505") throwWrite("createCouncilSession", new Error(error.message));
+    }
+    if (!row) throwWrite("createCouncilSession", new Error("could not allocate a unique council code"));
+    const session = row;
+
+    // joined_seq is the invite index, so floor election has a deterministic
+    // tiebreak instead of every candidate sharing the default 0.
+    const roster: {
+        session_id: string; name: string; kind: "agent" | "moderator";
+        expertise: string; joined_seq: number;
+    }[] = params.participants.map((p, i) => ({
+        session_id: session.id,
+        name: p.name,
+        kind: "agent",
+        expertise: p.expertise,
+        joined_seq: i + 1,
+    }));
+    roster.push({
+        session_id: session.id,
+        name: MODERATOR_NAME,
+        kind: "moderator",
+        expertise: "Convener and recorder. Answers procedural questions when addressed.",
+        joined_seq: 0,
+    });
+
+    const { error: rosterError } = await supabase.from("council_participants").insert(roster);
+    if (rosterError) throwWrite("createCouncilSession roster", new Error(rosterError.message));
+
+    // The brief is seq 1 so every participant's first batch carries it verbatim.
+    await appendMessage({
+        sessionId: session.id,
+        speaker: MODERATOR_NAME,
+        role: "moderator",
+        intent: "moderate",
+        body: params.brief,
+        clientKey: "mod:brief",
+    });
+
+    const refreshed = await getSessionById(session.id);
+    return refreshed ?? mapSession(session);
+}
+
+async function selectSession(column: "id" | "code", value: string): Promise<CouncilSession | null> {
+    try {
+        const { data, error } = await supabase
+            .from("council_sessions")
+            .select(SESSION_COLUMNS)
+            .eq(column, value)
+            .maybeSingle();
+        if (error) throw new Error(error.message);
+        return data ? mapSession(data as unknown as SessionRow) : null;
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[Council] getSession failed:", message);
+        if (schemaUnavailable(message)) throw new CouncilSchemaError();
+        return null;
+    }
+}
+
+export async function getSessionByCode(code: string): Promise<CouncilSession | null> {
+    return selectSession("code", code.trim().toUpperCase());
+}
+
+export async function getSessionById(id: string): Promise<CouncilSession | null> {
+    return selectSession("id", id);
+}
+
+// A single primary-key point read. Never { count: "exact", head: true }: a count
+// is an aggregate over rows, last_seq is a stored value.
+export async function readTick(sessionId: string): Promise<CouncilTick | null> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select("last_seq, round, status, last_message_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, quorum_at, expires_at")
+        .eq("id", sessionId)
+        .maybeSingle();
+    if (error || !data) {
+        if (error) console.error("[Council] readTick failed:", error.message);
+        return null;
+    }
+    const row = data as unknown as SessionRow;
+    return {
+        lastSeq: row.last_seq,
+        round: row.round,
+        status: row.status,
+        lastMessageAt: row.last_message_at,
+        floorHolder: row.floor_holder,
+        floorGrantedAt: row.floor_granted_at,
+        floorEpoch: row.floor_epoch,
+        silentGrants: row.silent_grants,
+        quorumAt: row.quorum_at,
+        expiresAt: row.expires_at,
+    };
+}
+
+export async function joinCouncil(params: {
+    sessionId: string;
+    agentName: string;
+    expertise?: string;
+}): Promise<{ ok: boolean; reason?: string; live?: number }> {
+    try {
+        const { data, error } = await supabase.rpc("join_council", {
+            p_session_id: params.sessionId,
+            p_agent_name: params.agentName,
+            p_expertise: params.expertise ?? "",
+        });
+        if (error) throw new Error(error.message);
+        return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; live?: number };
+    } catch (err) {
+        return throwWrite("joinCouncil", err);
+    }
+}
+
+export async function appendMessage(params: {
+    sessionId: string;
+    speaker: string;
+    role?: CouncilRole;
+    intent: string;
+    body: string;
+    clientKey: string;
+    addressedTo?: string;
+    replyToSeq?: number;
+    ackSeq?: number;
+}): Promise<{
+    ok: boolean; seq?: number; round: number; reason?: string;
+    duplicate?: boolean; advanced?: boolean; posts?: number;
+}> {
+    try {
+        const { data, error } = await supabase.rpc("append_council_message", {
+            p_session_id: params.sessionId,
+            p_speaker: params.speaker,
+            p_role: params.role ?? "agent",
+            p_intent: params.intent,
+            p_body: params.body,
+            p_client_key: params.clientKey,
+            p_addressed_to: params.addressedTo ?? "all",
+            p_reply_to_seq: params.replyToSeq ?? null,
+            p_ack_seq: params.ackSeq ?? null,
+            p_posts_per_round: POSTS_PER_ROUND,
+            p_stale_seconds: PARTICIPANT_STALE_SECONDS,
+        });
+        if (error) throw new Error(error.message);
+        return (data ?? { ok: false, reason: "no_result", round: 0 }) as {
+            ok: boolean; seq?: number; round: number; reason?: string;
+            duplicate?: boolean; advanced?: boolean; posts?: number;
+        };
+    } catch (err) {
+        return throwWrite("appendMessage", err);
+    }
+}
+
+// Best-effort: presence is judged by age on read, so a missed touch costs
+// nothing until it compounds.
+export async function touchParticipant(params: {
+    sessionId: string;
+    agentName: string;
+    pendingAck?: number;
+    countWait?: boolean;
+}): Promise<boolean> {
+    try {
+        const { data, error } = await supabase.rpc("touch_council_participant", {
+            p_session_id: params.sessionId,
+            p_agent_name: params.agentName,
+            p_pending_ack: params.pendingAck ?? null,
+            p_count_wait: params.countWait ?? false,
+        });
+        if (error) throw new Error(error.message);
+        return data === true;
+    } catch (err) {
+        console.warn("[Council] touchParticipant failed:", err);
+        return true;
+    }
+}
+
+export async function electFloor(params: {
+    sessionId: string;
+    epoch: number;
+    lastSeq: number;
+}): Promise<{ granted: boolean; holder?: string; reason?: string }> {
+    try {
+        const { data, error } = await supabase.rpc("elect_council_floor", {
+            p_session_id: params.sessionId,
+            p_expected_epoch: params.epoch,
+            p_expected_last_seq: params.lastSeq,
+            p_silence_seconds: SILENCE_GRANT_SECONDS,
+            p_floor_ttl_seconds: FLOOR_TTL_SECONDS,
+            p_waiter_fresh_seconds: WAITER_FRESH_SECONDS,
+        });
+        if (error) throw new Error(error.message);
+        return (data ?? { granted: false, reason: "no_result" }) as { granted: boolean; holder?: string; reason?: string };
+    } catch (err) {
+        console.warn("[Council] electFloor failed:", err);
+        return { granted: false, reason: "error" };
+    }
+}
+
+export async function getParticipant(sessionId: string, name: string): Promise<CouncilParticipant | null> {
+    const { data, error } = await supabase
+        .from("council_participants")
+        .select(PARTICIPANT_COLUMNS)
+        .eq("session_id", sessionId)
+        .eq("name", name)
+        .maybeSingle();
+    if (error || !data) return null;
+    return mapParticipant(data as unknown as ParticipantRow);
+}
+
+// Best-effort, and issued only when the transition actually applies: an
+// unconditional per-window UPDATE would fire the updated_at trigger and take a
+// row-exclusive lock on the one hot row the entire poll reads.
+export async function expireSessionIfDue(sessionId: string): Promise<void> {
+    const { error } = await supabase
+        .from("council_sessions")
+        .update({ status: "expired" })
+        .eq("id", sessionId)
+        .in("status", ["open", "concluding"])
+        .lt("expires_at", new Date().toISOString());
+    if (error) console.warn("[Council] expireSessionIfDue failed:", error.message);
+}
+
+// Shrinks the round-advance quorum immediately instead of waiting out the 180s
+// staleness threshold.
+export async function leaveCouncil(sessionId: string, agentName: string): Promise<void> {
+    const { error } = await supabase
+        .from("council_participants")
+        .update({ status: "left" })
+        .eq("session_id", sessionId)
+        .eq("name", agentName);
+    if (error) console.warn("[Council] leaveCouncil failed:", error.message);
+}
+
+export async function listParticipants(sessionId: string): Promise<CouncilParticipant[]> {
+    const { data, error } = await supabase
+        .from("council_participants")
+        .select(PARTICIPANT_COLUMNS)
+        .eq("session_id", sessionId)
+        .order("joined_seq", { ascending: true });
+    if (error) {
+        console.error("[Council] listParticipants failed:", error.message);
+        return [];
+    }
+    return (data as unknown as ParticipantRow[]).map(mapParticipant);
+}
+
+export async function readTranscript(params: {
+    sessionId: string;
+    fromSeq?: number;
+    limit?: number;
+}): Promise<CouncilMessage[]> {
+    const { data, error } = await supabase
+        .from("council_messages")
+        .select(MESSAGE_COLUMNS)
+        .eq("session_id", params.sessionId)
+        .gt("seq", params.fromSeq ?? 0)
+        .order("seq", { ascending: true })
+        .limit(params.limit ?? 30);
+    if (error) {
+        console.error("[Council] readTranscript failed:", error.message);
+        return [];
+    }
+    return (data as unknown as MessageRow[]).map(mapMessage);
+}
+
+// Obligations are machine-computed, never inferred by the agent: a challenge or
+// ask aimed at you stays open until you reply to that seq with answer/concede.
+async function readOpenToYou(sessionId: string, agentName: string): Promise<CouncilMessage[]> {
+    const { data, error } = await supabase
+        .from("council_messages")
+        .select(MESSAGE_COLUMNS)
+        .eq("session_id", sessionId)
+        .eq("addressed_to", agentName)
+        .eq("answered", false)
+        .in("intent", ["challenge", "ask"])
+        .order("seq", { ascending: true })
+        .limit(10);
+    if (error) {
+        console.error("[Council] readOpenToYou failed:", error.message);
+        return [];
+    }
+    return (data as unknown as MessageRow[]).map(mapMessage);
+}
+
+function baseKeyword(session: CouncilSession, you: CouncilParticipant | null): CouncilStatusKeyword {
+    if (session.status === "closed") return "COUNCIL_CLOSED";
+    if (session.status === "concluding" || session.status === "expired") return "COUNCIL_CONCLUDING";
+    if (you && session.floorHolder === you.name) return "YOUR_TURN";
+    return "WAITING";
+}
+
+export async function buildView(params: {
+    sessionId: string;
+    agentName: string;
+    sinceSeq?: number;
+}): Promise<CouncilView | null> {
+    const session = await getSessionById(params.sessionId);
+    if (!session) return null;
+
+    const participants = await listParticipants(params.sessionId);
+    const you = participants.find((p) => p.name === params.agentName) ?? null;
+
+    // effective = sinceSeq ?? cursor_seq. The agent's claim wins when present;
+    // otherwise resume from what the server recorded as acknowledged.
+    const cursor = params.sinceSeq ?? you?.cursorSeq ?? 0;
+
+    const batch = await readTranscript({
+        sessionId: params.sessionId,
+        fromSeq: cursor,
+        limit: MAX_BATCH_MESSAGES,
+    });
+
+    // On overflow the OLDEST are dropped and replaced with a pointer: bodies are
+    // rendered in full because truncating a peer's argument degrades the debate.
+    let fresh = batch;
+    let omittedBefore: number | null = null;
+    let chars = fresh.reduce((n, m) => n + m.body.length, 0);
+    while (fresh.length > 1 && chars > MAX_BATCH_CHARS) {
+        const dropped = fresh[0];
+        chars -= dropped.body.length;
+        fresh = fresh.slice(1);
+        omittedBefore = dropped.seq;
+    }
+
+    return {
+        session,
+        participants,
+        you,
+        fresh,
+        openToYou: you ? await readOpenToYou(params.sessionId, params.agentName) : [],
+        cursor,
+        omittedBefore,
+        keyword: baseKeyword(session, you),
+    };
+}
+
+export async function concludeCouncil(params: {
+    sessionId: string;
+    closer: string;
+    verdict: string;
+    openQuestions: string[];
+}): Promise<{ changed: boolean; verdict?: string; closer?: string; vaultPath?: string | null; round?: number; messages?: number }> {
+    try {
+        const { data, error } = await supabase.rpc("conclude_council", {
+            p_session_id: params.sessionId,
+            p_closer: params.closer,
+            p_verdict: params.verdict,
+            p_open_questions: params.openQuestions,
+        });
+        if (error) throw new Error(error.message);
+        return (data ?? { changed: false }) as { changed: boolean; verdict?: string; closer?: string; vaultPath?: string | null };
+    } catch (err) {
+        return throwWrite("concludeCouncil", err);
+    }
+}
+
+export async function markArchive(params: {
+    sessionId: string;
+    status: "filed" | "failed" | "skipped";
+    vaultPath?: string;
+}): Promise<void> {
+    const { error } = await supabase
+        .from("council_sessions")
+        .update({ archive_status: params.status, vault_path: params.vaultPath ?? null })
+        .eq("id", params.sessionId);
+    if (error) console.warn("[Council] markArchive failed:", error.message);
+}
+
+export async function listOpenCouncils(): Promise<CouncilSession[]> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .in("status", ["open", "concluding"])
+        .order("created_at", { ascending: false });
+    if (error) {
+        console.error("[Council] listOpenCouncils failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
+// Terminal but unwritten: the sweep is the only actor when every participant is
+// dead and nobody is polling to execute a transition.
+//
+// Age is measured by last_message_at, NOT updated_at: the updated_at trigger
+// fires on every write including the sweep's own expiry update, so a session
+// could never age past the grace window.
+export async function listSessionsNeedingVerdict(olderThanMs: number): Promise<CouncilSession[]> {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .in("status", ["expired", "concluding"])
+        .is("verdict", null)
+        .lt("last_message_at", cutoff);
+    if (error) {
+        console.error("[Council] listSessionsNeedingVerdict failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
+export async function listFailedArchives(): Promise<CouncilSession[]> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .eq("archive_status", "failed")
+        .eq("status", "closed");
+    if (error) {
+        console.error("[Council] listFailedArchives failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
+export async function expireOverdueSessions(): Promise<CouncilSession[]> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .update({ status: "expired" })
+        .in("status", ["open", "concluding"])
+        .lt("expires_at", new Date().toISOString())
+        .select(SESSION_COLUMNS);
+    if (error) {
+        console.error("[Council] expireOverdueSessions failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
+export function isValidCouncilCode(code: string): boolean {
+    const body = code.trim().toUpperCase().replace(/^CN-/, "");
+    return body.length > 0 && [...body].every((c) => CODE_ALPHABET.includes(c));
+}

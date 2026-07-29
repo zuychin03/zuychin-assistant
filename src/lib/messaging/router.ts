@@ -20,7 +20,10 @@ export type NotificationType =
     | "agent_run_complete"
     | "initiative_nudge"
     | "proactive_checkin"
-    | "run_review";
+    | "run_review"
+    | "council_convened"
+    | "council_conclusion"
+    | "council_stalled";
 
 interface Route {
     discord?: DiscordPurpose;
@@ -43,6 +46,11 @@ const ROUTES: Record<NotificationType, Route> = {
     initiative_nudge: { telegram: true, push: true },
     proactive_checkin: { telegram: true },
     run_review: { discord: "system", discordFallback: false },
+    // Milestones only, never per turn: sendDiscordMessage chunks over 2000 chars
+    // into sequential POSTs and aborts the rest on the first non-ok.
+    council_convened: { discord: "coworking" },
+    council_conclusion: { discord: "coworking" },
+    council_stalled: { discord: "coworking" },
 };
 
 export interface NotifyOptions {
