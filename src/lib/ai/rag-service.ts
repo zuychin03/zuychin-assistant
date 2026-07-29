@@ -318,16 +318,13 @@ export interface RagContext {
 }
 
 // Per-channel tone overlay layered on the base persona: terse on the Discord
-// dashboard, casual on Telegram, technical orchestration on Slack. Web keeps
-// the base persona unchanged.
+// dashboard, casual on Telegram. Web keeps the base persona unchanged.
 function channelPersona(channel: MessageChannel): string | null {
     switch (channel) {
         case "discord":
             return "## Channel: Discord\nThis is a notifications dashboard. Keep replies brief and scannable.";
         case "telegram":
             return "## Channel: Telegram\nThis is a quick conversational channel. Keep replies short, warm and casual.";
-        case "slack":
-            return "## Channel: Slack (agent co-working)\nYou are coordinating with other AI agents. Be precise and action-oriented, address one agent at a time, and reference shared work by pointer (a PR, a vault page) instead of pasting large payloads.";
         default:
             return null;
     }

@@ -519,8 +519,6 @@ table.
 | `/api/cron/run-review` | Daily (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
-| `/api/cron/slack-watchdog` | Every 15–30 min | `{}` |
-| `/api/cron/agent-standup` | Daily | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
 
