@@ -39,6 +39,8 @@ interface ThreadState {
     updatedAt: string;
     finishedAt?: string;
     escalated?: boolean;
+    /** Agents that were addressed but never replied; skipped from here on. */
+    unresponsive?: string[];
 }
 
 export const SLACK_THREAD_PREFIX = "slack_thread:";
@@ -96,6 +98,43 @@ export async function markEscalated(threadTs: string): Promise<void> {
     await saveState(s);
 }
 
+/**
+ * An addressed agent never replied. Say so in the thread, strike it off the
+ * roster, and either carry on with whoever is left or close the thread — a
+ * silent stall is the worst outcome, since nothing else ever moves it.
+ */
+export async function handleStalledThread(threadTs: string, staleMinutes: number): Promise<"advanced" | "closed" | "skipped"> {
+    const state = await loadState(threadTs);
+    if (!state || state.status !== "active" || !state.awaiting) return "skipped";
+
+    const dead = state.awaiting;
+    state.unresponsive = [...new Set([...(state.unresponsive ?? []), dead])];
+    state.awaiting = null;
+    await saveState(state);
+
+    await sendSlackMessage(
+        state.channel,
+        `⏳ No reply from ${dead} after ~${staleMinutes}m — moving on without it.`,
+        { threadTs: state.threadTs },
+    );
+
+    if (responsiveRoster(state).length === 0 || state.turns >= MAX_TURNS) {
+        await finalize(state, "capped", `Stopped: ${dead} never replied and no other agent is available.`);
+        return "closed";
+    }
+
+    const decision = await decideNext(state).catch((err) => {
+        console.error("[Slack] Decide after stall failed:", err);
+        return null;
+    });
+    if (!decision) {
+        await finalize(state, "capped", `Stopped after ${dead} went quiet.`);
+        return "closed";
+    }
+    await applyDecision(state, decision);
+    return "advanced";
+}
+
 export interface FinishedThread {
     task: string;
     status: string;
@@ -133,8 +172,13 @@ interface Decision {
     summary?: string;
 }
 
+function responsiveRoster(state: ThreadState): string[] {
+    const dead = new Set(state.unresponsive ?? []);
+    return listAgents().map((a) => a.label).filter((l) => !dead.has(l));
+}
+
 async function decideNext(state: ThreadState): Promise<Decision> {
-    const roster = listAgents().map((a) => a.label);
+    const roster = responsiveRoster(state);
     const transcript = state.transcript.map((e) => `${e.from}: ${e.text}`).join("\n") || "(no replies yet)";
     const balance = roster.map((l) => `${l}: ${state.mentionsByAgent[l] ?? 0}`).join(", ") || "(none)";
 
@@ -223,7 +267,13 @@ export async function handleThreadReply(event: SlackMessageEvent): Promise<void>
     const agent = identifyAgent(event);
     if (!agent) return; // only agent replies drive turns
 
-    state.transcript.push({ from: agent, text: humanizeMentions((event.text ?? "").slice(0, 2000)) });
+    const text = humanizeMentions((event.text ?? "").slice(0, 2000));
+    // Some agent integrations post the same reply twice; ignore an immediate
+    // duplicate so it doesn't advance the conversation twice.
+    const last = state.transcript[state.transcript.length - 1];
+    if (last && last.from === agent && last.text === text) return;
+
+    state.transcript.push({ from: agent, text });
     state.turns += 1;
     state.awaiting = null;
 
@@ -250,9 +300,8 @@ async function applyDecision(state: ThreadState, decision: Decision): Promise<vo
     }
 
     const label = decision.agentLabel ?? "";
-    const known = listAgents().some((a) => a.label === label);
-    if (!known) {
-        await finalize(state, "done", `Stopping: model tried to address an unknown agent "${label}".`);
+    if (!responsiveRoster(state).includes(label)) {
+        await finalize(state, "done", `Stopping: no responsive agent to address next (tried "${label}").`);
         return;
     }
 

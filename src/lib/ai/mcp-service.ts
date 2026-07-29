@@ -40,6 +40,12 @@ export const WEB_SEARCH_TOOL: McpTool = {
             description: "What to search for.",
             required: true,
         },
+        depth: {
+            type: "string",
+            enum: ["quick", "thorough"],
+            description: "'quick' (default) for a single fact or a current value - prices, weather, scores, dates, a name. 'thorough' for questions needing real source material: research, comparisons, how something works, anything you would want to read rather than glance at. 'thorough' is slower and costs more, so only pick it when snippets genuinely will not answer the question.",
+            required: false,
+        },
     },
 };
 
@@ -535,7 +541,7 @@ export async function executeTool(
             return executeGetCurrentTime(args.timezone as string | undefined);
 
         case "search_web":
-            return runWebSearch(args.query as string);
+            return runWebSearch(args.query as string, args.depth === "thorough" ? "thorough" : "quick");
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef);
