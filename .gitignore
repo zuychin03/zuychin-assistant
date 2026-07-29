@@ -42,3 +42,21 @@ CHANGELOG.md
 
 # local supabase project / migration history (use supabase-setup.sql instead)
 /supabase/
+
+# AI agent / MCP client configs. These hold bearer tokens for this app's own MCP
+# server, so none of them may ever be committed.
+.agents/
+.claude/
+.cursor/
+.codex/
+.gemini/
+.windsurf/
+.continue/
+.roo/
+.cline/
+.aider*
+.mcp.json
+.vscode/mcp.json
+CLAUDE.local.md
+**/mcp_config.json
+**/mcp.json
