@@ -10,7 +10,22 @@ export interface ChatModel {
     supportsVision: boolean;
     supportsThinking: boolean;
     supportsSearch: boolean;
+    /**
+     * Verified output-token ceiling, measured 2026-07-31 against each platform:
+     * Gemini via models.get outputTokenLimit, OpenRouter via
+     * top_provider.max_completion_tokens, and NVIDIA NIM / OpenCode Zen by
+     * probing chat/completions (their /models endpoints omit limits).
+     * Omitted where the platform publishes nothing and no key was available.
+     */
+    maxOutputTokens?: number;
 }
+
+// Used for the slider bound when a model's ceiling was never verified. Matches
+// the value the NIM path already backfills, so it is not a regression.
+export const UNVERIFIED_MAX_OUTPUT_TOKENS = 8192;
+
+// The widest verified ceiling across every provider; the request-level guard.
+export const MAX_OUTPUT_TOKENS_CEILING = 131072;
 
 export interface EmbeddingModel {
     id: string;
@@ -37,8 +52,8 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
         chatModels: [
-            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", name: "gemini-3.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", name: "gemini-3.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [
             { id: "gemini-embedding-2-preview", label: "Gemini Embedding 2 (768d)", name: "gemini-embedding-2", dimension: 768 },
@@ -55,13 +70,10 @@ export const PROVIDERS: ProviderConfig[] = [
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
         chatModels: [
-            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "poolside/laguna-m.1:free", label: "Laguna M.1 (free)", name: "laguna-m.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "openai/gpt-oss-120b:free", label: "GPT-OSS 120B (free)", name: "gpt-oss-120b", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "qwen/qwen3-next-80b-a3b-instruct:free", label: "Qwen3 Next 80B (free)", name: "qwen3-next", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
+            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 16384 },
         ],
         embeddingModels: [],
     },
@@ -72,17 +84,14 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
         chatModels: [
-            { id: "minimaxai/minimax-m3", label: "MiniMax M3 (free)", name: "minimax-m3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "deepseek-ai/deepseek-v4-pro", label: "DeepSeek V4 Pro (free)", name: "deepseek-v4-pro", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "deepseek-ai/deepseek-v4-flash", label: "DeepSeek V4 Flash (free)", name: "deepseek-v4-flash", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true },
-            { id: "google/diffusiongemma-26b-a4b-it", label: "DiffusionGemma 26B (free)", name: "diffusiongemma", supportsTools: false, supportsVision: true, supportsThinking: false, supportsSearch: false },
-            { id: "stepfun-ai/step-3.7-flash", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "z-ai/glm-5.2", label: "GLM-5.2 (free)", name: "glm-5.2", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "minimaxai/minimax-m2.7", label: "MiniMax M2.7 (free)", name: "minimax-m2.7", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "qwen/qwen3.5-397b-a17b", label: "Qwen3.5 397B (free)", name: "qwen3.5", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "qwen/qwen3-next-80b-a3b-instruct", label: "Qwen3 Next 80B (free)", name: "qwen3-next", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true }
+            { id: "minimaxai/minimax-m3", label: "MiniMax M3 (free)", name: "minimax-m3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "deepseek-ai/deepseek-v4-pro", label: "DeepSeek V4 Pro (free)", name: "deepseek-v4-pro", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "deepseek-ai/deepseek-v4-flash", label: "DeepSeek V4 Flash (free)", name: "deepseek-v4-flash", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "google/diffusiongemma-26b-a4b-it", label: "DiffusionGemma 26B (free)", name: "diffusiongemma", supportsTools: false, supportsVision: true, supportsThinking: false, supportsSearch: false, maxOutputTokens: 131072 },
+            { id: "stepfun-ai/step-3.7-flash", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "z-ai/glm-5.2", label: "GLM-5.2 (free)", name: "glm-5.2", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 }
         ],
         embeddingModels: [
             { id: "nvidia/llama-nemotron-embed-1b-v2", label: "Llama Nemotron Embed 1B v2 (free, 2048d)", name: "nemotron-embed-1b", dimension: 2048 },
@@ -96,8 +105,10 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://opencode.ai/zen/v1",
         apiKeyEnv: "OPENCODE_ZEN_API_KEY",
         chatModels: [
-            { id: "mimo-v2.5-free", label: "MiMo V2.5 (free)", name: "mimo-v2.5", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
-            { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash (free)", name: "deepseek-v4-flash", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true },
+            { id: "mimo-v2.5-free", label: "MiMo V2.5 (free)", name: "mimo-v2.5", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash (free)", name: "deepseek-v4-flash", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "laguna-s-2.1-free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, maxOutputTokens: 131072 },
+            { id: "ling-3.0-flash-free", label: "Ling 3.0 Flash (free)", name: "ling-3.0-flash", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, maxOutputTokens: 131072 },
         ],
         embeddingModels: [],
     },
@@ -131,10 +142,28 @@ export function sanitizeGenParams(raw: unknown): GenParams {
             out.topP = Math.min(1, Math.max(0, r.topP));
         }
         if (typeof r.maxTokens === "number" && isFinite(r.maxTokens)) {
-            out.maxTokens = Math.min(32000, Math.max(1, Math.round(r.maxTokens)));
+            out.maxTokens = Math.min(MAX_OUTPUT_TOKENS_CEILING, Math.max(1, Math.round(r.maxTokens)));
         }
     }
     return out;
+}
+
+/** Verified output ceiling for a chat model id, or the conservative fallback. */
+export function modelMaxOutputTokens(modelId: string): number {
+    for (const provider of PROVIDERS) {
+        const model = provider.chatModels.find((m) => m.id === modelId);
+        if (model) return model.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS;
+    }
+    return UNVERIFIED_MAX_OUTPUT_TOKENS;
+}
+
+/**
+ * Never send a model more than it accepts. sanitizeGenParams cannot do this —
+ * it runs before the model is resolved — and going over the ceiling makes the
+ * provider reject the whole request rather than quietly clamping.
+ */
+export function cappedMaxTokens(requested: number, modelId: string): number {
+    return Math.min(requested, modelMaxOutputTokens(modelId));
 }
 
 export const DEFAULT_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-lite" };
@@ -364,6 +393,7 @@ export function listProvidersPublic() {
             supportsVision: m.supportsVision,
             supportsThinking: m.supportsThinking,
             supportsSearch: m.supportsSearch,
+            maxOutputTokens: m.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS,
             meta: getModelMeta(m.id),
         })),
         embeddingModels: p.embeddingModels.map((m) => ({

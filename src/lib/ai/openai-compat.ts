@@ -1,7 +1,7 @@
 import {
     buildOpenAIToolDeclarations, executeTool, type OpenAITool,
 } from "@/lib/ai/mcp-service";
-import { getProviderApiKey, type ChatModel, type ProviderConfig, type GenParams } from "@/lib/ai/providers";
+import { getProviderApiKey, cappedMaxTokens, type ChatModel, type ProviderConfig, type GenParams } from "@/lib/ai/providers";
 import {
     joinContinuation, segmentText, trimOverlap, ANSWER_NOW_PROMPT, CONTINUATION_BUDGET_MS,
     CONTINUE_PROMPT, MAX_CONTINUATIONS, TRUNCATION_NOTE, type Segment,
@@ -353,7 +353,7 @@ async function postChat(
 
     if (genParams.temperature !== undefined) body.temperature = genParams.temperature;
     if (genParams.topP !== undefined) body.top_p = genParams.topP;
-    if (genParams.maxTokens !== undefined) body.max_tokens = genParams.maxTokens;
+    if (genParams.maxTokens !== undefined) body.max_tokens = cappedMaxTokens(genParams.maxTokens, model);
 
     if (provider.id === "nvidia-nim") {
         if (body.max_tokens === undefined) body.max_tokens = 8192;

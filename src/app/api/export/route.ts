@@ -3,6 +3,10 @@ import { renderDocument, type ExportFormat } from "@/lib/export";
 
 const FORMATS: ExportFormat[] = ["docx", "pdf", "md"];
 
+// Rendering a long conversation can exceed the default budget; the renderer
+// itself has no length ceiling.
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
     try {
         const { content, format, title = "Document" } = await req.json();

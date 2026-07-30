@@ -436,10 +436,10 @@ export default function Home() {
     } catch { }
   }, []);
 
-  const updateGenParams = (next: GenParamsState) => {
+  const updateGenParams = useCallback((next: GenParamsState) => {
     setGenParams(next);
     localStorage.setItem("zuychin-gen-params", JSON.stringify(next));
-  };
+  }, []);
 
   const currentChatProvider = (() => {
     const sep = chatSel.indexOf("::");
@@ -453,10 +453,22 @@ export default function Home() {
     return currentChatProvider?.chatModels.find((m) => m.id === mid);
   })();
   const canThink = !!currentChatModel?.supportsThinking;
+  // Each model publishes its own output ceiling, so the slider is bounded per
+  // model rather than by one global cap. Coarser steps once the range is large.
+  const maxTokenCeiling = currentChatModel?.maxOutputTokens ?? 8192;
+  const maxTokenStep = maxTokenCeiling > 32768 ? 2048 : maxTokenCeiling > 8192 ? 1024 : 256;
 
   useEffect(() => {
     if (!canThink && thinkingEnabled) setThinkingEnabled(false);
   }, [canThink, thinkingEnabled]);
+
+  // Switching to a model with a lower ceiling must not leave the slider holding a
+  // value it cannot represent; the server clamps too, but the UI should agree.
+  useEffect(() => {
+    if (typeof genParams.maxTokens === "number" && genParams.maxTokens > maxTokenCeiling) {
+      updateGenParams({ ...genParams, maxTokens: maxTokenCeiling });
+    }
+  }, [maxTokenCeiling, genParams, updateGenParams]);
 
   const toggleThinking = () => {
     setThinkingEnabled((prev) => {
@@ -1375,8 +1387,10 @@ export default function Home() {
             </div>
             <ParamRow label="Temperature" min={0} max={2} step={0.1} def={0.7} value={genParams.temperature} onChange={(v) => updateGenParams({ ...genParams, temperature: v })} />
             <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
-            <ParamRow label="Max tokens" min={256} max={8192} step={256} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
-            <p style={styles.settingsNote}>Auto uses the selected model&apos;s provider default.</p>
+            <ParamRow label="Max tokens" min={256} max={maxTokenCeiling} step={maxTokenStep} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
+            <p style={styles.settingsNote}>
+              Auto uses the selected model&apos;s provider default. Ceiling is {maxTokenCeiling.toLocaleString()} for {currentChatModel?.label ?? "this model"}.
+            </p>
             {providers.some((p) => p.embeddingModels.length > 0) && (
               <div style={styles.settingsEmbedRow}>
                 <span style={styles.settingsEmbedLabel}>Embedding</span>

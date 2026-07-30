@@ -2,7 +2,7 @@ import {
     commitFiles, getFile, requireVaultConfig,
     type CommitFileChange,
 } from "@/lib/vault/github";
-import { loadWikiPages } from "@/lib/vault/lint";
+import { loadWikiPages, type VaultPage } from "@/lib/vault/lint";
 import {
     deleteVaultPage, listVaultEmbeddings, listVaultPages,
     upsertVaultPage, type VaultPageRow,
@@ -10,38 +10,28 @@ import {
 import { addBacklink, appendLog, today, toWikilink } from "@/lib/vault/ingest";
 import { withVaultLock } from "@/lib/vault/lock";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
+import { parseFrontmatter } from "@/lib/knowledge/markdown";
+import { clusterNodes, pageRank, type Adjacency } from "@/lib/vault/graph-analysis";
+import {
+    listKnowledgeMetaByPath, readGraphSnapshot, replacePageLinks, writeGraphSnapshot,
+    type KnowledgeDocumentDates,
+} from "@/lib/vault/graph-store";
+import { NODE_HEALTH } from "@/lib/vault/graph-types";
+import type {
+    GraphCluster, GraphEdge, GraphNode, HealthSummary, LinkSuggestion,
+    NodeHealth, VaultGraph,
+} from "@/lib/vault/graph-types";
 
-export interface GraphNode {
-    id: string; // repo path, e.g. wiki/concepts/attention.md
-    title: string;
-    category: string;
-    summary: string;
-    links: number;
-    updated: string | null;
-}
-
-export interface GraphEdge {
-    source: string;
-    target: string;
-    /** True when both pages link to each other. */
-    mutual: boolean;
-}
-
-export interface LinkSuggestion {
-    source: string;
-    target: string;
-    similarity: number;
-}
-
-export interface VaultGraph {
-    nodes: GraphNode[];
-    edges: GraphEdge[];
-    suggestions: LinkSuggestion[];
-}
+export type { GraphCluster, GraphEdge, GraphNode, LinkSuggestion, NodeHealth, VaultGraph };
 
 // Doc<->doc cosine below this is noise (see LINK_THRESHOLD rationale in ingest.ts).
 const SUGGEST_THRESHOLD = 0.5;
 const MAX_SUGGESTIONS = 15;
+// Per-page candidates are reviewed one at a time, so a looser bar is useful there
+// than for the graph-wide overlay.
+const PAGE_SUGGEST_THRESHOLD = 0.35;
+const MAX_PAGE_SUGGESTIONS = 8;
+const STALE_DAYS = 180;
 
 function escapeRegExp(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -57,6 +47,66 @@ function parseTitle(markdown: string, fallback: string): string {
 function parseUpdated(markdown: string): string | null {
     const m = markdown.match(/^updated:\s*(\d{4}-\d{2}-\d{2})/m);
     return m ? m[1] : null;
+}
+
+function daysSince(value: string | null): number | null {
+    if (!value) return null;
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) return null;
+    return (Date.now() - parsed) / 86_400_000;
+}
+
+const TRUST_VALUES = new Set(["trusted", "reviewed", "untrusted"]);
+const STATUS_VALUES = new Set(["active", "suggested", "superseded", "archived", "deleted"]);
+
+/**
+ * Lifecycle metadata for one page. knowledge_documents wins when present (it has
+ * real timestamps); frontmatter is the fallback so a vault older than the
+ * knowledge tables still renders with meaningful trust and status.
+ */
+function resolveMeta(page: VaultPage, row: KnowledgeDocumentDates | undefined) {
+    const attributes = parseFrontmatter(page.text).attributes;
+    const attribute = (key: string): string | undefined => {
+        const value = attributes[key];
+        return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    };
+
+    const trustRaw = row?.trust ?? attribute("trust") ?? "reviewed";
+    const statusRaw = row?.status ?? attribute("status") ?? "active";
+    return {
+        trust: (TRUST_VALUES.has(trustRaw) ? trustRaw : "reviewed") as GraphNode["trust"],
+        status: (STATUS_VALUES.has(statusRaw) ? statusRaw : "active") as GraphNode["status"],
+        scope: row?.scope ?? attribute("scope") ?? "user",
+        sensitivity: row?.sensitivity ?? attribute("sensitivity") ?? "private",
+        kind: row?.kind ?? attribute("type") ?? "semantic",
+        created: row?.createdAt ?? attribute("created") ?? null,
+        malformed: !page.text.startsWith("---") || !attribute("title") || !attribute("category"),
+    };
+}
+
+function emptyHealthSummary(): HealthSummary {
+    return Object.fromEntries(NODE_HEALTH.map((key) => [key, 0])) as HealthSummary;
+}
+
+function buildClusters(nodes: GraphNode[]): GraphCluster[] {
+    const byCluster = new Map<number, GraphNode[]>();
+    for (const node of nodes) {
+        if (node.cluster < 0) continue;
+        const members = byCluster.get(node.cluster);
+        if (members) members.push(node);
+        else byCluster.set(node.cluster, [node]);
+    }
+
+    return [...byCluster.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([id, members]) => {
+            const lead = members.reduce((best, node) => (node.centrality > best.centrality ? node : best), members[0]);
+            const categoryMix: Record<string, number> = {};
+            for (const member of members) {
+                categoryMix[member.category] = (categoryMix[member.category] ?? 0) + 1;
+            }
+            return { id, size: members.length, label: lead.title, categoryMix, centroidPath: lead.id };
+        });
 }
 
 function humanize(path: string): string {
@@ -145,20 +195,30 @@ async function suggestLinks(
 
 export async function buildVaultGraph(includeSuggestions: boolean): Promise<VaultGraph> {
     const cfg = requireVaultConfig();
-    const [pages, rows] = await Promise.all([loadWikiPages(cfg), listVaultPages()]);
+    const [pages, rows, knowledgeMeta] = await Promise.all([
+        loadWikiPages(cfg),
+        listVaultPages(),
+        listKnowledgeMetaByPath(),
+    ]);
     const rowByPath = new Map(rows.map((r) => [r.path, r]));
     const pageByPath = new Map(pages.map((p) => [p.path, p]));
 
     const outboundPairs = new Set<string>(); // "a->b" directed
     const edges = new Map<string, GraphEdge>();
     const degree = new Map<string, number>();
+    const adjacency: Adjacency = new Map();
+    const dangling = new Map<string, number>();
 
     for (const p of pages) {
+        adjacency.set(p.path, new Set());
+        let missing = 0;
         for (const target of new Set(p.outbound)) {
             const t = `${target}.md`;
-            if (t === p.path || !pageByPath.has(t)) continue;
+            if (t === p.path) continue;
+            if (!pageByPath.has(t)) { missing++; continue; }
             outboundPairs.add(`${p.path}->${t}`);
         }
+        dangling.set(p.path, missing);
     }
     for (const pair of outboundPairs) {
         const [a, b] = pair.split("->");
@@ -170,26 +230,114 @@ export async function buildVaultGraph(includeSuggestions: boolean): Promise<Vaul
             edges.set(key, { source: a, target: b, mutual: false });
             degree.set(a, (degree.get(a) ?? 0) + 1);
             degree.set(b, (degree.get(b) ?? 0) + 1);
+            adjacency.get(a)!.add(b);
+            adjacency.get(b)!.add(a);
         }
     }
 
+    const ids = pages.map((p) => p.path);
+    const clusters = clusterNodes(ids, adjacency);
+    const ranks = pageRank(ids, adjacency);
+    const health = emptyHealthSummary();
+
     const nodes: GraphNode[] = pages.map((p) => {
         const row = rowByPath.get(p.path);
+        const meta = resolveMeta(p, knowledgeMeta.get(p.path));
+        const links = degree.get(p.path) ?? 0;
+        const missing = dangling.get(p.path) ?? 0;
+        const updated = parseUpdated(p.text) ?? row?.updatedAt?.slice(0, 10) ?? null;
+        const age = daysSince(updated);
+
+        const findings: NodeHealth[] = [];
+        if (links === 0) findings.push("orphan");
+        if (missing > 0) findings.push("dangling");
+        if (age !== null && age > STALE_DAYS) findings.push("stale");
+        if (meta.malformed) findings.push("malformed");
+        if (meta.trust === "untrusted" || meta.status === "suggested") findings.push("unreviewed");
+        for (const finding of findings) health[finding]++;
+
         return {
             id: p.path,
             title: parseTitle(p.text, row?.title ?? humanize(p.path)),
             category: p.category,
             summary: row?.summary ?? "",
-            links: degree.get(p.path) ?? 0,
-            updated: parseUpdated(p.text) ?? row?.updatedAt?.slice(0, 10) ?? null,
+            links,
+            updated,
+            created: meta.created,
+            trust: meta.trust,
+            status: meta.status,
+            scope: meta.scope,
+            sensitivity: meta.sensitivity,
+            kind: meta.kind,
+            cluster: clusters.get(p.path) ?? -1,
+            centrality: ranks.get(p.path) ?? 0,
+            words: p.text.split(/\s+/).length,
+            health: findings,
+            dangling: missing,
         };
     });
 
     const suggestions = includeSuggestions
-        ? await suggestLinks(rows, new Set(pages.map((p) => p.path)), new Set(edges.keys()))
+        ? await suggestLinks(rows, new Set(ids), new Set(edges.keys()))
         : [];
 
-    return { nodes, edges: [...edges.values()], suggestions };
+    return {
+        nodes,
+        edges: [...edges.values()],
+        suggestions,
+        clusters: buildClusters(nodes),
+        health,
+        builtAt: new Date().toISOString(),
+    };
+}
+
+/** Build, then persist the snapshot and the derived adjacency table. */
+export async function rebuildVaultGraph(includeSuggestions = true): Promise<VaultGraph> {
+    const startedAt = Date.now();
+    const graph = await buildVaultGraph(includeSuggestions);
+    await Promise.all([
+        writeGraphSnapshot(graph, Date.now() - startedAt),
+        replacePageLinks(graph.edges),
+    ]);
+    return graph;
+}
+
+/** Link candidates for one page, ranked by cosine against the stored vectors. */
+export async function suggestLinksForPage(path: string): Promise<LinkSuggestion[]> {
+    const rows = await listVaultPages();
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(r.embeddingModel, (counts.get(r.embeddingModel) ?? 0) + 1);
+    const model = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (!model) return [];
+
+    const vectors = await listVaultEmbeddings(model);
+    const own = vectors.find((v) => v.path === path);
+    if (!own) return [];
+
+    // Prefer the snapshot's edges: reading the whole repo from GitHub just to learn
+    // what is already linked costs seconds on an interactive panel.
+    const linked = new Set<string>();
+    const snapshot = await readGraphSnapshot();
+    if (snapshot) {
+        for (const edge of snapshot.graph.edges) {
+            if (edge.source === path) linked.add(edge.target);
+            else if (edge.target === path) linked.add(edge.source);
+        }
+    } else {
+        const pages = await loadWikiPages(requireVaultConfig());
+        const page = pages.find((p) => p.path === path);
+        for (const target of page?.outbound ?? []) linked.add(`${target}.md`);
+        for (const other of pages) {
+            if (other.outbound.some((target) => `${target}.md` === path)) linked.add(other.path);
+        }
+    }
+
+    return vectors
+        .filter((v) => v.path !== path && v.path.startsWith("wiki/") && !linked.has(v.path))
+        .map((v) => ({ source: path, target: v.path, similarity: cosine(own.embedding, v.embedding) }))
+        .filter((s) => s.similarity >= PAGE_SUGGEST_THRESHOLD)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, MAX_PAGE_SUGGESTIONS);
 }
 
 export interface GraphMutationResult {

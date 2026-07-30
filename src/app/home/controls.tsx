@@ -24,6 +24,8 @@ export interface ProviderModel {
   supportsVision?: boolean;
   supportsThinking?: boolean;
   supportsSearch?: boolean;
+  /** Verified output-token ceiling; bounds the max-tokens slider. */
+  maxOutputTokens?: number;
   meta?: ModelMeta | null;
 }
 export interface ProviderInfo {

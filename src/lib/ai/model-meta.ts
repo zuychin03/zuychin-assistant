@@ -39,15 +39,16 @@ const NEMOTRON_3_ULTRA: ModelMeta = {
     strengths: ["Reasoning", "Agentic", "Coding", "Math", "Science", "Long context"],
 };
 
-const LAGUNA_M1: ModelMeta = {
-    developer: "Poolside",
+// Only the verified output ceiling is recorded: OpenCode Zen's model list exposes
+// ids alone, so context size and parameter counts are deliberately left blank
+// rather than guessed at.
+const LING_3_FLASH: ModelMeta = {
+    developer: "InclusionAI",
     description:
-        "Poolside's flagship coding-agent model, trained from scratch on 30T tokens. Reaches 72.5% on SWE-bench Verified and is tuned for real software-engineering and tool-driven workflows.",
+        "Flash tier of the Ling family, tuned for fast high-throughput replies. Served free on OpenCode Zen; tool calling is verified working.",
     inputs: ["Text"],
-    context: "256K",
-    maxOutput: "32K",
-    params: "225B total · 23B active (MoE)",
-    strengths: ["Coding", "Agentic", "Tool use", "Reasoning"],
+    maxOutput: "128K",
+    strengths: ["Tool use", "High throughput"],
 };
 
 const LAGUNA_S_21: ModelMeta = {
@@ -78,16 +79,6 @@ const GEMMA_4_26B_A4B: ModelMeta = {
     context: "262K",
     params: "25.2B total · 3.8B active (MoE)",
     strengths: ["Efficient", "Multimodal", "Vision", "Tool use", "Reasoning", "Multilingual"],
-};
-
-const GPT_OSS_120B: ModelMeta = {
-    developer: "OpenAI",
-    description:
-        "OpenAI's open-weight MoE built for agentic tasks and configurable reasoning. Near-parity with o4-mini on reasoning benchmarks, with adjustable reasoning effort, native tool use and a 131K context.",
-    inputs: ["Text"],
-    context: "131K",
-    params: "117B total · 5.1B active (MoE)",
-    strengths: ["Reasoning", "Agentic", "Tool use", "Coding", "Math"],
 };
 
 const MINIMAX_M3: ModelMeta = {
@@ -130,26 +121,6 @@ const GLM_5_2: ModelMeta = {
     maxOutput: "128K",
     params: "753B total · 40B active (MoE)",
     strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Long context", "Math", "Terminal ops"],
-};
-
-const MINIMAX_M2_7: ModelMeta = {
-    developer: "MiniMax",
-    description:
-        "Sparse MoE tuned for agentic coding and chat - long-horizon software engineering, live troubleshooting and document generation. A self-evolving training loop pushes its coding scores near frontier models.",
-    inputs: ["Text"],
-    context: "200K",
-    params: "230B total · 10B active (MoE)",
-    strengths: ["Coding", "Agentic", "Tool use", "Reasoning", "Long context"],
-};
-
-const QWEN_35: ModelMeta = {
-    developer: "Alibaba Qwen",
-    description:
-        "Qwen's first natively multimodal open MoE, unifying the text and vision model lines. Supports switchable reasoning/non-reasoning modes, image and video input, and 201 languages, with strong logic, math and code over a 256K context.",
-    inputs: ["Text", "Image", "Video"],
-    context: "256K",
-    params: "397B total · 17B active (MoE)",
-    strengths: ["Reasoning", "Coding", "Math", "Multimodal", "Multilingual", "Agentic"],
 };
 
 const DEEPSEEK_V4_PRO: ModelMeta = {
@@ -206,16 +177,6 @@ const LLAMA_EMBED_8B: ModelMeta = {
     strengths: ["Retrieval", "Multilingual", "Reranking", "Classification"],
 };
 
-const QWEN3_NEXT_80B: ModelMeta = {
-    developer: "Alibaba Qwen",
-    description:
-        "Instruction-tuned Qwen3-Next MoE built for fast, stable chat without visible thinking traces. Hybrid attention and high-sparsity experts target long-context RAG, tool use and agent workflows with deterministic final answers.",
-    inputs: ["Text"],
-    context: "262K",
-    params: "80B total · 3B active (MoE)",
-    strengths: ["Long context", "Agentic", "Tool use", "Coding", "Fast", "RAG"],
-};
-
 const KIMI_K3: ModelMeta = {
     developer: "Moonshot AI",
     description:
@@ -231,12 +192,9 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "gemini-3.5-flash-lite": GEMINI_35_FLASH_LITE,
     "gemini-embedding-2-preview": GEMINI_EMBED_2,
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
-    "poolside/laguna-m.1:free": LAGUNA_M1,
     "poolside/laguna-s-2.1:free": LAGUNA_S_21,
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
     "google/gemma-4-26b-a4b-it": GEMMA_4_26B_A4B,
-    "openai/gpt-oss-120b:free": GPT_OSS_120B,
-    "qwen/qwen3-next-80b-a3b-instruct:free": QWEN3_NEXT_80B,
     "minimaxai/minimax-m3": MINIMAX_M3,
     "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,
     "deepseek-ai/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
@@ -245,13 +203,12 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "google/diffusiongemma-26b-a4b-it": DIFFUSIONGEMMA_26B,
     "stepfun-ai/step-3.7-flash": STEP_37_FLASH,
     "z-ai/glm-5.2": GLM_5_2,
-    "minimaxai/minimax-m2.7": MINIMAX_M2_7,
-    "qwen/qwen3.5-397b-a17b": QWEN_35,
-    "qwen/qwen3-next-80b-a3b-instruct": QWEN3_NEXT_80B,
     "nvidia/llama-nemotron-embed-1b-v2": NEMOTRON_EMBED_1B,
     "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
     "mimo-v2.5-free": MIMO_V25,
     "deepseek-v4-flash-free": DEEPSEEK_V4_FLASH,
+    "laguna-s-2.1-free": LAGUNA_S_21,
+    "ling-3.0-flash-free": LING_3_FLASH,
     "moonshotai/kimi-k3-free": KIMI_K3,
 };
 

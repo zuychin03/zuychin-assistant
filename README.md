@@ -16,8 +16,8 @@ edited and deleted in place.
 ## Features
 
 - Multi-provider chat: switch the model per message between Gemini, OpenRouter (Nemotron,
-  Laguna M.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Gemma 4) and OpenCode Zen (MiMo),
-  straight from the chat header
+  Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Step, GLM, Gemma 4) and
+  OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash), straight from the chat header
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -108,10 +108,13 @@ edited and deleted in place.
 - Second brain: a Karpathy-style LLM-wiki in a private GitHub repo - the agent ingests
   research into interlinked Markdown pages (auto-linked via pgvector + LLM curation,
   verified before every commit) and a lint curator keeps the graph healthy
-- 3D knowledge graph: an Obsidian-style force-directed graph of the vault at `/graph` -
-  rotate/zoom, search with camera fly-to, category filters, local mode, physics sliders,
-  AI-suggested links, and click-to-edit/delete pages and connections with every change
-  landing as an atomic Git commit
+- Knowledge cosmos: a dark, planetarium-style 3D view of the vault at `/graph` where each page
+  is a star sized by its connectedness. Five lenses recolour it (category, constellation,
+  trust, health, recency), semantic search flares the matching stars, route-finding lights the
+  chain of links between any two pages, detected communities separate into named
+  constellations, and a time scrubber replays the vault's growth. Health findings (orphans,
+  dead links, stale and unreviewed pages) surface on the graph itself, and pages and
+  connections stay editable in place with every change landing as an atomic Git commit
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
 - Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
@@ -142,7 +145,7 @@ edited and deleted in place.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.5 / 3 Flash, OpenRouter (Nemotron, Laguna M.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Gemma 4), OpenCode Zen (MiMo, DeepSeek) |
+| Chat models | Gemini 3.6 / 3.5 Flash, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
 | Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
@@ -253,6 +256,11 @@ The same script creates the unified knowledge domain (`knowledge_documents`,
 replacement RPCs and chunk-level hybrid recall. Knowledge tables are server-only under
 RLS, so production requires `SUPABASE_SERVICE_ROLE_KEY`.
 
+The `-- ===== Knowledge graph wave =====` block at the bottom adds `vault_graph_snapshot` and
+`vault_page_links`, which back the cached `/graph` payload and the derived vault adjacency.
+Both are rebuildable from the repo, so they can be dropped and regenerated at any time; the
+graph still works without them, it just rebuilds from GitHub on every load.
+
 
 ### Web authentication
 
@@ -351,7 +359,9 @@ npm run dev
 | POST | `/api/cron/proactive` | Proactive check-ins |
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
-| GET | `/api/vault/graph` | Vault as graph data: nodes, edges, similarity link suggestions |
+| GET | `/api/vault/graph` | Vault as graph data: nodes with lifecycle/cluster/centrality/health, edges, link suggestions. Served from a cached snapshot, revalidated in the background; `?refresh=1` forces a rebuild |
+| GET | `/api/vault/search` | Semantic (hybrid keyword + vector) page search for the graph's search box |
+| GET | `/api/vault/suggestions` | Link candidates for one page (`?path=`), ranked by cosine against stored vectors |
 | GET/PUT/DELETE | `/api/vault/page` | Read / edit / cascade-delete a wiki page |
 | POST/DELETE | `/api/vault/link` | Create / remove a bidirectional wikilink between two pages |
 | GET | `/api/admin/status` | Bot stats |
@@ -378,9 +388,9 @@ so add models or providers there.
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
 | Google Gemini | native | `gemini-3.6-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-m.1:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `openai/gpt-oss-120b:free`, `qwen/qwen3-next-80b-a3b-instruct:free` | Chat only |
-| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.2`, `qwen/qwen3-next-80b-a3b-instruct` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
-| OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free` | Chat only |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it` | Chat only |
+| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `stepfun-ai/step-3.7-flash`, `z-ai/glm-5.2` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
+| OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free`, `laguna-s-2.1-free`, `ling-3.0-flash-free` | Chat only; every model here takes a 131,072-token output budget |
 
 How it works:
 
@@ -401,6 +411,13 @@ How it works:
 - Hyperparameters (temperature, top_p, max tokens) are optional, sanitized on the server and
   mapped per provider. NIM requests backfill NVIDIA's recommended defaults so models like
   MiniMax M3 always get a token budget.
+- Max tokens is bounded **per model** by that model's verified output ceiling rather than one
+  global cap, so the slider goes to 131,072 on MiniMax M3 or DeepSeek V4 Pro, 65,536 on Gemini
+  3.6 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each platform
+  (`models.get` for Gemini, `top_provider.max_completion_tokens` for OpenRouter, and direct
+  `chat/completions` probes for NVIDIA NIM and OpenCode Zen, whose model lists omit them).
+  Requests are clamped to the resolved model's ceiling server-side, because exceeding it makes
+  the provider reject the whole call instead of quietly truncating.
 - Embeddings are model-aware: each embedding model writes and reads its own partition of the
   vector store, because vectors from different models (and dimensions) aren't comparable.
   Switching the embedding model in settings runs a real migration: `/api/admin/reembed`
@@ -721,21 +738,47 @@ export and synchronization paths are repository adapters, so a future local-file
 Obsidian adapter can be added without changing lifecycle or retrieval services.
 
 
-### 3D graph view
+### Knowledge cosmos (`/graph`)
 
-The **Graph** button in the header (or `/graph`) opens an interactive 3D force-directed
-view of the vault, in the spirit of Obsidian's graph:
+The **Graph** button in the header (or `/graph`) opens the vault as a dark planetarium. It is
+deliberately dark-only whatever the app theme is set to. Every visual property carries
+information: a page is a star, its size is its degree, its brightness is its PageRank
+centrality, and its shape says what kind of page it is - a crisp main-sequence star is
+reviewed, a hazy protostar has never been reviewed, a swollen red giant has gone stale, and a
+white dwarf has been archived or superseded.
 
-- Nodes are wiki pages (colored by category, sized by connection count, recently updated
-  pages glow); edges are `[[wikilinks]]`.
-- Click a page to read/edit its Markdown or delete it - deletion also strips every
-  reference in other pages, the `index.md` entry and the pgvector row, in one atomic commit.
-- Click a connection to remove it (both directions, readable text kept) or to add a new
-  labelled link from the page panel.
-- Toggle **suggested links**: dashed edges between similar-but-unlinked pages, computed
-  from the stored embeddings - click one to materialize it as a real link.
-- Search with camera fly-to, per-category filters, orphan toggle, physics sliders, and a
-  local mode (double-click a node) that isolates its 1–2 hop neighborhood.
+- **Lenses** (keys `1`-`5`) recolour without moving anything: category, constellation, trust,
+  health, recency. Each ships its own legend, and a lens that fades pages into the background
+  hides their labels too, so no name is ever left floating over an invisible star.
+- **Trust** shows one steel-blue baseline for reviewed pages with the exceptions picked out in
+  colour, and its legend rows are filters with counts - clicking *Unreviewed or suggested*
+  narrows the graph to exactly the pages waiting on you.
+- **Semantic search** (`/` to focus) runs hybrid keyword + vector recall, so "attention" finds
+  pages about transformers. Matches flare, everything else fades to dust. A local substring
+  pass answers instantly while the request is in flight.
+- **Routes** answer "how are these two connected": right-click two stars, and the shortest
+  chain of links lights up as a corridor with every hop listed. It says so plainly when no
+  route exists, which itself tells you the vault is fragmented there.
+- **Constellations** are detected communities (label propagation), each with its own hue, a
+  soft nebula, and a name taken from its most central page. A cohesion force pulls each one
+  together so they physically separate.
+- **Health** surfaces what the vault lint cron finds - orphans, links pointing at nothing,
+  stale pages, malformed frontmatter, unreviewed pages - as a filter over the graph. Filtering
+  to *unreviewed* turns the view into a review queue, which is where council output lands.
+- **Time travel** replays the vault's growth from a scrubber; stars ignite in creation order.
+  Page dates are real, link dates are inferred from their endpoints, and the UI says so.
+- **Gravity wells** ranks the most central and most weakly held pages.
+- Click a page to read, edit or delete it - deletion strips every reference in other pages,
+  the `index.md` entry and the pgvector row in one atomic commit. Click a connection to remove
+  it in both directions.
+- **Suggested arcs** are curved cyan links between similar-but-unlinked pages. The page panel
+  also lists candidates for that one page with a checkbox column, so several can be accepted at
+  once (each as its own commit).
+- Every view is addressable: lens, query, selection, route ends, local mode and the timeline
+  position all live in the URL, so a view can be bookmarked or pasted into chat.
+- Labels are an HTML overlay with distance culling rather than per-node textures, and a bloom
+  pass turns itself off above 600 nodes or on a software renderer. `Full effects` in the
+  Explore panel is the manual override.
 
 You can still point Obsidian at a clone of the repo - the on-disk format is plain
 Markdown + wikilinks.

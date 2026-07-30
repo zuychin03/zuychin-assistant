@@ -2,1387 +2,1028 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
-  ArrowLeft, Check, Crosshair, Link2, Loader2, Pencil, RefreshCw,
-  Search, SlidersHorizontal, Trash2, X,
+    ArrowLeft, Clock, Crosshair, Layers, Loader2, RefreshCw, Route, SlidersHorizontal, Type,
 } from "lucide-react";
-import type { ForceGraph3DInstance } from "3d-force-graph";
+import { COSMOS, LENSES, TRUST_BUCKETS, type Lens, type TrustBucket } from "./cosmos/palette";
+import { styles } from "./cosmos/styles";
+import { createCosmos, DEFAULT_PHYSICS, type Cosmos, type PhysicsSettings, type Quality } from "./cosmos/scene";
+import { createLabelLayer, type LabelLayer } from "./cosmos/labels";
+import {
+    buildAdjacency, createView, deriveVisible, earliestCreated, endpoints, pathLinkKeys,
+    shortestPath, type ApiGraph, type GLink, type GNode, type NodeHealth, type SelectedLink,
+} from "./cosmos/model";
+import ExplorePanel, { type SearchHit } from "./panels/explore-panel";
+import LensPanel from "./panels/lens-panel";
+import { ClustersPanel, HealthPanel, HubsPanel } from "./panels/insight-panels";
+import PagePanel, { LinkPanel, type PageSuggestion } from "./panels/page-panel";
+import PathPanel from "./panels/path-panel";
+import TimelineBar from "./panels/timeline-bar";
 
-// ---- Server payload ----
+type Selection = { type: "node"; id: string } | { type: "link"; link: SelectedLink } | null;
 
-interface ApiNode {
-  id: string;
-  title: string;
-  category: string;
-  summary: string;
-  links: number;
-  updated: string | null;
-}
-interface ApiEdge { source: string; target: string; mutual: boolean }
-interface ApiSuggestion { source: string; target: string; similarity: number }
-interface ApiGraph { nodes: ApiNode[]; edges: ApiEdge[]; suggestions: ApiSuggestion[] }
-
-// ---- Graph-lib objects (cached across refreshes so layout positions survive) ----
-
-interface GNode extends ApiNode { x?: number; y?: number; z?: number }
-interface GLink {
-  source: string | GNode;
-  target: string | GNode;
-  kind: "real" | "suggestion";
-  mutual: boolean;
-  similarity?: number;
-}
-type Graph = ForceGraph3DInstance<GNode, GLink>;
-
-const CATEGORIES = ["sources", "concepts", "entities", "synthesis"] as const;
-const CATEGORY_COLORS: Record<string, string> = {
-  sources: "#d9952b",
-  concepts: "#5b8def",
-  entities: "#3fbf8f",
-  synthesis: "#b678e0",
-};
-
-const DEFAULT_PHYSICS = { repel: 120, linkDist: 60, center: 1 };
-
-function linkId(l: GLink): { s: string; t: string } {
-  return {
-    s: typeof l.source === "string" ? l.source : l.source.id,
-    t: typeof l.target === "string" ? l.target : l.target.id,
-  };
-}
-function pairKey(a: string, b: string): string {
-  return [a, b].sort().join("|");
-}
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-/** Blend a hex color toward a target hex by t (0..1). */
-function blend(hex: string, target: string, t: number): string {
-  const p = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
-  const [r1, g1, b1] = p(hex);
-  const [r2, g2, b2] = p(target);
-  const mix = (a: number, b: number) => Math.round(a + (b - a) * t);
-  return `rgb(${mix(r1, r2)}, ${mix(g1, g2)}, ${mix(b1, b2)})`;
-}
-/** 0..1 glow factor from the page's last update date. */
-function recency(updated: string | null): number {
-  if (!updated) return 0;
-  const days = (Date.now() - new Date(updated).getTime()) / 86_400_000;
-  if (days <= 3) return 0.55;
-  if (days <= 7) return 0.4;
-  if (days <= 30) return 0.2;
-  return 0;
-}
-/** [[path|label]] → label, [[path]] → last segment, for read-mode display. */
-function displayMarkdown(md: string): string {
-  return md.replace(/\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g, (_m, path: string, label?: string) => {
-    const text = label?.trim() || path.replace(/\.md$/, "").split("/").pop()!.replace(/-/g, " ");
-    return `**${text}**`;
-  });
-}
-
-type Selection =
-  | { type: "node"; id: string }
-  | { type: "link"; source: string; target: string; kind: "real" | "suggestion"; similarity?: number }
-  | null;
+const MARKDOWN_CSS = `
+.graph-markdown h1,.graph-markdown h2,.graph-markdown h3{font-size:13.5px;font-weight:700;margin:12px 0 5px;color:#e8ecf8}
+.graph-markdown p{margin:0 0 8px}
+.graph-markdown ul,.graph-markdown ol{margin:0 0 8px;padding-left:18px}
+.graph-markdown li{margin:2px 0}
+.graph-markdown code{background:rgba(148,163,201,0.14);padding:1px 4px;border-radius:4px;font-size:11.5px}
+.graph-markdown pre{background:rgba(4,6,11,0.7);padding:9px;border-radius:9px;overflow-x:auto;margin:0 0 9px}
+.graph-markdown a{color:#8fc2ff}
+.graph-markdown table{border-collapse:collapse;font-size:11.5px;margin:0 0 9px}
+.graph-markdown th,.graph-markdown td{border:1px solid rgba(126,141,184,0.22);padding:3px 7px}
+.graph-markdown blockquote{margin:0 0 9px;padding-left:9px;border-left:2px solid rgba(126,141,184,0.35);color:#98a2bd}
+.cosmos-rail::-webkit-scrollbar{width:7px}
+.cosmos-rail::-webkit-scrollbar-thumb{background:rgba(126,141,184,0.26);border-radius:99px}
+.cosmos-rail::-webkit-scrollbar-track{background:transparent}
+`;
 
 export default function GraphPage() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<Graph | null>(null);
-  const nodeCache = useRef(new Map<string, GNode>());
-  const linkCache = useRef(new Map<string, GLink>());
+    const containerRef = useRef<HTMLDivElement>(null);
+    const cosmosRef = useRef<Cosmos | null>(null);
+    const labelsRef = useRef<LabelLayer | null>(null);
+    const viewRef = useRef(createView());
+    const nodeCache = useRef(new Map<string, GNode>());
+    const linkCache = useRef(new Map<string, GLink>());
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const urlLoaded = useRef(false);
 
-  const [data, setData] = useState<ApiGraph | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [graphReady, setGraphReady] = useState(false);
+    const [data, setData] = useState<ApiGraph | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [ready, setReady] = useState(false);
 
-  const [controlsOpen, setControlsOpen] = useState(true);
-  const [catFilter, setCatFilter] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(CATEGORIES.map((c) => [c, true])),
-  );
-  const [showOrphans, setShowOrphans] = useState(true);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [physics, setPhysics] = useState(DEFAULT_PHYSICS);
-  const [search, setSearch] = useState("");
-  const [localRoot, setLocalRoot] = useState<string | null>(null);
-  const [localDepth, setLocalDepth] = useState<1 | 2>(1);
+    const [railOpen, setRailOpen] = useState(true);
+    const [viewport, setViewport] = useState({ width: 1440, height: 900 });
+    // The top bar wraps on narrow panes, so the rails cannot use a fixed offset.
+    const topBarRef = useRef<HTMLDivElement>(null);
+    const [railTop, setRailTop] = useState(68);
+    const [lens, setLens] = useState<Lens>("category");
+    const [categoryFilter, setCategoryFilter] = useState<Record<string, boolean>>({});
+    const [showOrphans, setShowOrphans] = useState(true);
+    const [showSuggestions, setShowSuggestions] = useState(false);
+    const [physics, setPhysics] = useState<PhysicsSettings>(DEFAULT_PHYSICS);
+    const [quality, setQuality] = useState<Quality>("auto");
+    const [bloomActive, setBloomActive] = useState(false);
+    const [labelsOn, setLabelsOn] = useState(true);
 
-  const [selected, setSelected] = useState<Selection>(null);
-  const [pageMd, setPageMd] = useState<string | null>(null);
-  const [pageLoading, setPageLoading] = useState(false);
-  const [editMode, setEditMode] = useState(false);
-  const [editText, setEditText] = useState("");
-  const [busy, setBusy] = useState<string | null>(null); // "save" | "delete" | "unlink" | "link"
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const [linkQuery, setLinkQuery] = useState("");
-  const [linkLabel, setLinkLabel] = useState("");
-  const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+    const [query, setQuery] = useState("");
+    const [hits, setHits] = useState<SearchHit[]>([]);
+    const [searching, setSearching] = useState(false);
+    const [activeHit, setActiveHit] = useState(0);
 
-  // Accessor callbacks read these refs so the graph restyles without re-registering.
-  const hoverRef = useRef<string | null>(null);
-  const highlightNodes = useRef(new Set<string>());
-  const highlightLinks = useRef(new Set<string>());
-  const selectedRef = useRef<Selection>(null);
-  const searchRef = useRef("");
-  const editModeRef = useRef(false);
-  const themeRef = useRef({ bg: "#0c0c0e", text: "#f2f2f7", muted: "#98989f", dim: "#3a3a3c", light: false });
+    const [localRoot, setLocalRoot] = useState<string | null>(null);
+    const [localDepth, setLocalDepth] = useState<1 | 2>(1);
+    const [findings, setFindings] = useState<NodeHealth[]>([]);
+    const [trustFilter, setTrustFilter] = useState<TrustBucket[]>([]);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 3500);
-  }, []);
+    const [routeFrom, setRouteFrom] = useState<string | null>(null);
+    const [routeTo, setRouteTo] = useState<string | null>(null);
 
-  const fetchGraph = useCallback(async (initial: boolean) => {
-    if (initial) setLoading(true); else setRefreshing(true);
-    try {
-      const res = await fetch("/api/vault/graph?suggestions=1");
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to load the graph.");
-      setData(json as ApiGraph);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load the graph.");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+    const [timeActive, setTimeActive] = useState(false);
+    const [timeValue, setTimeValue] = useState(Date.now());
+    const [timePlaying, setTimePlaying] = useState(false);
 
-  useEffect(() => { fetchGraph(true); }, [fetchGraph]);
+    const [selected, setSelected] = useState<Selection>(null);
+    const [pageMd, setPageMd] = useState<string | null>(null);
+    const [pageLoading, setPageLoading] = useState(false);
+    const [editMode, setEditMode] = useState(false);
+    const [editText, setEditText] = useState("");
+    const [busy, setBusy] = useState<string | null>(null);
+    const [confirming, setConfirming] = useState<string | null>(null);
 
-  // ---- Derived visible slice (filters, orphans, local mode, suggestions) ----
+    const [suggestions, setSuggestions] = useState<PageSuggestion[]>([]);
+    const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+    const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set());
 
-  const neighborMap = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    if (!data) return map;
-    for (const e of data.edges) {
-      if (!map.has(e.source)) map.set(e.source, new Set());
-      if (!map.has(e.target)) map.set(e.target, new Set());
-      map.get(e.source)!.add(e.target);
-      map.get(e.target)!.add(e.source);
-    }
-    return map;
-  }, [data]);
+    const [linkQuery, setLinkQuery] = useState("");
+    const [linkLabel, setLinkLabel] = useState("");
+    const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
 
-  const visible = useMemo(() => {
-    if (!data) return { nodes: [] as GNode[], links: [] as GLink[] };
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+    const [toast, setToast] = useState<string | null>(null);
 
-    let keep = new Set(
-      data.nodes
-        .filter((n) => catFilter[n.category] !== false)
-        .filter((n) => showOrphans || n.links > 0)
-        .map((n) => n.id),
+    const showToast = useCallback((message: string) => {
+        setToast(message);
+        window.setTimeout(() => setToast(null), 3600);
+    }, []);
+
+    // ---- Data ----
+
+    const fetchGraph = useCallback(async (mode: "initial" | "refresh" | "rebuild") => {
+        if (mode === "initial") setLoading(true);
+        else setRefreshing(true);
+        try {
+            const url = mode === "rebuild" ? "/api/vault/graph?refresh=1" : "/api/vault/graph";
+            const response = await fetch(url);
+            const json = await response.json();
+            if (!response.ok) throw new Error(json.error || "Failed to load the graph.");
+            setData(json as ApiGraph);
+            setError(null);
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : "Failed to load the graph.");
+        } finally {
+            setLoading(false);
+            setRefreshing(false);
+        }
+    }, []);
+
+    useEffect(() => { void fetchGraph("initial"); }, [fetchGraph]);
+
+    const nodeById = useMemo(() => {
+        const map = new Map<string, GNode>();
+        for (const node of data?.nodes ?? []) map.set(node.id, node);
+        return map;
+    }, [data]);
+
+    const titleOf = useCallback(
+        (path: string) => nodeById.get(path)?.title ?? path.replace(/\.md$/, "").split("/").pop() ?? path,
+        [nodeById],
     );
 
-    if (localRoot && keep.has(localRoot)) {
-      const within = new Set([localRoot]);
-      let frontier = [localRoot];
-      for (let d = 0; d < localDepth; d++) {
-        const next: string[] = [];
-        for (const id of frontier) {
-          for (const nb of neighborMap.get(id) ?? []) {
-            if (!within.has(nb) && keep.has(nb)) { within.add(nb); next.push(nb); }
-          }
-        }
-        frontier = next;
-      }
-      keep = within;
-    }
+    const adjacency = useMemo(() => buildAdjacency(data?.edges ?? []), [data]);
 
-    const nodes: GNode[] = [];
-    for (const n of data.nodes) {
-      if (!keep.has(n.id)) continue;
-      const cached = nodeCache.current.get(n.id);
-      if (cached) {
-        Object.assign(cached, n);
-        nodes.push(cached);
-      } else {
-        const fresh: GNode = { ...n };
-        nodeCache.current.set(n.id, fresh);
-        nodes.push(fresh);
-      }
-    }
+    const timeBounds = useMemo(() => {
+        const earliest = earliestCreated(data?.nodes ?? []);
+        return { start: earliest ?? Date.now() - 86_400_000, end: Date.now() };
+    }, [data]);
 
-    const links: GLink[] = [];
-    const pushLink = (s: string, t: string, kind: "real" | "suggestion", mutual: boolean, similarity?: number) => {
-      if (!keep.has(s) || !keep.has(t)) return;
-      const key = `${kind}:${pairKey(s, t)}`;
-      const cached = linkCache.current.get(key);
-      if (cached) {
-        cached.mutual = mutual;
-        cached.similarity = similarity;
-        links.push(cached);
-      } else {
-        const fresh: GLink = { source: s, target: t, kind, mutual, similarity };
-        linkCache.current.set(key, fresh);
-        links.push(fresh);
-      }
-    };
-    for (const e of data.edges) pushLink(e.source, e.target, "real", e.mutual);
-    if (showSuggestions) {
-      for (const s of data.suggestions) pushLink(s.source, s.target, "suggestion", false, s.similarity);
-    }
-    return { nodes, links };
-  }, [data, catFilter, showOrphans, showSuggestions, localRoot, localDepth, neighborMap]);
-
-  // ---- Graph instance ----
-
-  const restyle = useCallback(() => {
-    const g = graphRef.current;
-    if (!g) return;
-    g.nodeColor(g.nodeColor());
-    g.linkColor(g.linkColor());
-    g.linkWidth(g.linkWidth());
-  }, []);
-
-  const setHover = useCallback((node: GNode | null) => {
-    hoverRef.current = node?.id ?? null;
-    highlightNodes.current.clear();
-    highlightLinks.current.clear();
-    if (node) {
-      highlightNodes.current.add(node.id);
-      const g = graphRef.current;
-      const links = (g?.graphData().links ?? []) as GLink[];
-      for (const l of links) {
-        const { s, t } = linkId(l);
-        if (s === node.id || t === node.id) {
-          highlightLinks.current.add(`${l.kind}:${pairKey(s, t)}`);
-          highlightNodes.current.add(s === node.id ? t : s);
-        }
-      }
-    }
-    restyle();
-  }, [restyle]);
-
-  const flyTo = useCallback((id: string) => {
-    const g = graphRef.current;
-    const node = nodeCache.current.get(id);
-    if (!g || !node || node.x === undefined) return;
-    const dist = 140;
-    const len = Math.hypot(node.x, node.y ?? 0, node.z ?? 0) || 1;
-    const k = 1 + dist / len;
-    g.cameraPosition({ x: node.x * k, y: (node.y ?? 0) * k, z: (node.z ?? 0) * k }, node as { x: number; y: number; z: number }, 900);
-  }, []);
-
-  const openNode = useCallback(async (id: string) => {
-    setSelected({ type: "node", id });
-    setEditMode(false);
-    setConfirming(null);
-    setLinkQuery("");
-    setLinkLabel("");
-    setLinkTargetId(null);
-    setPageMd(null);
-    setPageLoading(true);
-    try {
-      const res = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to load the page.");
-      setPageMd(json.markdown);
-      setEditText(json.markdown);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to load the page.");
-    } finally {
-      setPageLoading(false);
-    }
-  }, [showToast]);
-
-  const applyPhysics = useCallback((p: typeof DEFAULT_PHYSICS) => {
-    const g = graphRef.current;
-    if (!g) return;
-    (g.d3Force("charge") as { strength?: (v: number) => void } | undefined)?.strength?.(-p.repel);
-    (g.d3Force("link") as { distance?: (v: number) => void } | undefined)?.distance?.(p.linkDist);
-    (g.d3Force("center") as { strength?: (v: number) => void } | undefined)?.strength?.(p.center);
-    // Reheating before the first graphData() crashes tickFrame (state.layout is undefined).
-    if (g.graphData().nodes.length > 0) g.d3ReheatSimulation();
-  }, []);
-
-  useEffect(() => { selectedRef.current = selected; restyle(); }, [selected, restyle]);
-  useEffect(() => { searchRef.current = search.trim().toLowerCase(); restyle(); }, [search, restyle]);
-  useEffect(() => { editModeRef.current = editMode; }, [editMode]);
-
-  // Click vs double-click: a second click on the same node within the window isolates it.
-  const lastClick = useRef<{ id: string; at: number }>({ id: "", at: 0 });
-
-  useEffect(() => {
-    if (!containerRef.current || graphRef.current) return;
-    const el = containerRef.current;
-    let disposed = false;
-
-    (async () => {
-      const [{ default: ForceGraph3D }, { default: SpriteText }] = await Promise.all([
-        import("3d-force-graph"),
-        import("three-spritetext"),
-      ]);
-      if (disposed || graphRef.current) return;
-
-      const css = getComputedStyle(document.documentElement);
-      const light = document.documentElement.getAttribute("data-theme") !== "dark";
-      themeRef.current = {
-        bg: css.getPropertyValue("--color-background").trim() || (light ? "#ffffff" : "#0c0c0e"),
-        text: css.getPropertyValue("--color-text-primary").trim() || (light ? "#000000" : "#f2f2f7"),
-        muted: css.getPropertyValue("--color-text-muted").trim() || "#98989f",
-        dim: light ? "#c9c9ce" : "#3a3a3c",
-        light,
-      };
-      const theme = themeRef.current;
-
-      const g = (new ForceGraph3D(el) as unknown as Graph)
-        .backgroundColor(theme.bg)
-        .showNavInfo(false)
-        .nodeVal((n) => 1 + n.links)
-        .nodeResolution(32)
-        .nodeOpacity(0.85)
-        .nodeLabel((n) =>
-          `<div style="padding:6px 9px;border-radius:8px;background:${theme.light ? "rgba(255,255,255,.95)" : "rgba(20,20,24,.95)"};color:${theme.text};font-size:12px;max-width:260px;box-shadow:0 2px 10px rgba(0,0,0,.25)">` +
-          `<b>${escapeHtml(n.title)}</b><br/><span style="opacity:.7">${n.category} · ${n.links} link${n.links === 1 ? "" : "s"}</span>` +
-          (n.summary ? `<br/><span style="opacity:.85">${escapeHtml(n.summary)}</span>` : "") +
-          `</div>`)
-        .nodeColor((n) => {
-          const q = searchRef.current;
-          const hovering = hoverRef.current !== null;
-          const dimmed =
-            (hovering && !highlightNodes.current.has(n.id)) ||
-            (q && !n.title.toLowerCase().includes(q));
-          if (dimmed) return themeRef.current.dim;
-          const base = CATEGORY_COLORS[n.category] ?? "#888888";
-          const glow = recency(n.updated);
-          return glow > 0 ? blend(base, themeRef.current.light ? "#000000" : "#ffffff", glow * 0.6) : base;
-        })
-        .nodeThreeObjectExtend(true)
-        .nodeThreeObject((n) => {
-          const sprite = new SpriteText(n.title, 2.6, theme.muted);
-          (sprite.material as { depthWrite: boolean }).depthWrite = false;
-          sprite.position.y = -(Math.cbrt(1 + n.links) * 4 + 4);
-          return sprite;
-        })
-        .linkColor((l) => {
-          const { s, t } = linkId(l);
-          const key = `${l.kind}:${pairKey(s, t)}`;
-          const sel = selectedRef.current;
-          if (sel?.type === "link" && pairKey(sel.source, sel.target) === pairKey(s, t) && sel.kind === l.kind) {
-            return themeRef.current.text;
-          }
-          if (hoverRef.current && highlightLinks.current.has(key)) return themeRef.current.text;
-          if (l.kind === "suggestion") return "#7aa2ff";
-          return themeRef.current.light ? "#b3b3bb" : "#4a4a52";
-        })
-        .linkOpacity(0.4)
-        .linkWidth((l) => {
-          const { s, t } = linkId(l);
-          const sel = selectedRef.current;
-          if (sel?.type === "link" && pairKey(sel.source, sel.target) === pairKey(s, t) && sel.kind === l.kind) return 2.4;
-          if (hoverRef.current && highlightLinks.current.has(`${l.kind}:${pairKey(s, t)}`)) return 1.6;
-          return l.kind === "suggestion" ? 0.6 : 1;
-        })
-        .linkLabel((l) => {
-          const { s, t } = linkId(l);
-          const name = (id: string) => escapeHtml(nodeCache.current.get(id)?.title ?? id);
-          return l.kind === "suggestion"
-            ? `${name(s)} ~ ${name(t)} · ${(l.similarity! * 100).toFixed(0)}% similar (click to review)`
-            : `${name(s)} ↔ ${name(t)}`;
-        })
-        .onNodeHover((n) => { setHover(n); el.style.cursor = n ? "pointer" : "default"; })
-        .onLinkHover((l) => { el.style.cursor = l ? "pointer" : "default"; })
-        .onNodeClick((n) => {
-          const now = Date.now();
-          if (lastClick.current.id === n.id && now - lastClick.current.at < 350) {
-            setLocalRoot(n.id);
-            lastClick.current = { id: "", at: 0 };
-            return;
-          }
-          lastClick.current = { id: n.id, at: now };
-          openNode(n.id);
-          flyTo(n.id);
-        })
-        .onLinkClick((l) => {
-          const { s, t } = linkId(l);
-          setConfirming(null);
-          setLinkLabel("");
-          setSelected({ type: "link", source: s, target: t, kind: l.kind, similarity: l.similarity });
-        })
-        .onBackgroundClick(() => {
-          if (selectedRef.current?.type === "node" && editModeRef.current) return;
-          setSelected(null);
-          setConfirming(null);
+    const visible = useMemo(() => {
+        if (!data) return { nodes: [] as GNode[], links: [] as GLink[] };
+        return deriveVisible({
+            data,
+            adjacency,
+            categoryFilter,
+            showOrphans,
+            showSuggestions,
+            localRoot,
+            localDepth,
+            timeCutoff: timeActive ? timeValue : null,
+            onlyFindings: findings.length > 0 ? findings : null,
+            onlyTrust: trustFilter.length > 0 ? trustFilter : null,
+            nodeCache: nodeCache.current,
+            linkCache: linkCache.current,
         });
+    }, [data, adjacency, categoryFilter, showOrphans, showSuggestions, localRoot, localDepth, timeActive, timeValue, findings, trustFilter]);
 
-      graphRef.current = g;
-      setGraphReady(true);
+    const path = useMemo(() => {
+        if (!routeFrom || !routeTo) return [];
+        return shortestPath(routeFrom, routeTo, adjacency);
+    }, [routeFrom, routeTo, adjacency]);
 
-      const onResize = () => g.width(window.innerWidth).height(window.innerHeight);
-      onResize();
-      window.addEventListener("resize", onResize);
-      (el as HTMLDivElement & { __cleanup?: () => void }).__cleanup = () => window.removeEventListener("resize", onResize);
-    })();
+    // ---- URL state ----
 
-    return () => {
-      disposed = true;
-      (el as HTMLDivElement & { __cleanup?: () => void }).__cleanup?.();
-      graphRef.current?._destructor();
-      graphRef.current = null;
+    useEffect(() => {
+        if (urlLoaded.current) return;
+        urlLoaded.current = true;
+        const params = new URLSearchParams(window.location.search);
+
+        const urlLens = params.get("lens");
+        if (urlLens && (LENSES as readonly string[]).includes(urlLens)) setLens(urlLens as Lens);
+        const urlQuery = params.get("q");
+        if (urlQuery) setQuery(urlQuery);
+        const categories = params.get("cat");
+        if (categories) {
+            const allowed = new Set(categories.split(",").filter(Boolean));
+            setCategoryFilter(Object.fromEntries(
+                ["sources", "concepts", "entities", "synthesis"].map((category) => [category, allowed.has(category)]),
+            ));
+        }
+        if (params.get("sug") === "1") setShowSuggestions(true);
+        if (params.get("quality") === "plain") setQuality("plain");
+        const trustParam = params.get("trust");
+        if (trustParam) {
+            const buckets = trustParam
+                .split(",")
+                .filter((value): value is TrustBucket => (TRUST_BUCKETS as readonly string[]).includes(value));
+            if (buckets.length > 0) setTrustFilter(buckets);
+        }
+        const from = params.get("from");
+        const to = params.get("to");
+        if (from) setRouteFrom(from);
+        if (to) setRouteTo(to);
+        const local = params.get("local");
+        const node = params.get("node");
+        if (node) {
+            setSelected({ type: "node", id: node });
+            if (local === "1" || local === "2") {
+                setLocalRoot(node);
+                setLocalDepth(local === "2" ? 2 : 1);
+            }
+        }
+        const stamp = params.get("t");
+        if (stamp) {
+            const parsed = Date.parse(stamp);
+            if (!Number.isNaN(parsed)) {
+                setTimeActive(true);
+                setTimeValue(parsed);
+            }
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!urlLoaded.current) return;
+        const params = new URLSearchParams();
+        if (lens !== "category") params.set("lens", lens);
+        if (query) params.set("q", query);
+        if (showSuggestions) params.set("sug", "1");
+        if (quality === "plain") params.set("quality", "plain");
+        if (routeFrom) params.set("from", routeFrom);
+        if (routeTo) params.set("to", routeTo);
+        if (selected?.type === "node") params.set("node", selected.id);
+        if (localRoot) params.set("local", String(localDepth));
+        if (timeActive) params.set("t", new Date(timeValue).toISOString().slice(0, 10));
+        if (trustFilter.length > 0) params.set("trust", trustFilter.join(","));
+        const disabled = Object.entries(categoryFilter).filter(([, on]) => on === false);
+        if (disabled.length > 0) {
+            params.set("cat", Object.entries(categoryFilter).filter(([, on]) => on !== false).map(([key]) => key).join(","));
+        }
+        const search = params.toString();
+        // replaceState, not push: dragging a slider must not fill the back stack.
+        window.history.replaceState(null, "", search ? `?${search}` : window.location.pathname);
+    }, [lens, query, showSuggestions, quality, routeFrom, routeTo, selected, localRoot, localDepth, timeActive, timeValue, categoryFilter, trustFilter]);
+
+    // ---- Selection ----
+
+    const openNode = useCallback((id: string) => {
+        setSelected({ type: "node", id });
+        setEditMode(false);
+        setConfirming(null);
+        setLinkQuery("");
+        setLinkLabel("");
+        setLinkTargetId(null);
+        setSuggestions([]);
+        setSelectedSuggestions(new Set());
+    }, []);
+
+    // Selection drives the fetch, so a deep-linked ?node= loads exactly like a click.
+    useEffect(() => {
+        if (selected?.type !== "node") return;
+        const path = selected.id;
+        let cancelled = false;
+        setPageMd(null);
+        setPageLoading(true);
+        (async () => {
+            try {
+                const response = await fetch(`/api/vault/page?path=${encodeURIComponent(path)}`);
+                const json = await response.json();
+                if (cancelled) return;
+                if (!response.ok) throw new Error(json.error || "Failed to load the page.");
+                setPageMd(json.markdown);
+                setEditText(json.markdown);
+            } catch (caught) {
+                if (!cancelled) showToast(caught instanceof Error ? caught.message : "Failed to load the page.");
+            } finally {
+                if (!cancelled) setPageLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [selected, showToast]);
+
+    useEffect(() => {
+        if (selected?.type !== "node") return;
+        let cancelled = false;
+        setSuggestionsLoading(true);
+        (async () => {
+            try {
+                const response = await fetch(`/api/vault/suggestions?path=${encodeURIComponent(selected.id)}`);
+                const json = await response.json();
+                if (cancelled) return;
+                setSuggestions(response.ok ? (json.suggestions ?? []).map((item: { target: string; similarity: number }) => item) : []);
+            } catch {
+                if (!cancelled) setSuggestions([]);
+            } finally {
+                if (!cancelled) setSuggestionsLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [selected]);
+
+    const focusNode = useCallback((id: string) => {
+        const node = nodeCache.current.get(id);
+        if (node) cosmosRef.current?.flyTo(node);
+        void openNode(id);
+    }, [openNode]);
+
+    // ---- Cosmos instance ----
+
+    const handlersRef = useRef({
+        onNodeClick: (node: GNode) => { void node; },
+        onNodeDoubleClick: (node: GNode) => { void node; },
+        onNodeRightClick: (node: GNode, event: MouseEvent) => { void node; void event; },
+        onNodeHover: (node: GNode | null) => { void node; },
+        onLinkClick: (link: GLink) => { void link; },
+        onBackgroundClick: () => undefined,
+    });
+
+    handlersRef.current = {
+        onNodeClick: (node) => {
+            void openNode(node.id);
+            cosmosRef.current?.flyTo(node);
+        },
+        onNodeDoubleClick: (node) => setLocalRoot(node.id),
+        onNodeRightClick: (node, event) => {
+            event.preventDefault();
+            setContextMenu({ x: event.clientX, y: event.clientY, id: node.id });
+        },
+        onNodeHover: (node) => {
+            const view = viewRef.current;
+            view.hover = node?.id ?? null;
+            view.highlightNodes.clear();
+            view.highlightLinks.clear();
+            if (node) {
+                view.highlightNodes.add(node.id);
+                const links = (cosmosRef.current?.graph.graphData().links ?? []) as GLink[];
+                for (const link of links) {
+                    const { s, t } = endpoints(link);
+                    if (s === node.id || t === node.id) {
+                        view.highlightLinks.add(`${link.kind}:${[s, t].sort().join("|")}`);
+                        view.highlightNodes.add(s === node.id ? t : s);
+                    }
+                }
+            }
+            cosmosRef.current?.restyle();
+        },
+        onLinkClick: (link) => {
+            const { s, t } = endpoints(link);
+            setConfirming(null);
+            setSelected({ type: "link", link: { source: s, target: t, kind: link.kind, similarity: link.similarity } });
+        },
+        onBackgroundClick: () => {
+            if (editMode) return;
+            setContextMenu(null);
+            setSelected(null);
+            setConfirming(null);
+        },
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  useEffect(() => {
-    if (!graphReady || !graphRef.current) return;
-    setHover(null);
-    graphRef.current.graphData({ nodes: visible.nodes, links: visible.links });
-  }, [graphReady, visible, setHover]);
+    useEffect(() => {
+        const element = containerRef.current;
+        if (!element || cosmosRef.current) return;
+        let disposed = false;
 
-  useEffect(() => { if (graphReady) applyPhysics(physics); }, [graphReady, physics, applyPhysics]);
+        (async () => {
+            const { default: ForceGraph3D } = await import("3d-force-graph");
+            if (disposed || cosmosRef.current) return;
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (editMode) return;
-      if (selected) { setSelected(null); setConfirming(null); return; }
-      if (localRoot) setLocalRoot(null);
+            const cosmos = createCosmos(
+                element,
+                ForceGraph3D as unknown as new (el: HTMLElement) => unknown,
+                viewRef.current,
+                {
+                    onNodeClick: (node) => handlersRef.current.onNodeClick(node),
+                    onNodeDoubleClick: (node) => handlersRef.current.onNodeDoubleClick(node),
+                    onNodeRightClick: (node, event) => handlersRef.current.onNodeRightClick(node, event),
+                    onNodeHover: (node) => handlersRef.current.onNodeHover(node),
+                    onLinkClick: (link) => handlersRef.current.onLinkClick(link),
+                    onBackgroundClick: () => handlersRef.current.onBackgroundClick(),
+                },
+            );
+            cosmosRef.current = cosmos;
+
+            labelsRef.current = createLabelLayer({ container: element, graph: cosmos.graph, view: viewRef.current });
+            labelsRef.current.start();
+
+            const onResize = () => cosmos.resize(window.innerWidth, window.innerHeight);
+            onResize();
+            window.addEventListener("resize", onResize);
+            (element as HTMLDivElement & { __cleanup?: () => void }).__cleanup = () => {
+                window.removeEventListener("resize", onResize);
+            };
+            setReady(true);
+        })();
+
+        return () => {
+            disposed = true;
+            (element as HTMLDivElement & { __cleanup?: () => void }).__cleanup?.();
+            labelsRef.current?.dispose();
+            labelsRef.current = null;
+            cosmosRef.current?.dispose();
+            cosmosRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!ready || !cosmosRef.current) return;
+        viewRef.current.hover = null;
+        viewRef.current.highlightNodes.clear();
+        viewRef.current.highlightLinks.clear();
+        cosmosRef.current.setData(visible.nodes, visible.links);
+        labelsRef.current?.setNodes(visible.nodes);
+        setBloomActive(cosmosRef.current.bloomActive());
+    }, [ready, visible]);
+
+    useEffect(() => {
+        if (ready && data) cosmosRef.current?.setClusters(data.clusters ?? []);
+    }, [ready, data]);
+
+    useEffect(() => { if (ready) cosmosRef.current?.applyPhysics(physics); }, [ready, physics]);
+
+    // A health filter can cut 44 stars down to 2. Without reframing they are almost
+    // certainly off-screen and the graph just looks empty.
+    useEffect(() => {
+        if (!ready || (findings.length === 0 && trustFilter.length === 0)) return;
+        const timer = window.setTimeout(() => cosmosRef.current?.frameAll(), 400);
+        return () => window.clearTimeout(timer);
+    }, [ready, findings, trustFilter]);
+
+    useEffect(() => {
+        if (!ready) return;
+        cosmosRef.current?.setQuality(quality);
+        setBloomActive(cosmosRef.current?.bloomActive() ?? false);
+    }, [ready, quality]);
+
+    // View-only state lives on a ref so hover and search never re-render the tree.
+    useEffect(() => {
+        viewRef.current.lens = lens;
+        viewRef.current.labelsOn = labelsOn;
+        viewRef.current.selectedNode = selected?.type === "node" ? selected.id : null;
+        viewRef.current.selectedLink = selected?.type === "link" ? selected.link : null;
+        cosmosRef.current?.restyle();
+    }, [lens, labelsOn, selected]);
+
+    useEffect(() => {
+        const view = viewRef.current;
+        view.pathNodes = new Set(path);
+        view.pathLinks = pathLinkKeys(path);
+        view.pathActive = path.length > 1;
+        cosmosRef.current?.restyle();
+        if (path.length < 2) return;
+        // A corridor nobody can see is not an answer; frame the hops themselves.
+        const timer = window.setTimeout(() => cosmosRef.current?.frameNodes(new Set(path)), 350);
+        return () => window.clearTimeout(timer);
+    }, [path]);
+
+    // ---- Search ----
+
+    useEffect(() => {
+        const trimmed = query.trim();
+        const view = viewRef.current;
+
+        if (!trimmed) {
+            view.searchScores = new Map();
+            view.searchActive = false;
+            setHits([]);
+            setSearching(false);
+            cosmosRef.current?.restyle();
+            return;
+        }
+
+        // Instant local pass so typing feels responsive before the request lands.
+        const lower = trimmed.toLowerCase();
+        const local = (data?.nodes ?? [])
+            .filter((node) => node.title.toLowerCase().includes(lower))
+            .map((node) => ({ path: node.id, title: node.title, similarity: 0.55 }));
+        view.searchScores = new Map(local.map((hit) => [hit.path, hit.similarity]));
+        // Staying inactive on an empty result keeps the graph from blacking out while
+        // the semantic request is still in flight.
+        view.searchActive = local.length > 0;
+        setHits(local.slice(0, 8));
+        setActiveHit(0);
+        cosmosRef.current?.restyle();
+
+        let cancelled = false;
+        setSearching(true);
+        const timer = window.setTimeout(async () => {
+            try {
+                const response = await fetch(`/api/vault/search?q=${encodeURIComponent(trimmed)}`);
+                const json = await response.json();
+                if (cancelled || !response.ok) return;
+                // Recall spans the whole knowledge store, including raw/ captures and
+                // index.md, which are not graph nodes. Anything without a star would be
+                // a dead row in the list and an invisible highlight on the canvas.
+                const remote = (json.hits ?? []).filter((hit: SearchHit) => nodeById.has(hit.path)) as SearchHit[];
+                const merged = new Map(view.searchScores);
+                for (const hit of remote) {
+                    merged.set(hit.path, Math.max(merged.get(hit.path) ?? 0, hit.similarity));
+                }
+                view.searchScores = merged;
+                view.searchActive = merged.size > 0;
+                const combined = [...merged.entries()]
+                    .map(([nodePath, similarity]) => ({
+                        path: nodePath,
+                        title: nodeById.get(nodePath)?.title ?? nodePath,
+                        similarity,
+                    }))
+                    .sort((a, b) => b.similarity - a.similarity);
+                setHits(combined.slice(0, 8));
+                cosmosRef.current?.restyle();
+                // Bring the constellation the query lit up into view; without this the
+                // hits can sit behind a rail and the graph just looks dark.
+                const top = combined[0] && nodeCache.current.get(combined[0].path);
+                if (top) cosmosRef.current?.flyTo(top, 190);
+            } catch {
+                // The local pass already gave usable results.
+            } finally {
+                if (!cancelled) setSearching(false);
+            }
+        }, 250);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+            setSearching(false);
+        };
+    }, [query, data, nodeById]);
+
+    // ---- Mutations ----
+
+    const patch = useCallback((fn: (graph: ApiGraph) => ApiGraph) => {
+        setData((current) => (current ? fn(current) : current));
+    }, []);
+
+    const savePage = async () => {
+        if (selected?.type !== "node") return;
+        setBusy("save");
+        try {
+            const response = await fetch("/api/vault/page", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: selected.id, markdown: editText }),
+            });
+            const json = await response.json();
+            if (!response.ok) throw new Error(json.error || "Save failed.");
+            setPageMd(editText);
+            setEditMode(false);
+            showToast("Page saved and committed.");
+            void fetchGraph("rebuild");
+        } catch (caught) {
+            showToast(caught instanceof Error ? caught.message : "Save failed.");
+        } finally {
+            setBusy(null);
+        }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected, localRoot, editMode]);
 
-  // ---- Mutations (optimistic, then background re-sync) ----
+    const deletePage = async () => {
+        if (selected?.type !== "node") return;
+        const id = selected.id;
+        setBusy("delete");
+        try {
+            const response = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`, { method: "DELETE" });
+            const json = await response.json();
+            if (!response.ok) throw new Error(json.error || "Delete failed.");
+            nodeCache.current.delete(id);
+            patch((graph) => ({
+                ...graph,
+                nodes: graph.nodes.filter((node) => node.id !== id),
+                edges: graph.edges.filter((edge) => edge.source !== id && edge.target !== id),
+                suggestions: graph.suggestions.filter((s) => s.source !== id && s.target !== id),
+            }));
+            setSelected(null);
+            if (localRoot === id) setLocalRoot(null);
+            if (routeFrom === id) setRouteFrom(null);
+            if (routeTo === id) setRouteTo(null);
+            showToast(`Page deleted; ${json.changedPages?.length ?? 0} reference(s) cleaned.`);
+            void fetchGraph("rebuild");
+        } catch (caught) {
+            showToast(caught instanceof Error ? caught.message : "Delete failed.");
+        } finally {
+            setBusy(null);
+            setConfirming(null);
+        }
+    };
 
-  const patchData = useCallback((fn: (d: ApiGraph) => ApiGraph) => {
-    setData((d) => (d ? fn(d) : d));
-  }, []);
+    const deleteLink = async () => {
+        if (selected?.type !== "link") return;
+        const { source, target } = selected.link;
+        setBusy("unlink");
+        try {
+            const response = await fetch(
+                `/api/vault/link?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`,
+                { method: "DELETE" },
+            );
+            const json = await response.json();
+            if (!response.ok) throw new Error(json.error || "Unlink failed.");
+            linkCache.current.delete(`real:${[source, target].sort().join("|")}`);
+            patch((graph) => ({
+                ...graph,
+                edges: graph.edges.filter(
+                    (edge) => [edge.source, edge.target].sort().join("|") !== [source, target].sort().join("|"),
+                ),
+            }));
+            setSelected(null);
+            showToast("Connection removed from both pages.");
+            void fetchGraph("rebuild");
+        } catch (caught) {
+            showToast(caught instanceof Error ? caught.message : "Unlink failed.");
+        } finally {
+            setBusy(null);
+            setConfirming(null);
+        }
+    };
 
-  const savePage = async () => {
-    if (selected?.type !== "node") return;
-    setBusy("save");
-    try {
-      const res = await fetch("/api/vault/page", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: selected.id, markdown: editText }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Save failed.");
-      setPageMd(editText);
-      setEditMode(false);
-      showToast("Page saved and committed.");
-      fetchGraph(false); // edits can add/remove wikilinks
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Save failed.");
-    } finally {
-      setBusy(null);
-    }
-  };
+    const createLink = useCallback(async (source: string, target: string, label: string) => {
+        const response = await fetch("/api/vault/link", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source, target, label }),
+        });
+        const json = await response.json();
+        if (!response.ok) throw new Error(json.error || "Link failed.");
+        patch((graph) => ({
+            ...graph,
+            edges: [...graph.edges, { source, target, mutual: true }],
+            suggestions: graph.suggestions.filter(
+                (s) => [s.source, s.target].sort().join("|") !== [source, target].sort().join("|"),
+            ),
+        }));
+    }, [patch]);
 
-  const deletePage = async () => {
-    if (selected?.type !== "node") return;
-    const id = selected.id;
-    setBusy("delete");
-    try {
-      const res = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Delete failed.");
-      nodeCache.current.delete(id);
-      patchData((d) => ({
-        nodes: d.nodes.filter((n) => n.id !== id),
-        edges: d.edges.filter((e) => e.source !== id && e.target !== id),
-        suggestions: d.suggestions.filter((s) => s.source !== id && s.target !== id),
-      }));
-      setSelected(null);
-      if (localRoot === id) setLocalRoot(null);
-      showToast(`Page deleted; ${json.changedPages?.length ?? 0} reference(s) cleaned.`);
-      fetchGraph(false);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Delete failed.");
-    } finally {
-      setBusy(null);
-      setConfirming(null);
-    }
-  };
+    const linkOne = async (source: string, target: string, label: string) => {
+        setBusy("link");
+        try {
+            await createLink(source, target, label);
+            setSuggestions((current) => current.filter((item) => item.target !== target));
+            setSelectedSuggestions((current) => {
+                const next = new Set(current);
+                next.delete(target);
+                return next;
+            });
+            setLinkQuery("");
+            setLinkLabel("");
+            setLinkTargetId(null);
+            if (selected?.type === "link") setSelected(null);
+            showToast("Pages linked.");
+            void fetchGraph("rebuild");
+        } catch (caught) {
+            showToast(caught instanceof Error ? caught.message : "Link failed.");
+        } finally {
+            setBusy(null);
+        }
+    };
 
-  const deleteLink = async () => {
-    if (selected?.type !== "link") return;
-    const { source, target } = selected;
-    setBusy("unlink");
-    try {
-      const res = await fetch(
-        `/api/vault/link?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`,
-        { method: "DELETE" },
-      );
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Unlink failed.");
-      linkCache.current.delete(`real:${pairKey(source, target)}`);
-      patchData((d) => ({
-        ...d,
-        edges: d.edges.filter((e) => pairKey(e.source, e.target) !== pairKey(source, target)),
-      }));
-      setSelected(null);
-      showToast("Connection removed from both pages.");
-      fetchGraph(false);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Unlink failed.");
-    } finally {
-      setBusy(null);
-      setConfirming(null);
-    }
-  };
+    const linkSelectedSuggestions = async () => {
+        if (selected?.type !== "node" || selectedSuggestions.size === 0) return;
+        const targets = [...selectedSuggestions];
+        setBusy("link");
+        let linked = 0;
+        // Sequential on purpose: each link is its own vault commit, and the vault
+        // lock would serialise these anyway.
+        for (const target of targets) {
+            try {
+                await createLink(selected.id, target, "related");
+                linked++;
+            } catch (caught) {
+                showToast(caught instanceof Error ? caught.message : "One link failed.");
+            }
+        }
+        setSuggestions((current) => current.filter((item) => !selectedSuggestions.has(item.target)));
+        setSelectedSuggestions(new Set());
+        setBusy(null);
+        showToast(`Linked ${linked} of ${targets.length} page${targets.length === 1 ? "" : "s"}.`);
+        void fetchGraph("rebuild");
+    };
 
-  const createLink = async (source: string, target: string, label: string) => {
-    setBusy("link");
-    try {
-      const res = await fetch("/api/vault/link", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, target, label }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Link failed.");
-      patchData((d) => ({
-        ...d,
-        edges: [...d.edges, { source, target, mutual: true }],
-        suggestions: d.suggestions.filter((s) => pairKey(s.source, s.target) !== pairKey(source, target)),
-      }));
-      showToast("Pages linked.");
-      setLinkQuery("");
-      setLinkLabel("");
-      setLinkTargetId(null);
-      if (selectedRef.current?.type === "link") setSelected(null);
-      fetchGraph(false);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Link failed.");
-    } finally {
-      setBusy(null);
-    }
-  };
+    // ---- Keyboard ----
 
-  // ---- Panel helpers ----
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement | null;
+            const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
 
-  const nodeById = useCallback((id: string) => data?.nodes.find((n) => n.id === id), [data]);
+            if (event.key === "/" && !typing) {
+                event.preventDefault();
+                searchInputRef.current?.focus();
+                return;
+            }
+            if (event.key === "Escape") {
+                if (editMode) return;
+                if (contextMenu) { setContextMenu(null); return; }
+                if (selected) { setSelected(null); setConfirming(null); return; }
+                if (routeFrom || routeTo) { setRouteFrom(null); setRouteTo(null); return; }
+                if (localRoot) { setLocalRoot(null); return; }
+                if (timeActive) { setTimeActive(false); setTimePlaying(false); }
+                return;
+            }
+            if (typing) return;
 
-  const searchMatches = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q || !data) return [];
-    return data.nodes.filter((n) => n.title.toLowerCase().includes(q)).slice(0, 8);
-  }, [search, data]);
+            if (event.key >= "1" && event.key <= "5") {
+                setLens(LENSES[Number(event.key) - 1]);
+                return;
+            }
+            if (event.key === "f") { cosmosRef.current?.frameAll(); return; }
+            if (event.key === "r") { setPhysics(DEFAULT_PHYSICS); return; }
+            if (event.key === "l") { setLabelsOn((on) => !on); return; }
+            if (event.key === " " && timeActive) {
+                event.preventDefault();
+                setTimePlaying((playing) => !playing);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [editMode, selected, routeFrom, routeTo, localRoot, timeActive, contextMenu]);
 
-  const linkTargets = useMemo(() => {
-    const q = linkQuery.trim().toLowerCase();
-    if (!q || !data || selected?.type !== "node") return [];
-    const connected = neighborMap.get(selected.id) ?? new Set();
-    return data.nodes
-      .filter((n) => n.id !== selected.id && !connected.has(n.id) && n.title.toLowerCase().includes(q))
-      .slice(0, 6);
-  }, [linkQuery, data, selected, neighborMap]);
+    // ---- Derived panel inputs ----
 
-  const selectedNode = selected?.type === "node" ? nodeById(selected.id) : undefined;
+    const linkTargets = useMemo(() => {
+        const trimmed = linkQuery.trim().toLowerCase();
+        if (!trimmed || !data || selected?.type !== "node" || linkTargetId) return [];
+        const connected = adjacency.get(selected.id) ?? new Set<string>();
+        return data.nodes
+            .filter((node) => node.id !== selected.id && !connected.has(node.id) && node.title.toLowerCase().includes(trimmed))
+            .slice(0, 6);
+    }, [linkQuery, data, selected, adjacency, linkTargetId]);
 
-  return (
-    <div style={styles.root}>
-      <div style={styles.ambientOne} />
-      <div style={styles.ambientTwo} />
-      <div ref={containerRef} style={styles.canvas} />
+    const selectedNode = selected?.type === "node" ? nodeById.get(selected.id) : undefined;
 
-      {/* Top bar */}
-      <div style={styles.topBar}>
-        <Link href="/" style={styles.backBtn} aria-label="Back to chat">
-          <ArrowLeft size={17} />
-        </Link>
-        <div style={styles.titleStack}>
-          <span style={styles.eyebrow}>Second Brain</span>
-          <span style={styles.pageTitle}>Knowledge Graph</span>
-        </div>
-        {data && <span style={styles.counts}>{visible.nodes.length}/{data.nodes.length} pages</span>}
-        <button
-          onClick={() => fetchGraph(false)}
-          style={styles.iconBtn}
-          aria-label="Refresh graph"
-          title="Refresh"
-          disabled={refreshing}
-        >
-          <RefreshCw size={15} className={refreshing ? "animate-spin" : undefined} />
-        </button>
-        <button
-          onClick={() => setControlsOpen((o) => !o)}
-          style={{ ...styles.iconBtn, ...(controlsOpen ? styles.iconBtnActive : {}) }}
-          aria-label="Toggle controls"
-          title="Controls"
-        >
-          <SlidersHorizontal size={15} />
-        </button>
-      </div>
+    const rightPanelOpen = Boolean(selected) || Boolean(routeFrom || routeTo);
+    // Both rails cannot fit side by side on a narrow window, and the right one is
+    // always the thing the user just asked for.
+    const leftRailVisible = railOpen && !(viewport.width < 1080 && rightPanelOpen);
 
-      {/* Local mode banner */}
-      {localRoot && (
-        <div style={styles.localBanner} className="animate-fade-in-scale">
-          <Crosshair size={13} />
-          <span>Local: <b>{nodeById(localRoot)?.title ?? localRoot}</b></span>
-          <button
-            style={styles.depthBtn}
-            onClick={() => setLocalDepth((d) => (d === 1 ? 2 : 1))}
-            title="Neighborhood depth"
-          >
-            {localDepth} hop{localDepth > 1 ? "s" : ""}
-          </button>
-          <button style={styles.depthBtn} onClick={() => setLocalRoot(null)}>Exit (Esc)</button>
-        </div>
-      )}
+    useEffect(() => {
+        const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+        onResize();
+        window.addEventListener("resize", onResize);
+        return () => window.removeEventListener("resize", onResize);
+    }, []);
 
-      {/* Controls panel */}
-      {controlsOpen && (
-        <div style={styles.controls} className="animate-fade-in-scale">
-          <div style={styles.cardHeader}>
-            <div>
-              <div style={styles.cardTitle}>Explore</div>
-              <div style={styles.cardSubtle}>Filter, search and tune the layout</div>
-            </div>
-            {data && <span style={styles.suggestionPill}>{data.suggestions.length} suggestions</span>}
-          </div>
+    useEffect(() => {
+        const element = topBarRef.current;
+        if (!element) return;
+        const observer = new ResizeObserver(([entry]) => {
+            setRailTop(Math.round(entry.contentRect.height) + 22);
+        });
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
 
-          <div style={styles.searchRow}>
-            <Search size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search pages..."
-              style={styles.searchInput}
-            />
-            {search && (
-              <button style={styles.clearBtn} onClick={() => setSearch("")} aria-label="Clear search">
-                <X size={13} />
-              </button>
-            )}
-          </div>
+    useEffect(() => {
+        viewRef.current.labelSafeArea = {
+            left: leftRailVisible ? 316 : 0,
+            right: rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
+        };
+    }, [leftRailVisible, rightPanelOpen, viewport.width]);
 
-          {data && (
-            <div style={styles.statsGrid}>
-              <div style={styles.statCard}>
-                <span style={styles.statValue}>{visible.nodes.length}</span>
-                <span style={styles.statLabel}>Visible pages</span>
-              </div>
-              <div style={styles.statCard}>
-                <span style={styles.statValue}>{visible.links.length}</span>
-                <span style={styles.statLabel}>Visible links</span>
-              </div>
-            </div>
-          )}
+    return (
+        <div style={styles.root}>
+            <style>{MARKDOWN_CSS}</style>
+            <div style={styles.nebulaOne} />
+            <div style={styles.nebulaTwo} />
+            <div ref={containerRef} style={styles.canvas} />
 
-          {searchMatches.length > 0 && (
-            <div style={styles.searchResults}>
-              {searchMatches.map((n) => (
-                <button
-                  key={n.id}
-                  style={styles.searchItem}
-                  onClick={() => { openNode(n.id); flyTo(n.id); setSearch(""); }}
-                >
-                  <span style={{ ...styles.dot, background: CATEGORY_COLORS[n.category] }} />
-                  <span style={styles.searchItemText}>{n.title}</span>
-                </button>
-              ))}
-            </div>
-          )}
+            <div style={styles.topBar} ref={topBarRef}>
+                <div style={styles.topBarGroup}>
+                    <Link href="/" style={styles.backBtn} aria-label="Back to chat" title="Back to chat">
+                        <ArrowLeft size={16} />
+                    </Link>
+                    <div style={styles.titleStack}>
+                        <span style={styles.eyebrow}>Second Brain</span>
+                        <span style={styles.pageTitle}>Knowledge Cosmos</span>
+                    </div>
+                </div>
 
-          <div style={styles.sectionLabel}>Categories</div>
-          {CATEGORIES.map((c) => (
-            <label key={c} style={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={catFilter[c] !== false}
-                onChange={(e) => setCatFilter((f) => ({ ...f, [c]: e.target.checked }))}
-              />
-              <span style={{ ...styles.dot, background: CATEGORY_COLORS[c] }} />
-              <span style={styles.checkLabel}>{c}</span>
-            </label>
-          ))}
-          <label style={styles.checkRow}>
-            <input type="checkbox" checked={showOrphans} onChange={(e) => setShowOrphans(e.target.checked)} />
-            <span style={styles.checkLabel}>orphan pages</span>
-          </label>
-          <label style={styles.checkRow}>
-            <input type="checkbox" checked={showSuggestions} onChange={(e) => setShowSuggestions(e.target.checked)} />
-            <span style={{ ...styles.dot, background: "#7aa2ff" }} />
-            <span style={styles.checkLabel}>
-              suggested links{data ? ` (${data.suggestions.length})` : ""}
-            </span>
-          </label>
+                <div style={styles.topBarSpacer} />
 
-          <div style={styles.sectionLabel}>Forces</div>
-          <SliderRow label="Repel" min={0} max={300} step={10} value={physics.repel}
-            onChange={(v) => setPhysics((p) => ({ ...p, repel: v }))} />
-          <SliderRow label="Link distance" min={10} max={200} step={5} value={physics.linkDist}
-            onChange={(v) => setPhysics((p) => ({ ...p, linkDist: v }))} />
-          <SliderRow label="Center pull" min={0} max={1} step={0.05} value={physics.center}
-            onChange={(v) => setPhysics((p) => ({ ...p, center: v }))} />
-
-          <p style={styles.hint}>Click a page to inspect it. Double-click to isolate its neighborhood. Click a connection to manage it.</p>
-        </div>
-      )}
-
-      {/* Node panel */}
-      {selected?.type === "node" && (
-        <div style={styles.panel} className="animate-fade-in-scale">
-          <div style={styles.panelHeader}>
-            <span style={{ ...styles.categoryChip, background: CATEGORY_COLORS[selectedNode?.category ?? ""] ?? "#888" }}>
-              {selectedNode?.category}
-            </span>
-            <button style={styles.clearBtn} onClick={() => { setSelected(null); setEditMode(false); }} aria-label="Close panel">
-              <X size={15} />
-            </button>
-          </div>
-          <h2 style={styles.panelTitle}>{selectedNode?.title ?? selected.id}</h2>
-          <div style={styles.panelMeta}>
-            <span style={styles.mono}>{selected.id}</span>
-            {selectedNode?.updated && <span>updated {selectedNode.updated}</span>}
-            <span>{selectedNode?.links ?? 0} link{(selectedNode?.links ?? 0) === 1 ? "" : "s"}</span>
-          </div>
-
-          <div style={styles.panelActions}>
-            {!editMode ? (
-              <button style={styles.actionBtn} onClick={() => { setEditText(pageMd ?? ""); setEditMode(true); }} disabled={pageMd === null}>
-                <Pencil size={13} /> Edit
-              </button>
-            ) : (
-              <>
-                <button style={{ ...styles.actionBtn, ...styles.actionPrimary }} onClick={savePage} disabled={busy !== null || editText.trim() === ""}>
-                  {busy === "save" ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Save
-                </button>
-                <button style={styles.actionBtn} onClick={() => { setEditMode(false); setEditText(pageMd ?? ""); }} disabled={busy !== null}>
-                  Cancel
-                </button>
-              </>
-            )}
-            {confirming === "page" ? (
-              <>
-                <button style={{ ...styles.actionBtn, ...styles.actionDanger }} onClick={deletePage} disabled={busy !== null}>
-                  {busy === "delete" ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Confirm delete
-                </button>
-                <button style={styles.actionBtn} onClick={() => setConfirming(null)}>Keep</button>
-              </>
-            ) : (
-              <button style={{ ...styles.actionBtn, ...styles.actionDangerGhost }} onClick={() => setConfirming("page")} disabled={busy !== null}>
-                <Trash2 size={13} /> Delete
-              </button>
-            )}
-          </div>
-          {confirming === "page" && (
-            <p style={styles.dangerNote}>
-              Deletes the page, every reference to it in other pages, its index entry and its embedding. The commit is permanent.
-            </p>
-          )}
-
-          <div style={styles.panelBody}>
-            {pageLoading && <div style={styles.panelLoading}><Loader2 size={16} className="animate-spin" /></div>}
-            {!pageLoading && editMode && (
-              <textarea
-                value={editText}
-                onChange={(e) => setEditText(e.target.value)}
-                style={styles.editor}
-                spellCheck={false}
-              />
-            )}
-            {!pageLoading && !editMode && pageMd !== null && (
-              <div className="markdown-body" style={styles.mdView}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayMarkdown(pageMd)}</ReactMarkdown>
-              </div>
-            )}
-          </div>
-
-          {!editMode && (
-            <div style={styles.linkAdder}>
-              <div style={styles.sectionLabel}><Link2 size={11} style={{ marginRight: 4 }} />Connect to another page</div>
-              <input
-                value={linkQuery}
-                onChange={(e) => { setLinkQuery(e.target.value); setLinkTargetId(null); }}
-                placeholder="Search a page to link..."
-                style={styles.textInput}
-              />
-              {!linkTargetId && linkTargets.length > 0 && (
-                <div style={styles.searchResults}>
-                  {linkTargets.map((n) => (
+                <div style={styles.topBarGroup}>
+                    {data && (
+                        <span style={styles.counts}>
+                            {viewport.width < 760
+                                ? `${visible.nodes.length}/${data.nodes.length}`
+                                : `${visible.nodes.length}/${data.nodes.length} stars · ${visible.links.length} filaments`}
+                        </span>
+                    )}
+                    {data?.stale && (
+                        <span style={styles.staleDot} title="Serving a cached snapshot; a rebuild is running">
+                            <Clock size={11} /> refreshing
+                        </span>
+                    )}
                     <button
-                      key={n.id}
-                      style={styles.searchItem}
-                      onClick={() => { setLinkQuery(n.title); setLinkLabel((l) => l || "related"); setLinkTargetId(n.id); }}
+                        onClick={() => setLabelsOn((on) => !on)}
+                        style={{ ...styles.iconBtn, ...(labelsOn ? styles.iconBtnActive : {}) }}
+                        aria-label="Toggle labels"
+                        title="Labels (l)"
                     >
-                      <span style={{ ...styles.dot, background: CATEGORY_COLORS[n.category] }} />
-                      <span style={styles.searchItemText}>{n.title}</span>
+                        <Type size={14} />
                     </button>
-                  ))}
+                    <button
+                        onClick={() => { setTimeActive((on) => !on); setTimeValue(timeBounds.end); setTimePlaying(false); }}
+                        style={{ ...styles.iconBtn, ...(timeActive ? styles.iconBtnActive : {}) }}
+                        aria-label="Toggle time travel"
+                        title="Time travel"
+                    >
+                        <Clock size={14} />
+                    </button>
+                    <button
+                        onClick={() => void fetchGraph("rebuild")}
+                        style={styles.iconBtn}
+                        aria-label="Rebuild graph"
+                        title="Rebuild from the vault"
+                        disabled={refreshing}
+                    >
+                        <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} />
+                    </button>
+                    <button
+                        onClick={() => setRailOpen((open) => !open)}
+                        style={{ ...styles.iconBtn, ...(railOpen ? styles.iconBtnActive : {}) }}
+                        aria-label="Toggle controls"
+                        title="Controls"
+                    >
+                        <SlidersHorizontal size={14} />
+                    </button>
                 </div>
-              )}
-              {linkTargetId && (
-                <div style={styles.linkConfirmRow}>
-                  <input
-                    value={linkLabel}
-                    onChange={(e) => setLinkLabel(e.target.value)}
-                    placeholder="relationship (e.g. extends)"
-                    style={{ ...styles.textInput, flex: 1 }}
-                  />
-                  <button
-                    style={{ ...styles.actionBtn, ...styles.actionPrimary }}
-                    disabled={busy !== null}
-                    onClick={() => createLink(selected.id, linkTargetId, linkLabel || "related")}
-                  >
-                    {busy === "link" ? <Loader2 size={13} className="animate-spin" /> : <Link2 size={13} />} Link
-                  </button>
-                </div>
-              )}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* Link panel */}
-      {selected?.type === "link" && (
-        <div style={{ ...styles.panel, maxHeight: "none", height: "auto" }} className="animate-fade-in-scale">
-          <div style={styles.panelHeader}>
-            <span style={{ ...styles.categoryChip, background: selected.kind === "suggestion" ? "#7aa2ff" : "var(--color-secondary)" }}>
-              {selected.kind === "suggestion" ? "suggested link" : "connection"}
-            </span>
-            <button style={styles.clearBtn} onClick={() => setSelected(null)} aria-label="Close panel">
-              <X size={15} />
-            </button>
-          </div>
-          <h2 style={styles.panelTitle}>
-            {nodeById(selected.source)?.title ?? selected.source}
-            <span style={{ opacity: 0.5 }}> ↔ </span>
-            {nodeById(selected.target)?.title ?? selected.target}
-          </h2>
-          {selected.kind === "suggestion" ? (
-            <>
-              <p style={styles.panelNote}>
-                These pages are {(selected.similarity! * 100).toFixed(0)}% similar but not linked yet. Materialize the link?
-              </p>
-              <div style={styles.linkConfirmRow}>
-                <input
-                  value={linkLabel}
-                  onChange={(e) => setLinkLabel(e.target.value)}
-                  placeholder="relationship (e.g. related)"
-                  style={{ ...styles.textInput, flex: 1 }}
+            {localRoot && (
+                <div style={{ ...styles.banner, top: railTop }} className="animate-fade-in-scale">
+                    <Crosshair size={12} />
+                    <span>System: <b>{titleOf(localRoot)}</b></span>
+                    <button style={styles.chip} onClick={() => setLocalDepth((depth) => (depth === 1 ? 2 : 1))}>
+                        {localDepth} hop{localDepth > 1 ? "s" : ""}
+                    </button>
+                    <button style={styles.chip} onClick={() => setLocalRoot(null)}>Exit (Esc)</button>
+                </div>
+            )}
+
+            {leftRailVisible && (
+                <div style={{ ...styles.leftRail, top: railTop }} className="cosmos-rail">
+                    <ExplorePanel
+                        query={query}
+                        onQueryChange={setQuery}
+                        searching={searching}
+                        hits={hits}
+                        activeHit={activeHit}
+                        onPickHit={focusNode}
+                        visibleNodes={visible.nodes.length}
+                        visibleLinks={visible.links.length}
+                        totalNodes={data?.nodes.length ?? 0}
+                        categoryFilter={categoryFilter}
+                        onToggleCategory={(category) =>
+                            setCategoryFilter((current) => ({ ...current, [category]: current[category] === false }))
+                        }
+                        showOrphans={showOrphans}
+                        onShowOrphans={setShowOrphans}
+                        showSuggestions={showSuggestions}
+                        onShowSuggestions={setShowSuggestions}
+                        suggestionCount={data?.suggestions.length ?? 0}
+                        physics={physics}
+                        onPhysics={setPhysics}
+                        quality={quality}
+                        onQuality={setQuality}
+                        bloomActive={bloomActive}
+                        searchInputRef={searchInputRef}
+                    />
+                    <LensPanel
+                        lens={lens}
+                        onLens={setLens}
+                        clusters={data?.clusters ?? []}
+                        nodes={data?.nodes ?? []}
+                        trustFilter={trustFilter}
+                        onToggleTrust={(bucket) =>
+                            setTrustFilter((current) =>
+                                current.includes(bucket)
+                                    ? current.filter((item) => item !== bucket)
+                                    : [...current, bucket],
+                            )
+                        }
+                    />
+                    <ClustersPanel clusters={data?.clusters ?? []} onFocus={focusNode} />
+                    {data && (
+                        <HealthPanel
+                            health={data.health}
+                            nodes={data.nodes}
+                            activeFindings={findings}
+                            onToggleFinding={(finding) =>
+                                setFindings((current) =>
+                                    current.includes(finding)
+                                        ? current.filter((item) => item !== finding)
+                                        : [...current, finding],
+                                )
+                            }
+                            onFocus={focusNode}
+                        />
+                    )}
+                    <HubsPanel nodes={data?.nodes ?? []} onFocus={focusNode} />
+                </div>
+            )}
+
+            <div style={{ ...styles.rightRail, top: railTop }} className="cosmos-rail">
+                {(routeFrom || routeTo) && (
+                    <PathPanel
+                        from={routeFrom}
+                        to={routeTo}
+                        path={path}
+                        titleOf={titleOf}
+                        onFocus={focusNode}
+                        onClear={() => { setRouteFrom(null); setRouteTo(null); }}
+                        onSwap={() => { setRouteFrom(routeTo); setRouteTo(routeFrom); }}
+                    />
+                )}
+
+                {selectedNode && selected?.type === "node" && (
+                    <PagePanel
+                        node={selectedNode}
+                        markdown={pageMd}
+                        loading={pageLoading}
+                        editMode={editMode}
+                        editText={editText}
+                        busy={busy}
+                        confirming={confirming}
+                        suggestions={suggestions}
+                        suggestionsLoading={suggestionsLoading}
+                        selectedSuggestions={selectedSuggestions}
+                        linkQuery={linkQuery}
+                        linkTargets={linkTargets}
+                        linkTargetId={linkTargetId}
+                        linkLabel={linkLabel}
+                        titleOf={titleOf}
+                        onClose={() => { setSelected(null); setConfirming(null); }}
+                        onEdit={() => setEditMode(true)}
+                        onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
+                        onEditText={setEditText}
+                        onSave={() => void savePage()}
+                        onDelete={() => void deletePage()}
+                        onConfirm={setConfirming}
+                        onFocus={focusNode}
+                        onLocal={() => setLocalRoot(selected.id)}
+                        onRouteFrom={() => setRouteFrom(selected.id)}
+                        onRouteTo={() => setRouteTo(selected.id)}
+                        onToggleSuggestion={(target) =>
+                            setSelectedSuggestions((current) => {
+                                const next = new Set(current);
+                                if (next.has(target)) next.delete(target);
+                                else next.add(target);
+                                return next;
+                            })
+                        }
+                        onAcceptSuggestion={(target) => void linkOne(selected.id, target, "related")}
+                        onLinkSelected={() => void linkSelectedSuggestions()}
+                        onLinkQuery={setLinkQuery}
+                        onLinkTarget={setLinkTargetId}
+                        onLinkLabel={setLinkLabel}
+                        onCreateLink={() => {
+                            if (linkTargetId) void linkOne(selected.id, linkTargetId, linkLabel || "related");
+                        }}
+                    />
+                )}
+
+                {selected?.type === "link" && (
+                    <LinkPanel
+                        source={selected.link.source}
+                        target={selected.link.target}
+                        kind={selected.link.kind}
+                        similarity={selected.link.similarity}
+                        titleOf={titleOf}
+                        busy={busy}
+                        confirming={confirming}
+                        onConfirm={setConfirming}
+                        onUnlink={() => void deleteLink()}
+                        onAccept={() => void linkOne(selected.link.source, selected.link.target, "related")}
+                        onClose={() => { setSelected(null); setConfirming(null); }}
+                    />
+                )}
+            </div>
+
+            {timeActive && (
+                <TimelineBar
+                    start={timeBounds.start}
+                    end={timeBounds.end}
+                    value={timeValue}
+                    playing={timePlaying}
+                    onChange={setTimeValue}
+                    onPlaying={setTimePlaying}
+                    onExit={() => { setTimeActive(false); setTimePlaying(false); }}
                 />
-                <button
-                  style={{ ...styles.actionBtn, ...styles.actionPrimary }}
-                  disabled={busy !== null}
-                  onClick={() => createLink(selected.source, selected.target, linkLabel || "related")}
+            )}
+
+            {contextMenu && (
+                <div
+                    style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}
+                    onMouseLeave={() => setContextMenu(null)}
                 >
-                  {busy === "link" ? <Loader2 size={13} className="animate-spin" /> : <Link2 size={13} />} Create link
-                </button>
-              </div>
-            </>
-          ) : (
-            <div style={styles.panelActions}>
-              {confirming === "link" ? (
-                <>
-                  <button style={{ ...styles.actionBtn, ...styles.actionDanger }} onClick={deleteLink} disabled={busy !== null}>
-                    {busy === "unlink" ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Confirm removal
-                  </button>
-                  <button style={styles.actionBtn} onClick={() => setConfirming(null)}>Keep</button>
-                </>
-              ) : (
-                <button style={{ ...styles.actionBtn, ...styles.actionDangerGhost }} onClick={() => setConfirming("link")}>
-                  <Trash2 size={13} /> Delete connection
-                </button>
-              )}
-            </div>
-          )}
-          {confirming === "link" && (
-            <p style={styles.dangerNote}>Removes the wikilink from both pages (text is kept) and commits the change.</p>
-          )}
-        </div>
-      )}
+                    <button style={styles.contextItem} onClick={() => { setRouteFrom(contextMenu.id); setContextMenu(null); }}>
+                        <Route size={13} /> Route from here
+                    </button>
+                    <button style={styles.contextItem} onClick={() => { setRouteTo(contextMenu.id); setContextMenu(null); }}>
+                        <Route size={13} /> Route to here
+                    </button>
+                    <button style={styles.contextItem} onClick={() => { setLocalRoot(contextMenu.id); setContextMenu(null); }}>
+                        <Crosshair size={13} /> Isolate this system
+                    </button>
+                    <button style={styles.contextItem} onClick={() => { focusNode(contextMenu.id); setContextMenu(null); }}>
+                        <Layers size={13} /> Open page
+                    </button>
+                </div>
+            )}
 
-      {/* Loading / error / empty */}
-      {loading && (
-        <div style={styles.center}>
-          <div style={styles.centerCard}>
-            <Loader2 size={22} className="animate-spin" />
-            <span style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>Reading the vault...</span>
-          </div>
-        </div>
-      )}
-      {!loading && error && (
-        <div style={styles.center}>
-          <div style={styles.centerCard}>
-            <p style={{ fontSize: 14, marginBottom: 12 }}>{error}</p>
-            <button style={styles.actionBtn} onClick={() => fetchGraph(true)}>Retry</button>
-          </div>
-        </div>
-      )}
-      {!loading && !error && data && data.nodes.length === 0 && (
-        <div style={styles.center}>
-          <div style={styles.centerCard}>
-            <p style={{ fontSize: 14, opacity: 0.75 }}>The vault has no wiki pages yet. Ask the agent to save something first.</p>
-          </div>
-        </div>
-      )}
+            {loading && (
+                <div style={styles.overlay}>
+                    <Loader2 size={22} className="animate-spin" />
+                    <span>Charting the vault...</span>
+                </div>
+            )}
 
-      {toast && <div style={styles.toast} className="animate-fade-in">{toast}</div>}
-    </div>
-  );
+            {error && !loading && (
+                <div style={styles.overlay}>
+                    <span style={{ color: COSMOS.danger, maxWidth: 420, textAlign: "center", lineHeight: 1.5 }}>{error}</span>
+                    <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={() => void fetchGraph("initial")}>
+                        Try again
+                    </button>
+                </div>
+            )}
+
+            {toast && <div style={styles.toast} className="animate-fade-in-scale">{toast}</div>}
+        </div>
+    );
 }
-
-function SliderRow({ label, min, max, step, value, onChange }: {
-  label: string; min: number; max: number; step: number; value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label style={styles.sliderRow}>
-      <span style={styles.sliderLabel}>{label}</span>
-      <input
-        type="range"
-        min={min} max={max} step={step} value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        style={{ flex: 1 }}
-      />
-      <span style={styles.sliderValue}>{value}</span>
-    </label>
-  );
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  root: {
-    position: "fixed",
-    inset: 0,
-    background: "radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 28%), radial-gradient(circle at 90% 80%, color-mix(in srgb, #7aa2ff 14%, transparent), transparent 30%), var(--color-background)",
-    color: "var(--color-text-primary)",
-    overflow: "hidden",
-    fontFamily: "var(--font-family)",
-  },
-  ambientOne: {
-    position: "absolute",
-    width: 420,
-    height: 420,
-    left: -120,
-    top: -140,
-    borderRadius: "50%",
-    background: "color-mix(in srgb, var(--color-secondary) 20%, transparent)",
-    filter: "blur(70px)",
-    opacity: 0.45,
-    pointerEvents: "none",
-  },
-  ambientTwo: {
-    position: "absolute",
-    width: 520,
-    height: 520,
-    right: -180,
-    bottom: -180,
-    borderRadius: "50%",
-    background: "color-mix(in srgb, #7aa2ff 18%, transparent)",
-    filter: "blur(90px)",
-    opacity: 0.4,
-    pointerEvents: "none",
-  },
-  canvas: { position: "absolute", inset: 0, zIndex: 1 },
-  topBar: {
-    position: "absolute",
-    top: 16,
-    left: 16,
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "10px 12px",
-    borderRadius: "20px",
-    background: "linear-gradient(135deg, color-mix(in srgb, var(--color-surface) 90%, transparent), color-mix(in srgb, var(--color-surface) 72%, transparent))",
-    backdropFilter: "blur(22px) saturate(1.2)",
-    WebkitBackdropFilter: "blur(22px) saturate(1.2)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-    boxShadow: "0 16px 50px rgba(0, 0, 0, 0.22)",
-    zIndex: 10,
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  backBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    background: "color-mix(in srgb, var(--color-background) 72%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-    color: "var(--color-text-primary)",
-    textDecoration: "none",
-  },
-  titleStack: { display: "flex", flexDirection: "column", minWidth: 118 },
-  eyebrow: {
-    fontSize: 10,
-    lineHeight: 1,
-    fontWeight: 700,
-    letterSpacing: 1.1,
-    textTransform: "uppercase",
-    color: "var(--color-text-muted)",
-  },
-  pageTitle: { fontSize: 15, fontWeight: 750, letterSpacing: "-0.03em", lineHeight: 1.25 },
-  counts: {
-    padding: "6px 9px",
-    borderRadius: 999,
-    fontSize: 12,
-    color: "var(--color-text-muted)",
-    background: "color-mix(in srgb, var(--color-background) 70%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
-  },
-  iconBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: "transparent",
-    background: "transparent",
-    color: "var(--color-text-primary)",
-    cursor: "pointer",
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  iconBtnActive: {
-    background: "color-mix(in srgb, var(--color-secondary) 16%, var(--color-background))",
-    borderColor: "color-mix(in srgb, var(--color-secondary) 40%, var(--color-border))",
-  },
-  localBanner: {
-    position: "absolute",
-    top: 78,
-    left: 16,
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "6px 10px",
-    fontSize: 12,
-    borderRadius: "14px",
-    background: "color-mix(in srgb, var(--color-surface) 90%, transparent)",
-    backdropFilter: "blur(18px)",
-    WebkitBackdropFilter: "blur(18px)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-    boxShadow: "0 12px 34px rgba(0, 0, 0, 0.18)",
-    zIndex: 10,
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  depthBtn: {
-    padding: "3px 8px",
-    fontSize: 11,
-    borderRadius: 6,
-    border: "1px solid var(--color-border)",
-    background: "transparent",
-    color: "var(--color-text-primary)",
-    cursor: "pointer",
-  },
-  controls: {
-    position: "absolute",
-    bottom: 16,
-    right: 16,
-    width: 304,
-    padding: 16,
-    borderRadius: "22px",
-    background: "linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 93%, transparent), color-mix(in srgb, var(--color-surface) 78%, transparent))",
-    backdropFilter: "blur(24px) saturate(1.18)",
-    WebkitBackdropFilter: "blur(24px) saturate(1.18)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 68%, transparent)",
-    boxShadow: "0 22px 70px rgba(0, 0, 0, 0.26)",
-    zIndex: 10,
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  cardHeader: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 4,
-  },
-  cardTitle: { fontSize: 14, fontWeight: 750, letterSpacing: "-0.02em" },
-  cardSubtle: { marginTop: 2, fontSize: 11.5, color: "var(--color-text-muted)" },
-  suggestionPill: {
-    flexShrink: 0,
-    padding: "4px 8px",
-    borderRadius: 999,
-    fontSize: 10.5,
-    fontWeight: 650,
-    color: "#7aa2ff",
-    background: "color-mix(in srgb, #7aa2ff 14%, transparent)",
-    border: "1px solid color-mix(in srgb, #7aa2ff 24%, transparent)",
-  },
-  searchRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "9px 10px",
-    borderRadius: 14,
-    border: "1px solid color-mix(in srgb, var(--color-border) 85%, transparent)",
-    background: "color-mix(in srgb, var(--color-background) 78%, transparent)",
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  searchInput: {
-    flex: 1,
-    minWidth: 0,
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    color: "var(--color-text-primary)",
-    fontSize: 13,
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 8,
-  },
-  statCard: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    padding: "10px 11px",
-    borderRadius: 15,
-    background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
-  },
-  statValue: { fontSize: 18, fontWeight: 800, letterSpacing: "-0.04em" },
-  statLabel: { fontSize: 10.5, color: "var(--color-text-muted)" },
-  searchResults: {
-    display: "flex",
-    flexDirection: "column",
-    borderRadius: 13,
-    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
-    overflow: "hidden",
-  },
-  searchItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: 7,
-    padding: "8px 10px",
-    fontSize: 12.5,
-    border: "none",
-    borderBottom: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-    background: "color-mix(in srgb, var(--color-background) 78%, transparent)",
-    color: "var(--color-text-primary)",
-    cursor: "pointer",
-    textAlign: "left",
-  },
-  searchItemText: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
-  sectionLabel: {
-    marginTop: 8,
-    fontSize: 10.5,
-    fontWeight: 600,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    color: "var(--color-text-muted)",
-    display: "flex",
-    alignItems: "center",
-  },
-  checkRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 7,
-    fontSize: 12.5,
-    cursor: "pointer",
-    padding: "6px 8px",
-    borderRadius: 11,
-    background: "color-mix(in srgb, var(--color-background) 38%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
-  },
-  checkLabel: { textTransform: "capitalize" as const },
-  sliderRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 12,
-    padding: "4px 0",
-  },
-  sliderLabel: { width: 78, flexShrink: 0, color: "var(--color-text-muted)" },
-  sliderValue: { width: 30, textAlign: "right", fontSize: 11, color: "var(--color-text-muted)" },
-  hint: {
-    marginTop: 10,
-    padding: "10px 11px",
-    fontSize: 11,
-    lineHeight: 1.45,
-    color: "var(--color-text-muted)",
-    borderRadius: 14,
-    background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
-  },
-  panel: {
-    position: "absolute",
-    bottom: 16,
-    left: 16,
-    width: 430,
-    maxWidth: "calc(100vw - 32px)",
-    maxHeight: "min(620px, calc(100vh - 110px))",
-    display: "flex",
-    flexDirection: "column",
-    padding: 18,
-    borderRadius: "24px",
-    background: "linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 94%, transparent), color-mix(in srgb, var(--color-surface) 80%, transparent))",
-    backdropFilter: "blur(26px) saturate(1.2)",
-    WebkitBackdropFilter: "blur(26px) saturate(1.2)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 68%, transparent)",
-    boxShadow: "0 28px 80px rgba(0, 0, 0, 0.32)",
-    zIndex: 11,
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  panelHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-  categoryChip: {
-    padding: "4px 10px",
-    fontSize: 10.5,
-    fontWeight: 750,
-    borderRadius: 999,
-    color: "#fff",
-    letterSpacing: 0.3,
-    textTransform: "capitalize" as const,
-  },
-  clearBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: "none",
-    background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-    color: "var(--color-text-muted)",
-    cursor: "pointer",
-    padding: 5,
-    borderRadius: 10,
-  },
-  panelTitle: { fontSize: 20, fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1.2, marginBottom: 8 },
-  panelMeta: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 8,
-    fontSize: 11,
-    color: "var(--color-text-muted)",
-    marginBottom: 14,
-  },
-  mono: {
-    fontFamily: "var(--font-mono)",
-    fontSize: 10.5,
-    padding: "2px 6px",
-    borderRadius: 7,
-    background: "color-mix(in srgb, var(--color-background) 52%, transparent)",
-  },
-  panelActions: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 },
-  actionBtn: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    padding: "7px 12px",
-    fontSize: 12.5,
-    fontWeight: 650,
-    borderRadius: 12,
-    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
-    background: "color-mix(in srgb, var(--color-background) 72%, transparent)",
-    color: "var(--color-text-primary)",
-    cursor: "pointer",
-    transition: "all 0.2s cubic-bezier(0.23, 1, 0.32, 1)",
-  },
-  actionPrimary: {
-    background: "var(--color-text-primary)",
-    color: "var(--color-background)",
-    borderColor: "var(--color-text-primary)",
-  },
-  actionDanger: { background: "#c0392b", borderColor: "#c0392b", color: "#fff" },
-  actionDangerGhost: { color: "#ff6b5a", borderColor: "#c0392b55", background: "color-mix(in srgb, #c0392b 8%, transparent)" },
-  dangerNote: {
-    fontSize: 11.5,
-    lineHeight: 1.45,
-    color: "#ff6b5a",
-    marginBottom: 10,
-    padding: "9px 10px",
-    borderRadius: 12,
-    background: "color-mix(in srgb, #c0392b 10%, transparent)",
-    border: "1px solid color-mix(in srgb, #c0392b 24%, transparent)",
-  },
-  panelNote: {
-    fontSize: 12.5,
-    lineHeight: 1.5,
-    color: "var(--color-text-muted)",
-    margin: "6px 0 12px",
-    padding: "10px 11px",
-    borderRadius: 14,
-    background: "color-mix(in srgb, var(--color-background) 46%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 46%, transparent)",
-  },
-  panelBody: {
-    flex: 1,
-    minHeight: 0,
-    overflowY: "auto",
-    borderRadius: 16,
-    paddingRight: 2,
-  },
-  panelLoading: { display: "flex", justifyContent: "center", padding: 24 },
-  mdView: {
-    fontSize: 13.5,
-    lineHeight: 1.6,
-    padding: "2px 2px 4px",
-  },
-  editor: {
-    width: "100%",
-    minHeight: 280,
-    resize: "vertical",
-    padding: 12,
-    fontSize: 12,
-    lineHeight: 1.5,
-    fontFamily: "var(--font-mono)",
-    borderRadius: 14,
-    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
-    background: "color-mix(in srgb, var(--color-background) 82%, transparent)",
-    color: "var(--color-text-primary)",
-    outline: "none",
-  },
-  linkAdder: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 17,
-    background: "color-mix(in srgb, var(--color-background) 42%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 46%, transparent)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-  },
-  textInput: {
-    padding: "9px 10px",
-    fontSize: 12.5,
-    borderRadius: 12,
-    border: "1px solid color-mix(in srgb, var(--color-border) 78%, transparent)",
-    background: "color-mix(in srgb, var(--color-background) 76%, transparent)",
-    color: "var(--color-text-primary)",
-    outline: "none",
-  },
-  linkConfirmRow: { display: "flex", gap: 6, alignItems: "center" },
-  center: {
-    position: "absolute",
-    inset: 0,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 5,
-    textAlign: "center",
-    padding: 24,
-  },
-  centerCard: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    maxWidth: 380,
-    padding: "22px 24px",
-    borderRadius: 24,
-    background: "color-mix(in srgb, var(--color-surface) 86%, transparent)",
-    backdropFilter: "blur(22px)",
-    WebkitBackdropFilter: "blur(22px)",
-    border: "1px solid color-mix(in srgb, var(--color-border) 65%, transparent)",
-    boxShadow: "0 24px 70px rgba(0, 0, 0, 0.25)",
-  },
-  toast: {
-    position: "absolute",
-    bottom: 20,
-    left: "50%",
-    transform: "translateX(-50%)",
-    padding: "10px 16px",
-    fontSize: 13,
-    borderRadius: 999,
-    background: "color-mix(in srgb, var(--color-text-primary) 92%, transparent)",
-    color: "var(--color-background)",
-    boxShadow: "0 16px 44px rgba(0, 0, 0, 0.28)",
-    zIndex: 20,
-    maxWidth: "80vw",
-  },
-};

@@ -1674,3 +1674,39 @@ begin
   return deleted_count > 0;
 end;
 $$;
+
+
+-- ===== Knowledge graph wave =====
+
+-- Derived state only: both tables are rebuilt from the GitHub vault by the graph
+-- build and can be dropped at any time without data loss.
+create table if not exists vault_graph_snapshot (
+  id text primary key default 'current',
+  payload jsonb not null,
+  node_count integer not null default 0,
+  edge_count integer not null default 0,
+  build_ms integer,
+  built_at timestamptz not null default now()
+);
+
+alter table vault_graph_snapshot enable row level security;
+drop policy if exists "Allow all access to vault_graph_snapshot" on vault_graph_snapshot;
+create policy "Allow all access to vault_graph_snapshot"
+  on vault_graph_snapshot for all using (true) with check (true);
+
+-- vault_pages.content is truncated at 8000 chars, so wikilinks cannot be
+-- re-derived from it. The graph build parses full GitHub text and lands the
+-- complete adjacency here for any reader that needs it without a repo crawl.
+create table if not exists vault_page_links (
+  source_path text not null,
+  target_path text not null,
+  mutual boolean not null default false,
+  primary key (source_path, target_path)
+);
+
+create index if not exists idx_vault_page_links_target on vault_page_links (target_path);
+
+alter table vault_page_links enable row level security;
+drop policy if exists "Allow all access to vault_page_links" on vault_page_links;
+create policy "Allow all access to vault_page_links"
+  on vault_page_links for all using (true) with check (true);

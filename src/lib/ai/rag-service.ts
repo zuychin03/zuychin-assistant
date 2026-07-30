@@ -11,7 +11,7 @@ import { extractMemories } from "@/lib/ai/memory/extractor";
 import { getConversationProject } from "@/lib/projects";
 import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -754,7 +754,7 @@ async function generateGeminiReply(opts: {
     const genConfig: Record<string, number> = {};
     if (genParams.temperature !== undefined) genConfig.temperature = genParams.temperature;
     if (genParams.topP !== undefined) genConfig.topP = genParams.topP;
-    if (genParams.maxTokens !== undefined) genConfig.maxOutputTokens = genParams.maxTokens;
+    if (genParams.maxTokens !== undefined) genConfig.maxOutputTokens = cappedMaxTokens(genParams.maxTokens, model);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parts: any[] = [{ text: `${contextBlock}## Current Message\nUser: ${message}` }];
