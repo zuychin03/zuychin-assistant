@@ -134,7 +134,7 @@ export const styles: Record<string, CSSProperties> = {
 
     // The rails are rounded scroll viewports: a card taller than the rail then gets
     // clipped on a curve instead of ending in a hard flat edge. scrollbarColor is the
-    // standard property — Chromium ignores ::-webkit-scrollbar once it is set, so the
+    // standard property: Chromium ignores ::-webkit-scrollbar once it is set, so the
     // dark thumb here is what actually renders.
     leftRail: {
         position: "absolute",

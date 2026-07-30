@@ -388,7 +388,9 @@ export const styles: Record<string, CSSProperties> = {
     display: "flex",
     alignItems: "stretch",
     minWidth: 0,
-    maxWidth: 360,
+    // Tracks its row like the nav row above it. A fixed cap here left the
+    // selector at 360px on wide screens while everything around it filled out.
+    maxWidth: "none",
     flex: 1,
     padding: 2,
     gap: 2,

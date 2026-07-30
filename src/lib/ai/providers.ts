@@ -158,9 +158,9 @@ export function modelMaxOutputTokens(modelId: string): number {
 }
 
 /**
- * Never send a model more than it accepts. sanitizeGenParams cannot do this —
- * it runs before the model is resolved — and going over the ceiling makes the
- * provider reject the whole request rather than quietly clamping.
+ * Never send a model more than it accepts. sanitizeGenParams cannot do this
+ * because it runs before the model is resolved, and going over the ceiling makes
+ * the provider reject the whole request rather than quietly clamping.
  */
 export function cappedMaxTokens(requested: number, modelId: string): number {
     return Math.min(requested, modelMaxOutputTokens(modelId));

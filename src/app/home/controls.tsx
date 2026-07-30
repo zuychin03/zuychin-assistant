@@ -88,7 +88,6 @@ export function SelectMenu({
             ...dropdown.menu,
             ...(align === "right" ? { right: 0 } : { left: 0 }),
             ...(dropUp ? { top: "auto", bottom: "calc(100% + 6px)" } : {}),
-            ...(wide ? { maxWidth: "min(380px, calc(100vw - 20px))" } : {}),
           }}
           className="animate-fade-in-scale"
         >
@@ -374,8 +373,11 @@ const dropdown: Record<string, React.CSSProperties> = {
     position: "absolute",
     top: "calc(100% + 6px)",
     zIndex: 50,
-    minWidth: 200,
-    maxWidth: "min(280px, calc(100vw - 20px))",
+    // Matches the trigger it hangs off rather than a fixed cap, so a wide selector
+    // gets a wide list instead of ellipsising every model name.
+    width: "100%",
+    minWidth: 240,
+    maxWidth: "calc(100vw - 20px)",
     maxHeight: 360,
     overflowY: "auto",
     background: "var(--color-background)",

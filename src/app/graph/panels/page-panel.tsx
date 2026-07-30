@@ -1,9 +1,10 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-    Check, Crosshair, Link2, Loader2, Pencil, Route, Sparkles, Trash2, X,
+    Check, Crosshair, Link2, Loader2, Orbit, Pencil, Route, Sparkles, Trash2, X,
 } from "lucide-react";
 import {
     CATEGORY_COLORS, COSMOS, HEALTH_COLORS, HEALTH_LABELS,
@@ -46,6 +47,9 @@ export default function PagePanel(props: {
     linkTargets: GraphNode[];
     linkTargetId: string | null;
     linkLabel: string;
+    /** Section whose planet was clicked in local mode; scrolled to on change. */
+    focusedSection: { id: string; title: string } | null;
+    onClearSection(): void;
     titleOf(path: string): string;
     onClose(): void;
     onEdit(): void;
@@ -69,12 +73,25 @@ export default function PagePanel(props: {
     const {
         node, markdown, loading, editMode, editText, busy, confirming,
         suggestions, suggestionsLoading, selectedSuggestions,
-        linkQuery, linkTargets, linkTargetId, linkLabel, titleOf,
+        linkQuery, linkTargets, linkTargetId, linkLabel, focusedSection, onClearSection, titleOf,
         onClose, onEdit, onCancelEdit, onEditText, onSave, onDelete, onConfirm,
         onFocus, onLocal, onRouteFrom, onRouteTo,
         onToggleSuggestion, onAcceptSuggestion, onLinkSelected,
         onLinkQuery, onLinkTarget, onLinkLabel, onCreateLink,
     } = props;
+
+    const markdownRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!focusedSection || !markdownRef.current) return;
+        const wanted = focusedSection.title.trim();
+        const heading = [...markdownRef.current.querySelectorAll("h1, h2, h3")]
+            .find((element) => (element.textContent ?? "").trim() === wanted);
+        if (!heading) return;
+        // scrollIntoView would also scroll the surrounding rail; keep it to the pane.
+        const pane = markdownRef.current;
+        pane.scrollTop = (heading as HTMLElement).offsetTop - pane.offsetTop;
+    }, [focusedSection, markdown, editMode]);
 
     return (
         <section style={styles.panel}>
@@ -113,7 +130,7 @@ export default function PagePanel(props: {
                     <span style={styles.statLabel}>Words</span>
                 </div>
                 <div style={styles.statCard}>
-                    <span style={styles.statValue}>{node.updated ?? "—"}</span>
+                    <span style={styles.statValue}>{node.updated ?? "-"}</span>
                     <span style={styles.statLabel}>Updated</span>
                 </div>
             </div>
@@ -171,8 +188,16 @@ export default function PagePanel(props: {
                 />
             )}
 
+            {focusedSection && (
+                <div style={{ ...styles.badgeRow, marginTop: 10 }}>
+                    <button style={styles.chip} onClick={onClearSection} title="Clear section focus">
+                        <Orbit size={11} /> {focusedSection.title} <X size={11} />
+                    </button>
+                </div>
+            )}
+
             {!loading && !editMode && markdown && (
-                <div style={styles.markdown} className="graph-markdown">
+                <div ref={markdownRef} style={styles.markdown} className="graph-markdown">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayMarkdown(markdown)}</ReactMarkdown>
                 </div>
             )}

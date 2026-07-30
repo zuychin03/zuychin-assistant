@@ -151,7 +151,7 @@ edited and deleted in place.
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
 | Push | web-push (VAPID) + service worker (PWA) |
 | Database | Supabase (PostgreSQL + pgvector) |
-| 3D graph | 3d-force-graph (three.js + d3-force-3d), three-spritetext |
+| 3D graph | 3d-force-graph (three.js + d3-force-3d), three (sprite stars, planet bodies, bloom), HTML label overlay |
 | Integrations | Google Calendar API, Gmail API |
 | Messaging | Discord.js, Telegram Bot API |
 | Export | docx, pdfkit |
@@ -767,6 +767,12 @@ white dwarf has been archived or superseded.
   to *unreviewed* turns the view into a review queue, which is where council output lands.
 - **Time travel** replays the vault's growth from a scrubber; stars ignite in creation order.
   Page dates are real, link dates are inferred from their endpoints, and the UI says so.
+- **Section systems**: isolating a page ("System", or double-click a star) turns its own
+  headings into planets orbiting it, with sub-headings as their moons - sized by how much prose
+  each section holds, on concentric orbits that scale to any heading count. Click a planet to
+  read that section; the page panel scrolls to it. Neighbouring pages stay stars, because a
+  wikilink is symmetric and has no parent to orbit, whereas a heading really does belong to its
+  page.
 - **Gravity wells** ranks the most central and most weakly held pages.
 - Click a page to read, edit or delete it - deletion strips every reference in other pages,
   the `index.md` entry and the pgvector row in one atomic commit. Click a connection to remove

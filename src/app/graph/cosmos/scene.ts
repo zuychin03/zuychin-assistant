@@ -1,9 +1,13 @@
 import * as THREE from "three";
 import type { ForceGraph3DInstance } from "3d-force-graph";
 import {
-    createNebulaSprite, createSelectionRing, createStarfield, createStarMaterial, getTexture,
+    createBodySprite, createNebulaSprite, createOrbitRing, createSelectionRing,
+    createStarfield, createStarMaterial, getTexture,
 } from "./textures";
-import { classifyStar, COSMOS, clusterColor, lensColor, lensOpacity, starSize } from "./palette";
+import type { VaultSection } from "./sections";
+import {
+    CATEGORY_COLORS, classifyStar, COSMOS, clusterColor, lensColor, lensOpacity, starSize,
+} from "./palette";
 import {
     endpoints, linkKey, pairKey, type CosmosView, type GLink, type GNode, type GraphCluster,
 } from "./model";
@@ -30,6 +34,57 @@ export interface CosmosHandlers {
     onNodeHover(node: GNode | null): void;
     onLinkClick(link: GLink): void;
     onBackgroundClick(): void;
+    onSectionClick(sectionId: string, title: string): void;
+}
+
+export interface SystemSpec {
+    /** Node the system orbits. */
+    rootId: string;
+    planets: VaultSection[];
+}
+
+interface OrbitingBody {
+    sprite: THREE.Sprite;
+    sectionId: string;
+    title: string;
+    radius: number;
+    angle: number;
+    speed: number;
+    /** Tilt of this orbit, so the system does not read as one flat disc. */
+    tilt: number;
+    moons: OrbitingBody[];
+}
+
+// A planet's size comes from how much prose sits under its heading, clamped so a
+// one-line section is still clickable and an essay does not eclipse the star.
+const PLANET_MIN = 5.5;
+const PLANET_MAX = 13;
+const MOON_MIN = 3;
+const MOON_MAX = 6;
+const SYSTEM_FRAME_MS = 33;
+
+function bodyScale(chars: number, min: number, max: number): number {
+    const t = Math.min(1, Math.sqrt(chars) / 55);
+    return min + (max - min) * t;
+}
+
+/**
+ * Fill concentric orbits, capacity growing with radius, so any number of sections
+ * lays out without crowding. Returns one entry per planet: which ring it sits on
+ * and its slot within that ring.
+ */
+function orbitSlots(count: number): { ring: number; slot: number; ringSize: number }[] {
+    const slots: { ring: number; slot: number; ringSize: number }[] = [];
+    let ring = 1;
+    let placed = 0;
+    while (placed < count) {
+        const capacity = ring * 6;
+        const take = Math.min(capacity, count - placed);
+        for (let slot = 0; slot < take; slot++) slots.push({ ring, slot, ringSize: take });
+        placed += take;
+        ring++;
+    }
+    return slots;
 }
 
 export interface Cosmos {
@@ -37,6 +92,7 @@ export interface Cosmos {
     setData(nodes: GNode[], links: GLink[]): void;
     restyle(): void;
     setClusters(clusters: GraphCluster[]): void;
+    setSystem(spec: SystemSpec | null): void;
     flyTo(node: GNode, distance?: number): void;
     frameAll(): void;
     frameNodes(ids: Set<string>): void;
@@ -201,6 +257,174 @@ export function createCosmos(
     graph.lights([new THREE.AmbientLight(0xffffff, 0.4)]);
 
     graph.d3Force("cluster", createClusterForce(() => physics.cluster));
+
+    // ---- Section system overlay ----
+    // These bodies are NOT graph nodes. Injecting them into the simulation would
+    // make a page's own sections repel its neighbours and tear the neighbourhood
+    // apart, so they live in their own group with their own picking.
+
+    const systemGroup = new THREE.Group();
+    systemGroup.visible = false;
+    scene.add(systemGroup);
+
+    let system: { rootId: string; bodies: OrbitingBody[] } | null = null;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let hoveredBody: OrbitingBody | null = null;
+    let systemRaf = 0;
+    let lastSystemPaint = 0;
+
+    const ringTilt = (ring: number) => 0.32 + ring * 0.14;
+
+    function clearSystem() {
+        for (const child of [...systemGroup.children]) {
+            systemGroup.remove(child);
+            if (child instanceof THREE.Sprite) (child.material as THREE.SpriteMaterial).dispose();
+            if (child instanceof THREE.Line) {
+                child.geometry.dispose();
+                (child.material as THREE.LineBasicMaterial).dispose();
+            }
+        }
+        system = null;
+        hoveredBody = null;
+        systemGroup.visible = false;
+    }
+
+    function buildSystem(spec: SystemSpec) {
+        clearSystem();
+        const root = nodeById.get(spec.rootId);
+        if (!root || spec.planets.length === 0) return;
+
+        const base = starSize(root) * 0.8 + 18;
+        const slots = orbitSlots(spec.planets.length);
+        const bodies: OrbitingBody[] = [];
+        const ringsDrawn = new Set<number>();
+
+        spec.planets.forEach((planet, index) => {
+            const { ring, slot, ringSize } = slots[index];
+            const radius = base + (ring - 1) * 16;
+            const tilt = ringTilt(ring);
+
+            if (!ringsDrawn.has(ring)) {
+                ringsDrawn.add(ring);
+                const orbit = createOrbitRing(radius, COSMOS.filament, 0.2);
+                orbit.rotation.x = tilt;
+                systemGroup.add(orbit);
+            }
+
+            const scale = bodyScale(planet.chars, PLANET_MIN, PLANET_MAX);
+            const sprite = createBodySprite("planet", CATEGORY_COLORS[root.category] ?? "#9fb6e8", scale);
+            systemGroup.add(sprite);
+
+            const moons: OrbitingBody[] = planet.moons.map((moon, moonIndex) => {
+                const moonScale = bodyScale(moon.chars, MOON_MIN, MOON_MAX);
+                const moonSprite = createBodySprite("moon", "#c8d2e8", moonScale);
+                systemGroup.add(moonSprite);
+                return {
+                    sprite: moonSprite,
+                    sectionId: moon.id,
+                    title: moon.title,
+                    radius: scale * 0.7 + 4 + planet.moons.length * 0.6,
+                    angle: (moonIndex / Math.max(1, planet.moons.length)) * Math.PI * 2,
+                    speed: 0.011,
+                    tilt: tilt + 0.25,
+                    moons: [],
+                };
+            });
+
+            bodies.push({
+                sprite,
+                sectionId: planet.id,
+                title: planet.title,
+                radius,
+                angle: (slot / Math.max(1, ringSize)) * Math.PI * 2,
+                // Outer orbits run slower, which reads as a system rather than a dial.
+                speed: 0.0026 / Math.sqrt(ring),
+                tilt,
+                moons,
+            });
+        });
+
+        system = { rootId: spec.rootId, bodies };
+        systemGroup.visible = true;
+    }
+
+    const orbitOffset = new THREE.Vector3();
+    const xAxis = new THREE.Vector3(1, 0, 0);
+
+    function placeBody(body: OrbitingBody, centre: THREE.Vector3) {
+        orbitOffset.set(Math.cos(body.angle) * body.radius, 0, Math.sin(body.angle) * body.radius);
+        orbitOffset.applyAxisAngle(xAxis, body.tilt);
+        body.sprite.position.copy(centre).add(orbitOffset);
+    }
+
+    function animateSystem(now: number) {
+        systemRaf = requestAnimationFrame(animateSystem);
+        if (!system) return;
+        if (now - lastSystemPaint < SYSTEM_FRAME_MS) return;
+        const elapsed = now - lastSystemPaint;
+        lastSystemPaint = now;
+
+        const root = nodeById.get(system.rootId);
+        if (!root || root.x === undefined) {
+            systemGroup.visible = false;
+            return;
+        }
+        systemGroup.visible = true;
+        systemGroup.position.set(root.x, root.y ?? 0, root.z ?? 0);
+
+        const step = elapsed / 16;
+        const origin = new THREE.Vector3(0, 0, 0);
+        for (const planet of system.bodies) {
+            planet.angle += planet.speed * step;
+            placeBody(planet, origin);
+            for (const moon of planet.moons) {
+                moon.angle += moon.speed * step;
+                placeBody(moon, planet.sprite.position);
+            }
+        }
+    }
+    systemRaf = requestAnimationFrame(animateSystem);
+
+    function pickBody(event: PointerEvent | MouseEvent): OrbitingBody | null {
+        if (!system) return null;
+        const rect = element.getBoundingClientRect();
+        pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, graph.camera() as THREE.Camera);
+
+        const all = system.bodies.flatMap((planet) => [planet, ...planet.moons]);
+        const hits = raycaster.intersectObjects(all.map((b) => b.sprite), false);
+        if (hits.length === 0) return null;
+        return all.find((b) => b.sprite === hits[0].object) ?? null;
+    }
+
+    function setHoveredBody(body: OrbitingBody | null) {
+        if (hoveredBody === body) return;
+        if (hoveredBody) (hoveredBody.sprite.material as THREE.SpriteMaterial).opacity = 1;
+        hoveredBody = body;
+        if (body) (body.sprite.material as THREE.SpriteMaterial).opacity = 0.72;
+    }
+
+    const onSystemPointerMove = (event: PointerEvent) => {
+        const body = pickBody(event);
+        setHoveredBody(body);
+        if (body) element.style.cursor = "pointer";
+        // The graph's own hover handler will not fire when leaving a planet, so the
+        // pointer cursor would otherwise stick.
+        else if (!view.hover) element.style.cursor = "default";
+    };
+    // Capture phase: a hit must not also reach the graph, which would read it as a
+    // background click and clear the selection.
+    const onSystemClick = (event: MouseEvent) => {
+        const body = pickBody(event);
+        if (!body) return;
+        event.stopPropagation();
+        event.preventDefault();
+        handlers.onSectionClick(body.sectionId, body.title);
+    };
+    element.addEventListener("pointermove", onSystemPointerMove);
+    element.addEventListener("click", onSystemClick, true);
 
     function applyStarStyle(node: GNode, sprite: THREE.Sprite) {
         const material = sprite.material as THREE.SpriteMaterial;
@@ -382,6 +606,11 @@ export function createCosmos(
             updateNebulae();
         },
 
+        setSystem(spec) {
+            if (!spec) clearSystem();
+            else buildSystem(spec);
+        },
+
         flyTo(node, distance = 150) {
             if (node.x === undefined) return;
             const length = Math.hypot(node.x, node.y ?? 0, node.z ?? 0) || 1;
@@ -427,6 +656,12 @@ export function createCosmos(
         },
 
         dispose() {
+            if (systemRaf) cancelAnimationFrame(systemRaf);
+            systemRaf = 0;
+            element.removeEventListener("pointermove", onSystemPointerMove);
+            element.removeEventListener("click", onSystemClick, true);
+            clearSystem();
+            scene.remove(systemGroup);
             for (const sprite of nebulaById.values()) {
                 scene.remove(sprite);
                 (sprite.material as THREE.SpriteMaterial).dispose();

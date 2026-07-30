@@ -13,6 +13,7 @@ import {
     buildAdjacency, createView, deriveVisible, earliestCreated, endpoints, pathLinkKeys,
     shortestPath, type ApiGraph, type GLink, type GNode, type NodeHealth, type SelectedLink,
 } from "./cosmos/model";
+import { parseSections } from "./cosmos/sections";
 import ExplorePanel, { type SearchHit } from "./panels/explore-panel";
 import LensPanel from "./panels/lens-panel";
 import { ClustersPanel, HealthPanel, HubsPanel } from "./panels/insight-panels";
@@ -101,6 +102,9 @@ export default function GraphPage() {
     const [linkLabel, setLinkLabel] = useState("");
     const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
 
+    // Matched back to a rendered heading by title, not slug: slugs carry collision
+    // suffixes that would not survive a round trip through the DOM.
+    const [focusedSection, setFocusedSection] = useState<{ id: string; title: string } | null>(null);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
     const [toast, setToast] = useState<string | null>(null);
 
@@ -315,6 +319,7 @@ export default function GraphPage() {
         onNodeHover: (node: GNode | null) => { void node; },
         onLinkClick: (link: GLink) => { void link; },
         onBackgroundClick: () => undefined,
+        onSectionClick: (sectionId: string, title: string) => { void sectionId; void title; },
     });
 
     handlersRef.current = {
@@ -356,6 +361,7 @@ export default function GraphPage() {
             setSelected(null);
             setConfirming(null);
         },
+        onSectionClick: (sectionId, title) => setFocusedSection({ id: sectionId, title }),
     };
 
     useEffect(() => {
@@ -378,6 +384,7 @@ export default function GraphPage() {
                     onNodeHover: (node) => handlersRef.current.onNodeHover(node),
                     onLinkClick: (link) => handlersRef.current.onLinkClick(link),
                     onBackgroundClick: () => handlersRef.current.onBackgroundClick(),
+                    onSectionClick: (id, title) => handlersRef.current.onSectionClick(id, title),
                 },
             );
             cosmosRef.current = cosmos;
@@ -417,6 +424,23 @@ export default function GraphPage() {
     useEffect(() => {
         if (ready && data) cosmosRef.current?.setClusters(data.clusters ?? []);
     }, [ready, data]);
+
+    // The root's own headings become its planets. Only built when the loaded
+    // markdown actually belongs to the local root, so selecting a neighbour while
+    // in local mode never hangs that page's sections off this star.
+    const systemSpec = useMemo(() => {
+        if (!localRoot || selected?.type !== "node" || selected.id !== localRoot || !pageMd) return null;
+        const root = nodeById.get(localRoot);
+        if (!root) return null;
+        const { planets } = parseSections(pageMd, root.title);
+        return planets.length > 0 ? { rootId: localRoot, planets } : null;
+    }, [localRoot, selected, pageMd, nodeById]);
+
+    useEffect(() => {
+        if (ready) cosmosRef.current?.setSystem(systemSpec);
+    }, [ready, systemSpec]);
+
+    useEffect(() => { setFocusedSection(null); }, [localRoot, selected]);
 
     useEffect(() => { if (ready) cosmosRef.current?.applyPhysics(physics); }, [ready, physics]);
 
@@ -927,6 +951,8 @@ export default function GraphPage() {
                         linkTargets={linkTargets}
                         linkTargetId={linkTargetId}
                         linkLabel={linkLabel}
+                        focusedSection={focusedSection}
+                        onClearSection={() => setFocusedSection(null)}
                         titleOf={titleOf}
                         onClose={() => { setSelected(null); setConfirming(null); }}
                         onEdit={() => setEditMode(true)}
