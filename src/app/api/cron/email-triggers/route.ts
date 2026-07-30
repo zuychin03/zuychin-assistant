@@ -8,10 +8,10 @@ import { addTodo, listTodos } from "@/lib/db";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { notify } from "@/lib/messaging/router";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
+import { requireCron } from "@/lib/auth/guard";
 
 export const maxDuration = 300;
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 const SCAN_LIMIT = 30;
 const MAX_CANDIDATES = 5;
@@ -241,10 +241,8 @@ function formatDue(dueDate: string): string {
 
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         const emails = await listRecentEmails(SCAN_LIMIT, "newer_than:2d");
         if (emails.length === 0) {

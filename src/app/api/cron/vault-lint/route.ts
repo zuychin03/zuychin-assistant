@@ -2,18 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { getVaultConfig } from "@/lib/vault/github";
 import { lintVault } from "@/lib/vault/lint";
+import { requireCron } from "@/lib/auth/guard";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 // GitHub round-trips + three LLM calls (review, verify, embeds) need headroom.
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         if (!getVaultConfig()) {
             return NextResponse.json({ error: "Vault not configured." }, { status: 500 });

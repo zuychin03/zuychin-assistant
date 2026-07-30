@@ -4,8 +4,8 @@ import { notify } from "@/lib/messaging/router";
 import { hasAnyDiscordChannel } from "@/lib/messaging/channels";
 import { listDueTodos, markTodosReminded } from "@/lib/db";
 import { APP_TIMEZONE } from "@/lib/datetime";
+import { requireCron } from "@/lib/auth/guard";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const LOOKAHEAD_MINUTES = 15;
 
@@ -22,10 +22,8 @@ function formatDue(dueDate: string): string {
 
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         if (!hasAnyDiscordChannel() && !TELEGRAM_CHAT_ID) {
             return NextResponse.json({ error: "No messaging channel configured." }, { status: 500 });

@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Events } = require("discord.js");
 
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const API_URL = process.env.ZUYCHIN_API_URL || "http://localhost:3000";
+const CHAT_API_KEY = process.env.CHAT_API_KEY;
 // Discord is now a mostly-outbound dashboard; the bot only holds conversations
 // in #ask-zuychin. Notification channels are written to by the crons over REST.
 // Falls back to the legacy single channel so existing setups keep working.
@@ -93,7 +94,12 @@ client.on(Events.MessageCreate, async (message) => {
 
         const res = await fetch(`${API_URL}/api/chat`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                // /api/chat is outside the browser session, so the bot presents
+                // its own credential. Without it the API answers 401.
+                ...(CHAT_API_KEY ? { Authorization: `Bearer ${CHAT_API_KEY}` } : {}),
+            },
             body: JSON.stringify(body),
         });
 

@@ -10,8 +10,8 @@ import { listAgentRuns, getAgentRun, type AgentRunSummary } from "@/lib/ai/agent
 import { createDraftSkill, listCustomSkills } from "@/lib/ai/skills/custom-store";
 import { SKILL_IDS } from "@/lib/ai/skills/registry";
 import { notify } from "@/lib/messaging/router";
+import { requireCron } from "@/lib/auth/guard";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 export const maxDuration = 300;
 
@@ -52,10 +52,8 @@ async function formatRunExcerpt(id: string): Promise<string | null> {
 }
 
 export async function POST(req: NextRequest) {
-    const authHeader = req.headers.get("authorization");
-    if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const denied = requireCron(req);
+    if (denied) return denied;
 
     // Unreadable state = hard abort: without the high-water mark every tick
     // would re-review the same runs and burn model calls.

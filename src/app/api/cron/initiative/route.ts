@@ -7,6 +7,7 @@ import { getRecentMessages, listTodos, type Todo } from "@/lib/db";
 import { listMemories } from "@/lib/ai/memory/store";
 import { listUpcomingEvents, type CalendarEvent } from "@/lib/integrations/calendar-service";
 import { notify } from "@/lib/messaging/router";
+import { requireCron } from "@/lib/auth/guard";
 import {
     INITIATIVE_CATEGORIES,
     getInitiativeFeedbackStats,
@@ -16,7 +17,6 @@ import {
     type InitiativeCategory,
 } from "@/lib/ai/initiative-store";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 export const maxDuration = 300;
 
@@ -51,10 +51,8 @@ function formatEvents(events: CalendarEvent[]): string {
 }
 
 export async function POST(req: NextRequest) {
-    const authHeader = req.headers.get("authorization");
-    if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const denied = requireCron(req);
+    if (denied) return denied;
 
     // --- Code gates: all of these run before any model call. ---
 

@@ -3,8 +3,8 @@ import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
 import { notify, type NotificationType } from "@/lib/messaging/router";
 import { buildToolSystemPrompt } from "@/lib/ai/mcp-service";
+import { requireCron } from "@/lib/auth/guard";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 // Each proactive subtype lands in its role-appropriate channel.
 const PROACTIVE_ROUTE: Record<string, NotificationType> = {
@@ -16,10 +16,8 @@ const PROACTIVE_ROUTE: Record<string, NotificationType> = {
 export async function POST(req: NextRequest) {
     try {
 
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         const body = await req.json();
         const { type = "daily_check" } = body;

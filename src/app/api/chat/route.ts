@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
+import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { getArtifact } from "@/lib/artifacts/store";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
@@ -11,6 +12,8 @@ const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+    const denied = await requireChatAuth(req);
+    if (denied) return denied;
     try {
         const body = await req.json();
         const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, agent = false, provider, model, embeddingModel, genParams } = body;

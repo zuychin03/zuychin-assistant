@@ -6,8 +6,8 @@ import { listUnreadEmails, formatEmailSummary, type EmailThread } from "@/lib/in
 import { listUpcomingEvents, formatEventsSummary } from "@/lib/integrations/calendar-service";
 import { notify } from "@/lib/messaging/router";
 import { hasAnyDiscordChannel } from "@/lib/messaging/channels";
+import { requireCron } from "@/lib/auth/guard";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 export const maxDuration = 300;
@@ -116,10 +116,8 @@ function emailSection(emails: EmailThread[], highlights: Highlight[] | null): st
 
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         if (!hasAnyDiscordChannel() && !TELEGRAM_CHAT_ID) {
             return NextResponse.json({ error: "No messaging channel configured." }, { status: 500 });

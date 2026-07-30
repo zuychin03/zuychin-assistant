@@ -228,7 +228,9 @@ const panelStyles: Record<string, React.CSSProperties> = {
         cursor: "pointer",
         flexShrink: 0,
     },
-    list: { display: "flex", flexDirection: "column", gap: 9 },
+    // Runs accumulate without bound, so the column grew far past its neighbours.
+    // Taller than the skills/memories lists because rows are two-line and expand.
+    list: { display: "flex", flexDirection: "column", gap: 9, maxHeight: 420, overflowY: "auto" },
     row: {
         padding: "10px 12px",
         borderRadius: 16,

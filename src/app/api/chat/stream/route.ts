@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
+import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
@@ -16,6 +17,9 @@ const SSE_HEADERS = {
 };
 
 export async function POST(req: NextRequest) {
+    const denied = await requireChatAuth(req);
+    if (denied) return denied;
+
     let body: Record<string, unknown>;
     try {
         body = await req.json();

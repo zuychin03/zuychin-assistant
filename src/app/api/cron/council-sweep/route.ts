@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { notify } from "@/lib/messaging/router";
 import { closeCouncil } from "@/lib/council/close";
+import { requireCron } from "@/lib/auth/guard";
 import {
     expireOverdueSessions, listFailedArchives, listSessionsNeedingVerdict, readTranscript,
 } from "@/lib/council/store";
 
 export const maxDuration = 60;
 
-const CRON_SECRET = process.env.CRON_SECRET;
 // A terminal session gets this long for its own closer to write the verdict
 // before the sweep writes one from the transcript.
 const VERDICT_GRACE_MS = 10 * 60 * 1000;
@@ -17,10 +17,8 @@ const VERDICT_GRACE_MS = 10 * 60 * 1000;
 // sessions nobody concluded, and retries filing that failed at close time.
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         const expired = await expireOverdueSessions();
 

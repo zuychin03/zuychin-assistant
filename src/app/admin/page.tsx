@@ -665,6 +665,9 @@ const styles: Record<string, React.CSSProperties> = {
     promptPanel: {
         position: "relative",
         zIndex: 1,
+        // The masonry above spaces its panels with a flex gap, which leaves no
+        // margin on the last row; this is the seam between the two sections.
+        marginTop: 16,
         padding: 20,
         borderRadius: 26,
         background: "linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 92%, transparent), color-mix(in srgb, var(--color-surface) 78%, transparent))",

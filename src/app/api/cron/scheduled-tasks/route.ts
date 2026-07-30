@@ -2,17 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { claimDueTasks } from "@/lib/tasks/store";
 import { runScheduledTask, type TaskRunResult } from "@/lib/tasks/runner";
+import { requireCron } from "@/lib/auth/guard";
 
 export const maxDuration = 300;
 
-const CRON_SECRET = process.env.CRON_SECRET;
 
 export async function POST(req: NextRequest) {
     try {
-        const authHeader = req.headers.get("authorization");
-        if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
-            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-        }
+        const denied = requireCron(req);
+        if (denied) return denied;
 
         const tasks = await claimDueTasks(3);
         if (tasks.length === 0) {

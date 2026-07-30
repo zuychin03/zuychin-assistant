@@ -213,8 +213,15 @@ async function processUpdate(update: Record<string, unknown>) {
 }
 
 export async function POST(req: NextRequest) {
+    // Fails closed: an unsecured webhook lets anyone post an update the
+    // assistant then acts on, with tools and memory writes behind it.
     const secretHeader = req.headers.get("x-telegram-bot-api-secret-token");
-    if (WEBHOOK_SECRET && secretHeader !== WEBHOOK_SECRET) {
+    if (!WEBHOOK_SECRET) {
+        if (process.env.NODE_ENV === "production") {
+            console.error("[Telegram] TELEGRAM_WEBHOOK_SECRET is not set; refusing update.");
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+    } else if (secretHeader !== WEBHOOK_SECRET) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

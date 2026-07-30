@@ -3,8 +3,12 @@ export const AUTH_CHALLENGE_COOKIE = "zuychin-auth-challenge";
 export const AUTH_RECOVERY_COOKIE = "zuychin-auth-recovery";
 export const AUTH_OWNER_ID = "owner";
 
+// Fails closed. Keying this on ACCESS_PASSWORD alone meant a passkey-only
+// deployment - one that drops the password and keeps AUTH_SESSION_SECRET - left
+// every page open with no error, and so did a deploy that simply lost its env.
 export function authEnabled() {
-    return Boolean(process.env.ACCESS_PASSWORD);
+    if (process.env.ACCESS_PASSWORD || process.env.AUTH_SESSION_SECRET) return true;
+    return process.env.NODE_ENV === "production";
 }
 
 export function authRpId() {
