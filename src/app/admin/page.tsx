@@ -5,6 +5,7 @@ import Link from "next/link";
 import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
+import { Masonry } from "./masonry";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
     GitBranch, MessageSquare, RefreshCw, Save, ShieldCheck,
@@ -218,7 +219,7 @@ export default function AdminPage() {
                 <MetricCard icon={<CheckCircle2 size={18} />} label="Pending Notes" value={stats?.stats.pendingTodos ?? 0} note={`${stats?.stats.totalTodos ?? 0} total checklist items`} />
             </div>
 
-            <div style={styles.layoutGrid}>
+            <Masonry minColumnWidth={300} gap={16}>
                 <section style={styles.panel}>
                     <PanelHeader title="Provider Status" description={`${availableProviders.length}/${providers.length || 0} providers configured`} icon={<Sparkles size={16} />} />
                     <div style={styles.providerList}>
@@ -300,7 +301,7 @@ export default function AdminPage() {
                 <section style={styles.panel}>
                     <SkillsPanel />
                 </section>
-            </div>
+            </Masonry>
 
             <section style={styles.promptPanel}>
                 <div style={styles.promptHeader}>
@@ -563,17 +564,7 @@ const styles: Record<string, React.CSSProperties> = {
         lineHeight: 1.35,
         color: "var(--color-text-muted)",
     },
-    // Masonry-style columns: panels pack vertically so a short panel doesn't
-    // leave a hole in its row (grid rows all align to the tallest panel).
-    layoutGrid: {
-        position: "relative",
-        zIndex: 1,
-        columns: "300px",
-        columnGap: 16,
-    },
     panel: {
-        breakInside: "avoid",
-        marginBottom: 16,
         padding: 18,
         borderRadius: 24,
         background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",

@@ -437,9 +437,13 @@ const handler = createMcpHandler(
                     maxRounds: z.number().int().min(2).max(10).optional().describe("Rounds before the council must conclude (default 6)."),
                     maxMessages: z.number().int().min(10).max(200).optional().describe("Hard message cap for the whole session (default 60)."),
                     ttlMinutes: z.number().int().min(10).max(240).optional().describe("Hard expiry from now (default 90). The session self-terminates at this deadline whether or not anyone concludes."),
+                    workspace: z.object({
+                        repoPath: z.string().min(1).describe("Absolute path to the shared git repo the agents will work in."),
+                        baseBranch: z.string().min(1).optional().describe("Branch each agent's worktree starts from (default 'main')."),
+                    }).optional().describe("Set ONLY when the council will change code. Gives each agent its own git worktree and branch, so they cannot overwrite each other, and returns the merge steps for you. Omit for a debate-only council."),
                 },
             },
-            async ({ topic, brief, participants, closerName, maxRounds, maxMessages, ttlMinutes }, extra) => {
+            async ({ topic, brief, participants, closerName, maxRounds, maxMessages, ttlMinutes, workspace }, extra) => {
                 const denied = requireCouncil(extra);
                 if (denied) return denied;
                 try {
@@ -462,7 +466,10 @@ const handler = createMcpHandler(
                         topic, brief, closerName, participants, maxRounds, maxMessages, ttlMinutes,
                     });
                     const roster = await listParticipants(session.id);
-                    return { content: [{ type: "text", text: renderConveneResult(session, roster) }] };
+                    const ws = workspace
+                        ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main" }
+                        : undefined;
+                    return { content: [{ type: "text", text: renderConveneResult(session, roster, ws) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Convene failed: ${errMsg(error)}` }] };
                 }

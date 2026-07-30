@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-    Activity, Brain, CheckCircle2, Clock, GitBranch, Gavel, MessageSquare,
-    RefreshCw, ShieldCheck, Users, XCircle,
+    Activity, Brain, CheckCircle2, Clock, GitBranch, Gavel, Maximize2, MessageSquare,
+    Minimize2, RefreshCw, ShieldCheck, Users, XCircle,
 } from "lucide-react";
 
 // Live view over a council. Read-only by construction: watching a debate must
@@ -77,8 +77,34 @@ export default function CouncilPage() {
     const [loading, setLoading] = useState(true);
     const [live, setLive] = useState(true);
     const [error, setError] = useState("");
+    // The rail needs ~240px beside a readable transcript; below this the split
+    // is stacked instead of squeezed.
+    const [isNarrow, setIsNarrow] = useState(false);
+    const [monitor, setMonitor] = useState(false);
     const transcriptEnd = useRef<HTMLDivElement | null>(null);
     const lastSeqRef = useRef(0);
+
+    useEffect(() => {
+        const check = () => setIsNarrow(window.innerWidth < 900);
+        check();
+        window.addEventListener("resize", check);
+        return () => window.removeEventListener("resize", check);
+    }, []);
+
+    // The overlay covers the page, so the page behind it must not scroll under
+    // the feed, and Esc has to be an exit or there is no way back on a TV.
+    useEffect(() => {
+        if (!monitor) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMonitor(false); };
+        const previous = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        window.addEventListener("keydown", onKey);
+        transcriptEnd.current?.scrollIntoView({ block: "end" });
+        return () => {
+            document.body.style.overflow = previous;
+            window.removeEventListener("keydown", onKey);
+        };
+    }, [monitor]);
 
     const fetchList = useCallback(async () => {
         try {
@@ -134,14 +160,14 @@ export default function CouncilPage() {
     const isRunning = s?.status === "open" || s?.status === "concluding";
 
     return (
-        <div style={styles.shell}>
+        <div style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
             <div style={styles.ambientOne} />
             <div style={styles.ambientTwo} />
 
-            <header style={styles.header}>
+            <header style={{ ...styles.header, ...(isNarrow ? styles.headerNarrow : {}) }}>
                 <div>
                     <div style={styles.kicker}>zuychin-council</div>
-                    <h1 style={styles.title}>Council</h1>
+                    <h1 style={{ ...styles.title, ...(isNarrow ? styles.titleNarrow : {}) }}>Council</h1>
                     <p style={styles.subtitle}>
                         Live debates between your coding agents. This view is read-only - it never
                         marks anyone present and never changes whose turn it is.
@@ -180,7 +206,7 @@ export default function CouncilPage() {
             )}
 
             {!loading && (open.length > 0 || recent.length > 0) && (
-                <div style={styles.split}>
+                <div style={{ ...styles.split, ...(isNarrow ? styles.splitNarrow : {}) }}>
                     <div style={styles.rail}>
                         <section style={styles.panel}>
                             <PanelHeader
@@ -306,36 +332,25 @@ export default function CouncilPage() {
                                 )}
 
                                 <section style={styles.panel}>
-                                    <PanelHeader
-                                        title="Transcript"
-                                        description={isRunning ? `live · quiet ${ago(s.lastMessageAt)}` : "final"}
-                                        icon={<MessageSquare size={16} />}
-                                    />
+                                    <div style={styles.panelHeadRow}>
+                                        <PanelHeader
+                                            title="Transcript"
+                                            description={isRunning ? `live · quiet ${ago(s.lastMessageAt)}` : "final"}
+                                            icon={<MessageSquare size={16} />}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setMonitor(true)}
+                                            style={styles.quickLink}
+                                            title="Fullscreen monitor (Esc to exit)"
+                                        >
+                                            <Maximize2 size={15} /> Monitor
+                                        </button>
+                                    </div>
                                     <div style={styles.transcript}>
-                                        {detail.messages.map((m) => (
-                                            <div key={m.seq} style={styles.msg}>
-                                                <div style={styles.msgHead}>
-                                                    <span style={styles.seq}>{m.seq}</span>
-                                                    <span style={styles.speaker}>{m.speaker}</span>
-                                                    {m.addressedTo !== "all" && (
-                                                        <span style={styles.arrow}>→ {m.addressedTo}</span>
-                                                    )}
-                                                    <span style={{ ...styles.intent, color: INTENT_TONE[m.intent] ?? "var(--color-text-muted)" }}>
-                                                        {m.intent}
-                                                    </span>
-                                                    {m.replyToSeq && <span style={styles.re}>re {m.replyToSeq}</span>}
-                                                    {!m.answered && ["challenge", "ask"].includes(m.intent) && m.addressedTo !== "all" && (
-                                                        <span style={{ ...styles.smallPill, ...styles.pillWarn }}>unanswered</span>
-                                                    )}
-                                                    <span style={styles.msgTime}>r{m.round} · {ago(m.createdAt)} ago</span>
-                                                </div>
-                                                <div style={{ ...styles.msgBody, ...(m.role !== "agent" ? styles.msgModerator : {}) }}>
-                                                    {m.body}
-                                                </div>
-                                            </div>
-                                        ))}
+                                        {detail.messages.map((m) => <MessageRow key={m.seq} m={m} />)}
                                         {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
-                                        <div ref={transcriptEnd} />
+                                        <div ref={monitor ? undefined : transcriptEnd} />
                                     </div>
                                 </section>
                             </>
@@ -343,6 +358,89 @@ export default function CouncilPage() {
                     </div>
                 </div>
             )}
+
+            {monitor && (
+                <div style={styles.monitorOverlay} role="dialog" aria-label="Council monitor">
+                    <div style={styles.monitorBar}>
+                        <div style={{ minWidth: 0 }}>
+                            <div style={styles.monitorTitle}>{s ? `${s.code} · ${s.topic}` : "Council monitor"}</div>
+                            {s && (
+                                <div style={styles.monitorMeta}>
+                                    {s.status} · round {s.round} of {s.maxRounds} · {s.messages} messages
+                                    {isRunning ? ` · quiet ${ago(s.lastMessageAt)}` : ""}
+                                    {s.floorHolder ? ` · floor ${s.floorHolder}` : ""}
+                                </div>
+                            )}
+                        </div>
+                        <div style={styles.monitorActions}>
+                            {(detail?.participants ?? []).filter((p) => p.kind === "agent").map((p) => (
+                                <span key={p.name} style={styles.monitorAgent}>
+                                    <span style={{
+                                        ...styles.dot,
+                                        background: p.status === "left"
+                                            ? "#5f6368"
+                                            : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "#ff8f6b" : "#31d07f",
+                                    }} />
+                                    {p.name}
+                                    {s?.floorHolder === p.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>floor</span>}
+                                </span>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={() => setLive((v) => !v)}
+                                style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
+                            >
+                                <RefreshCw size={15} style={live ? styles.spin : undefined} />
+                                {live ? "Live" : "Paused"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setMonitor(false)}
+                                style={styles.quickLink}
+                                title="Exit fullscreen (Esc)"
+                            >
+                                <Minimize2 size={15} /> Exit
+                            </button>
+                        </div>
+                    </div>
+
+                    <div style={styles.monitorFeed}>
+                        {!detail && <div style={styles.loadingCard}><Clock size={16} /> Loading transcript…</div>}
+                        {detail && (
+                            <div style={styles.monitorInner}>
+                                {detail.messages.map((m) => <MessageRow key={m.seq} m={m} />)}
+                                {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
+                                <div ref={transcriptEnd} />
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Shared by the inline transcript and the monitor overlay so the two views can
+// never drift apart.
+function MessageRow({ m }: { m: Message }) {
+    return (
+        <div style={styles.msg}>
+            <div style={styles.msgHead}>
+                <span style={styles.seq}>{m.seq}</span>
+                <span style={styles.speaker}>{m.speaker}</span>
+                {m.addressedTo !== "all" && <span style={styles.arrow}>→ {m.addressedTo}</span>}
+                <span style={{ ...styles.intent, color: INTENT_TONE[m.intent] ?? "var(--color-text-muted)" }}>
+                    {m.intent}
+                </span>
+                {m.replyToSeq && <span style={styles.re}>re {m.replyToSeq}</span>}
+                {!m.answered && ["challenge", "ask"].includes(m.intent) && m.addressedTo !== "all" && (
+                    <span style={{ ...styles.smallPill, ...styles.pillWarn }}>unanswered</span>
+                )}
+                <span style={styles.msgTime}>r{m.round} · {ago(m.createdAt)} ago</span>
+            </div>
+            <div style={{ ...styles.msgBody, ...(m.role !== "agent" ? styles.msgModerator : {}) }}>
+                {m.body}
+            </div>
         </div>
     );
 }
@@ -389,6 +487,9 @@ const styles: Record<string, React.CSSProperties> = {
         position: "relative", zIndex: 1, display: "flex", alignItems: "flex-start",
         justifyContent: "space-between", gap: 20, marginBottom: 18,
     },
+    headerNarrow: { flexDirection: "column", alignItems: "stretch", gap: 12 },
+    shellNarrow: { padding: "22px 14px 40px" },
+    titleNarrow: { fontSize: 26 },
     kicker: {
         fontSize: 11, fontWeight: 800, letterSpacing: 1.2, textTransform: "uppercase",
         color: "var(--color-text-muted)", marginBottom: 6,
@@ -415,16 +516,50 @@ const styles: Record<string, React.CSSProperties> = {
         position: "relative", zIndex: 1, display: "grid",
         gridTemplateColumns: "minmax(240px, 320px) minmax(0, 1fr)", gap: 16, alignItems: "start",
     },
+    splitNarrow: { gridTemplateColumns: "minmax(0, 1fr)" },
     rail: { display: "flex", flexDirection: "column" },
     main: { minWidth: 0 },
     panel: {
-        breakInside: "avoid", marginBottom: 16, padding: 18, borderRadius: 24,
+        marginBottom: 16, padding: 18, borderRadius: 24,
         background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 66%, transparent)",
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         boxShadow: "0 18px 60px rgba(0, 0, 0, 0.18)",
     },
     panelHeader: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
+    panelHeadRow: {
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+        gap: 12, flexWrap: "wrap",
+    },
+    // Fixed rather than the Fullscreen API: it needs no user-gesture permission,
+    // survives a re-render, and Esc still exits.
+    monitorOverlay: {
+        position: "fixed", inset: 0, zIndex: 60, display: "flex", flexDirection: "column",
+        background: "var(--color-background)", fontFamily: "var(--font-family)",
+        color: "var(--color-text-primary)",
+    },
+    monitorBar: {
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+        flexWrap: "wrap", padding: "12px 18px", flexShrink: 0,
+        borderBottom: "1px solid color-mix(in srgb, var(--color-border) 66%, transparent)",
+        background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
+    },
+    monitorTitle: {
+        fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em",
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+    },
+    monitorMeta: { fontSize: 12, color: "var(--color-text-muted)", marginTop: 3 },
+    monitorActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    monitorAgent: {
+        display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 650,
+        padding: "7px 10px", borderRadius: 12,
+        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
+    },
+    // The scroll container is this element, so transcriptEnd.scrollIntoView
+    // follows the tail here exactly as it does inline.
+    monitorFeed: { flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 18px 28px" },
+    monitorInner: { maxWidth: 1600, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 },
     panelIcon: {
         width: 32, height: 32, borderRadius: 12, display: "flex", alignItems: "center",
         justifyContent: "center",

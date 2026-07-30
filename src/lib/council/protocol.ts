@@ -47,6 +47,28 @@ export const CODE_LENGTH = 4;
 
 export const MODERATOR_NAME = "zuychin";
 
+// Co-working mode. The council orders who SPEAKS and never touches file access:
+// no tool, column or message field names a path, and the anti-injection rule
+// stops an agent acting on a peer's division of labour. So agents sharing one
+// checkout would still overwrite each other. The answer is isolation, not
+// locking - a worktree and branch per agent, merged by the human at the end.
+export const WORKTREE_BRANCH_PREFIX = "council";
+
+export function agentSlug(name: string): string {
+    return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+}
+
+export function councilBranch(code: string, agentName: string): string {
+    return `${WORKTREE_BRANCH_PREFIX}/${code.toLowerCase()}/${agentSlug(agentName)}`;
+}
+
+// Relative so git resolves it against the repo root, which keeps the rendered
+// command identical on Windows and POSIX.
+export function councilWorktreeDir(repoPath: string, agentName: string): string {
+    const base = repoPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "repo";
+    return `../${base}-${agentSlug(agentName)}`;
+}
+
 export type CouncilStatus = "open" | "concluding" | "closed" | "expired";
 export type CouncilIntent = "propose" | "challenge" | "answer" | "concede" | "refine" | "ask";
 export type CouncilRole = "agent" | "moderator" | "system";

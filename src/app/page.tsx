@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2 } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -197,7 +197,6 @@ export default function Home() {
   // Message id whose export formats (DOCX/PDF/MD) are expanded.
   const [exportMenuFor, setExportMenuFor] = useState<string | null>(null);
   const [convosLoaded, setConvosLoaded] = useState(false);
-  const [convTitleSpace, setConvTitleSpace] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -218,8 +217,6 @@ export default function Home() {
   // sendPayload runs from a drain in an old closure; the ref always has the
   // current conversation so a queued send can't open a second conversation.
   const activeConvIdRef = useRef<string | null>(null);
-  const headerLeftRef = useRef<HTMLDivElement>(null);
-  const headerRightRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const check = () => setIsDesktop(window.innerWidth >= 768);
@@ -301,34 +298,6 @@ export default function Home() {
       })
       .catch(() => { });
   }, []);
-
-  // The centered conversation title is absolutely positioned, so on narrow
-  // screens it can overlap the model selectors / header buttons. Measure the
-  // free gap around the header midpoint (headerLeft is flex:1, so its children,
-  // not its own box, mark where the content ends) and hide the title when the
-  // gap is too tight to render it legibly.
-  useEffect(() => {
-    const measure = () => {
-      const left = headerLeftRef.current;
-      const right = headerRightRef.current;
-      const container = left?.parentElement;
-      if (!left || !right || !container) return;
-      const c = container.getBoundingClientRect();
-      const mid = c.left + c.width / 2;
-      let contentRight = c.left;
-      for (const child of Array.from(left.children)) {
-        contentRight = Math.max(contentRight, child.getBoundingClientRect().right);
-      }
-      const half = Math.min(mid - contentRight, right.getBoundingClientRect().left - mid);
-      setConvTitleSpace(Math.max(0, Math.floor((half - 12) * 2)));
-    };
-    const raf = requestAnimationFrame(measure);
-    window.addEventListener("resize", measure);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", measure);
-    };
-  }, [isDesktop, providers, chatSel, embedSel]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1402,11 +1371,6 @@ export default function Home() {
     }
   };
 
-  const activeConvTitle = (() => {
-    const title = conversations.find((c) => c.id === activeConversationId)?.title;
-    return title && title !== "New Chat" ? title : undefined;
-  })();
-
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
       <>
@@ -1585,7 +1549,7 @@ export default function Home() {
       <div style={isDesktop ? styles.containerDesktop : styles.container}>
         <header style={styles.header}>
           <div style={styles.headerContent}>
-            <div style={styles.headerLeft} ref={headerLeftRef}>
+            <div style={styles.headerLeft}>
               <span aria-hidden style={isDesktop ? styles.logoMark : styles.logoMarkMobile} />
               <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
                 <h1 style={styles.title}>Zuychin</h1>
@@ -1599,13 +1563,13 @@ export default function Home() {
               )}
             </div>
 
-            {isDesktop && activeConvTitle && messages.length > 0 && convTitleSpace >= 120 && (
-              <div style={{ ...styles.headerConvTitle, maxWidth: Math.min(convTitleSpace, 420) }} title={activeConvTitle}>
-                {activeConvTitle}
-              </div>
-            )}
-
-            <div style={styles.headerRight} ref={headerRightRef}>
+            <div style={styles.headerRight}>
+              <Link href="/council" style={{ ...styles.iconBtn, textDecoration: "none" }} aria-label="Council" title="Council">
+                <Gavel size={19} color="var(--color-text-primary)" />
+              </Link>
+              <Link href="/admin" style={{ ...styles.iconBtn, textDecoration: "none" }} aria-label="Admin" title="Admin">
+                <ShieldCheck size={19} color="var(--color-text-primary)" />
+              </Link>
               <button type="button"
                 onClick={toggleTheme}
                 style={styles.iconBtn}

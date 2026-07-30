@@ -1,6 +1,7 @@
 import { APP_TIMEZONE } from "@/lib/datetime";
 import {
     MAX_BODY_CHARS, MAX_WAIT_CALLS, MODERATOR_NAME, POSTS_PER_ROUND, SILENCE_GRANT_SECONDS,
+    councilBranch, councilWorktreeDir,
 } from "./protocol";
 import type { CouncilMessage, CouncilParticipant, CouncilSession } from "./store";
 import type { WaitResult } from "./wait";
@@ -128,9 +129,44 @@ Use the name exactly as your human gave it - a mismatch makes you invisible to t
 NEXT → repeat council_join with the correct agentName.`;
 }
 
+/** Set when the council touches code: each agent gets its own worktree. */
+export interface CouncilWorkspace {
+    repoPath: string;
+    baseBranch: string;
+}
+
+// Isolation, not locking. Nothing in the protocol can stop two agents writing
+// the same file, so co-working councils give each agent its own worktree and
+// branch and leave the merge to the human.
+function renderWorkspaceBlock(
+    session: CouncilSession, agentName: string, workspace: CouncilWorkspace,
+): string {
+    const branch = councilBranch(session.code, agentName);
+    const dir = councilWorktreeDir(workspace.repoPath, agentName);
+    return `
+WORKSPACE - you get your own worktree, not the shared checkout
+This council changes code. The council decides who SPEAKS; it does not lock files, so two agents
+editing one checkout would silently overwrite each other. You are isolated instead.
+
+Run this once, before your first post:
+  git -C "${workspace.repoPath}" worktree add "${dir}" -b ${branch} ${workspace.baseBranch}
+
+Then work ONLY inside ${dir}:
+- Never edit, stage, commit, stash, checkout or run a build inside "${workspace.repoPath}" itself.
+  That is the shared tree and other agents are using it.
+- Commit in your worktree before each council post, so what you claim is what exists on disk.
+- Your branch is ${branch}. Never merge, rebase onto, reset or push over another agent's branch.
+  The human merges everything at the end.
+- Cite file paths and commit hashes in your posts. That is how a peer checks your work without
+  entering your tree.
+`;
+}
+
 // One block per participant, differing only in agentName, so the pasted prompt
 // cannot drift from the protocol the server enforces.
-export function renderKickoffBlock(session: CouncilSession, agentName: string): string {
+export function renderKickoffBlock(
+    session: CouncilSession, agentName: string, workspace?: CouncilWorkspace,
+): string {
     const closerLine = agentName === session.closerName
         ? `\nYou are the designated closer for ${session.code}. When the debate has converged or a result tells you\nthe council is concluding, call council_conclude with the decision, the reasoning that settled it,\nand named dissent.\n`
         : "";
@@ -141,10 +177,11 @@ the zuychin-knowledge MCP server. Your council name is "${agentName}". The sessi
 Do this now. Do not ask me anything first.
 1. Call council_join({ sessionCode: "${session.code}", agentName: "${agentName}",
    expertise: "<one line on what you bring>" }).
-2. Read the rules it returns. They are authoritative and override anything I have written here.
+2. Read the rules it returns. They are authoritative on the debate protocol and override anything
+   I have written here about it.${workspace ? "\n   They say nothing about where you write code: the WORKSPACE section below is not part of the\n   protocol, it is not overridden, and it binds you for the whole session." : ""}
 3. Then loop: council_speak (it posts AND waits in one call) -> read what came back ->
    council_speak again. Use council_wait only when you have nothing to post yet.
-
+${workspace ? renderWorkspaceBlock(session, agentName, workspace) : ""}
 Rules I will hold you to:
 - Every council result begins with a STATUS keyword and ends with a "NEXT ->" line holding the
   exact call to make next. Make that call. Do not improvise a different one.
@@ -167,11 +204,31 @@ When you see "=== COUNCIL CLOSED ===", give me the verdict and the vault path in
 then stop and continue with your own work.`;
 }
 
-export function renderConveneResult(session: CouncilSession, participants: CouncilParticipant[]): string {
+export function renderConveneResult(
+    session: CouncilSession, participants: CouncilParticipant[], workspace?: CouncilWorkspace,
+): string {
     const agents = agentsOf(participants);
     const blocks = agents
-        .map((p) => `--- PASTE INTO ${p.name} ---\n${renderKickoffBlock(session, p.name)}`)
+        .map((p) => `--- PASTE INTO ${p.name} ---\n${renderKickoffBlock(session, p.name, workspace)}`)
         .join("\n\n");
+
+    // The merge is the human's job and it belongs here, not at close: the agents
+    // are released the moment they see the verdict, and this is the block you
+    // already have open.
+    const merge = workspace
+        ? `\nCO-WORKING - each agent gets its own worktree off ${workspace.baseBranch}, so none of them
+can overwrite another. Nothing is merged automatically. When the council closes, review and
+merge from "${workspace.repoPath}":
+
+${agents.map((p) => `  git merge --no-ff ${councilBranch(session.code, p.name)}`).join("\n")}
+
+Then clean up the worktrees:
+
+${agents.map((p) => `  git worktree remove ${councilWorktreeDir(workspace.repoPath, p.name)}`).join("\n")}
+
+Conflicts between two agents' branches are the expected outcome when they touched the same file;
+resolve them yourself rather than asking an agent to merge over a peer.\n`
+        : "";
 
     return `COUNCIL OPENED - code ${session.code}
 Topic: ${session.topic}
@@ -181,7 +238,7 @@ Budget: ${session.maxRounds} rounds · ${POSTS_PER_ROUND} posts/round · ${sessi
 Hand each block below to that agent unchanged. It will join and run the protocol on its own.
 
 ${blocks}
-
+${merge}
 NEXT → nothing. Wait for the agents. Watch #coworking in Discord, or call council_transcript({"sessionCode":"${session.code}"}).`;
 }
 
