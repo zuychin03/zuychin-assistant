@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import type { CouncilType } from "./templates";
 import {
     MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
@@ -10,13 +11,14 @@ import {
 export type { CouncilStatus, CouncilStatusKeyword };
 
 export interface CouncilSession {
-    id: string; code: string; topic: string; brief: string; closerName: string;
+    id: string; code: string; topic: string; brief: string; closerName: string; councilType: CouncilType;
     status: CouncilStatus; round: number; maxRounds: number; maxMessages: number;
     lastSeq: number; lastMessageAt: string; quorumAt: string | null;
     floorHolder: string | null; floorGrantedAt: string | null; floorEpoch: number;
     silentGrants: number; verdict: string | null; openQuestions: string[];
     archiveStatus: "pending" | "filed" | "failed" | "skipped";
     vaultPath: string | null; expiresAt: string; closedAt: string | null; createdAt: string;
+    repoPath: string | null; baseBranch: string | null;
 }
 
 // Exactly the columns one poll tick reads: a ~180-byte primary-key point read.
@@ -47,13 +49,14 @@ export interface CouncilView {
 }
 
 interface SessionRow {
-    id: string; code: string; topic: string; brief: string; closer_name: string;
+    id: string; code: string; topic: string; brief: string; closer_name: string; council_type: CouncilType;
     status: CouncilStatus; round: number; max_rounds: number; max_messages: number;
     last_seq: number; last_message_at: string; quorum_at: string | null;
     floor_holder: string | null; floor_granted_at: string | null; floor_epoch: number;
     silent_grants: number; verdict: string | null; open_questions: string[] | null;
     archive_status: "pending" | "filed" | "failed" | "skipped";
     vault_path: string | null; expires_at: string; closed_at: string | null; created_at: string;
+    repo_path: string | null; base_branch: string | null;
 }
 
 interface MessageRow {
@@ -70,9 +73,9 @@ interface ParticipantRow {
 }
 
 const SESSION_COLUMNS =
-    "id, code, topic, brief, closer_name, status, round, max_rounds, max_messages, last_seq, " +
+    "id, code, topic, brief, closer_name, council_type, status, round, max_rounds, max_messages, last_seq, " +
     "last_message_at, quorum_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, " +
-    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at";
+    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at, repo_path, base_branch";
 
 const MESSAGE_COLUMNS =
     "seq, round, speaker, role, addressed_to, intent, reply_to_seq, body, answered, created_at";
@@ -88,6 +91,7 @@ function mapSession(row: SessionRow): CouncilSession {
         topic: row.topic,
         brief: row.brief,
         closerName: row.closer_name,
+        councilType: row.council_type,
         status: row.status,
         round: row.round,
         maxRounds: row.max_rounds,
@@ -106,6 +110,8 @@ function mapSession(row: SessionRow): CouncilSession {
         expiresAt: row.expires_at,
         closedAt: row.closed_at,
         createdAt: row.created_at,
+        repoPath: row.repo_path,
+        baseBranch: row.base_branch,
     };
 }
 
@@ -172,6 +178,8 @@ export async function createCouncilSession(params: {
     maxMessages?: number;
     ttlMinutes?: number;
     userProfileId?: string;
+    workspace?: { repoPath: string; baseBranch: string };
+    councilType?: CouncilType;
 }): Promise<CouncilSession> {
     const ttl = params.ttlMinutes ?? SESSION_TTL_MINUTES;
     const expiresAt = new Date(Date.now() + ttl * 60_000).toISOString();
@@ -187,9 +195,12 @@ export async function createCouncilSession(params: {
                 topic: params.topic,
                 brief: params.brief,
                 closer_name: params.closerName,
+                council_type: params.councilType ?? "debate",
                 max_rounds: params.maxRounds ?? MAX_ROUNDS,
                 max_messages: params.maxMessages ?? MAX_MESSAGES,
                 expires_at: expiresAt,
+                repo_path: params.workspace?.repoPath ?? null,
+                base_branch: params.workspace?.baseBranch ?? null,
             })
             .select(SESSION_COLUMNS)
             .single();

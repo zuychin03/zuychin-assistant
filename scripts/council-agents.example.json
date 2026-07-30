@@ -3,6 +3,14 @@
 
   "mcpUrl": "http://localhost:3000/api/mcp/mcp",
 
+  "instances": {
+    "codex-1": { "provider": "codex", "expertise": "implementation and integration" },
+    "codex-2": { "provider": "codex", "expertise": "tests and edge cases" },
+    "claude-a": { "provider": "claude-code", "expertise": "architecture" },
+    "claude-b": { "provider": "claude-code", "expertise": "security review" },
+    "claude-c": { "provider": "claude-code", "expertise": "documentation and verification" }
+  },
+
   "agents": {
     "claude-code": {
       "_doc": "https://code.claude.com/docs/en/headless - -p runs the full agent loop non-interactively. --mcp-config is passed a file the launcher writes OUTSIDE the worktree, because it holds a bearer token. Do NOT add --bare: it skips MCP discovery.",

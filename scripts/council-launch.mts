@@ -18,6 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { councilBranch, councilWorktreeDir } from "../src/lib/council/protocol.ts";
 import { parseKickoffBlocks } from "../src/lib/council/render.ts";
+import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
 
 interface Adapter {
     command: string;
@@ -27,9 +28,11 @@ interface Adapter {
     mcpConfig?: "claude";
     warn?: string;
 }
+interface AgentInstance { provider: string; expertise?: string; }
 interface LauncherConfig {
     mcpUrl: string;
     agents: Record<string, Adapter>;
+    instances?: Record<string, AgentInstance>;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -86,18 +89,31 @@ const closer = arg("closer");
 const names = (arg("agents") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const repo = arg("repo") ? resolve(arg("repo")!) : process.cwd();
 const base = arg("base") ?? "main";
+const councilType = arg("type") ?? "debate";
 const dryRun = process.argv.includes("--dry-run");
 
 if (!topic || !brief || names.length < 2 || !closer) {
-    die("usage: --topic <t> --brief <b> --agents a,b[,c] --closer <a> [--repo <path>] [--base main] [--dry-run]");
+    die("usage: --topic <t> --brief <b> --agents a,b[,c] --closer <a> [--type debate|code|research|audit|debug] [--repo <path>] [--base main] [--dry-run]");
 }
 if (!names.includes(closer)) die(`--closer "${closer}" is not in --agents (${names.join(", ")})`);
+if (new Set(names).size !== names.length) die("--agents names must be unique; use instance names such as codex-1 and codex-2.");
+if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) die(`--type must be one of ${COUNCIL_TYPES.join(", ")}`);
 
 const configPath = join(HERE, "council-agents.json");
 if (!existsSync(configPath)) {
     die(`missing ${configPath}\nCopy council-agents.example.json to council-agents.json and set the commands you actually run.`);
 }
 const config: LauncherConfig = JSON.parse(readFileSync(configPath, "utf8"));
+
+function resolveAgent(name: string): { adapter: Adapter; provider: string; expertise: string } {
+    const instance = config.instances?.[name];
+    const provider = instance?.provider ?? name;
+    const adapter = config.agents[provider];
+    if (!adapter) die(`no provider adapter for "${name}" (provider "${provider}") in council-agents.json`);
+    return { adapter, provider, expertise: instance?.expertise ?? `${provider} coding agent` };
+}
+
+const selectedAgents = new Map(names.map((name) => [name, resolveAgent(name)]));
 
 const mcpKey = process.env.MCP_API_KEY;
 if (!mcpKey) die("MCP_API_KEY is not set (run with --env-file=.env.local)");
@@ -108,25 +124,24 @@ if (!git(repo, ["rev-parse", "--git-dir"]).ok) die(`${repo} is not a git reposit
 if (!git(repo, ["rev-parse", "--verify", base]).ok) die(`base branch "${base}" does not exist in ${repo}`);
 
 for (const name of names) {
-    const adapter = config.agents[name];
-    if (!adapter) die(`no adapter for "${name}" in council-agents.json (have: ${Object.keys(config.agents).join(", ")})`);
-    if (!onPath(adapter.command)) die(`"${adapter.command}" for agent "${name}" is not on PATH`);
+    const { adapter, provider } = selectedAgents.get(name)!;
+    if (!onPath(adapter.command)) die(`"${adapter.command}" for ${name} (provider ${provider}) is not on PATH`);
 }
 
 console.log(`Convening "${topic}"`);
-console.log(`  agents ${names.join(", ")} · closer ${closer} · repo ${repo} · base ${base}\n`);
+console.log(`  type ${councilType} - agents ${names.join(", ")} - closer ${closer} - repo ${repo} - base ${base}\n`);
 
 // Stops before convening on purpose: a dry run must not create a session in
 // Postgres or a worktree on disk, or it is not dry.
 if (dryRun) {
     console.log("dry run - nothing convened, no worktree created.\n");
     for (const name of names) {
-        const adapter = config.agents[name];
+        const { adapter, provider } = selectedAgents.get(name)!;
         const shown = adapter.args
             .map((a) => a.replace("{prompt}", "<kickoff block>").replace("{mcpConfigFile}", "<run-dir>/" + name + ".mcp.json"))
             .map((a) => (a.includes(" ") ? `"${a}"` : a))
             .join(" ");
-        console.log(`  ${name}`);
+        console.log(`  ${name} (${provider})`);
         console.log(`    worktree ${councilWorktreeDir(repo, name)} on ${councilBranch("CN-XXXX", name)}`);
         console.log(`    ${adapter.command} ${shown}`);
         if (adapter.warn) console.log(`    ! ${adapter.warn}`);
@@ -135,8 +150,8 @@ if (dryRun) {
 }
 
 const conveneText = await callConvene(config, mcpKey, {
-    topic, brief, closerName: closer,
-    participants: names.map((n) => ({ name: n, expertise: config.agents[n].warn ?? "coding agent" })),
+    topic, brief, closerName: closer, councilType,
+    participants: names.map((name) => ({ name, expertise: selectedAgents.get(name)!.expertise })),
     workspace: { repoPath: repo, baseBranch: base },
 });
 
@@ -150,10 +165,10 @@ console.log(`Council ${code} opened.\n`);
 const runDir = join(repo, "..", `.council-run-${code.toLowerCase()}`);
 mkdirSync(runDir, { recursive: true });
 
-const launched: { name: string; branch: string; dir: string; log: string }[] = [];
+const launched: { name: string; branch: string; dir: string; treeDir: string; log: string; mcpFile: string }[] = [];
 
 for (const { agentName, prompt } of blocks) {
-    const adapter = config.agents[agentName];
+    const { adapter } = selectedAgents.get(agentName)!;
     const branch = councilBranch(code, agentName);
     const relDir = councilWorktreeDir(repo, agentName);
     const treeDir = resolve(repo, relDir);
@@ -193,10 +208,15 @@ for (const { agentName, prompt } of blocks) {
         child.on("exit", (codeOut) => console.log(`  ${agentName} exited (${codeOut}) → ${logPath}`));
         child.on("error", (err) => console.error(`  ${agentName} failed to start: ${err.message}`));
     }
-    launched.push({ name: agentName, branch, dir: relDir, log: logPath });
+    launched.push({ name: agentName, branch, dir: relDir, treeDir, log: logPath, mcpFile });
 }
 
+writeFileSync(join(runDir, "campaign-run.json"), JSON.stringify({
+    code, configPath, agents: launched.map((agent) => ({ name: agent.name, dir: agent.treeDir, mcpFile: agent.mcpFile })),
+}, null, 2));
+
 console.log(`\nWatch: http://localhost:3000/council   (or tail ${runDir})`);
+console.log(`Resume task supervision after an interruption:\n  npx tsx --env-file=.env.local scripts/council-campaign-supervise.mts --run-dir ${runDir}`);
 console.log(`\nWhen it closes, merge from ${repo}:`);
 for (const l of launched) console.log(`  git merge --no-ff ${l.branch}`);
 console.log(`\nThen clean up:`);

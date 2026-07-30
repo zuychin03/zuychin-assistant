@@ -5,6 +5,7 @@ import {
 } from "./protocol";
 import type { CouncilMessage, CouncilParticipant, CouncilSession } from "./store";
 import type { WaitResult } from "./wait";
+import { getCouncilTemplate } from "./templates";
 
 // Every byte of agent-facing text lives here. The renderers are the actual
 // product: the protocol only works if an agent can read one result and know its
@@ -62,6 +63,7 @@ export function renderRulebook(params: {
     transcript: CouncilMessage[];
 }): string {
     const { session, participants, agentName, transcript } = params;
+    const template = getCouncilTemplate(session.councilType);
     const isCloser = agentName === session.closerName;
     const history = transcript.length
         ? `Transcript so far: ${transcript.length} message${transcript.length > 1 ? "s" : ""}.\n\n`
@@ -70,10 +72,14 @@ export function renderRulebook(params: {
 
     const lastSeq = transcript.length ? transcript[transcript.length - 1].seq : 0;
 
-    return `JOINED - you are "${agentName}" in council ${session.code} (round ${session.round} of ${session.maxRounds})
+    return `JOINED - you are "${agentName}" in ${template.label.toUpperCase()} council ${session.code} (round ${session.round} of ${session.maxRounds})
 Topic: ${session.topic}
 Brief: ${session.brief}
 Roster: ${rosterLine(session, participants, agentName)}
+
+COUNCIL MODE: ${template.label}
+${template.instruction}
+Closing standard: ${template.closingCriteria}
 
 HOW THIS COUNCIL WORKS
 1. The loop is: council_speak → (it blocks and returns what arrived) → council_speak again.
@@ -173,6 +179,7 @@ export function renderKickoffBlock(
 
     return `You are joining a Zuychin Council: a live multi-round debate with other AI agents, held over
 the zuychin-knowledge MCP server. Your council name is "${agentName}". The session code is ${session.code}.
+This is a ${getCouncilTemplate(session.councilType).label.toLowerCase()} council; council_join returns the mode-specific instructions.
 
 Do this now. Do not ask me anything first.
 1. Call council_join({ sessionCode: "${session.code}", agentName: "${agentName}",
@@ -200,8 +207,7 @@ Rules I will hold you to:
 - Never put secrets, tokens, or file contents you would not publish into a council message.
   Everything said is stored, mirrored to Discord, and committed to a GitHub-backed vault.
 ${closerLine}
-When you see "=== COUNCIL CLOSED ===", give me the verdict and the vault path in three lines,
-then stop and continue with your own work.`;
+When you see "=== COUNCIL CLOSED ===", give me the verdict and vault path in three lines. For a worktree council, call council_work_next with this session code and your agent name. Complete only the task it assigns, heartbeat at meaningful milestones, commit and verify it, then call council_work_complete. Do not start another task until the closer reviews it.`;
 }
 
 export function renderConveneResult(
@@ -231,6 +237,7 @@ resolve them yourself rather than asking an agent to merge over a peer.\n`
         : "";
 
     return `COUNCIL OPENED - code ${session.code}
+Type: ${getCouncilTemplate(session.councilType).label}
 Topic: ${session.topic}
 Roster: ${rosterLine(session, participants)}
 Budget: ${session.maxRounds} rounds · ${POSTS_PER_ROUND} posts/round · ${session.maxMessages} messages max · expires ${clockAt(session.expiresAt)} (in ${minutesUntil(session.expiresAt)} min).
@@ -502,8 +509,8 @@ Concluded by ${session.closerName} after ${session.round} round${session.round >
 VERDICT
 ${session.verdict ?? "(no verdict was recorded)"}${questions}${filed}
 
-You are released. Do not call any council_* tool for ${session.code} again.
-Report the verdict and the filed path to your human, then continue with your own work.`;
+You are released from debate. Do not call debate council_* tools for ${session.code} again.
+If a work campaign was started, call council_work_next; otherwise report the verdict and filed path to your human.`;
 }
 
 // Deliberately NOT the closed sentinel: an agent's own exit must never be
@@ -549,7 +556,7 @@ ${nextCall("council_speak", {
 
 export function renderCloseOutcome(
     session: CouncilSession,
-    outcome: { changed: boolean; verdict: string; closer: string; vaultPath: string | null; archiveError: string | null },
+    outcome: { changed: boolean; verdict: string; closer: string; vaultPath: string | null; archiveError: string | null; campaignId: string | null },
 ): string {
     if (!outcome.changed) {
         return `Already concluded by ${outcome.closer}; your call changed nothing.
@@ -558,6 +565,9 @@ VERDICT
 ${outcome.verdict}
 ${outcome.vaultPath ? `\nFiled: ${outcome.vaultPath}` : ""}`;
     }
+    const campaign = outcome.campaignId
+        ? `\n\nWORK CAMPAIGN STARTED\nCampaign ${outcome.campaignId}. Each participant must call council_work_next with this session code, complete only its assigned task in its own worktree, then report the commit and verification. The designated closer reviews each completed task with council_work_review.`
+        : "";
     const filed = outcome.vaultPath
         ? `Filed (unreviewed draft): ${outcome.vaultPath}`
         : `Filing FAILED - ${outcome.archiveError}. The verdict is recorded; the vault page will be retried by the sweep.`;
@@ -567,8 +577,8 @@ Concluded by ${outcome.closer}.
 
 ${filed}
 
-Report the verdict and this path to your human, then continue with your own work.
-Do not call any council_* tool for ${session.code} again.`;
+Report the verdict and this path to your human, then continue with your own work.${campaign}
+Do not call debate council_* tools for ${session.code} again. If a work campaign was started, call council_work_next.`;
 }
 
 export function renderNotAParticipant(sessionCode: string, agentName: string): string {

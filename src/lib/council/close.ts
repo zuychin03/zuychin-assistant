@@ -6,6 +6,7 @@ import {
     concludeCouncil, getSessionById, listParticipants, markArchive, readTranscript,
     type CouncilMessage, type CouncilSession,
 } from "./store";
+import { createCampaign, type CouncilWorkItemInput } from "./campaign";
 
 // Order is load-bearing: the DB CAS commits FIRST, so a client-side timeout can
 // never lose an agreed verdict. Nothing is deferred to after() -- its callbacks
@@ -22,6 +23,7 @@ export interface CloseOutcome {
     closer: string;
     vaultPath: string | null;
     archiveError: string | null;
+    campaignId: string | null;
 }
 
 function transcriptMarkdown(session: CouncilSession, messages: CouncilMessage[], verdict: string, openQuestions: string[]): string {
@@ -53,8 +55,9 @@ export async function closeCouncil(params: {
     closer: string;
     verdict: string;
     openQuestions: string[];
+    workItems?: CouncilWorkItemInput[];
 }): Promise<CloseOutcome> {
-    const { session, closer, verdict, openQuestions } = params;
+    const { session, closer, verdict, openQuestions, workItems } = params;
 
     // The CAS is the mutex: two agents concluding simultaneously cannot both
     // race a vault write against the GitHub ref.
@@ -62,13 +65,23 @@ export async function closeCouncil(params: {
         sessionId: session.id, closer, verdict, openQuestions,
     });
     if (!cas.changed) {
+        const campaignId = workItems?.length
+            ? (await createCampaign({ sessionId: session.id, createdBy: closer, workItems })).campaign.id
+            : null;
         return {
             changed: false,
             verdict: cas.verdict ?? "",
             closer: cas.closer ?? session.closerName,
             vaultPath: cas.vaultPath ?? null,
             archiveError: null,
+            campaignId,
         };
+    }
+
+    let campaignId: string | null = null;
+    if (workItems?.length) {
+        const campaign = await createCampaign({ sessionId: session.id, createdBy: closer, workItems });
+        campaignId = campaign.campaign.id;
     }
 
     const [messages, participants] = await Promise.all([
@@ -118,5 +131,5 @@ export async function closeCouncil(params: {
         }).catch((e) => console.warn("[Council] Follow-up todo failed:", e));
     }
 
-    return { changed: true, verdict, closer, vaultPath, archiveError };
+    return { changed: true, verdict, closer, vaultPath, archiveError, campaignId };
 }

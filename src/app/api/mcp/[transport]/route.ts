@@ -29,6 +29,8 @@ import {
 import { pollCouncil } from "@/lib/council/wait";
 import { closeCouncil } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
+import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
+import { blockWorkItem, claimNextWorkItem, completeWorkItem, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, reviewWorkItem } from "@/lib/council/campaign";
 
 export const maxDuration = 300;
 
@@ -434,6 +436,7 @@ const handler = createMcpHandler(
                         expertise: z.string().min(1),
                     })).min(2).max(5).describe("Agents to invite. Short lowercase handles the human will type into each agent ('codex', 'claude-code', 'cursor')."),
                     closerName: z.string().min(1).describe("Which participant may call council_conclude. Must be one of participants[].name."),
+                    councilType: z.enum(COUNCIL_TYPES).optional().describe("Discussion template: debate, code, research, audit or debug. Defaults to debate."),
                     maxRounds: z.number().int().min(2).max(10).optional().describe("Rounds before the council must conclude (default 6)."),
                     maxMessages: z.number().int().min(10).max(200).optional().describe("Hard message cap for the whole session (default 60)."),
                     ttlMinutes: z.number().int().min(10).max(240).optional().describe("Hard expiry from now (default 90). The session self-terminates at this deadline whether or not anyone concludes."),
@@ -443,7 +446,7 @@ const handler = createMcpHandler(
                     }).optional().describe("Set ONLY when the council will change code. Gives each agent its own git worktree and branch, so they cannot overwrite each other, and returns the merge steps for you. Omit for a debate-only council."),
                 },
             },
-            async ({ topic, brief, participants, closerName, maxRounds, maxMessages, ttlMinutes, workspace }, extra) => {
+            async ({ topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace }, extra) => {
                 const denied = requireCouncil(extra);
                 if (denied) return denied;
                 try {
@@ -462,8 +465,13 @@ const handler = createMcpHandler(
                         return { content: [{ type: "text", text: `${open.length} councils are already open (${open.map((s) => s.code).join(", ")}). Close one before convening another.` }] };
                     }
 
+                    const template = getCouncilTemplate(councilType);
                     const session = await createCouncilSession({
-                        topic, brief, closerName, participants, maxRounds, maxMessages, ttlMinutes,
+                        topic, brief, closerName, participants, councilType,
+                        maxRounds: maxRounds ?? template.defaults.maxRounds,
+                        maxMessages: maxMessages ?? template.defaults.maxMessages,
+                        ttlMinutes: ttlMinutes ?? template.defaults.ttlMinutes,
+                        workspace: workspace ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main" } : undefined,
                     });
                     const roster = await listParticipants(session.id);
                     const ws = workspace
@@ -655,9 +663,10 @@ const handler = createMcpHandler(
                     agentName: z.string().min(1).describe("Your council name. Must match the closer named at convene time."),
                     verdict: z.string().min(1).max(4000).describe("The decision, the reasoning that settled it, and named dissent. Cite seq numbers. This is what the human reads."),
                     openQuestions: z.array(z.string().min(1)).max(8).optional().describe("What stayed unresolved. Each becomes a follow-up todo for the human."),
+                    workItems: z.array(z.object({ agentName: z.string().min(1).max(40), title: z.string().min(1).max(160), instructions: z.string().min(1).max(8000), acceptanceCriteria: z.array(z.string().min(1).max(500)).min(1).max(12) })).min(1).max(30).optional().describe("Optional implementation tasks for the isolated-worktree campaign."),
                 },
             },
-            async ({ sessionCode, agentName, verdict, openQuestions }, extra) => {
+            async ({ sessionCode, agentName, verdict, openQuestions, workItems }, extra) => {
                 const denied = requireCouncil(extra);
                 if (denied) return denied;
                 try {
@@ -670,11 +679,90 @@ const handler = createMcpHandler(
                     }
                     const outcome = await closeCouncil({
                         session, closer: agentName, verdict, openQuestions: openQuestions ?? [],
+                        workItems: workItems?.map((item) => ({ agentName: item.agentName, title: item.title, instructions: item.instructions, acceptanceCriteria: item.acceptanceCriteria })),
                     });
                     return { content: [{ type: "text", text: renderCloseOutcome(session, outcome) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Conclude failed: ${errMsg(error)}` }] };
                 }
+            },
+        );
+
+
+        server.registerTool(
+            "council_work_next",
+            { description: "[COUNCIL WORK CAMPAIGN] Claim or resume your assigned task after the council closes. Work only in your worktree, heartbeat at milestones, then commit, verify and submit it for review.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1) } },
+            async ({ sessionCode, agentName }, extra) => {
+                const denied = requireCouncil(extra); if (denied) return denied;
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    if (session.status !== "closed") return { content: [{ type: "text", text: "WORK_NOT_READY - the council has not closed yet. Continue the council protocol." }] };
+                    const campaign = await getCampaignForSession(session.id);
+                    if (!campaign) return { content: [{ type: "text", text: "NO_WORK_CAMPAIGN - no implementation tasks were recorded for this council. Stop here and wait for human direction." }] };
+                    const item = await claimNextWorkItem(session.id, agentName);
+                    if (!item) return { content: [{ type: "text", text: "WORK_IDLE - campaign " + campaign.status + ". You have no runnable task. Do not take another agent's work." }] };
+                    return { content: [{ type: "text", text: "WORK_ASSIGNED - " + item.id + "\nTask " + item.sequence + ": " + item.title + "\n\n" + item.instructions + "\n\nAcceptance criteria:\n" + item.acceptanceCriteria.map((criterion) => "- " + criterion).join("\n") + "\n\nNEXT -> council_work_heartbeat({itemId: \"" + item.id + "\", agentName: \"" + agentName + "\", progress: \"started\"})" }] };
+                } catch (error) { return { content: [{ type: "text", text: "Work claim failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_work_heartbeat",
+            { description: "[COUNCIL WORK CAMPAIGN] Record progress on your assigned in-progress task at meaningful milestones.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), progress: z.string().min(1).max(1000).optional() } },
+            async ({ itemId, agentName, progress }, extra) => {
+                const denied = requireCouncil(extra); if (denied) return denied;
+                try { const ok = await heartbeatWorkItem({ itemId, agentName, progress }); return { content: [{ type: "text", text: ok ? "WORK_HEARTBEAT_RECORDED" : "WORK_HEARTBEAT_REJECTED - this is not your active task." }] }; }
+                catch (error) { return { content: [{ type: "text", text: "Heartbeat failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_work_complete",
+            { description: "[COUNCIL WORK CAMPAIGN] Submit a committed, verified task for closer review. This never self-approves the work.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), commitHash: z.string().min(1).max(120), verification: z.string().min(1).max(4000) } },
+            async ({ itemId, agentName, commitHash, verification }, extra) => {
+                const denied = requireCouncil(extra); if (denied) return denied;
+                try { const ok = await completeWorkItem({ itemId, agentName, commitHash, verification }); return { content: [{ type: "text", text: ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] }; }
+                catch (error) { return { content: [{ type: "text", text: "Completion failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_work_block",
+            { description: "[COUNCIL WORK CAMPAIGN] Mark your task blocked when it needs a human decision, missing access or an external dependency.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), reason: z.string().min(1).max(2000) } },
+            async ({ itemId, agentName, reason }, extra) => {
+                const denied = requireCouncil(extra); if (denied) return denied;
+                try { const ok = await blockWorkItem({ itemId, agentName, reason }); return { content: [{ type: "text", text: ok ? "WORK_BLOCKED - stop the task and report the recorded blocker." : "WORK_BLOCK_REJECTED - this is not your active task." }] }; }
+                catch (error) { return { content: [{ type: "text", text: "Block failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_work_review",
+            { description: "[COUNCIL WORK CAMPAIGN] Designated closer only: accept a submitted task after reviewing its diff and verification, or return it to its owner with specific feedback. The campaign completes only after every task is accepted.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), accepted: z.boolean(), note: z.string().min(1).max(3000) } },
+            async ({ itemId, agentName, accepted, note }, extra) => {
+                const denied = requireCouncil(extra); if (denied) return denied;
+                try { const ok = await reviewWorkItem({ itemId, reviewer: agentName, accepted, note }); return { content: [{ type: "text", text: ok ? (accepted ? "WORK_VERIFIED" : "WORK_RETURNED_TO_OWNER") : "WORK_REVIEW_REJECTED - only the designated closer may review an awaiting-review task." }] }; }
+                catch (error) { return { content: [{ type: "text", text: "Review failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_work_status",
+            { description: "[COUNCIL WORK CAMPAIGN] Read campaign progress and assigned task states without changing them. Use for supervision and recovery.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1).optional() } },
+            async ({ sessionCode, agentName }) => {
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    const campaign = await getCampaignForSession(session.id);
+                    if (!campaign) return { content: [{ type: "text", text: "SUPERVISE: idle\nNo work campaign exists." }] };
+                    const items = await listCampaignWorkItems(campaign.id);
+                    const owned = agentName ? items.filter((item) => item.agentName === agentName) : [];
+                    const hasReview = agentName === session.closerName && items.some((item) => item.status === "awaiting_review");
+                    const supervise = hasReview ? "review" : owned.some((item) => item.status === "queued" || item.status === "in_progress") ? "active" : "idle";
+                    const state = campaign.status === "complete" ? "complete" : campaign.status === "blocked" ? "blocked" : supervise;
+                    return { content: [{ type: "text", text: "SUPERVISE: " + state + "\nCampaign " + campaign.status + ": " + items.filter((item) => item.status === "verified").length + "/" + items.length + " verified\n" + items.map((item) => "#" + item.sequence + " " + item.agentName + " " + item.status + " " + item.title).join("\n") }] };
+                } catch (error) { return { content: [{ type: "text", text: "Campaign status failed: " + errMsg(error) }] }; }
             },
         );
 

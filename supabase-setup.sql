@@ -1486,3 +1486,141 @@ alter table auth_totp enable row level security;
 
 -- The application uses SUPABASE_SERVICE_ROLE_KEY. Do not add anon policies to
 -- these tables: every read and write is server-side after auth verification.
+
+-- ===== Council work campaign wave =====
+alter table council_sessions
+  add column if not exists repo_path text,
+  add column if not exists base_branch text,
+  add column if not exists council_type text not null default 'debate'
+    check (council_type in ('debate', 'code', 'research', 'audit', 'debug'));
+
+create table if not exists council_campaigns (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null unique references council_sessions(id) on delete cascade,
+  status text not null default 'running' check (status in ('running', 'complete', 'blocked', 'cancelled')),
+  repo_path text not null,
+  base_branch text not null default 'main',
+  created_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+create table if not exists council_work_items (
+  id uuid primary key default gen_random_uuid(),
+  campaign_id uuid not null references council_campaigns(id) on delete cascade,
+  sequence integer not null check (sequence > 0),
+  agent_name text not null,
+  title text not null check (char_length(title) <= 160),
+  instructions text not null check (char_length(instructions) <= 8000),
+  acceptance_criteria jsonb not null default '[]',
+  status text not null default 'queued' check (status in ('queued', 'in_progress', 'awaiting_review', 'verified', 'blocked', 'cancelled')),
+  heartbeat_at timestamptz,
+  attempts integer not null default 0,
+  progress text,
+  commit_hash text,
+  verification text,
+  blocked_reason text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  reviewed_at timestamptz,
+  unique (campaign_id, sequence)
+);
+create index if not exists idx_council_work_items_agent on council_work_items (campaign_id, agent_name, status, sequence);
+alter table council_campaigns enable row level security;
+alter table council_work_items enable row level security;
+
+create or replace function create_council_campaign(p_session_id uuid, p_created_by text, p_work_items jsonb)
+returns jsonb language plpgsql as $$
+declare v_session council_sessions; v_campaign council_campaigns; v_item jsonb; v_index integer := 0;
+begin
+  select * into v_session from council_sessions where id = p_session_id for update;
+  if v_session.id is null then raise exception 'council session not found'; end if;
+  if v_session.status <> 'closed' then raise exception 'council must be closed before work begins'; end if;
+  if v_session.closer_name <> p_created_by then raise exception 'only the designated closer can create a campaign'; end if;
+  if v_session.repo_path is null or v_session.base_branch is null then raise exception 'this council has no registered workspace'; end if;
+  if jsonb_typeof(p_work_items) <> 'array' or jsonb_array_length(p_work_items) = 0 then raise exception 'a campaign needs at least one work item'; end if;
+  select * into v_campaign from council_campaigns where session_id = p_session_id;
+  if v_campaign.id is not null then return jsonb_build_object('campaign_id', v_campaign.id, 'created', false); end if;
+  for v_item in select value from jsonb_array_elements(p_work_items) loop
+    v_index := v_index + 1;
+    if not exists (select 1 from council_participants where session_id = p_session_id and name = coalesce(v_item->>'agent_name', '') and kind = 'agent') then
+      raise exception 'work item % has an agent outside the council roster', v_index;
+    end if;
+    if coalesce(char_length(v_item->>'title'), 0) = 0 or coalesce(char_length(v_item->>'instructions'), 0) = 0 then
+      raise exception 'work item % needs a title and instructions', v_index;
+    end if;
+  end loop;
+  insert into council_campaigns (session_id, repo_path, base_branch)
+  values (p_session_id, v_session.repo_path, v_session.base_branch) returning * into v_campaign;
+  insert into council_work_items (campaign_id, sequence, agent_name, title, instructions, acceptance_criteria)
+  select v_campaign.id, row_number() over (), item->>'agent_name', item->>'title', item->>'instructions', coalesce(item->'acceptance_criteria', '[]'::jsonb)
+    from jsonb_array_elements(p_work_items) item;
+  return jsonb_build_object('campaign_id', v_campaign.id, 'created', true);
+end;
+$$;
+
+create or replace function claim_council_work_item(p_session_id uuid, p_agent_name text)
+returns jsonb language plpgsql as $$
+declare v_item council_work_items; v_campaign council_campaigns;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null or v_campaign.status <> 'running' then return null; end if;
+  select w.* into v_item from council_work_items w where w.campaign_id = v_campaign.id and w.agent_name = p_agent_name and w.status = 'in_progress' order by w.sequence limit 1 for update;
+  if v_item.id is null then
+    select w.* into v_item from council_work_items w where w.campaign_id = v_campaign.id and w.agent_name = p_agent_name and w.status = 'queued' order by w.sequence limit 1 for update skip locked;
+    if v_item.id is null then return null; end if;
+    update council_work_items set status = 'in_progress', attempts = attempts + 1, started_at = coalesce(started_at, now()), heartbeat_at = now() where id = v_item.id returning * into v_item;
+  else
+    update council_work_items set heartbeat_at = now() where id = v_item.id returning * into v_item;
+  end if;
+  return to_jsonb(v_item);
+end;
+$$;
+
+create or replace function heartbeat_council_work_item(p_item_id uuid, p_agent_name text, p_progress text)
+returns boolean language plpgsql as $$
+begin
+  update council_work_items set heartbeat_at = now(), progress = coalesce(p_progress, progress) where id = p_item_id and agent_name = p_agent_name and status = 'in_progress';
+  return found;
+end;
+$$;
+
+create or replace function complete_council_work_item(p_item_id uuid, p_agent_name text, p_commit_hash text, p_verification text)
+returns boolean language plpgsql as $$
+begin
+  update council_work_items set status = 'awaiting_review', heartbeat_at = now(), commit_hash = p_commit_hash, verification = p_verification, completed_at = now() where id = p_item_id and agent_name = p_agent_name and status = 'in_progress';
+  return found;
+end;
+$$;
+
+create or replace function block_council_work_item(p_item_id uuid, p_agent_name text, p_reason text)
+returns boolean language plpgsql as $$
+declare v_campaign_id uuid;
+begin
+  update council_work_items set status = 'blocked', blocked_reason = p_reason, heartbeat_at = now() where id = p_item_id and agent_name = p_agent_name and status in ('queued', 'in_progress') returning campaign_id into v_campaign_id;
+  if not found then return false; end if;
+  update council_campaigns set status = 'blocked' where id = v_campaign_id and not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status in ('queued', 'in_progress', 'awaiting_review'));
+  return true;
+end;
+$$;
+
+create or replace function review_council_work_item(p_item_id uuid, p_reviewer text, p_accepted boolean, p_note text)
+returns boolean language plpgsql as $$
+declare v_campaign_id uuid; v_closer text;
+begin
+  select c.id, s.closer_name into v_campaign_id, v_closer from council_work_items w join council_campaigns c on c.id = w.campaign_id join council_sessions s on s.id = c.session_id where w.id = p_item_id for update;
+  if v_campaign_id is null or v_closer <> p_reviewer then return false; end if;
+  if p_accepted then
+    update council_work_items set status = 'verified', verification = concat_ws(E'\n', verification, 'Review: ' || p_note), reviewed_at = now() where id = p_item_id and status = 'awaiting_review';
+  else
+    update council_work_items set status = 'queued', progress = concat_ws(E'\n', progress, 'Review feedback: ' || p_note), heartbeat_at = null, completed_at = null where id = p_item_id and status = 'awaiting_review';
+  end if;
+  if not found then return false; end if;
+  update council_campaigns set status = case
+      when not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status <> 'verified') then 'complete'
+      when exists (select 1 from council_work_items where campaign_id = v_campaign_id and status = 'blocked')
+       and not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status in ('queued', 'in_progress', 'awaiting_review')) then 'blocked'
+      else 'running' end,
+    completed_at = case when not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status <> 'verified') then now() else null end where id = v_campaign_id;
+  return true;
+end;
+$$;

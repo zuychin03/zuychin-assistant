@@ -16,12 +16,12 @@ const POLL_MS = 2500;
 const STALE_SECONDS = 180;
 
 interface OpenCouncil {
-    code: string; topic: string; status: string; round: number; maxRounds: number;
+    code: string; topic: string; councilType: string; status: string; round: number; maxRounds: number;
     messages: number; lastMessageAt: string; closerName: string; expiresAt: string;
     waitingOn: string[]; participants: string[];
 }
 interface RecentCouncil {
-    code: string; topic: string; status: string; round: number; maxRounds: number;
+    code: string; topic: string; councilType: string; status: string; round: number; maxRounds: number;
     messages: number; closerName: string; verdict: string | null;
     vaultPath: string | null; archiveStatus: string; closedAt: string | null;
 }
@@ -35,7 +35,7 @@ interface Message {
 }
 interface Detail {
     session: {
-        code: string; topic: string; brief: string; status: string; round: number;
+        code: string; topic: string; councilType: string; brief: string; status: string; round: number;
         maxRounds: number; messages: number; closerName: string; lastMessageAt: string;
         expiresAt: string; verdict: string | null; openQuestions: string[];
         vaultPath: string | null; archiveStatus: string; floorHolder: string | null;
@@ -43,6 +43,10 @@ interface Detail {
     participants: Participant[];
     messages: Message[];
     openObligations: { seq: number; from: string; to: string; intent: string }[];
+    campaign: {
+        id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
+        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; verification: string | null; blockedReason: string | null }[];
+    } | null;
 }
 
 function ago(iso: string): string {
@@ -272,7 +276,7 @@ export default function CouncilPage() {
                                         description={`${s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} messages · closer ${s.closerName}`}
                                         icon={<Users size={16} />}
                                     />
-                                    <div style={styles.brief}>{s.brief}</div>
+                                    <div style={styles.brief}><strong>{s.councilType} council</strong><br />{s.brief}</div>
                                     <div style={styles.roster}>
                                         {detail.participants.filter((p) => p.kind === "agent").map((p) => {
                                             const stale = (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS;
@@ -327,6 +331,29 @@ export default function CouncilPage() {
                                                 {s.vaultPath ?? "not filed"}
                                                 {s.vaultPath && <span style={styles.untrusted}> · untrusted draft, promote with vault_ingest</span>}
                                             </span>
+                                        </div>
+                                    </section>
+                                )}
+
+                                {detail.campaign && (
+                                    <section style={styles.panel}>
+                                        <PanelHeader
+                                            title="Work campaign"
+                                            description={detail.campaign.status + " - " + detail.campaign.workItems.filter((item) => item.status === "verified").length + "/" + detail.campaign.workItems.length + " verified"}
+                                            icon={<GitBranch size={16} />}
+                                        />
+                                        <div style={styles.filedPath}>{detail.campaign.repoPath} - base {detail.campaign.baseBranch}</div>
+                                        <div style={styles.roster}>
+                                            {detail.campaign.workItems.map((item) => (
+                                                <div key={item.id} style={styles.workRow}>
+                                                    <span style={styles.seq}>{item.sequence}</span>
+                                                    <span style={styles.rosterName}>{item.agentName}</span>
+                                                    <span style={{ ...styles.smallPill, ...(item.status === "verified" ? styles.pillGood : item.status === "blocked" ? styles.pillWarn : styles.pillMuted) }}>{item.status}</span>
+                                                    <span style={styles.workTitle}>{item.title}</span>
+                                                    {item.blockedReason && <span style={styles.workDetail}>{item.blockedReason}</span>}
+                                                    {!item.blockedReason && item.progress && <span style={styles.workDetail}>{item.progress}</span>}
+                                                </div>
+                                            ))}
                                         </div>
                                     </section>
                                 )}
@@ -605,6 +632,9 @@ const styles: Record<string, React.CSSProperties> = {
     },
     roster: { display: "flex", flexDirection: "column", gap: 8 },
     rosterRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    workRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--color-border) 30%, transparent)" },
+    workTitle: { fontSize: 12.5, fontWeight: 650 },
+    workDetail: { width: "100%", fontSize: 11.5, lineHeight: 1.45, color: "var(--color-text-muted)", paddingLeft: 36 },
     dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
     rosterName: { fontSize: 13, fontWeight: 750, display: "inline-flex", alignItems: "center", gap: 6 },
     rosterMeta: { fontSize: 11.5, color: "var(--color-text-muted)", marginLeft: "auto" },

@@ -7,7 +7,9 @@ tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Se
 grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
 and remember durable facts about you across conversations. It installs as a PWA with push
 notifications, holds hands-free voice conversations (replies are spoken back), and can decide
-on its own when something is worth reaching out about. Its second-brain wiki vault comes
+on its own when something is worth reaching out about. The web app supports passkey sign-in
+with device biometrics, password plus TOTP recovery, and a shared council for collaborating
+with external coding agents. Its second-brain wiki vault comes
 with an interactive Obsidian-style 3D graph view where pages and links can be inspected,
 edited and deleted in place.
 
@@ -23,9 +25,13 @@ edited and deleted in place.
   instructions injected into every chat inside it; extracted facts can be scoped to a
   project so they only surface in that project's chats
 - File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
-- MCP tools: 23 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
+- MCP tools: two dozen tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   message-history search, the second-brain vault, scheduled tasks, current time and recent
   conversations
+- Passkey-first PWA sign-in: WebAuthn device biometrics, PIN or a hardware security key with
+  short-lived signed sessions; password confirmation protects enrolment and TOTP provides a
+  recovery path
+- Council workspace: a live view at `/council` for open and completed external-agent debates
 - Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
   to the model natively (it hears you, not a transcript) and the reply is spoken back with
   Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
@@ -126,7 +132,10 @@ edited and deleted in place.
   skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
 - Self-authoring skills: after a novel multi-step task the agent can save its procedure
   as a draft skill; once approved in the admin panel it joins the skill index for future runs
-- Password auth: cookie-based access control via the auth proxy
+- Resilient replies: a provider response that stops at its length limit is resumed and stitched
+  together rather than silently ending mid-answer
+- Secure web and API access: passkeys and password plus TOTP recovery protect the PWA; cron
+  and headless chat callers require dedicated bearer credentials in production
 
 ## Tech Stack
 
@@ -203,7 +212,12 @@ Optional auth, integrations, channels and cron:
 |----------|-------------|
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key for server-only knowledge writes; required in production |
 | `APP_TIMEZONE` | Timezone for the date/time the model is given each request (default `Australia/Sydney`) |
-| `ACCESS_PASSWORD` | Password for web UI access (leave empty to disable auth) |
+| `ACCESS_PASSWORD` | Recovery password and confirmation for passkey or TOTP enrolment. Set it for a private deployment. |
+| `AUTH_SESSION_SECRET` | A stable, random 32-byte secret for signed sessions and encrypted TOTP data. Required for production auth. |
+| `AUTH_RP_ID` | Passkey relying-party ID, for example `zuychinassistant.quest`. |
+| `AUTH_ORIGIN` | Exact public application origin without a trailing slash, for example `https://zuychinassistant.quest`. |
+| `AUTH_OWNER_NAME` / `AUTH_TOTP_ISSUER` | Display label for the owner and authenticator app. |
+| `CHAT_API_KEY` | Bearer token for non-browser calls to `/api/chat`, including the Discord bot. Set the same value in both environments. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord: bot token + legacy single channel (fallback for the per-purpose ids below) |
 | `DISCORD_ASK_CHANNEL_ID` | The one Discord channel the bot converses in (`#ask-zuychin`) |
@@ -239,6 +253,33 @@ The same script creates the unified knowledge domain (`knowledge_documents`,
 replacement RPCs and chunk-level hybrid recall. Knowledge tables are server-only under
 RLS, so production requires `SUPABASE_SERVICE_ROLE_KEY`.
 
+
+### Web authentication
+
+For a private production deployment, set `ACCESS_PASSWORD`, `AUTH_SESSION_SECRET`,
+`AUTH_RP_ID` and `AUTH_ORIGIN` before deploying. Generate `AUTH_SESSION_SECRET` once and
+keep it stable:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+After signing in with the password, open **Security** in the sidebar, or visit `/security`.
+Add a passkey using your device's biometric prompt, Windows Hello, Samsung Pass, a password
+manager or a FIDO2 key. Register at least two passkeys on separate devices before relying on
+them. The same screen creates a QR code for an authenticator app; confirm its six-digit code
+to enable password-plus-TOTP recovery.
+
+Passkeys are bound to the configured public domain. Use these values locally instead:
+
+```env
+AUTH_RP_ID=localhost
+AUTH_ORIGIN=http://localhost:3000
+```
+
+The database script also creates the server-only `auth_passkeys`, `auth_challenges` and
+`auth_totp` tables. Re-run it after upgrading so the auth schema is present before the first
+passkey enrolment.
 
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
@@ -293,6 +334,10 @@ npm run dev
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
 | POST / DELETE | `/api/auth` | Login / logout |
+| GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
+| GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
+| GET | `/api/council` | Open councils and participant rosters for the council dashboard |
+| GET | `/api/council/[code]` | One council's status and transcript for the council dashboard |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
 | GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (Bearer `MCP_API_KEY`) |
@@ -316,8 +361,10 @@ npm run dev
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
 | GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
 
-All routes except `/login`, `/api/auth`, `/api/cron`, `/api/chat` and `/api/telegram` require
-the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
+Browser routes require the signed `zuychin-auth` session when authentication is enabled. The
+public webhook, cron and headless-chat routes protect themselves with bearer credentials:
+`CRON_SECRET` for cron endpoints and `CHAT_API_KEY` for `/api/chat`. See `src/proxy.ts` and
+`src/lib/auth/guard.ts` for the enforcement boundary.
 
 ## Providers & Models
 
@@ -421,12 +468,18 @@ your **other AI agents and chatbots** can share the knowledge base:
 | `council_speak` | write | Say one thing, then block until someone replies (the fused primary tool) |
 | `council_wait` | write | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
 | `council_pass` | write | Nothing to add this round, or leave the council for good |
-| `council_conclude` | write | Closer-only: write the verdict, mirror to Discord, file a quarantined vault page |
+| `council_conclude` | write | Closer-only: write the verdict, optionally create assigned implementation tasks, mirror to Discord and file a quarantined vault page |
+| `council_work_status` | read | Campaign progress and per-agent task state, without claiming work |
+| `council_work_next` | write | Claim or resume the caller's assigned implementation task |
+| `council_work_heartbeat` | write | Record meaningful progress on an active task |
+| `council_work_complete` | write | Submit a committed, verified task for closer review |
+| `council_work_block` | write | Record a human or external dependency blocker |
+| `council_work_review` | write | Closer-only: accept a task or return it with feedback |
 
 ### zuychin-council
 
-The seven `council_*` tools are a **live multi-round debate room** for your external coding
-agents. Ask the assistant to convene one, paste the generated block into each agent's
+The seven debate tools plus six `council_work_*` tools make a **bounded decision room** and a
+**durable implementation campaign** for your external coding agents. Ask the assistant to convene one, paste the generated block into each agent's
 terminal, and read the verdict in Discord `#coworking`.
 
 An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
@@ -441,8 +494,9 @@ Council output is filed to the vault as `trust: untrusted`, `status: suggested` 
 human-reviewed material in the assistant's own recall. Promote it yourself with `vault_ingest`
 if it earns it. Council messages are never embedded or indexed anywhere else.
 
-The council tables live in the `-- ===== Council wave =====` block at the bottom of
-`supabase-setup.sql`; run it in the Supabase SQL Editor before first use.
+The council and campaign tables live in the `-- ===== Council wave =====` and
+`-- ===== Council work campaign wave =====` blocks at the bottom of `supabase-setup.sql`; run
+both in the Supabase SQL Editor before first use.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -468,6 +522,46 @@ claude mcp add --transport http zuychin https://<your-app>/api/mcp/mcp \
 Or test locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
 "Streamable HTTP"). Note that anything saved through `save_note` later surfaces in the
 assistant's own context - only hand the key to agents you trust.
+
+### Launch a council into isolated worktrees
+
+The dashboard at `/council` lets you watch the roster, live transcript and outcome. To run
+several local coding agents without pasting kickoff blocks or letting them edit the same
+checkout, use the launcher:
+
+1. Copy `scripts/council-agents.example.json` to `scripts/council-agents.json`. This file is
+   gitignored because it describes local commands and may point to local MCP configuration.
+2. `agents` contains one adapter per provider. Add optional `instances` with unique participant names that point to those adapters, for example `codex-1` and `codex-2` both using `codex`, or three Claude instances using `claude-code`.
+3. Choose a template with `--type`: `debate` for decisions and dissent, `code` for implementation and test planning, `research` for evidence and confidence, `audit` for ranked risk findings, or `debug` for reproduction and root-cause work.
+4. Run a dry run first:
+
+```bash
+npx tsx --env-file=.env.local scripts/council-launch.mts \
+  --topic "Should we adopt X?" --brief "Constraints and current evidence" \
+  --agents codex-1,codex-2,claude-a,claude-b,claude-c --closer claude-a \
+  --type code --repo /path/to/repo --dry-run
+```
+
+5. Remove `--dry-run` to convene the council, make one worktree per participant and launch
+   the configured CLIs. The launcher only reads commands from your local adapter file, never
+   from council messages or the server response.
+
+When the closer includes `workItems` in `council_conclude`, each agent claims only its assigned
+work from `council_work_next`. It heartbeats progress, commits and verifies its change, then stops
+at `awaiting_review`; the closer accepts it with `council_work_review` or sends it back with
+feedback. The campaign becomes complete only when every item is verified.
+
+The generated run directory beside the repository contains logs and `campaign-run.json`. If an
+agent terminal or the machine restarts, resume unfinished assigned work with:
+
+```bash
+npx tsx --env-file=.env.local scripts/council-campaign-supervise.mts \
+  --run-dir /path/to/.council-run-cn-xxxx
+```
+
+The supervisor polls durable campaign state, starts only agents with queued or in-progress tasks,
+and exits when the campaign completes. Review and merge the named worktree branches yourself
+after the campaign is complete.
 
 ## Models on Discord / Telegram
 
@@ -647,7 +741,12 @@ Markdown + wikilinks.
 
 - Web app: Vercel. Add every `.env.local` variable under Project > Settings > Environment
   Variables. Update the Google OAuth redirect URI and the Telegram webhook URL to your
-  production domain.
+  production domain. Set `AUTH_RP_ID` and `AUTH_ORIGIN` to that exact domain before enrolling
+  a passkey. Do not rotate `AUTH_SESSION_SECRET` without also resetting TOTP recovery data.
+- Apply `supabase-setup.sql` after deployment upgrades. It is idempotent and includes the
+  passkey, TOTP and council schema.
+- Give the Discord bot `CHAT_API_KEY` and the web app the identical value; cron callers need
+  `Authorization: Bearer <CRON_SECRET>`.
 - Discord bot: Render (or any always-on host) using `discord-bot/Procfile`, with
   `ZUYCHIN_API_URL` pointing at the deployed web app.
 

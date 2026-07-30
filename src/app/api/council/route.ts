@@ -10,7 +10,7 @@ export async function GET() {
 
         const { data: recent } = await supabase
             .from("council_sessions")
-            .select("id, code, topic, status, round, max_rounds, last_seq, last_message_at, closer_name, verdict, vault_path, archive_status, created_at, closed_at")
+            .select("id, code, topic, council_type, status, round, max_rounds, last_seq, last_message_at, closer_name, verdict, vault_path, archive_status, created_at, closed_at")
             .in("status", ["closed", "expired"])
             .order("created_at", { ascending: false })
             .limit(10);
@@ -22,6 +22,7 @@ export async function GET() {
                 return {
                     code: s.code,
                     topic: s.topic,
+                    councilType: s.councilType,
                     status: s.status,
                     round: s.round,
                     maxRounds: s.maxRounds,
@@ -40,6 +41,7 @@ export async function GET() {
             recent: (recent ?? []).map((r) => ({
                 code: r.code,
                 topic: r.topic,
+                councilType: r.council_type,
                 status: r.status,
                 round: r.round,
                 maxRounds: r.max_rounds,
