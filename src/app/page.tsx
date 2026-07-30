@@ -6,6 +6,7 @@ import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileA
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
+import { chatMarkdownComponents } from "./home/markdown";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import type { ArtifactDescriptor } from "@/lib/types";
@@ -1371,18 +1372,33 @@ export default function Home() {
     }
   };
 
-  const renderModelSelectors = (compact: boolean) =>
-    providers.length > 0 ? (
+  // On mobile these own a row of their own, so they share it evenly instead of
+  // being pushed off the edge by the model selectors.
+  const renderNavLinks = (compact: boolean) => {
+    const linkStyle: React.CSSProperties = compact
+      ? { ...styles.graphBtn, flex: 1, minWidth: 0, justifyContent: "center" }
+      : styles.graphBtn;
+    return (
       <>
-        <Link
-          href="/knowledge"
-          style={{ ...styles.graphBtn, flexShrink: 0 }}
-          aria-label="Knowledge workspace"
-          title="Knowledge workspace"
-        >
+        <Link href="/knowledge" style={linkStyle} aria-label="Knowledge workspace" title="Knowledge workspace">
           <Waypoints size={14} color="var(--color-text-muted)" />
           <span>Knowledge</span>
         </Link>
+        <Link href="/council" style={linkStyle} aria-label="Council" title="Council">
+          <Gavel size={14} color="var(--color-text-muted)" />
+          <span>Council</span>
+        </Link>
+        <Link href="/admin" style={linkStyle} aria-label="Admin" title="Admin">
+          <ShieldCheck size={14} color="var(--color-text-muted)" />
+          <span>Admin</span>
+        </Link>
+      </>
+    );
+  };
+
+  const renderModelSelectors = (compact: boolean) =>
+    providers.length > 0 ? (
+      <>
         <SelectMenu
           compact={compact}
           align="right"
@@ -1558,18 +1574,13 @@ export default function Home() {
 
               {isDesktop && (
                 <div style={styles.headerCenter}>
+                  {renderNavLinks(false)}
                   {renderModelSelectors(false)}
                 </div>
               )}
             </div>
 
             <div style={styles.headerRight}>
-              <Link href="/council" style={{ ...styles.iconBtn, textDecoration: "none" }} aria-label="Council" title="Council">
-                <Gavel size={19} color="var(--color-text-primary)" />
-              </Link>
-              <Link href="/admin" style={{ ...styles.iconBtn, textDecoration: "none" }} aria-label="Admin" title="Admin">
-                <ShieldCheck size={19} color="var(--color-text-primary)" />
-              </Link>
               <button type="button"
                 onClick={toggleTheme}
                 style={styles.iconBtn}
@@ -1599,6 +1610,12 @@ export default function Home() {
               </button>
             </div>
           </div>
+
+          {!isDesktop && (
+            <div style={styles.headerNavRow}>
+              {renderNavLinks(true)}
+            </div>
+          )}
 
           {!isDesktop && providers.length > 0 && (
             <div style={styles.headerSelectorsRow}>
@@ -1739,7 +1756,7 @@ export default function Home() {
                 )}
                 {msg.role === "assistant" ? (
                   <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>{msg.content}</ReactMarkdown>
                   </div>
                 ) : (
                   <p style={styles.bubbleText}>{msg.content}</p>

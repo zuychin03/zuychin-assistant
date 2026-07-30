@@ -242,6 +242,29 @@ ${merge}
 NEXT → nothing. Wait for the agents. Watch #coworking in Discord, or call council_transcript({"sessionCode":"${session.code}"}).`;
 }
 
+// Inverse of renderConveneResult, for the local launcher: it needs each agent's
+// block as a prompt rather than as something to paste. Kept beside the renderer
+// so a change to that format has to be made here too.
+export function parseKickoffBlocks(text: string): {
+    code: string;
+    blocks: { agentName: string; prompt: string }[];
+} {
+    const code = /^COUNCIL OPENED - code (\S+)/m.exec(text)?.[1] ?? "";
+    const parts = text.split(/^--- PASTE INTO (.+?) ---$/m);
+    const blocks: { agentName: string; prompt: string }[] = [];
+
+    // split() with one capture group yields [preamble, name, body, name, body...].
+    for (let i = 1; i < parts.length; i += 2) {
+        const body = parts[i + 1] ?? "";
+        // Only the final body carries the trailer meant for the human.
+        const ends = [body.indexOf("\nCO-WORKING - "), body.indexOf("\nNEXT → ")]
+            .filter((n) => n >= 0);
+        const cut = ends.length ? Math.min(...ends) : body.length;
+        blocks.push({ agentName: parts[i].trim(), prompt: body.slice(0, cut).trim() });
+    }
+    return { code, blocks };
+}
+
 export function renderTranscript(params: {
     session: CouncilSession;
     messages: CouncilMessage[];

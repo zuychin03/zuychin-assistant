@@ -313,6 +313,12 @@ export const styles: Record<string, CSSProperties> = {
     background: "color-mix(in srgb, var(--color-surface) 80%, transparent)",
     border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
   },
+  headerNavRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 12px 8px",
+  },
   headerSelectorsRow: {
     display: "flex",
     alignItems: "center",

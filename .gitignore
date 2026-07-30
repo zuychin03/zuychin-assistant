@@ -47,3 +47,6 @@ CHANGELOG.md
 .agents/
 .claude/
 .cursor/
+
+# Local council launcher config (holds no secret, but is machine-specific)
+scripts/council-agents.json

@@ -1,0 +1,38 @@
+{
+  "_comment": "Copy to council-agents.json (gitignored) and keep only the agents you actually run. The launcher takes the command ONLY from this file, never from the council record, so convening a council can never choose what executes on your machine.",
+
+  "mcpUrl": "http://localhost:3000/api/mcp/mcp",
+
+  "agents": {
+    "claude-code": {
+      "_doc": "https://code.claude.com/docs/en/headless - -p runs the full agent loop non-interactively. --mcp-config is passed a file the launcher writes OUTSIDE the worktree, because it holds a bearer token. Do NOT add --bare: it skips MCP discovery.",
+      "command": "claude",
+      "args": [
+        "-p", "{prompt}",
+        "--mcp-config", "{mcpConfigFile}",
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Bash,Read,Edit,Write,mcp__zuychin-knowledge"
+      ],
+      "mcpConfig": "claude"
+    },
+
+    "codex": {
+      "_doc": "https://github.com/openai/codex/issues/24135 - codex exec AUTO-CANCELS MCP tool calls non-interactively. The council is entirely MCP tool calls, so with these args codex will join and then stall. The only known workaround today is to add \"--dangerously-bypass-approvals-and-sandbox\", which disables the sandbox: uncomment it only if you accept that on this machine. MCP server must already be in ~/.codex/config.toml.",
+      "command": "codex",
+      "args": ["exec", "--full-auto", "{prompt}"],
+      "warn": "codex exec cancels MCP tool calls unless you add --dangerously-bypass-approvals-and-sandbox (openai/codex#24135) - it will likely stall after joining"
+    },
+
+    "cursor": {
+      "_doc": "https://cursor.com/docs/cli/headless - --force pre-approves edits in print mode. MCP server must already be in ~/.cursor/mcp.json. Known upstream bug: -p can hang without releasing the terminal on some early-2026 builds.",
+      "command": "cursor-agent",
+      "args": ["-p", "--force", "{prompt}"]
+    },
+
+    "antigravity": {
+      "_doc": "https://antigravity.google/docs/cli/headless - --print-timeout defaults to 5m, far below a 90m council, so it is raised here. Shell commands are soft-denied in headless mode unless allowed: add permissions.allow rules in ~/.gemini/antigravity-cli/settings.json (preferred) or append --dangerously-skip-permissions.",
+      "command": "agy",
+      "args": ["-p", "{prompt}", "--print-timeout", "95m"]
+    }
+  }
+}

@@ -256,6 +256,40 @@ input[type="range"] {
   font-size: inherit;
 }
 
+.markdown-body .code-block {
+  position: relative;
+}
+
+/* Room for the button so it never sits on top of the first line of code. */
+.markdown-body .code-block pre {
+  padding-right: 46px;
+}
+
+/* Dimmed rather than hover-revealed: on touch there is no hover, and a copy
+   control you cannot discover is the same as no copy control. */
+.markdown-body .code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6e6e6;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.markdown-body .code-copy:hover,
+.markdown-body .code-copy:focus-visible {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .markdown-body ul,
 .markdown-body ol {
   padding-left: 22px;
@@ -303,6 +337,28 @@ input[type="range"] {
   width: 100%;
   margin: 8px 0;
   font-size: 14px;
+}
+
+/* Wrapping the table is not enough on its own: at width:100% the browser
+   compresses columns to fit the bubble instead of overflowing. The table has to
+   be free to size to its content, and cells must not wrap, before there is
+   anything for the container to scroll. */
+.markdown-body .table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
+  margin: 8px 0;
+}
+
+.markdown-body .table-scroll table {
+  width: auto;
+  min-width: 100%;
+  margin: 0;
+}
+
+.markdown-body .table-scroll th,
+.markdown-body .table-scroll td {
+  white-space: nowrap;
 }
 
 .markdown-body th,
