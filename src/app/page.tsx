@@ -510,10 +510,10 @@ export default function Home() {
         }
         setEmbedModal({ target, status: `Re-embedding… ${data.remaining} rows left` });
       }
-      throw new Error("Still not finished after many rounds — confirm again to resume.");
+      throw new Error("Still not finished after many rounds - confirm again to resume.");
     } catch (err) {
       setEmbedModal(null);
-      alert(`Embedding switch failed: ${err instanceof Error ? err.message : err}\n\nProgress is kept — confirming again resumes where it stopped.`);
+      alert(`Embedding switch failed: ${err instanceof Error ? err.message : err}\n\nProgress is kept - confirming again resumes where it stopped.`);
     }
   };
 
@@ -1142,7 +1142,7 @@ export default function Home() {
         setSpeakingId(null);
         ttsPlayerRef.current = null;
         void ctx.close().catch(() => { });
-        // Voice conversation: the reply has been spoken — listen again.
+        // Voice conversation: the reply has been spoken - listen again.
         if (voiceLoopRef.current) void startVoiceRecording();
       }
     } catch (err) {
@@ -1473,7 +1473,7 @@ export default function Home() {
       {embedModal && (
         <ConfirmModal
           title="Switch embedding model?"
-          body={`This re-embeds the ENTIRE knowledge store — every message, note, document and remembered fact — with ${providers.flatMap((p) => p.embeddingModels).find((m) => m.id === embedModal.target)?.label ?? embedModal.target}. It runs in batches, can take a few minutes and uses embedding API quota. Keep this tab open until it finishes.`}
+          body={`This re-embeds the ENTIRE knowledge store - every message, note, document and remembered fact - with ${providers.flatMap((p) => p.embeddingModels).find((m) => m.id === embedModal.target)?.label ?? embedModal.target}. It runs in batches, can take a few minutes and uses embedding API quota. Keep this tab open until it finishes.`}
           confirmLabel="Re-embed everything"
           busyText={embedModal.status === "confirm" ? undefined : embedModal.status}
           onConfirm={() => void runReembed(embedModal.target)}
@@ -1573,6 +1573,8 @@ export default function Home() {
           onMoveConversation={handleMoveConversation}
           formatTime={formatTime}
         />
+
+        <a href="/security" style={{ ...styles.logoutBtn, textDecoration: "none" }}>Security</a>
 
         <button onClick={handleLogout} style={styles.logoutBtn}>
           <LogOut size={15} />
@@ -1802,7 +1804,7 @@ export default function Home() {
                       onClick={() => handleSubmit(null, msg.resume)}
                       style={{ ...styles.exportBtn, opacity: isLoading ? 0.5 : 1 }}
                       disabled={isLoading}
-                      title="Relaunch this run — the agent continues from its recorded progress"
+                      title="Relaunch this run - the agent continues from its recorded progress"
                     >
                       <RotateCcw size={12} />
                       <span>Resume run</span>
@@ -2074,7 +2076,7 @@ export default function Home() {
                 ? <Mic size={14} color="#ef4444" style={{ flexShrink: 0 }} />
                 : <Volume2 size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
               <span style={styles.replyPreviewLabel}>
-                Voice chat{isRecording ? " — listening" : speakingId ? " — speaking" : isLoading ? " — thinking" : ""}
+                Voice chat{isRecording ? " - listening" : speakingId ? " - speaking" : isLoading ? " - thinking" : ""}
               </span>
               <span style={styles.replyPreviewText}>say &ldquo;Zuychin, stop&rdquo; to end</span>
               <button
@@ -2162,7 +2164,7 @@ export default function Home() {
               onClick={toggleRecording}
               style={styles.attachBtn}
               aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
-              title={isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat — replies are spoken, say “Zuychin, stop” to end"}
+              title={isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat - replies are spoken, say “Zuychin, stop” to end"}
               className={isRecording ? "animate-fade-in" : undefined}
             >
               <Mic size={18} color={isRecording ? "#ef4444" : "var(--color-text-muted)"} />

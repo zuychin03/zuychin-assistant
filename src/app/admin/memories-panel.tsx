@@ -142,7 +142,7 @@ export default function MemoriesPanel() {
                                 <div style={panelStyles.rowFooter}>
                                     <span style={panelStyles.categoryChip}>{m.category}</span>
                                     {m.status === "candidate" && (
-                                        <span style={{ ...panelStyles.categoryChip, borderStyle: "dashed" }} title="Unconfirmed work/study pattern — becomes a Known Fact when it repeats in another conversation">
+                                        <span style={{ ...panelStyles.categoryChip, borderStyle: "dashed" }} title="Unconfirmed work/study pattern - becomes a Known Fact when it repeats in another conversation">
                                             pattern {m.evidenceCount ?? 1}/{PROMOTE_EVIDENCE_COUNT}
                                         </span>
                                     )}
@@ -161,7 +161,7 @@ export default function MemoriesPanel() {
                         )}
                     </div>
                 ))}
-                {!loading && memories.length === 0 && <div style={panelStyles.muted}>Nothing remembered yet — facts appear here as you chat.</div>}
+                {!loading && memories.length === 0 && <div style={panelStyles.muted}>Nothing remembered yet - facts appear here as you chat.</div>}
             </div>
         </div>
     );

@@ -52,7 +52,7 @@ updated: YYYY-MM-DD
 sources: [<raw file path or URL>]   # only for sources/synthesis pages
 ---
 
-Then "# <Title>" and the body. Link related pages with labelled [[wikilinks]] using the path WITHOUT .md, e.g. "extends [[wiki/concepts/attention]]". Keep claims cited. Write durable, self-contained knowledge — not chat transcripts.`;
+Then "# <Title>" and the body. Link related pages with labelled [[wikilinks]] using the path WITHOUT .md, e.g. "extends [[wiki/concepts/attention]]". Keep claims cited. Write durable, self-contained knowledge - not chat transcripts.`;
 
 interface AuthoredPage {
     markdown: string;
@@ -72,7 +72,7 @@ async function authorPage(params: {
 }): Promise<AuthoredPage> {
     const candidateBlock = params.candidates.length
         ? params.candidates
-            .map((c) => `- ${c.path} (${c.category}, sim ${c.similarity.toFixed(2)}): ${c.title} — ${c.summary}`)
+            .map((c) => `- ${c.path} (${c.category}, sim ${c.similarity.toFixed(2)}): ${c.title} - ${c.summary}`)
             .join("\n")
         : "(none)";
 
@@ -88,13 +88,13 @@ Page to write:
 ${params.rawPath ? `- sources frontmatter must include: ${params.rawPath}` : ""}
 ${params.source ? `- original source (cite it): ${params.source}` : ""}
 
-${params.existing ? `An earlier version of this page exists. MERGE the new material into it — keep everything still true, update what changed, bump "updated:". Earlier version:\n"""\n${params.existing.slice(0, 12000)}\n"""\n` : ""}
+${params.existing ? `An earlier version of this page exists. MERGE the new material into it - keep everything still true, update what changed, bump "updated:". Earlier version:\n"""\n${params.existing.slice(0, 12000)}\n"""\n` : ""}
 Material to distil into the page:
 """
 ${params.content.slice(0, 30000)}
 """
 
-Semantically similar existing pages (auto-link candidates). Link ONLY genuine relationships — extends, contradicts, example-of, part-of, uses — and discard weak or coincidental matches:
+Semantically similar existing pages (auto-link candidates). Link ONLY genuine relationships - extends, contradicts, example-of, part-of, uses - and discard weak or coincidental matches:
 ${candidateBlock}
 
 Return JSON:
@@ -168,7 +168,7 @@ ${params.markdown.slice(0, 20000)}
 
 Files in this commit: ${params.touchedPaths.join(", ")}
 
-Return JSON {pass: boolean, reason: string} — reason is one short sentence.`;
+Return JSON {pass: boolean, reason: string} - reason is one short sentence.`;
 
     const resp = await ai.models.generateContent({
         model: MODEL,
@@ -214,7 +214,7 @@ const CATEGORY_HEADING: Record<VaultCategory, string> = {
 /** Insert or update this page's one-line entry under its category heading in index.md. */
 export function updateIndex(indexMarkdown: string, category: VaultCategory, pagePath: string, summary: string): string {
     const link = toWikilink(pagePath);
-    const entry = `- [[${link}]] — ${summary}`;
+    const entry = `- [[${link}]] - ${summary}`;
     const heading = CATEGORY_HEADING[category];
 
     const lines = indexMarkdown.split("\n");

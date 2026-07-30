@@ -37,9 +37,9 @@ async function triageEmails(emails: EmailThread[]): Promise<Highlight[] | null> 
     try {
         const res = await ai.models.generateContent({
             model: MODEL,
-            contents: `You triage an inbox for a busy user. From the unread emails below, select ONLY the ones genuinely worth their attention or immediate action: real people writing to them personally, deadlines, bills/invoices, security alerts, bookings/deliveries, replies they are waiting on. EXCLUDE newsletters, promotions, product updates, social notifications and automated digests. Select at most ${MAX_HIGHLIGHTS} — selecting none is a valid answer if nothing matters.
+            contents: `You triage an inbox for a busy user. From the unread emails below, select ONLY the ones genuinely worth their attention or immediate action: real people writing to them personally, deadlines, bills/invoices, security alerts, bookings/deliveries, replies they are waiting on. EXCLUDE newsletters, promotions, product updates, social notifications and automated digests. Select at most ${MAX_HIGHLIGHTS} - selecting none is a valid answer if nothing matters.
 
-For each selected email give an urgency: "act_now" (deadline, payment, security — handle today), "needs_reply" (a person is waiting on them), or "fyi" (worth knowing, no action).
+For each selected email give an urgency: "act_now" (deadline, payment, security - handle today), "needs_reply" (a person is waiting on them), or "fyi" (worth knowing, no action).
 
 Emails:
 ${listing}`,
@@ -100,18 +100,18 @@ function emailSection(emails: EmailThread[], highlights: Highlight[] | null): st
         return `\n📧 **Unread Emails (showing ${shown.length} of ${emails.length}):**\n${formatEmailSummary(shown)}`;
     }
     if (highlights.length === 0) {
-        return `\n📧 **Inbox:** ${emails.length} unread, nothing that needs you — newsletters and notifications only.`;
+        return `\n📧 **Inbox:** ${emails.length} unread, nothing that needs you - newsletters and notifications only.`;
     }
 
     const lines = highlights
         .map((h) => {
-            const reason = h.reason ? ` — _${h.reason}_` : "";
+            const reason = h.reason ? ` - _${h.reason}_` : "";
             return `${URGENCY_ICON[h.urgency]} **${truncate(senderName(h.email.from), 30)}** · ${truncate(h.email.subject, 60)}${reason}`;
         })
         .join("\n");
     const rest = emails.length - highlights.length;
-    const restLine = rest > 0 ? `\n▫️ _${rest} more unread are newsletters & notifications — safe to skip._` : "";
-    return `\n📧 **Inbox — ${highlights.length} of ${emails.length} unread need you** (🔴 act · 🟡 reply · 🔵 know):\n${lines}${restLine}`;
+    const restLine = rest > 0 ? `\n▫️ _${rest} more unread are newsletters & notifications - safe to skip._` : "";
+    return `\n📧 **Inbox - ${highlights.length} of ${emails.length} unread need you** (🔴 act · 🟡 reply · 🔵 know):\n${lines}${restLine}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -172,7 +172,7 @@ async function buildAndSendBriefing() {
         if (emails.length > 0) {
             parts.push(emailSection(emails, highlights));
         } else {
-            parts.push("\n📧 **Inbox:** All clear — no unread emails!");
+            parts.push("\n📧 **Inbox:** All clear - no unread emails!");
         }
 
         parts.push("\n_Reply here to ask about any email or manage the schedule._");

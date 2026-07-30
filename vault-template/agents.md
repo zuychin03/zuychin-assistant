@@ -1,8 +1,8 @@
-# Vault Schema — Zuychin Assistant Second Brain
+# Vault Schema - Zuychin Assistant Second Brain
 
 This file is the contract between the human and the agent. The agent reads it before every ingest, query, or lint. It defines the structure, conventions, and workflows of this knowledge base.
 
-Modelled on Andrej Karpathy's LLM-Wiki pattern: synthesis happens **once, at ingest, and is persisted** — not re-derived on every query.
+Modelled on Andrej Karpathy's LLM-Wiki pattern: synthesis happens **once, at ingest, and is persisted** - not re-derived on every query.
 
 ## Roles
 
@@ -21,10 +21,10 @@ agents.md This file.
 
 ### Page categories (under `wiki/`)
 
-- `wiki/sources/` — one page per ingested source: summary, key claims, citations back to the `raw/` file.
-- `wiki/concepts/` — durable ideas, methods, definitions.
-- `wiki/entities/` — people, tools, projects, organisations.
-- `wiki/synthesis/` — cross-source articles that answer a question or connect multiple concepts.
+- `wiki/sources/` - one page per ingested source: summary, key claims, citations back to the `raw/` file.
+- `wiki/concepts/` - durable ideas, methods, definitions.
+- `wiki/entities/` - people, tools, projects, organisations.
+- `wiki/synthesis/` - cross-source articles that answer a question or connect multiple concepts.
 
 ## Page conventions
 
@@ -59,7 +59,7 @@ sources: [raw/<file>.md]        # for source/synthesis pages
 ### INGEST (add a source)
 1. Write the original to `raw/<slug>.md` (or store the URL if the body is large). Never modify it afterwards.
 2. Create `wiki/sources/<slug>.md`: summary, key claims, citations.
-3. **Auto-link:** the assistant embeds the new page and retrieves semantically similar existing pages (pgvector doc↔doc, cosine ≳ 0.40 — a generous proposal net; the LLM curator does the real selection). For each genuine relationship, add a labelled `[[wikilink]]` in BOTH pages (e.g. "extends", "contradicts", "example-of"). Discard weak/spurious candidates.
+3. **Auto-link:** the assistant embeds the new page and retrieves semantically similar existing pages (pgvector doc↔doc, cosine ≳ 0.40 - a generous proposal net; the LLM curator does the real selection). For each genuine relationship, add a labelled `[[wikilink]]` in BOTH pages (e.g. "extends", "contradicts", "example-of"). Discard weak/spurious candidates.
 4. Update `index.md` (add the new page under its category with a one-line summary).
 5. Append to `log.md`: `## [YYYY-MM-DD] ingest | <title>`.
 6. **Verify before commit:** an independent check confirms the summary is faithful to the source and citations resolve. If it fails, do not commit.
@@ -76,8 +76,8 @@ sources: [raw/<file>.md]        # for source/synthesis pages
 
 ## Commit message conventions
 
-- `learn: …` — new knowledge from ingest or query-writeback.
-- `curator: …` — lint/maintenance edits.
-- `chore: …` — structural/template changes (not knowledge).
+- `learn: …` - new knowledge from ingest or query-writeback.
+- `curator: …` - lint/maintenance edits.
+- `chore: …` - structural/template changes (not knowledge).
 
-Only ever stage the specific paths a change touched. Git history is the safety net — a bad write is one revert away.
+Only ever stage the specific paths a change touched. Git history is the safety net - a bad write is one revert away.

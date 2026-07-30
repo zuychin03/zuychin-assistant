@@ -46,7 +46,7 @@ async function pickCandidates(emails: EmailThread[]): Promise<{ index: number; k
     try {
         const res = await ai.models.generateContent({
             model: MODEL,
-            contents: `You scan an inbox for concrete OBLIGATIONS the user must act on by a certain time: a bill or invoice to pay, a hard deadline, an appointment or booking to attend, a subscription/registration renewal. Select ONLY emails that clearly state such an obligation for the user personally. EXCLUDE newsletters, promotions, receipts for already-completed payments, general reminders without a real obligation, and anything ambiguous — a false positive creates junk tasks. Selecting none is the normal outcome. At most ${MAX_CANDIDATES}.
+            contents: `You scan an inbox for concrete OBLIGATIONS the user must act on by a certain time: a bill or invoice to pay, a hard deadline, an appointment or booking to attend, a subscription/registration renewal. Select ONLY emails that clearly state such an obligation for the user personally. EXCLUDE newsletters, promotions, receipts for already-completed payments, general reminders without a real obligation, and anything ambiguous - a false positive creates junk tasks. Selecting none is the normal outcome. At most ${MAX_CANDIDATES}.
 
 Emails:
 ${listing}`,
@@ -89,7 +89,7 @@ async function extractObligations(email: { from: string; subject: string; date: 
             model: MODEL,
             contents: `${currentDateTimeContext()}
 
-Extract the concrete obligation(s) for the user from this email. For each: a short imperative title (e.g. "Pay electricity bill"), the kind, the due date/time as ISO 8601 if one is stated or clearly implied ("YYYY-MM-DD" when only a date is known, full datetime with offset when a time is stated), the amount if it is a payment, and a one-sentence summary. Resolve relative dates ("next Friday", "within 14 days of this email") against the current date above and the email's sent date. If no due date is determinable, leave it out. Do not invent obligations — an empty list is valid.
+Extract the concrete obligation(s) for the user from this email. For each: a short imperative title (e.g. "Pay electricity bill"), the kind, the due date/time as ISO 8601 if one is stated or clearly implied ("YYYY-MM-DD" when only a date is known, full datetime with offset when a time is stated), the amount if it is a payment, and a one-sentence summary. Resolve relative dates ("next Friday", "within 14 days of this email") against the current date above and the email's sent date. If no due date is determinable, leave it out. Do not invent obligations - an empty list is valid.
 
 From: ${email.from}
 Subject: ${email.subject}
@@ -176,8 +176,8 @@ The user's existing pending todos:
 ${todoLines}
 
 Rules:
-- Obligations that refer to the SAME underlying obligation (the same bill, job, deadline, appointment — including reminders, updates, or re-sends worded differently) MERGE into ONE entry: keep the clearest title, the most complete amount/summary, the LATEST stated due date, and list every contributing source index.
-- DROP any obligation an existing pending todo already covers — match on the underlying issue, not exact wording. The user already knows about those.
+- Obligations that refer to the SAME underlying obligation (the same bill, job, deadline, appointment - including reminders, updates, or re-sends worded differently) MERGE into ONE entry: keep the clearest title, the most complete amount/summary, the LATEST stated due date, and list every contributing source index.
+- DROP any obligation an existing pending todo already covers - match on the underlying issue, not exact wording. The user already knows about those.
 - Genuinely distinct obligations stay separate entries.
 An empty list is valid when everything is a duplicate.`,
             config: {
@@ -259,7 +259,7 @@ export async function POST(req: NextRequest) {
             .in("gmail_message_id", emails.map((e) => e.id));
         if (seenError) {
             console.warn("[EmailTriggers] Dedup read failed (run supabase-setup.sql?):", seenError.message);
-            return NextResponse.json({ error: "processed_emails table unavailable — nothing processed." }, { status: 503 });
+            return NextResponse.json({ error: "processed_emails table unavailable - nothing processed." }, { status: 503 });
         }
         const seen = new Set((seenRows ?? []).map((r) => r.gmail_message_id));
         const fresh = emails.filter((e) => !seen.has(e.id));
@@ -286,8 +286,8 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
     try {
         const candidates = await pickCandidates(fresh);
         if (candidates === null) {
-            // Nothing marked processed — the whole batch retries next run.
-            console.warn("[EmailTriggers] Candidate triage failed — batch retries next run.");
+            // Nothing marked processed - the whole batch retries next run.
+            console.warn("[EmailTriggers] Candidate triage failed - batch retries next run.");
             return;
         }
         const candidateIndexes = new Set(candidates.map((c) => c.index));
@@ -309,7 +309,7 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
 
             const content = await getEmailContent(email.id);
             if (!content) {
-                // Body fetch failed — leave unmarked so this one retries.
+                // Body fetch failed - leave unmarked so this one retries.
                 console.warn(`[EmailTriggers] Could not fetch body for "${email.subject}".`);
                 continue;
             }
@@ -334,9 +334,9 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
 
         for (const o of finalEntries) {
             const sourceLines = o.sources.length > 1
-                ? `From ${o.sources.length} emails:\n${o.sources.map((s) => `- ${s.from} — ${s.subject}`).join("\n")}`
+                ? `From ${o.sources.length} emails:\n${o.sources.map((s) => `- ${s.from} - ${s.subject}`).join("\n")}`
                 : o.sources.length === 1
-                    ? `From: ${o.sources[0].from} — ${o.sources[0].subject}`
+                    ? `From: ${o.sources[0].from} - ${o.sources[0].subject}`
                     : "";
 
             try {
@@ -364,7 +364,7 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
                 }
             }
 
-            digest.push(`- **${o.title}**${o.dueDate ? ` (due ${formatDue(o.dueDate)})` : ""}${o.amount ? ` — ${o.amount}` : ""}${o.sources.length > 1 ? ` _(merged from ${o.sources.length} emails)_` : ""}\n  _${o.summary}_`);
+            digest.push(`- **${o.title}**${o.dueDate ? ` (due ${formatDue(o.dueDate)})` : ""}${o.amount ? ` - ${o.amount}` : ""}${o.sources.length > 1 ? ` _(merged from ${o.sources.length} emails)_` : ""}\n  _${o.summary}_`);
         }
 
         if (processedRows.length > 0) {
@@ -375,7 +375,7 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
         }
 
         if (digest.length > 0) {
-            const msg = `📬 **Found in your inbox** (added to your todo list${eventsCreated ? " + calendar" : ""} — delete anything that's off):\n\n${digest.join("\n")}`;
+            const msg = `📬 **Found in your inbox** (added to your todo list${eventsCreated ? " + calendar" : ""} - delete anything that's off):\n\n${digest.join("\n")}`;
             await notify("email_obligation", msg, {
                 pushTitle: "Zuychin found obligations in your inbox",
                 pushBody: msg.replace(/\*\*|_/g, "").slice(0, 500),
@@ -389,7 +389,7 @@ async function processBatch(fresh: EmailThread[], scanned: number) {
             .lt("processed_at", new Date(Date.now() - 90 * 86_400_000).toISOString());
 
         if (consolidationFailed) {
-            console.warn(`[EmailTriggers] Consolidation failed for ${extracted.length} obligation(s) — candidate emails retry next run.`);
+            console.warn(`[EmailTriggers] Consolidation failed for ${extracted.length} obligation(s) - candidate emails retry next run.`);
             return;
         }
 

@@ -164,7 +164,7 @@ export default function SkillsPanel() {
                 {active.map(renderSkill)}
 
                 {!loading && custom.length === 0 && (
-                    <div style={panelStyles.muted}>No custom skills yet — the agent saves drafts here after novel multi-step tasks.</div>
+                    <div style={panelStyles.muted}>No custom skills yet - the agent saves drafts here after novel multi-step tasks.</div>
                 )}
 
                 <button style={panelStyles.builtInToggle} onClick={() => setShowBuiltIn((v) => !v)}>

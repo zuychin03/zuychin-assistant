@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
         const mode = req.nextUrl.searchParams.get("mode") === "suggest" ? "suggest" : "auto";
 
-        // Suggest mode is a manual diagnostic — the caller wants the report
+        // Suggest mode is a manual diagnostic - the caller wants the report
         // back, so it stays synchronous. Auto is the scheduled path and runs
         // far past the cron client's timeout (cron-job.org caps at 30s).
         if (mode === "suggest") {
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         after(async () => {
             try {
                 const result = await lintVault({ mode: "auto" });
-                console.log(`[VaultLint] ${result.report.split("\n")[0]} — fixed=${result.fixes.length}${result.commit ? ` commit=${result.commit}` : ""}`);
+                console.log(`[VaultLint] ${result.report.split("\n")[0]} - fixed=${result.fixes.length}${result.commit ? ` commit=${result.commit}` : ""}`);
             } catch (error) {
                 console.error("[VaultLint] Error:", error);
             }

@@ -39,7 +39,7 @@ function localHour(): number {
 function formatTodos(todos: Todo[]): string {
     if (todos.length === 0) return "(none)";
     return todos
-        .map((t) => `- [${t.priority}] ${t.title}${t.dueDate ? ` (due ${t.dueDate})` : ""}${t.description ? ` — ${t.description.slice(0, 100)}` : ""}`)
+        .map((t) => `- [${t.priority}] ${t.title}${t.dueDate ? ` (due ${t.dueDate})` : ""}${t.description ? ` - ${t.description.slice(0, 100)}` : ""}`)
         .join("\n");
 }
 
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
         console.error("[Initiative] Gate info unavailable:", err);
         return NextResponse.json(
-            { error: "initiative_log unreadable — has the DDL been run?" },
+            { error: "initiative_log unreadable - has the DDL been run?" },
             { status: 503 }
         );
     }
@@ -134,7 +134,7 @@ STRONG DEFAULT: silence (shouldSend=false). The user hates noise. Only message f
 
 Never message about: routine pending todos that aren't time-critical, things already covered by a recent decision below (sent OR silent), generic check-ins, or anything speculative.
 
-Feedback history — categories with 👎 need a MUCH higher bar; repeated 👍 means that category is welcome:
+Feedback history - categories with 👎 need a MUCH higher bar; repeated 👍 means that category is welcome:
 ${statsBlock}
 
 Recent initiative decisions (do not repeat these topics):

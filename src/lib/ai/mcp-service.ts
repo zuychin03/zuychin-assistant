@@ -130,7 +130,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "save_note",
-        description: "Save a note or piece of information for the user to remember later. For actionable tasks or reminders use manage_todo_list instead — those show up in the user's Notes checklist where they can tick them off.",
+        description: "Save a note or piece of information for the user to remember later. For actionable tasks or reminders use manage_todo_list instead - those show up in the user's Notes checklist where they can tick them off.",
         parameters: {
             content: {
                 type: "string",
@@ -199,7 +199,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "list_calendar_events",
-        description: "List upcoming Google Calendar events. Returns events within the next N hours. Each event includes its Event ID, which you can use with manage_calendar_event action='delete' to delete it. Event IDs are internal — never include them when relaying events to the user.",
+        description: "List upcoming Google Calendar events. Returns events within the next N hours. Each event includes its Event ID, which you can use with manage_calendar_event action='delete' to delete it. Event IDs are internal - never include them when relaying events to the user.",
         parameters: {
             hours_ahead: {
                 type: "number",
@@ -344,7 +344,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "vault_write",
-        description: "Directly create or overwrite ONE vault wiki page with markdown you have already written — for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it handles synthesis and auto-linking). The catalogue and log update automatically. This tool cannot remove a page — to delete one call vault_delete; NEVER overwrite a page with a 'DELETE'/'redirect' marker.",
+        description: "Directly create or overwrite ONE vault wiki page with markdown you have already written - for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it handles synthesis and auto-linking). The catalogue and log update automatically. This tool cannot remove a page - to delete one call vault_delete; NEVER overwrite a page with a 'DELETE'/'redirect' marker.",
         parameters: {
             path: {
                 type: "string",
@@ -365,7 +365,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "vault_delete",
-        description: "Permanently delete ONE vault wiki page and everything pointing at it: wikilinks in other pages, its catalogue entry, and its search-index row, in one commit (the immutable raw/ capture and git history are kept). Use when a page is redundant — e.g. after merging duplicates — or the user asks to remove it. This is the ONLY way to remove a page; never mark one as deleted with vault_write.",
+        description: "Permanently delete ONE vault wiki page and everything pointing at it: wikilinks in other pages, its catalogue entry, and its search-index row, in one commit (the immutable raw/ capture and git history are kept). Use when a page is redundant - e.g. after merging duplicates - or the user asks to remove it. This is the ONLY way to remove a page; never mark one as deleted with vault_write.",
         parameters: {
             path: {
                 type: "string",
@@ -388,7 +388,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_todo_list",
-        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task). Open tasks appear as a checklist in the web app's Notes panel, where the user can tick them off themselves — a task marked done there is finished; never remind the user about it again.",
+        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task). Open tasks appear as a checklist in the web app's Notes panel, where the user can tick them off themselves - a task marked done there is finished; never remind the user about it again.",
         parameters: {
             action: {
                 type: "string",
@@ -432,7 +432,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_scheduled_task",
-        description: "Schedule the assistant to run an instruction later or on a recurring schedule and deliver the result (e.g. 'every weekday at 8am send me a workout reminder on telegram'). Actions: 'create', 'list', 'update', 'delete', 'enable', 'disable'. Recurring tasks use a 5-field cron expression evaluated in the user's timezone; one-off tasks use run_at. Channel 'web' delivers into the current conversation. Always tell the user the next run time from the tool result. This schedules future runs — for a to-do list item use manage_todo_list instead.",
+        description: "Schedule the assistant to run an instruction later or on a recurring schedule and deliver the result (e.g. 'every weekday at 8am send me a workout reminder on telegram'). Actions: 'create', 'list', 'update', 'delete', 'enable', 'disable'. Recurring tasks use a 5-field cron expression evaluated in the user's timezone; one-off tasks use run_at. Channel 'web' delivers into the current conversation. Always tell the user the next run time from the tool result. This schedules future runs - for a to-do list item use manage_todo_list instead.",
         parameters: {
             action: {
                 type: "string",
@@ -474,7 +474,7 @@ export const MCP_TOOLS: McpTool[] = [
             },
             agent_mode: {
                 type: "boolean",
-                description: "Run the instruction as a full agent task (multi-step research/tools). Only for tasks that genuinely need it — agent runs are slow and expensive.",
+                description: "Run the instruction as a full agent task (multi-step research/tools). Only for tasks that genuinely need it - agent runs are slow and expensive.",
                 required: false,
             },
             task_id: {
@@ -486,7 +486,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_memory_facts",
-        description: "Manage the extracted long-term memory facts (the Known Facts). Actions: 'list' (what is remembered, optionally by category), 'forget' (delete a fact the user wants gone), 'correct' (replace a fact's text with what the user says is right). Use when the user asks what you remember about them, or says to forget or fix something. New facts are extracted automatically from conversation — to explicitly save something, use save_note instead.",
+        description: "Manage the extracted long-term memory facts (the Known Facts). Actions: 'list' (what is remembered, optionally by category), 'forget' (delete a fact the user wants gone), 'correct' (replace a fact's text with what the user says is right). Use when the user asks what you remember about them, or says to forget or fix something. New facts are extracted automatically from conversation - to explicitly save something, use save_note instead.",
         parameters: {
             action: {
                 type: "string",
@@ -502,7 +502,7 @@ export const MCP_TOOLS: McpTool[] = [
             },
             fact_id: {
                 type: "string",
-                description: "Fact ID (required for forget/correct) — from a previous list result.",
+                description: "Fact ID (required for forget/correct) - from a previous list result.",
                 required: false,
             },
             fact: {
@@ -514,7 +514,7 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_notes",
-        description: "Manage saved knowledge-base notes (the ones created with save_note). Actions: 'list' (browse newest-first, optionally by category), 'update' (rewrite a note's text and/or re-categorize — use for stale plans or project info instead of saving a duplicate), 'delete' (remove a note). Only touches saved notes, never conversation history.",
+        description: "Manage saved knowledge-base notes (the ones created with save_note). Actions: 'list' (browse newest-first, optionally by category), 'update' (rewrite a note's text and/or re-categorize - use for stale plans or project info instead of saving a duplicate), 'delete' (remove a note). Only touches saved notes, never conversation history.",
         parameters: {
             action: {
                 type: "string",
@@ -529,7 +529,7 @@ export const MCP_TOOLS: McpTool[] = [
             },
             note_id: {
                 type: "string",
-                description: "Note ID (required for update/delete) — from a previous list result.",
+                description: "Note ID (required for update/delete) - from a previous list result.",
                 required: false,
             },
             content: {
@@ -574,7 +574,7 @@ export async function executeTool(
     ctx?: ToolContext
 ): Promise<string> {
     // Resolve the default ref only after the runtime partition override is
-    // known — a default-param getEmbeddingRef() would run before the await.
+    // known - a default-param getEmbeddingRef() would run before the await.
     await refreshEmbeddingOverride();
     embRef = embRef ?? getEmbeddingRef();
 
@@ -952,10 +952,10 @@ async function executeVaultSearch(query: string, embRef: ResolvedEmbedding): Pro
     try {
         const hits = await searchVaultPages({ query, embRef, hybrid: true });
         if (hits.length === 0) {
-            return "No vault pages matched. The topic may not have been ingested yet — check index.md via vault_read('index.md') if unsure.";
+            return "No vault pages matched. The topic may not have been ingested yet - check index.md via vault_read('index.md') if unsure.";
         }
         return hits
-            .map((h) => `- ${h.path} (${h.category}, ${h.similarity.toFixed(2)}): ${h.title} — ${h.summary}`)
+            .map((h) => `- ${h.path} (${h.category}, ${h.similarity.toFixed(2)}): ${h.title} - ${h.summary}`)
             .join("\n");
     } catch (error) {
         console.error("[MCP] Vault search failed:", error);
@@ -997,13 +997,13 @@ async function executeVaultIngest(
         });
         const links = result.links.length
             ? `Linked (bidirectionally): ${result.links.map((l) => `${l.path} (${l.label})`).join(", ")}.`
-            : "No related pages yet — this is a new area of the vault.";
+            : "No related pages yet - this is a new area of the vault.";
         return `${result.updatedExisting ? "Updated" : "Created"} ${result.pagePath} (commit ${result.commit.slice(0, 7)}). Summary: ${result.summary} ${links}`;
     } catch (error) {
         console.error("[MCP] Vault ingest failed:", error);
         const message = error instanceof Error ? error.message : "";
         if (message.startsWith("Verification failed")) return message;
-        return "Vault ingest failed — nothing was committed. Try again, or use vault_write if you already have the exact page content.";
+        return "Vault ingest failed - nothing was committed. Try again, or use vault_write if you already have the exact page content.";
     }
 }
 
@@ -1028,7 +1028,7 @@ async function executeVaultWrite(
         console.error("[MCP] Vault write failed:", error);
         const message = error instanceof Error ? error.message : "";
         if (message.startsWith("vault_write only")) return message;
-        return "Vault write failed — nothing was committed.";
+        return "Vault write failed - nothing was committed.";
     }
 }
 
@@ -1050,9 +1050,9 @@ async function executeVaultDelete(path: string): Promise<string> {
         console.error("[MCP] Vault delete failed:", error);
         const message = error instanceof Error ? error.message : "";
         if (message.startsWith("Page not found")) {
-            return `No page found at "${trimmed}" — nothing was deleted. Use vault_read('index.md') to find valid paths.`;
+            return `No page found at "${trimmed}" - nothing was deleted. Use vault_read('index.md') to find valid paths.`;
         }
-        return "Vault delete failed — nothing was removed.";
+        return "Vault delete failed - nothing was removed.";
     }
 }
 
@@ -1063,7 +1063,7 @@ async function executeVaultLint(mode: LintMode | undefined, embRef: ResolvedEmbe
         return result.report;
     } catch (error) {
         console.error("[MCP] Vault lint failed:", error);
-        return "Vault lint failed — nothing was changed.";
+        return "Vault lint failed - nothing was changed.";
     }
 }
 
@@ -1132,7 +1132,7 @@ function formatTask(t: ScheduledTask): string {
     const schedule = t.scheduleType === "recurring" ? `cron ${t.cron}` : `once at ${t.runAt}`;
     const state = t.enabled ? describeNextRun(t.nextRunAt, t.timezone) : "disabled";
     const last = t.lastStatus ? `, last run ${t.lastStatus}` : "";
-    return `- "${t.title}" (${schedule}, ${t.channel}${t.agentMode ? ", agent" : ""}) — ${state}${last} [id: ${t.id}]`;
+    return `- "${t.title}" (${schedule}, ${t.channel}${t.agentMode ? ", agent" : ""}) - ${state}${last} [id: ${t.id}]`;
 }
 
 async function executeManageScheduledTask(
@@ -1161,7 +1161,7 @@ async function executeManageScheduledTask(
                     if (cronError) return `Error: ${cronError}`;
                 } else {
                     if (!runAt || isNaN(Date.parse(runAt))) return "Error: a one-off task needs a valid ISO run_at datetime.";
-                    if (new Date(runAt) <= new Date()) return "Error: run_at is in the past — pick a future time.";
+                    if (new Date(runAt) <= new Date()) return "Error: run_at is in the past - pick a future time.";
                 }
 
                 const channel = (args.channel as TaskChannel | undefined) ?? "telegram";
@@ -1180,7 +1180,7 @@ async function executeManageScheduledTask(
                     agentMode: args.agent_mode === true,
                     userProfileId: ctx?.userProfileId,
                 });
-                return `✅ Scheduled "${task.title}" (${task.channel}${task.agentMode ? ", agent mode" : ""}) — ${describeNextRun(task.nextRunAt, task.timezone)}. Task id: ${task.id}`;
+                return `✅ Scheduled "${task.title}" (${task.channel}${task.agentMode ? ", agent mode" : ""}) - ${describeNextRun(task.nextRunAt, task.timezone)}. Task id: ${task.id}`;
             }
 
             case "list": {
@@ -1208,23 +1208,23 @@ async function executeManageScheduledTask(
                     ...(args.channel !== undefined && { channel: args.channel as TaskChannel }),
                     ...(args.agent_mode !== undefined && { agentMode: args.agent_mode === true }),
                 });
-                if (!task) return "Failed to update — check the task_id with action 'list'.";
-                return `✅ Updated "${task.title}" — ${task.enabled ? describeNextRun(task.nextRunAt, task.timezone) : "still disabled"}.`;
+                if (!task) return "Failed to update - check the task_id with action 'list'.";
+                return `✅ Updated "${task.title}" - ${task.enabled ? describeNextRun(task.nextRunAt, task.timezone) : "still disabled"}.`;
             }
 
             case "delete": {
                 if (!taskId) return "Error: task_id is required to delete a task.";
                 const ok = await deleteScheduledTask(taskId);
-                return ok ? "🗑️ Scheduled task deleted." : "Failed to delete — check the task_id with action 'list'.";
+                return ok ? "🗑️ Scheduled task deleted." : "Failed to delete - check the task_id with action 'list'.";
             }
 
             case "enable":
             case "disable": {
                 if (!taskId) return `Error: task_id is required to ${action} a task.`;
                 const task = await updateScheduledTask(taskId, { enabled: action === "enable" });
-                if (!task) return "Failed — check the task_id with action 'list'.";
+                if (!task) return "Failed - check the task_id with action 'list'.";
                 return action === "enable"
-                    ? `✅ Enabled "${task.title}" — ${describeNextRun(task.nextRunAt, task.timezone)}.`
+                    ? `✅ Enabled "${task.title}" - ${describeNextRun(task.nextRunAt, task.timezone)}.`
                     : `⏸ Disabled "${task.title}".`;
             }
 
@@ -1256,16 +1256,16 @@ async function executeManageMemoryFacts(
             }
 
             case "forget": {
-                if (!factId) return "Error: fact_id is required to forget a fact — list them first.";
+                if (!factId) return "Error: fact_id is required to forget a fact - list them first.";
                 const ok = await deleteMemory(factId);
-                return ok ? "🗑️ Fact forgotten." : "Failed to delete — check the fact_id with action 'list'.";
+                return ok ? "🗑️ Fact forgotten." : "Failed to delete - check the fact_id with action 'list'.";
             }
 
             case "correct": {
                 const fact = (args.fact as string | undefined)?.trim();
                 if (!factId || !fact) return "Error: fact_id and the corrected fact text are both required.";
                 const ok = await updateMemoryFact({ id: factId, fact });
-                return ok ? `✅ Fact updated to: "${fact}"` : "Failed to update — check the fact_id with action 'list'.";
+                return ok ? `✅ Fact updated to: "${fact}"` : "Failed to update - check the fact_id with action 'list'.";
             }
 
             default:
@@ -1296,7 +1296,7 @@ async function executeManageNotes(args: Record<string, unknown>): Promise<string
             case "update": {
                 const content = (args.content as string | undefined)?.trim();
                 const newCategory = (args.new_category as string | undefined)?.trim();
-                if (!noteId) return "Error: note_id is required to update — list notes first.";
+                if (!noteId) return "Error: note_id is required to update - list notes first.";
                 if (!content && !newCategory) return "Error: provide content and/or new_category to change.";
                 // Re-embed in the default partition so edited notes land in the
                 // shared store regardless of the turn's embedding selection.
@@ -1309,13 +1309,13 @@ async function executeManageNotes(args: Record<string, unknown>): Promise<string
                     embeddingModel: embRef.model.id,
                     category: newCategory,
                 });
-                return ok ? "✅ Note updated." : "Failed to update — check the note_id with action 'list'.";
+                return ok ? "✅ Note updated." : "Failed to update - check the note_id with action 'list'.";
             }
 
             case "delete": {
-                if (!noteId) return "Error: note_id is required to delete — list notes first.";
+                if (!noteId) return "Error: note_id is required to delete - list notes first.";
                 const ok = await deleteKnowledgeNote(noteId);
-                return ok ? "🗑️ Note deleted." : "Failed to delete — check the note_id with action 'list'.";
+                return ok ? "🗑️ Note deleted." : "Failed to delete - check the note_id with action 'list'.";
             }
 
             default:
@@ -1512,7 +1512,7 @@ async function executeCouncilStatus(sessionCode?: string): Promise<string> {
         .map((p) => `${p.name} (${p.status}, ${p.postsTotal} posts, seen ${quietFor(p.lastSeenAt)} ago)`)
         .join("\n");
     const recent = messages.map((m) => `[${m.seq}] ${m.speaker} → ${m.addressedTo} (${m.intent}): ${m.body.slice(0, 300)}`).join("\n");
-    return `${session.code} — ${session.topic}\nStatus ${session.status}, round ${session.round}/${session.maxRounds}, ${session.lastSeq} messages, quiet ${quietFor(session.lastMessageAt)}.\n\nParticipants:\n${roster}\n\nRecent:\n${recent || "(nothing yet)"}`
+    return `${session.code} - ${session.topic}\nStatus ${session.status}, round ${session.round}/${session.maxRounds}, ${session.lastSeq} messages, quiet ${quietFor(session.lastMessageAt)}.\n\nParticipants:\n${roster}\n\nRecent:\n${recent || "(nothing yet)"}`
         + (session.verdict ? `\n\nVERDICT (${session.closerName}):\n${session.verdict}` : "");
 }
 

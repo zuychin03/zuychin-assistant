@@ -113,7 +113,7 @@ client.on(Events.MessageCreate, async (message) => {
             if (!a.base64) continue;
             const buffer = Buffer.from(a.base64, "base64");
             if (buffer.length > MAX_DISCORD_FILE) {
-                console.warn(`[Bot] Skipping ${a.name} — too large for Discord (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
+                console.warn(`[Bot] Skipping ${a.name} - too large for Discord (${(buffer.length / 1024 / 1024).toFixed(1)} MB)`);
                 continue;
             }
             files.push({ attachment: buffer, name: a.name });

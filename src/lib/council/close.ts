@@ -103,11 +103,11 @@ export async function closeCouncil(params: {
     // already committed, so every mirror is catch-wrapped.
     await notify(
         "council_conclusion",
-        `**Council concluded — ${closed.topic}**\n`
+        `**Council concluded - ${closed.topic}**\n`
         + `${names.join(", ")} · ${closed.round} rounds · ${closed.lastSeq} messages\n\n`
         + `${verdict.slice(0, VERDICT_SLICE)}\n\n`
         + (openQuestions.length ? `Open: ${openQuestions.join("; ")}\n` : "")
-        + (vaultPath ? `Filed (unreviewed draft): ${vaultPath}` : `Filed: FAILED — ${archiveError}`),
+        + (vaultPath ? `Filed (unreviewed draft): ${vaultPath}` : `Filed: FAILED - ${archiveError}`),
     ).catch((e) => console.warn("[Council] Discord announce failed:", e));
 
     for (const q of openQuestions) {

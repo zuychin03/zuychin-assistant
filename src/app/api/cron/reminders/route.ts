@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
         if (dueTodos.length > 0) {
             const lines = dueTodos.map((t) => {
                 const overdue = t.dueDate && new Date(t.dueDate).getTime() < now;
-                return `- ${t.title} (${overdue ? "OVERDUE — was due" : "due"} ${formatDue(t.dueDate!)})`;
+                return `- ${t.title} (${overdue ? "OVERDUE - was due" : "due"} ${formatDue(t.dueDate!)})`;
             });
             await notify("todo_due", `⏰ **Tasks due soon:**\n\n${lines.join("\n")}\n\nTick them off in the Notes panel when done.`);
             await markTodosReminded(dueTodos.map((t) => t.id));

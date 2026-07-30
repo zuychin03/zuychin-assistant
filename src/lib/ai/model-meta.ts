@@ -31,7 +31,7 @@ const GEMINI_35_FLASH_LITE: ModelMeta = {
 const NEMOTRON_3_ULTRA: ModelMeta = {
     developer: "NVIDIA",
     description:
-        "NVIDIA's flagship open MoE with a hybrid Mamba-Attention design. Built for long-running agents — orchestration, coding agents, deep research — with reasoning-budget control over code, math and science.",
+        "NVIDIA's flagship open MoE with a hybrid Mamba-Attention design. Built for long-running agents - orchestration, coding agents, deep research - with reasoning-budget control over code, math and science.",
     inputs: ["Text"],
     context: "1M",
     maxOutput: "64K",
@@ -63,7 +63,7 @@ const LAGUNA_S_21: ModelMeta = {
 const GEMMA_4_31B: ModelMeta = {
     developer: "Google DeepMind",
     description:
-        "Compact multimodal model that handles text, image and video and runs on consumer GPUs. 140+ languages, native function calling, and a 256K context — strong coding for its size (~68% SWE-bench Verified).",
+        "Compact multimodal model that handles text, image and video and runs on consumer GPUs. 140+ languages, native function calling, and a 256K context - strong coding for its size (~68% SWE-bench Verified).",
     inputs: ["Text", "Image", "Video"],
     context: "256K",
     params: "30.7B (dense)",
@@ -93,7 +93,7 @@ const GPT_OSS_120B: ModelMeta = {
 const MINIMAX_M3: ModelMeta = {
     developer: "MiniMax",
     description:
-        "Multimodal MoE vision-language model for long-horizon agentic work — multi-hour coding, up-to-30-minute video understanding and strong tool use over a 1M-token context.",
+        "Multimodal MoE vision-language model for long-horizon agentic work - multi-hour coding, up-to-30-minute video understanding and strong tool use over a 1M-token context.",
     inputs: ["Text", "Image", "Video"],
     context: "1M",
     params: "428B total · 22B active (MoE)",
@@ -135,7 +135,7 @@ const GLM_5_2: ModelMeta = {
 const MINIMAX_M2_7: ModelMeta = {
     developer: "MiniMax",
     description:
-        "Sparse MoE tuned for agentic coding and chat — long-horizon software engineering, live troubleshooting and document generation. A self-evolving training loop pushes its coding scores near frontier models.",
+        "Sparse MoE tuned for agentic coding and chat - long-horizon software engineering, live troubleshooting and document generation. A self-evolving training loop pushes its coding scores near frontier models.",
     inputs: ["Text"],
     context: "200K",
     params: "230B total · 10B active (MoE)",
@@ -185,7 +185,7 @@ const MIMO_V25: ModelMeta = {
 const GEMINI_EMBED_2: ModelMeta = {
     developer: "Google DeepMind",
     description:
-        "Google's first natively multimodal embedding model — text, images, video, audio and docs in one space. Leads the MTEB English (68.32) and Code (74.66) benchmarks. Used here at 768 dimensions.",
+        "Google's first natively multimodal embedding model - text, images, video, audio and docs in one space. Leads the MTEB English (68.32) and Code (74.66) benchmarks. Used here at 768 dimensions.",
     inputs: ["Text", "Image", "Video", "Audio", "PDF"],
     strengths: ["Multimodal", "Multilingual", "Retrieval", "Code"],
 };
@@ -216,6 +216,16 @@ const QWEN3_NEXT_80B: ModelMeta = {
     strengths: ["Long context", "Agentic", "Tool use", "Coding", "Fast", "RAG"],
 };
 
+const KIMI_K3: ModelMeta = {
+    developer: "Moonshot AI",
+    description:
+        "Moonshot's 2.8T open-weight multimodal reasoning MoE, firing 16 of 896 experts per token. Kimi Delta Attention and Attention Residuals buy ~2.5x the intelligence per unit of compute, aimed at long-horizon coding, repo navigation and agentic tool loops over a 1M-token context.",
+    inputs: ["Text", "Image"],
+    context: "1M",
+    params: "2.8T total · 104B active (MoE)",
+    strengths: ["Reasoning", "Coding", "Agentic", "Multimodal", "Vision", "Tool use", "Long context"],
+};
+
 export const MODEL_META: Record<string, ModelMeta> = {
     "gemini-3.6-flash": GEMINI_36_FLASH,
     "gemini-3.5-flash-lite": GEMINI_35_FLASH_LITE,
@@ -242,6 +252,7 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "nvidia/llama-embed-nemotron-8b": LLAMA_EMBED_8B,
     "mimo-v2.5-free": MIMO_V25,
     "deepseek-v4-flash-free": DEEPSEEK_V4_FLASH,
+    "moonshotai/kimi-k3-free": KIMI_K3,
 };
 
 export function getModelMeta(id: string): ModelMeta | null {

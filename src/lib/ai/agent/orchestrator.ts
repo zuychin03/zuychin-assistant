@@ -14,11 +14,11 @@ import type { ArtifactDescriptor } from "@/lib/types";
 
 const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's request end-to-end:
 1. Call update_plan first with a short plan (2–6 steps), and update it as you progress.
-2. Carry out the steps using your tools. Call search_web whenever you need current, factual, or up-to-date information — don't rely on stale knowledge for research.
-3. When subtasks are independent, call run_subagents to do them in parallel and save time. Sub-agents only gather information and return findings as text — they do NOT create files. You are the SOLE author of the deliverables: gather everything first, then synthesize it yourself.
-4. You alone produce the output files: use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) — never paste large file contents into the chat. Produce exactly what the user asked for and no more: if they asked for "a PDF report", create ONE document. Never create duplicate or overlapping files for the same deliverable.
+2. Carry out the steps using your tools. Call search_web whenever you need current, factual, or up-to-date information - don't rely on stale knowledge for research.
+3. When subtasks are independent, call run_subagents to do them in parallel and save time. Sub-agents only gather information and return findings as text - they do NOT create files. You are the SOLE author of the deliverables: gather everything first, then synthesize it yourself.
+4. You alone produce the output files: use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) - never paste large file contents into the chat. Produce exactly what the user asked for and no more: if they asked for "a PDF report", create ONE document. Never create duplicate or overlapping files for the same deliverable.
 5. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
-6. If you just completed a novel multi-step procedure the user is likely to ask for again, you may call save_skill ONCE to save it as a draft playbook for review — never for one-offs or anything the skill index already covers.
+6. If you just completed a novel multi-step procedure the user is likely to ask for again, you may call save_skill ONCE to save it as a draft playbook for review - never for one-offs or anything the skill index already covers.
 Be decisive and keep going until the task is fully resolved.`;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -85,7 +85,7 @@ export async function runAgent(opts: {
         const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
         const remaining = Math.max(0, AGENT_CONFIG.maxTotalSubagents - subagentsSpawned);
         const tasks = rawTasks.slice(0, Math.min(AGENT_CONFIG.maxSubagentsPerCall, remaining));
-        if (tasks.length === 0) return "No worker capacity remaining — handle the rest yourself.";
+        if (tasks.length === 0) return "No worker capacity remaining - handle the rest yourself.";
         subagentsSpawned += tasks.length;
 
         const results = await Promise.all(
@@ -105,7 +105,7 @@ export async function runAgent(opts: {
                 );
                 workerTokens += res.tokens;
                 onEvent?.({ type: "subagent", objective, model: res.model, phase: "done" });
-                return `### Worker result — ${objective}\n(model: ${res.model})\n${res.output}`;
+                return `### Worker result - ${objective}\n(model: ${res.model})\n${res.output}`;
             })
         );
 
@@ -137,7 +137,7 @@ export async function runAgent(opts: {
             });
             onEvent?.({ type: "tool", name, phase: "done" });
             return result.ok
-                ? `Draft skill saved. It will become usable once the user approves it in the admin panel — mention this in your final reply.`
+                ? `Draft skill saved. It will become usable once the user approves it in the admin panel - mention this in your final reply.`
                 : `Could not save the skill: ${result.reason}`;
         }
         onEvent?.({ type: "tool", name, phase: "start" });
@@ -151,7 +151,7 @@ export async function runAgent(opts: {
     try {
         const { text: reply, usage } = await runGeminiLoop({
             model,
-            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS — proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
+            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
             userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
             toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
             dispatch,

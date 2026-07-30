@@ -21,7 +21,7 @@ export function getVoicePrefs(preferences: unknown): VoicePrefs {
 
 // Caps keep synthesis inside the 60s serverless budget. Streaming generates
 // at ~41.5 chars/s of wall time (measured), so ~1800 chars ≈ 45s generation
-// ≈ 1¾ min of audio — callers that stream can afford the full-reply cap. The
+// ≈ 1¾ min of audio - callers that stream can afford the full-reply cap. The
 // default stays lead-only: the Telegram webhook shares its 60s with the chat
 // generation itself. The timeout is a safety net below the budget so cleanup
 // runs before Vercel's hard kill.
@@ -61,7 +61,7 @@ function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample =
 /**
  * Streams raw 16-bit PCM mono chunks ("audio/L16;...;rate=24000") as the TTS
  * model generates them. Measured: first chunk ~2.4s in, generation ~2.3x
- * realtime — so a consumer can start playback almost immediately.
+ * realtime - so a consumer can start playback almost immediately.
  */
 export async function* synthesizeSpeechStream(
     text: string,

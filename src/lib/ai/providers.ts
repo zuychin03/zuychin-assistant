@@ -101,6 +101,17 @@ export const PROVIDERS: ProviderConfig[] = [
         ],
         embeddingModels: [],
     },
+    {
+        id: "tokenrouter",
+        label: "TokenRouter",
+        kind: "openai-compatible",
+        baseUrl: "https://api.tokenrouter.com/v1",
+        apiKeyEnv: "TOKENROUTER_API_KEY",
+        chatModels: [
+            { id: "moonshotai/kimi-k3-free", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+        ],
+        embeddingModels: [],
+    },
 ];
 
 export interface GenParams {

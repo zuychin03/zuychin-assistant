@@ -1,10 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Bot, Lock, Loader2 } from "lucide-react";
+import { startAuthentication } from "@simplewebauthn/browser";
+import { Bot, KeyRound, Lock, Loader2, ShieldCheck } from "lucide-react";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
+  const [totp, setTotp] = useState("");
+  const [needsTotp, setNeedsTotp] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -22,10 +25,12 @@ export default function LoginPage() {
         body: JSON.stringify({ password }),
       });
 
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.requiresTotp) {
+        setNeedsTotp(true);
+      } else if (res.ok) {
         window.location.href = "/";
       } else {
-        const data = await res.json();
         setError(data.error || "Incorrect password");
         setPassword("");
       }
@@ -36,6 +41,37 @@ export default function LoginPage() {
     }
   };
 
+  const handlePasskey = async () => {
+    if (loading) return;
+    setLoading(true); setError("");
+    try {
+      const optionsRes = await fetch("/api/auth/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "authentication-options" }) });
+      const options = await optionsRes.json();
+      if (!optionsRes.ok) throw new Error(options.error);
+      const response = await startAuthentication({ optionsJSON: options });
+      const verifyRes = await fetch("/api/auth/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "authentication-verify", response }) });
+      const verified = await verifyRes.json();
+      if (!verifyRes.ok) throw new Error(verified.error);
+      window.location.href = "/";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Passkey sign-in was cancelled or failed.");
+    } finally { setLoading(false); }
+  };
+
+  const handleTotp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(totp) || loading) return;
+    setLoading(true); setError("");
+    try {
+      const res = await fetch("/api/auth/totp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "recover", code: totp }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      window.location.href = "/";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not verify authenticator code.");
+    } finally { setLoading(false); }
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.card} className="animate-fade-in">
@@ -44,16 +80,19 @@ export default function LoginPage() {
         </div>
 
         <h1 style={styles.title}>Zuychin Assistant</h1>
-        <p style={styles.subtitle}>Enter the password to continue</p>
+        <p style={styles.subtitle}>{needsTotp ? "Enter the code from your authenticator app" : "Sign in with a passkey or recovery password"}</p>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
+        {!needsTotp && <button type="button" onClick={handlePasskey} disabled={loading} style={{ ...styles.button, marginBottom: 12, opacity: loading ? 0.5 : 1 }}>{loading ? <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> : <><KeyRound size={18} /> <span>Sign in with passkey</span></>}</button>}
+        <form onSubmit={needsTotp ? handleTotp : handleSubmit} style={styles.form}>
           <div style={styles.inputWrap}>
-            <Lock size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} />
+            {needsTotp ? <ShieldCheck size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} /> : <Lock size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} />}
             <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
+              type={needsTotp ? "text" : "password"}
+              inputMode={needsTotp ? "numeric" : undefined}
+              autoComplete={needsTotp ? "one-time-code" : "current-password"}
+              value={needsTotp ? totp : password}
+              onChange={(e) => needsTotp ? setTotp(e.target.value.replace(/\D/g, "").slice(0, 6)) : setPassword(e.target.value)}
+              placeholder={needsTotp ? "123456" : "Password"}
               autoFocus
               style={styles.input}
             />
@@ -63,16 +102,16 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={!password.trim() || loading}
+            disabled={needsTotp ? totp.length !== 6 || loading : !password.trim() || loading}
             style={{
               ...styles.button,
-              opacity: !password.trim() || loading ? 0.5 : 1,
+              opacity: needsTotp ? (totp.length !== 6 || loading ? 0.5 : 1) : (!password.trim() || loading ? 0.5 : 1),
             }}
           >
             {loading ? (
               <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} />
             ) : (
-              "Enter"
+              needsTotp ? "Verify code" : "Enter"
             )}
           </button>
         </form>

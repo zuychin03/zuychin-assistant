@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
             if (outcome.changed) autoVerdicts++;
             await notify(
                 "council_stalled",
-                `**Council ${session.code} ended without a verdict** — ${session.topic}\n`
+                `**Council ${session.code} ended without a verdict** - ${session.topic}\n`
                 + `${messages.length} messages, ${session.round} round(s). Auto-summary filed`
                 + (outcome.vaultPath ? `: ${outcome.vaultPath}` : " (vault write failed)"),
             ).catch((e) => console.warn("[CouncilSweep] notify failed:", e));

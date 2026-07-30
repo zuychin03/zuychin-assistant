@@ -1,4 +1,4 @@
-import { ai, MODEL } from "@/lib/gemini";
+import { ai, MODEL, cutShortAtMaxTokens } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, deleteMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences, listTodos, countUserMessagesSince } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
@@ -15,6 +15,7 @@ import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessaging
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
+import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
 import { expandSlashCommand } from "@/lib/commands";
 import { isTextLikeAttachment } from "@/lib/types";
@@ -221,7 +222,7 @@ function formatModelListing(
     groups: { provider: string; providerId: string; models: { name: string; label: string }[] }[]
 ): string {
     return groups
-        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  • ${m.name} — ${m.label}`).join("\n"))
+        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  • ${m.name} - ${m.label}`).join("\n"))
         .join("\n");
 }
 
@@ -298,7 +299,7 @@ async function dailyNotesReminder(excludeMessageId?: string): Promise<string> {
         const shown = undated.slice(0, 5).map((t) => `"${t.title}"`).join(", ");
         const more = undated.length > 5 ? ` and ${undated.length - 5} more` : "";
         const plural = undated.length === 1 ? "task" : "tasks";
-        return `\n\n---\n📌 First chat of the day — you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
+        return `\n\n---\n📌 First chat of the day - you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
     } catch (err) {
         console.warn("[RAG] Daily notes reminder failed:", err);
         return "";
@@ -368,7 +369,7 @@ export async function buildRagContext(params: {
 
     // Project lookup runs alongside the embed call: the project's id scopes
     // the fact search below and its instructions join the prompt. One query
-    // vector serves message search, fact search, and the message save — all
+    // vector serves message search, fact search, and the message save - all
     // three live in the same default partition. If the embedding provider is
     // down the turn continues on recent history alone rather than failing.
     const [queryEmbedding, project] = await Promise.all([
@@ -483,7 +484,7 @@ export async function buildRagContext(params: {
 }
 
 // Summarizes an interrupted run so a fresh agent pass can pick up where it
-// stopped instead of redoing completed work. No transcript replay — the new
+// stopped instead of redoing completed work. No transcript replay - the new
 // run re-derives context and treats this as briefing notes.
 async function buildResumePrefix(resumeRunId: string): Promise<string | undefined> {
     try {
@@ -506,7 +507,7 @@ async function buildResumePrefix(resumeRunId: string): Promise<string | undefine
             })
             .filter(Boolean)
             .join("\n");
-        return `A previous attempt at this task was interrupted (status: ${run.status}). Its plan and progress:\n${planLines || "(no plan recorded)"}\n\nLast recorded activity:\n${eventLines || "(none)"}\n\nDo not redo completed work — artifacts already created were delivered. Continue from where it stopped.\n\n## Original Task\n`;
+        return `A previous attempt at this task was interrupted (status: ${run.status}). Its plan and progress:\n${planLines || "(no plan recorded)"}\n\nLast recorded activity:\n${eventLines || "(none)"}\n\nDo not redo completed work - artifacts already created were delivered. Continue from where it stopped.\n\n## Original Task\n`;
     } catch (err) {
         console.warn("[RAG] Failed to build resume prefix:", err);
         return undefined;
@@ -671,7 +672,7 @@ export async function ragChat(params: {
 
     // Post-turn fact extraction, off the reply path. after() defers past the
     // response; the Discord bot calls ragChat outside a request scope, where
-    // after() throws — fall back to plain fire-and-forget there.
+    // after() throws - fall back to plain fire-and-forget there.
     const extraction = () => extractMemories({
         userMessage: message,
         assistantReply: reply,
@@ -711,22 +712,26 @@ async function streamGeminiText(
     config: Record<string, unknown>,
     onToken?: TokenSink
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ text: string; candidate: any }> {
+): Promise<{ text: string; candidate: any; truncated: boolean }> {
     const stream = await ai.models.generateContentStream({ model, contents, config });
     let text = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let candidate: any;
+    let finishReason: string | undefined;
     for await (const chunk of stream) {
         const delta = chunk.text;
         if (delta) {
             text += delta;
             onToken?.(delta);
         }
-        // Grounding metadata rides the trailing chunks; keep the richest one.
         const c = chunk.candidates?.[0];
+        // finishReason lands on a trailing chunk that carries no grounding, so
+        // it is tracked apart from the candidate kept below.
+        if (c?.finishReason) finishReason = String(c.finishReason);
+        // Grounding metadata rides the trailing chunks; keep the richest one.
         if (c?.groundingMetadata || (!candidate && c)) candidate = c;
     }
-    return { text, candidate };
+    return { text, candidate, truncated: cutShortAtMaxTokens({ finishReason }) };
 }
 
 async function generateGeminiReply(opts: {
@@ -779,14 +784,39 @@ async function generateGeminiReply(opts: {
     const groundingConfig = { tools: [{ googleSearch: {} }, { urlContext: {} }], ...thinkingOpts, ...genConfig };
     const mapsConfig = { tools: [{ googleMaps: {} }], ...thinkingOpts, ...genConfig };
 
+    // Gemini sets no request deadline of its own; it stops at MAX_TOKENS
+    // instead. Resumes run tool-free with thinking low so the fresh output
+    // budget is spent finishing the prose.
+    const continueConfig = {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        ...(signal ? { abortSignal: signal } : {}),
+        ...genConfig,
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resume = (initial: string, base: any[]) => resumeTruncated({
+        initial,
+        label: "RAG",
+        onText: (t) => onToken?.(t, true),
+        generate: async (soFar) => {
+            const resumed = [
+                ...base,
+                { role: "model", parts: [{ text: soFar }] },
+                { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
+            ];
+            const r = await ai.models.generateContent({ model, contents: resumed, config: continueConfig });
+            return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
+        },
+    });
+
     const isLocationQuery = (q: string) => {
         const loc = /\b(near me|nearby|restaurant|cafe|coffee|hotel|hospital|pharmacy|cinema|gym|airport|station|directions?|map|address|open now|hours|rating|review|how far|distance|km|miles?|street|suburb|postcode|zip code|where is|located|location)\b/i;
         return loc.test(q);
     };
 
     if (search) {
-        const { text, candidate } = await streamGeminiText(model, contents, groundingConfig, onToken);
-        return channel === "telegram" ? text : addCitationsText(text, candidate);
+        const { text, candidate, truncated } = await streamGeminiText(model, contents, groundingConfig, onToken);
+        const full = truncated ? await resume(text, contents) : text;
+        return channel === "telegram" ? full : addCitationsText(full, candidate);
     }
 
     let response = await ai.models.generateContent({ model, contents, config: mcpConfig });
@@ -838,26 +868,29 @@ async function generateGeminiReply(opts: {
 
     if (!usedTool) {
         // The grounded re-run REPLACES the first response when it has text, so
-        // this — the common path — is the turn that streams to the client.
+        // this - the common path - is the turn that streams to the client.
         const fallbackConfig = isLocationQuery(message) ? mapsConfig : groundingConfig;
         const label = isLocationQuery(message) ? "Maps" : "Search";
         try {
-            const { text, candidate } = await streamGeminiText(model, contents, fallbackConfig, onToken);
+            const { text, candidate, truncated } = await streamGeminiText(model, contents, fallbackConfig, onToken);
             if (text) {
-                return channel === "telegram" ? text : addCitationsText(text, candidate);
+                const full = truncated ? await resume(text, contents) : text;
+                return channel === "telegram" ? full : addCitationsText(full, candidate);
             }
         } catch (err) {
             console.warn(`[RAG] Grounding fallback failed (${label}):`, err);
         }
         // Grounding failed or came back empty: partial deltas may already be
-        // on screen — reset the forming bubble to the first response's text.
-        const fallbackText = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+        // on screen - reset the forming bubble to the first response's text.
+        const first = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+        const fallbackText = cutShortAtMaxTokens(response.candidates?.[0]) ? await resume(first, contents) : first;
         onToken?.(fallbackText, true);
         return fallbackText;
     }
 
     // Tool turns finish non-streamed; surface the text in one late chunk.
-    const finalText = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+    const answer = channel === "telegram" ? (response.text ?? "") : addCitations(response);
+    const finalText = cutShortAtMaxTokens(response.candidates?.[0]) ? await resume(answer, contents) : answer;
     onToken?.(finalText, true);
     return finalText;
 }

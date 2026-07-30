@@ -1,71 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AUTH_COOKIE, authEnabled } from "@/lib/auth/config";
+import { verifySessionValue } from "@/lib/auth/session";
 
 const PUBLIC_PATHS = [
-  "/login",
-  "/api/auth",
-  "/api/webhooks",
-  "/api/cron",
-  "/api/chat",
-  "/api/telegram",
-  "/api/mcp",
-  "/api/knowledge/webhook",
+  "/login", "/api/auth", "/api/webhooks", "/api/cron", "/api/chat", "/api/telegram", "/api/mcp", "/api/knowledge/webhook",
   // Browsers fetch the manifest and service worker without cookies; gating
   // them silently breaks PWA install.
-  "/manifest.webmanifest",
-  "/sw.js",
-  "/icons",
+  "/manifest.webmanifest", "/sw.js", "/icons",
 ];
 
 function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some(
-    (p) => pathname === p || pathname.startsWith(p + "/")
-  );
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
 function isStaticAsset(pathname: string): boolean {
-  return (
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/favicon") ||
-    pathname.endsWith(".svg") ||
-    pathname.endsWith(".png") ||
-    pathname.endsWith(".ico")
-  );
-}
-
-async function computeToken(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + "zuychin-auth-salt-v1");
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return pathname.startsWith("/_next") || pathname.startsWith("/favicon") || pathname.endsWith(".svg") || pathname.endsWith(".png") || pathname.endsWith(".ico");
 }
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
-
-  if (isStaticAsset(pathname) || isPublicPath(pathname)) {
-    return NextResponse.next();
-  }
-
-  const accessPassword = process.env.ACCESS_PASSWORD;
-
-  if (!accessPassword) {
-    return NextResponse.next();
-  }
-
-  const cookie = req.cookies.get("zuychin-auth")?.value;
-  const expectedToken = await computeToken(accessPassword);
-
-  if (cookie === expectedToken) {
-    return NextResponse.next();
-  }
-
+  if (isStaticAsset(pathname) || isPublicPath(pathname)) return NextResponse.next();
+  if (!authEnabled()) return NextResponse.next();
+  if (await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return NextResponse.next();
   const loginUrl = req.nextUrl.clone();
   loginUrl.pathname = "/login";
   return NextResponse.redirect(loginUrl);
 }
 
-export const config = {
-  matcher: ["/((?!_next/static|_next/image).*)"],
-};
+export const config = { matcher: ["/((?!_next/static|_next/image).*)"] };

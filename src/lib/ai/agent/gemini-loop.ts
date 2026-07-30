@@ -1,7 +1,8 @@
-import { ai, MODEL } from "@/lib/gemini";
+import { ai, MODEL, cutShortAtMaxTokens } from "@/lib/gemini";
 import { ThinkingLevel } from "@google/genai";
 import type { GeminiToolDeclarations } from "@/lib/ai/mcp-service";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
+import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
 
 export interface LoopUsage {
     promptTokens: number;
@@ -45,7 +46,7 @@ function summarizeText(contents: any[]): string {
 // Replaces the middle of the transcript with one condensed turn once the
 // context grows past the threshold. contents is [task, (model, fnResponse)*],
 // so cutting a multiple of 2 from the end keeps functionCall/functionResponse
-// pairs intact — never separate them or the API rejects the transcript.
+// pairs intact - never separate them or the API rejects the transcript.
 async function compactContents(contents: any[], model: string): Promise<any[]> {
     const keepTail = AGENT_CONFIG.compactionKeepPairs * 2;
     if (contents.length < keepTail + 3) return contents;
@@ -54,19 +55,40 @@ async function compactContents(contents: any[], model: string): Promise<any[]> {
     const middle = contents.slice(1, contents.length - keepTail);
     const tail = contents.slice(contents.length - keepTail);
 
+    const prompt = `Condense this agent work log into the key findings, decisions, tool results worth remembering, and remaining open items. Be thorough on facts, terse on narration.\n\n${summarizeText(middle).slice(0, 400_000)}`;
+    const summaryConfig = { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+
     let condensed: string;
     try {
         const response = await ai.models.generateContent({
             model,
-            contents: [{
-                role: "user",
-                parts: [{
-                    text: `Condense this agent work log into the key findings, decisions, tool results worth remembering, and remaining open items. Be thorough on facts, terse on narration.\n\n${summarizeText(middle).slice(0, 400_000)}`,
-                }],
-            }],
-            config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: summaryConfig,
         });
-        condensed = response.text?.trim() || "";
+        const raw = response.text ?? "";
+        condensed = raw.trim();
+        // A summary cut at MAX_TOKENS drops the tail of the work log, and once
+        // it replaces those turns nothing downstream can tell. Only one resume:
+        // compaction is housekeeping and must not eat the task's own time.
+        if (condensed && cutShortAtMaxTokens(response.candidates?.[0])) {
+            condensed = (await resumeTruncated({
+                initial: raw,
+                label: "AgentLoop/compaction",
+                maxAttempts: 1,
+                generate: async (soFar) => {
+                    const r = await ai.models.generateContent({
+                        model,
+                        contents: [
+                            { role: "user", parts: [{ text: prompt }] },
+                            { role: "model", parts: [{ text: soFar }] },
+                            { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
+                        ],
+                        config: summaryConfig,
+                    });
+                    return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
+                },
+            })).trim();
+        }
     } catch (e) {
         console.warn("[AgentLoop] Compaction summary failed, truncating instead:", e);
         condensed = "";
@@ -101,6 +123,11 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
     const config = {
         tools: [{ functionDeclarations: opts.toolDeclarations }],
         thinkingConfig: { thinkingLevel: opts.thinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW },
+        ...(opts.signal ? { abortSignal: opts.signal } : {}),
+    };
+    // Turns that must produce prose, never another tool call.
+    const toolFreeConfig = {
+        thinkingConfig: config.thinkingConfig,
         ...(opts.signal ? { abortSignal: opts.signal } : {}),
     };
 
@@ -166,15 +193,34 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
                 },
             })),
         });
-        response = await ai.models.generateContent({
-            model,
-            contents,
-            config: { thinkingConfig: config.thinkingConfig, ...(opts.signal ? { abortSignal: opts.signal } : {}) },
-        });
+        response = await ai.models.generateContent({ model, contents, config: toolFreeConfig });
         trackUsage(response);
     }
 
-    const text = response.text?.trim()
-        || "I ran out of steps before finishing this task. Say 'continue' and I'll pick up where I left off.";
-    return { text, usage };
+    // A long answer can stop at MAX_TOKENS with no error raised, leaving the
+    // agent's reply mid-sentence. Resume it tool-free; contents still excludes
+    // this last model turn, so the partial is replayed as one.
+    const raw = response.text ?? "";
+    let text = raw.trim();
+    if (text && cutShortAtMaxTokens(response.candidates?.[0])) {
+        text = (await resumeTruncated({
+            initial: raw,
+            label: "AgentLoop",
+            generate: async (soFar) => {
+                const resumed = [
+                    ...contents,
+                    { role: "model", parts: [{ text: soFar }] },
+                    { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
+                ];
+                const r = await ai.models.generateContent({ model, contents: resumed, config: toolFreeConfig });
+                trackUsage(r);
+                return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
+            },
+        })).trim();
+    }
+
+    return {
+        text: text || "I ran out of steps before finishing this task. Say 'continue' and I'll pick up where I left off.",
+        usage,
+    };
 }

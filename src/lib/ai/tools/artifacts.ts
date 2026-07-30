@@ -29,7 +29,7 @@ function sanitizeZipPath(name: string, fallback: string): string {
 export const ARTIFACT_TOOLS: McpTool[] = [
     {
         name: "create_document",
-        description: "Generate a downloadable, nicely formatted report/document from Markdown and attach it to your reply. Use whenever the user asks for a report, summary write-up, briefing, or any document they can download and open (Word/PDF). Supports headings, lists, tables, code blocks, bold/italic and links. The document is automatically remembered in the knowledge base — do not save it again with save_note. After calling this, tell the user the document is ready to download.",
+        description: "Generate a downloadable, nicely formatted report/document from Markdown and attach it to your reply. Use whenever the user asks for a report, summary write-up, briefing, or any document they can download and open (Word/PDF). Supports headings, lists, tables, code blocks, bold/italic and links. The document is automatically remembered in the knowledge base - do not save it again with save_note. After calling this, tell the user the document is ready to download.",
         parameters: {
             title: { type: "string", description: "Document title; also used as the filename.", required: true },
             markdown: { type: "string", description: "The full document body in Markdown.", required: true },
@@ -121,7 +121,7 @@ async function execCreateDocument(args: Record<string, unknown>, ctx?: ToolConte
         });
         ctx?.onArtifact?.(art);
         await rememberDocument(title, filename, markdown, ctx, embRef);
-        return `Created document "${filename}" (${(art.size / 1024).toFixed(0)} KB). It is attached to this reply as a download and saved to the knowledge base — let the user know it's ready.`;
+        return `Created document "${filename}" (${(art.size / 1024).toFixed(0)} KB). It is attached to this reply as a download and saved to the knowledge base - let the user know it's ready.`;
     } catch (err) {
         console.error("[Artifacts] create_document failed:", err);
         return "Failed to generate the document.";

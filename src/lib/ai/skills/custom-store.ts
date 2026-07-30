@@ -79,7 +79,7 @@ export async function createDraftSkill(params: {
 }): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
     const slug = params.slug.trim().toLowerCase();
     if (!SLUG_RE.test(slug) || slug.length > 60) {
-        return { ok: false, reason: `Invalid slug "${params.slug}" — use short kebab-case (e.g. "summarize-invoices").` };
+        return { ok: false, reason: `Invalid slug "${params.slug}" - use short kebab-case (e.g. "summarize-invoices").` };
     }
     if (SKILL_IDS.includes(slug)) {
         return { ok: false, reason: `Slug "${slug}" collides with a built-in skill. Pick a different slug.` };

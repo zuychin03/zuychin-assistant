@@ -26,17 +26,17 @@ edited and deleted in place.
 - MCP tools: 23 tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   message-history search, the second-brain vault, scheduled tasks, current time and recent
   conversations
-- Voice conversations: send a Telegram voice note or tap the web mic — the audio is passed
+- Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
   to the model natively (it hears you, not a transcript) and the reply is spoken back with
   Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
-  hands-free loop: silence auto-sends, the reply plays, the mic reopens — say
+  hands-free loop: silence auto-sends, the reply plays, the mic reopens - say
   "Zuychin, stop" (or tap the ✕ chip) to end it. Telegram voice notes are answered with a
   voice note too. Spoken replies fire only on voice input
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
   free fast models (DeepSeek V4 Flash, Step 3.7 Flash, any Fast-tagged tool-capable model)
-  with Gemini only as the fallback — 3 Flash for simple subtasks, 3.5 Flash for complex ones
+  with Gemini only as the fallback - 3 Flash for simple subtasks, 3.5 Flash for complex ones
 - Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
   token usage); long runs self-compact their context, and if a stream dies mid-run the web
   UI offers a **Resume run** chip that continues from where it stopped. Interrupted plain
@@ -46,17 +46,17 @@ edited and deleted in place.
   generates them (Gemini and OpenAI-compatible providers alike); agent runs stream their
   plan and step events the same way
 - Initiative engine: a cron where the agent *decides* whether anything is worth proactively
-  messaging you about (overdue todos, calendar conflicts, forgotten follow-ups) — hard code
+  messaging you about (overdue todos, calendar conflicts, forgotten follow-ups) - hard code
   gates run before any model call (quiet hours, ≥3 h spacing, ≤3/day, skips while you're
   active), and Telegram nudges carry 👍/👎 buttons whose feedback steers future decisions
 - Nightly run review: a cron inspects failed or expensive agent runs and files draft skills
-  for approval in the admin panel — it can propose improvements but never self-approve
+  for approval in the admin panel - it can propose improvements but never self-approve
 - History search: `/history <query>` (backed by the `search_history` tool) semantically
   searches your own past messages across channels, with links that jump to the conversation
-- Today card: the empty chat state shows a dismissible digest of the next 48 hours — due
+- Today card: the empty chat state shows a dismissible digest of the next 48 hours - due
   todos, calendar events and pending tasks
 - PWA + push: installable app (manifest + service worker) with web-push notifications for
-  reminders, email-trigger digests, initiative nudges and agent-run completion — suppressed
+  reminders, email-trigger digests, initiative nudges and agent-run completion - suppressed
   while the app is focused
 - Fact memory: durable facts about you are extracted after each turn (Mem0-style
   add/update/delete consolidation) and injected as "Known Facts" alongside the raw-message
@@ -66,18 +66,18 @@ edited and deleted in place.
   conversations. Facts live in one shared embedding partition, so they're remembered no
   matter which embedding model a chat uses
 - Scheduled tasks: ask in chat for one-off or recurring jobs ("every weekday at 8am send me
-  a workout reminder on telegram") — stored with a 5-field cron schedule, executed through
+  a workout reminder on telegram") - stored with a 5-field cron schedule, executed through
   the real chat pipeline and delivered to Telegram, Discord or a web conversation
 - Email triggers: the inbox is scanned every few hours for concrete obligations (bills,
-  deadlines, appointments, renewals) — each one becomes a todo with a due date, a calendar
+  deadlines, appointments, renewals) - each one becomes a todo with a due date, a calendar
   event when dated, and a digest message, with a dedup ledger so nothing fires twice
 - Shared MCP server: a real Model Context Protocol endpoint (`/api/mcp/mcp`) so your other
   AI agents and chatbots can search and contribute to the same knowledge base and read the
   second-brain vault, gated by a bearer token
-- Cancel in flight: a stop button appears while a reply streams. Stopping is a true drop —
+- Cancel in flight: a stop button appears while a reply streams. Stopping is a true drop -
   it aborts the model work server-side, saves no reply, and removes the message you sent,
   so a mistaken send leaves no trace (works for agent runs too)
-- Message queue: keep typing while a reply streams — each send queues (shown as dimmed
+- Message queue: keep typing while a reply streams - each send queues (shown as dimmed
   bubbles you can remove) and fires one at a time as responses complete; stop clears the
   queue too
 - Mobile-friendly composer: on phones the Enter key inserts a newline and only the send
@@ -88,7 +88,7 @@ edited and deleted in place.
 - Slash commands: type `/` in the message bar for a drop-up of 29 ready-made commands
   (`/plan_day`, `/weekly_review`, `/remind`, `/history`, `/new_app`, `/update_app`,
   `/facts`, `/skill`, `/research`, `/code`, `/debug`, `/vault_save`, …) that expand into
-  full prompts — skill-backed ones force the agent loop
+  full prompts - skill-backed ones force the agent loop
 - Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
   completes the task and the agent never reminds you about it again. Pending undated tasks
   are surfaced once a day, at the end of the first reply
@@ -99,10 +99,10 @@ edited and deleted in place.
   wikilinks, attachments and `.obsidian` settings; stable `zuychin_id` properties survive
   renames, while signed GitHub webhooks support incremental synchronization
 
-- Second brain: a Karpathy-style LLM-wiki in a private GitHub repo — the agent ingests
+- Second brain: a Karpathy-style LLM-wiki in a private GitHub repo - the agent ingests
   research into interlinked Markdown pages (auto-linked via pgvector + LLM curation,
   verified before every commit) and a lint curator keeps the graph healthy
-- 3D knowledge graph: an Obsidian-style force-directed graph of the vault at `/graph` —
+- 3D knowledge graph: an Obsidian-style force-directed graph of the vault at `/graph` -
   rotate/zoom, search with camera fly-to, category filters, local mode, physics sliders,
   AI-suggested links, and click-to-edit/delete pages and connections with every change
   landing as an atomic Git commit
@@ -113,14 +113,14 @@ edited and deleted in place.
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
-- Cron jobs: daily briefing (LLM-triaged inbox — only the emails that matter, icon-coded
+- Cron jobs: daily briefing (LLM-triaged inbox - only the emails that matter, icon-coded
   by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
   initiative decisions, the nightly run review and proactive check-ins
 - Export: every long reply gets a collapsed **Generate ▾** menu for a DOCX / PDF / MD
   download; whole conversations export to PDF or DOCX (Markdown-aware)
 - Live embedding switcher: changing the embedding model in settings (behind a confirm
   modal) re-embeds the entire knowledge store in resumable batches and flips the active
-  partition at runtime — no script run or redeploy needed
+  partition at runtime - no script run or redeploy needed
 - Admin dashboard: stats, a live personality/system-prompt editor, agent-run traces
   (status, duration, tokens, expandable step timeline), a fact-memory editor and a
   skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
@@ -193,6 +193,7 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + Llama Nemotron, the default embedding model for the knowledge store |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
+| `TOKENROUTER_API_KEY` | TokenRouter key ([tokenrouter.com](https://www.tokenrouter.com)): Kimi K3 chat |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional: swap the knowledge store to another registered embedding model (fallback if NIM is down). After changing it, run `npx tsx --env-file=<env> scripts/reembed-knowledge.ts` to re-embed the store |
 | `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
 
@@ -230,7 +231,7 @@ extension, core tables (`user_profiles`, `conversations`, `messages`, `embedding
 the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
-is safe to run more than once — re-run it after upgrading to pick up new tables and columns.
+is safe to run more than once - re-run it after upgrading to pick up new tables and columns.
 
 The same script creates the unified knowledge domain (`knowledge_documents`,
 `knowledge_chunks`, `knowledge_links`, `knowledge_assertions`,
@@ -266,7 +267,7 @@ npm run dev
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
   and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
-- The checklist icon in the header opens the **Notes** panel — undated tasks the agent has
+- The checklist icon in the header opens the **Notes** panel - undated tasks the agent has
   remembered. Ticking one completes it for good.
 - Toggle dark/light mode, start a new conversation, or open history from the header buttons.
 - In the history sidebar, **New project** creates a collapsible group: use the folder icon
@@ -321,8 +322,8 @@ the `zuychin-auth` cookie when `ACCESS_PASSWORD` is set (see `src/proxy.ts`).
 ## Providers & Models
 
 The chat model is chosen per message from the header dropdown (saved in `localStorage`). The
-settings drop-up picks the embedding model — changing it (behind a confirm modal) migrates
-the whole knowledge store to the new partition — and tunes hyperparameters. Only
+settings drop-up picks the embedding model - changing it (behind a confirm modal) migrates
+the whole knowledge store to the new partition - and tunes hyperparameters. Only
 providers whose API key is set show up in the UI. Discord/Telegram and cron always use the
 default (Gemini Flash). The registry lives in [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts),
 so add models or providers there.
@@ -390,8 +391,8 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `vault_lint` | Vault health check / auto-fix curator |
 
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
-(downloadable artifacts — generated documents are auto-embedded into the knowledge base),
-`update_plan` (live step tracker), `use_skill` (loads a skill's full instructions —
+(downloadable artifacts - generated documents are auto-embedded into the knowledge base),
+`update_plan` (live step tracker), `use_skill` (loads a skill's full instructions -
 built-in or approved custom), `save_skill` (files a new draft skill for review) and
 `run_subagents` (parallel workers on free fast models).
 
@@ -429,7 +430,7 @@ agents. Ask the assistant to convene one, paste the generated block into each ag
 terminal, and read the verdict in Discord `#coworking`.
 
 An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
-tools — so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
+tools - so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
 handoff is sub-second, and it runs on stateless serverless with no daemon. Ordering is total
 per session (compare-and-swap on one row); deadlock is covered by a quorum gate, an 8 s
 silence election, a 50 s floor TTL, an SQL-derived escalation ladder, hard caps and a
@@ -446,7 +447,7 @@ The council tables live in the `-- ===== Council wave =====` block at the bottom
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
 dominant embedding partition so pages never fragment across models. `vault_delete` is
-deliberately not exposed — page removal stays with the assistant and the graph UI.
+deliberately not exposed - page removal stays with the assistant and the graph UI.
 
 **Two access levels.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants read
 only (write tools return an error for a read-only key). Hand the read-only key to agents you
@@ -466,7 +467,7 @@ claude mcp add --transport http zuychin https://<your-app>/api/mcp/mcp \
 
 Or test locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
 "Streamable HTTP"). Note that anything saved through `save_note` later surfaces in the
-assistant's own context — only hand the key to agents you trust.
+assistant's own context - only hand the key to agents you trust.
 
 ## Models on Discord / Telegram
 
@@ -489,7 +490,7 @@ since Discord reserves `/` for its own slash-command UI:
 
 ### Files and agent mode on messaging
 
-When a request produces a file — a report, a code file, or a zip bundle — the bot delivers it as
+When a request produces a file - a report, a code file, or a zip bundle - the bot delivers it as
 a real attachment (Telegram document / Discord upload), not a wall of text. This works on the
 normal fast path too, so "make me a report about X" returns a document without any special flag.
 
@@ -555,7 +556,7 @@ The reminders job covers imminent calendar events and todos due within 24 h (re-
 roughly daily while overdue). Scheduled-tasks is the dispatcher for user-created tasks
 (`manage_scheduled_task`); email-triggers turns bills/deadlines found in the inbox into
 todos and calendar events, deduplicated via the `processed_emails` ledger. Initiative asks
-the agent whether anything warrants reaching out — code gates (quiet hours, spacing, daily
+the agent whether anything warrants reaching out - code gates (quiet hours, spacing, daily
 cap, user-active skip) run before any model call, so most invocations cost nothing.
 Run-review reads the previous day's agent runs and files draft skills for anything that
 failed or ran expensive; drafts wait for approval in `/admin`.
@@ -564,7 +565,7 @@ failed or ran expensive; drafts wait for approval in `/admin`.
 
 A long-term research/study knowledge base following Andrej Karpathy's LLM-wiki pattern:
 the agent writes interlinked Markdown wiki pages into a **private GitHub repo** and keeps
-them cross-linked, catalogued and healthy. It complements (not replaces) pgvector RAG —
+them cross-linked, catalogued and healthy. It complements (not replaces) pgvector RAG -
 `search_knowledge`/`save_note` stay for personal/temporal memory; the vault holds durable
 knowledge worth keeping.
 
@@ -582,7 +583,7 @@ The assistant then gets six tools: `vault_search` (hybrid keyword + pgvector ove
 bidirectional `[[wikilinks]]` → catalogue/log update → independent verification → one atomic
 `learn:` commit), `vault_write` (direct page edits), `vault_delete` (cascade removal: the
 page, every inbound wikilink, the `index.md` entry and the pgvector row in one commit) and
-`vault_lint` (suggest/auto curator — also runs on the weekly cron above with `curator:`
+`vault_lint` (suggest/auto curator - also runs on the weekly cron above with `curator:`
 commits). Every change is a Git commit, so any bad write is one revert away.
 
 ### Knowledge workspace
@@ -630,16 +631,16 @@ view of the vault, in the spirit of Obsidian's graph:
 
 - Nodes are wiki pages (colored by category, sized by connection count, recently updated
   pages glow); edges are `[[wikilinks]]`.
-- Click a page to read/edit its Markdown or delete it — deletion also strips every
+- Click a page to read/edit its Markdown or delete it - deletion also strips every
   reference in other pages, the `index.md` entry and the pgvector row, in one atomic commit.
 - Click a connection to remove it (both directions, readable text kept) or to add a new
   labelled link from the page panel.
 - Toggle **suggested links**: dashed edges between similar-but-unlinked pages, computed
-  from the stored embeddings — click one to materialize it as a real link.
+  from the stored embeddings - click one to materialize it as a real link.
 - Search with camera fly-to, per-category filters, orphan toggle, physics sliders, and a
   local mode (double-click a node) that isolates its 1–2 hop neighborhood.
 
-You can still point Obsidian at a clone of the repo — the on-disk format is plain
+You can still point Obsidian at a clone of the repo - the on-disk format is plain
 Markdown + wikilinks.
 
 ## Deployment

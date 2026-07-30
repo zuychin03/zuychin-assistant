@@ -20,7 +20,7 @@ export function formatTextAttachment(file: FileAttachment): string {
     let note = "";
     if (text.length > MAX_TEXT_ATTACHMENT_CHARS) {
         text = text.slice(0, MAX_TEXT_ATTACHMENT_CHARS);
-        note = `\n… [truncated — original file is ${(file.size / 1024).toFixed(0)} KB]`;
+        note = `\n… [truncated - original file is ${(file.size / 1024).toFixed(0)} KB]`;
     }
     const lang = getFileExtension(file.name);
     return `The user attached a file named "${file.name}". Its full contents are below:\n\n\`\`\`${lang}\n${text}${note}\n\`\`\``;

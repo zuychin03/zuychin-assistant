@@ -41,7 +41,7 @@ async function formatRunExcerpt(id: string): Promise<string | null> {
         .join("\n");
 
     return [
-        `### Run ${run.id} — status: ${run.status}`,
+        `### Run ${run.id} - status: ${run.status}`,
         `Task: ${run.message.slice(0, 300)}`,
         `Usage: ${run.usage.totalTokens ?? "?"} tokens, ${run.usage.llmCalls ?? "?"} LLM calls`,
         run.error ? `Error: ${run.error.slice(0, 300)}` : "",
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
         console.error("[RunReview] State unavailable:", err);
         return NextResponse.json(
-            { error: "cron_state unreadable — has the DDL been run?" },
+            { error: "cron_state unreadable - has the DDL been run?" },
             { status: 503 }
         );
     }
@@ -118,12 +118,12 @@ async function reviewOutliers(
 
     const prompt = `You review failed or wasteful runs of an AI agent (Zuychin's agent mode) and distill REUSABLE skills that would have prevented the failure or waste. A skill is a named procedure the agent can load next time it faces the same kind of task.
 
-Below are ${excerpts.length} problem runs (errors, timeouts, or unusually expensive). Look for recurring, generalizable causes: a tool used wrong, a missing step order, flailing that a checklist would prevent. Propose at most ${MAX_DRAFTS} skill drafts — proposing NONE is the right answer when the failures are one-off (transient API errors, user cancellations) or not generalizable.
+Below are ${excerpts.length} problem runs (errors, timeouts, or unusually expensive). Look for recurring, generalizable causes: a tool used wrong, a missing step order, flailing that a checklist would prevent. Propose at most ${MAX_DRAFTS} skill drafts - proposing NONE is the right answer when the failures are one-off (transient API errors, user cancellations) or not generalizable.
 
 Rules for drafts:
 - slug: short kebab-case, must NOT be any of: ${[...existingSlugs].join(", ")}
 - whenToUse: one sentence, phrased so an agent can match it against a task
-- instructions: the concrete procedure, grounded ONLY in what these runs show — do not invent tool names or steps you cannot see evidence for
+- instructions: the concrete procedure, grounded ONLY in what these runs show - do not invent tool names or steps you cannot see evidence for
 - rationale: which run(s) motivated it and why
 
 Problem runs:

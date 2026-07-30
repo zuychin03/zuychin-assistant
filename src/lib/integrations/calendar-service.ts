@@ -111,6 +111,6 @@ export function formatEventsSummary(events: CalendarEvent[], opts?: { withIds?: 
                 day: "numeric",
             }) + " (all day)";
 
-        return `• **${e.summary}** — ${time}${e.location ? ` 📍 ${e.location}` : ""}${opts?.withIds ? `\n  _Event ID: ${e.id}_` : ""}`;
+        return `• **${e.summary}** - ${time}${e.location ? ` 📍 ${e.location}` : ""}${opts?.withIds ? `\n  _Event ID: ${e.id}_` : ""}`;
     }).join("\n");
 }

@@ -196,7 +196,7 @@ export default function AdminPage() {
                         <div style={styles.heroLabel}>Default chat model</div>
                         <div style={styles.heroTitle}>{stats?.model ?? "Unknown"}</div>
                         <div style={styles.heroMeta}>
-                            Profile: {stats?.profile?.displayName ?? "No profile"} · Uptime {stats ? formatUptime(stats.uptime) : "—"}
+                            Profile: {stats?.profile?.displayName ?? "No profile"} · Uptime {stats ? formatUptime(stats.uptime) : "-"}
                         </div>
                     </div>
                 </div>

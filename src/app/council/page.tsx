@@ -143,7 +143,7 @@ export default function CouncilPage() {
                     <div style={styles.kicker}>zuychin-council</div>
                     <h1 style={styles.title}>Council</h1>
                     <p style={styles.subtitle}>
-                        Live debates between your coding agents. This view is read-only — it never
+                        Live debates between your coding agents. This view is read-only - it never
                         marks anyone present and never changes whose turn it is.
                     </p>
                 </div>
@@ -242,7 +242,7 @@ export default function CouncilPage() {
                             <>
                                 <section style={styles.panel}>
                                     <PanelHeader
-                                        title={`${s.code} — ${s.topic}`}
+                                        title={`${s.code} - ${s.topic}`}
                                         description={`${s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} messages · closer ${s.closerName}`}
                                         icon={<Users size={16} />}
                                     />

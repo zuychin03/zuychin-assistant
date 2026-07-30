@@ -6,7 +6,7 @@ import { refreshEmbeddingOverride, setEmbeddingOverride } from "@/lib/ai/embeddi
 export const maxDuration = 60;
 
 // Rows per call: each needs one embedding API round trip (~0.3s), so a chunk
-// stays well inside maxDuration. The client keeps POSTing until done:true —
+// stays well inside maxDuration. The client keeps POSTing until done:true -
 // an interrupted migration resumes exactly where it stopped because progress
 // is the rows themselves (embedding_model != target).
 const CHUNK = 20;

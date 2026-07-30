@@ -7,7 +7,7 @@ self.addEventListener("push", (event) => {
     } catch {
         data = { body: event.data ? event.data.text() : "" };
     }
-    // Skip the notification when the app is focused — the reply is already on
+    // Skip the notification when the app is focused - the reply is already on
     // screen; buzzing the same device is noise.
     event.waitUntil(
         clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {

@@ -19,7 +19,7 @@ export interface WorkerParams {
 
 const workerSystem = (contextBlock: string, hasTools: boolean) => {
     const toolLine = hasTools
-        ? "using tools as needed — call search_web for any current or factual information you need"
+        ? "using tools as needed - call search_web for any current or factual information you need"
         : "working from the objective and the context you are given (you have no tools on this run, so do not reference tool calls)";
     return `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, ${toolLine}. Do NOT create files or documents yourself; return your findings as clear, well-structured text so the lead agent can synthesize them into the single final deliverable. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
 };

@@ -106,12 +106,12 @@ async function proposeOperations(
 
 Two kinds of facts, with different bars:
 
-1. PERSONAL LIFE (categories: identity, relationship, preference, routine, fact) — capture ONLY what the user explicitly and literally stated about their real life: who people are, where they or the people close to them live, names, important dates, stable likes/dislikes, habits. These matter most — a detail like where the user's partner lives must not be missed when clearly stated. Rules:
+1. PERSONAL LIFE (categories: identity, relationship, preference, routine, fact) - capture ONLY what the user explicitly and literally stated about their real life: who people are, where they or the people close to them live, names, important dates, stable likes/dislikes, habits. These matter most - a detail like where the user's partner lives must not be missed when clearly stated. Rules:
    - The user must have SAID it, in this exchange. Never infer it from a question, a hypothetical, a task, or anything the assistant said.
    - It must be durable: still true and worth knowing a month from now. No recent trips, moods, one-off events, or pending tasks (a to-do list handles those).
    - Prefer specific over vague ("Cathy lives in Sydney" beats "the user has a girlfriend").
 
-2. WORK / STUDY (category: project) — tools, frameworks, projects, courses, research topics, professional patterns. Use category "project" for ALL of these. Do not judge one mention as a fact; propose it anyway and the system tracks it as an unconfirmed pattern until it repeats in a later conversation. If the exchange shows the SAME pattern as an existing fact marked "unconfirmed pattern", emit CONFIRM with its index instead of ADD.
+2. WORK / STUDY (category: project) - tools, frameworks, projects, courses, research topics, professional patterns. Use category "project" for ALL of these. Do not judge one mention as a fact; propose it anyway and the system tracks it as an unconfirmed pattern until it repeats in a later conversation. If the exchange shows the SAME pattern as an existing fact marked "unconfirmed pattern", emit CONFIRM with its index instead of ADD.
 
 Consolidate against the existing facts listed below: if a new fact refines or contradicts an existing one, UPDATE it (new information wins); if an existing fact is now clearly false, DELETE it; CONFIRM an unconfirmed pattern the exchange demonstrates again; only ADD when nothing similar exists. Never ADD a rewording of an existing fact. At most ${MAX_OPS} operations. Each fact must be one self-contained sentence.${inProject ? `\nScope: mark a fact "project" only if it is specific to the current project context; general facts about the user are "global".` : ""}
 

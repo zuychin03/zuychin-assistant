@@ -46,7 +46,7 @@ export async function runScheduledTask(task: ScheduledTask): Promise<TaskRunResu
             }
         } else if (task.channel === "discord") {
             const note = artifacts.length
-                ? `\n\n(${artifacts.length} file(s) generated — download from the web app.)`
+                ? `\n\n(${artifacts.length} file(s) generated - download from the web app.)`
                 : "";
             const sent = await notify("scheduled_task", `🕑 **${task.title}**\n\n${reply}${note}`);
             delivered = sent.discord;

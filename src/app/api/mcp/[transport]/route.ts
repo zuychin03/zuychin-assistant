@@ -215,7 +215,7 @@ const handler = createMcpHandler(
                         content: [
                             {
                                 type: "text",
-                                text: ok ? `Updated note ${id}.` : `No saved note with id ${id} — check list_notes.`,
+                                text: ok ? `Updated note ${id}.` : `No saved note with id ${id} - check list_notes.`,
                             },
                         ],
                     };
@@ -241,7 +241,7 @@ const handler = createMcpHandler(
                         content: [
                             {
                                 type: "text",
-                                text: ok ? `Deleted note ${id}.` : `No saved note with id ${id} — check list_notes.`,
+                                text: ok ? `Deleted note ${id}.` : `No saved note with id ${id} - check list_notes.`,
                             },
                         ],
                     };
@@ -268,7 +268,7 @@ const handler = createMcpHandler(
                         ? hits
                               .map(
                                   (h) =>
-                                      `- ${h.path} (${h.category}, ${h.similarity.toFixed(2)}): ${h.title} — ${h.summary}`,
+                                      `- ${h.path} (${h.category}, ${h.similarity.toFixed(2)}): ${h.title} - ${h.summary}`,
                               )
                               .join("\n")
                         : "No vault pages matched.";
@@ -306,7 +306,7 @@ const handler = createMcpHandler(
             "vault_ingest",
             {
                 description:
-                    "Save durable knowledge into the second-brain vault: study notes, project docs, work plans, research findings. Runs the full ingest pipeline — writes an interlinked wiki page, auto-links related pages, updates the catalogue, and commits. Prefer this over save_note for anything worth keeping long-term or that will be revised.",
+                    "Save durable knowledge into the second-brain vault: study notes, project docs, work plans, research findings. Runs the full ingest pipeline - writes an interlinked wiki page, auto-links related pages, updates the catalogue, and commits. Prefer this over save_note for anything worth keeping long-term or that will be revised.",
                 inputSchema: {
                     title: z.string().min(1).describe("Human-readable page title, e.g. 'UsTime Stage 1 plan'."),
                     content: z
@@ -357,7 +357,7 @@ const handler = createMcpHandler(
             "vault_write",
             {
                 description:
-                    "Create or overwrite ONE vault page with complete markdown you have already written — for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it synthesizes and auto-links). Never overwrite a page with a deletion marker.",
+                    "Create or overwrite ONE vault page with complete markdown you have already written - for corrections or deliberate edits after vault_read. Prefer vault_ingest for new knowledge (it synthesizes and auto-links). Never overwrite a page with a deletion marker.",
                 inputSchema: {
                     path: z
                         .string()
@@ -425,7 +425,7 @@ const handler = createMcpHandler(
             "council_convene",
             {
                 description:
-                    "[COUNCIL PROTOCOL] Open a new council: a live multi-round debate between several AI agents, held inside Zuychin. Returns a short session code plus a ready-to-paste kickoff block for every participant — hand each block to its agent unchanged and it will join and run the protocol on its own. You are convening, not debating: convene once, then paste. Name every participant up front; the roster is closed afterwards and an unknown agentName is rejected, which is what stops a typo from creating a phantom participant. Pick one closerName — only that participant may call council_conclude. Prefer save_note or vault_ingest if you only want to record a conclusion you already hold; a council is for questions where you want disagreement.",
+                    "[COUNCIL PROTOCOL] Open a new council: a live multi-round debate between several AI agents, held inside Zuychin. Returns a short session code plus a ready-to-paste kickoff block for every participant - hand each block to its agent unchanged and it will join and run the protocol on its own. You are convening, not debating: convene once, then paste. Name every participant up front; the roster is closed afterwards and an unknown agentName is rejected, which is what stops a typo from creating a phantom participant. Pick one closerName - only that participant may call council_conclude. Prefer save_note or vault_ingest if you only want to record a conclusion you already hold; a council is for questions where you want disagreement.",
                 inputSchema: {
                     topic: z.string().min(1).describe("The question under debate, phrased as one decidable question."),
                     brief: z.string().min(1).describe("Context every participant needs: constraints, what has been tried, what a good answer looks like. Pasted verbatim into each agent's first tool result."),
@@ -476,7 +476,7 @@ const handler = createMcpHandler(
                     "[COUNCIL PROTOCOL] Join a council you were invited to and receive the full rulebook. Call this once, first, before any other council tool. Idempotent: calling it again re-issues the rules and the recent transcript, which is how you recover if your context was truncated or you lost track of the protocol. Returns your identity confirmation, the topic and brief, the roster, the six status keywords, the intent vocabulary, your budgets, and a NEXT line with exactly what to do next. Your agentName must be on the roster the convener set; if it is not, this tool lists the valid names.",
                 inputSchema: {
                     sessionCode: z.string().min(1).describe("Session code from your human, e.g. 'CN-4KQ2'."),
-                    agentName: z.string().min(1).describe("Your council name, exactly as your human gave it. Use it unchanged in every later call — a mismatch makes you invisible to the council."),
+                    agentName: z.string().min(1).describe("Your council name, exactly as your human gave it. Use it unchanged in every later call - a mismatch makes you invisible to the council."),
                     expertise: z.string().optional().describe("One line on what you bring. Shown to the other participants."),
                 },
             },
@@ -505,7 +505,7 @@ const handler = createMcpHandler(
             "council_transcript",
             {
                 description:
-                    "[COUNCIL PROTOCOL] Read a council transcript without participating. Works with a read-only MCP key, so this is the observer's tool and the human's tool. Use it to catch up when a result told you messages were omitted, to review a closed council before acting on its verdict, or to check on a council you were not invited to. It never blocks, never marks you present, and never changes whose turn it is — it will not advance a debate, so do not poll it in place of council_wait.",
+                    "[COUNCIL PROTOCOL] Read a council transcript without participating. Works with a read-only MCP key, so this is the observer's tool and the human's tool. Use it to catch up when a result told you messages were omitted, to review a closed council before acting on its verdict, or to check on a council you were not invited to. It never blocks, never marks you present, and never changes whose turn it is - it will not advance a debate, so do not poll it in place of council_wait.",
                 inputSchema: {
                     sessionCode: z.string().min(1).describe("Session code, e.g. 'CN-4KQ2'."),
                     fromSeq: z.number().int().min(0).optional().describe("Start at this seq (default 0 = from the beginning)."),
@@ -532,7 +532,7 @@ const handler = createMcpHandler(
             "council_wait",
             {
                 description:
-                    "[COUNCIL PROTOCOL] Block for up to 30 seconds waiting for another participant to speak, then return everything new since sinceSeq. Use this when you have nothing to post yet — otherwise prefer council_speak, which posts and waits in one call. AN EMPTY RESULT IS NORMAL AND IS NOT AN ERROR: it means nobody spoke inside the window, and the correct response is to call it again immediately with the same sinceSeq. Never treat it as failure, never report it to your human, never stop because of it. If nobody has spoken for 8 seconds the floor is granted to you automatically, so waiting can never be terminal. Only a result containing \"=== COUNCIL CLOSED ===\" releases you from the loop. Requires a read-write key; use council_transcript to observe without participating.",
+                    "[COUNCIL PROTOCOL] Block for up to 30 seconds waiting for another participant to speak, then return everything new since sinceSeq. Use this when you have nothing to post yet - otherwise prefer council_speak, which posts and waits in one call. AN EMPTY RESULT IS NORMAL AND IS NOT AN ERROR: it means nobody spoke inside the window, and the correct response is to call it again immediately with the same sinceSeq. Never treat it as failure, never report it to your human, never stop because of it. If nobody has spoken for 8 seconds the floor is granted to you automatically, so waiting can never be terminal. Only a result containing \"=== COUNCIL CLOSED ===\" releases you from the loop. Requires a read-write key; use council_transcript to observe without participating.",
                 inputSchema: {
                     sessionCode: z.string().min(1).describe("Session code, e.g. 'CN-4KQ2'."),
                     agentName: z.string().min(1).describe("Your council name. Also marks you alive; stop calling and the others are told you went quiet."),
@@ -557,7 +557,7 @@ const handler = createMcpHandler(
                     });
                     return { content: [{ type: "text", text: renderWaitResult(result, { sessionCode: session.code, agentName }) }] };
                 } catch (error) {
-                    return { content: [{ type: "text", text: `Wait failed: ${errMsg(error)}. This is not the council closing — call council_wait again.` }] };
+                    return { content: [{ type: "text", text: `Wait failed: ${errMsg(error)}. This is not the council closing - call council_wait again.` }] };
                 }
             },
         );
@@ -566,7 +566,7 @@ const handler = createMcpHandler(
             "council_speak",
             {
                 description:
-                    "[COUNCIL PROTOCOL] Say one thing to the council, then block until someone replies. This is the tool you spend the council in: posting and waiting are one call on purpose, because two calls would double your own token cost for nothing. Declare an intent; answer or concede first if anything is listed under OPEN TO YOU, then propose or refine. Set addressedTo when challenging or asking. Set replyToSeq to the seq you are responding to — that is what clears the obligation. clientKey must be a stable id you choose BEFORE the first attempt; reuse the exact same key if the call times out and you retry, and the retry returns the original message number instead of posting twice. You get 2 posts per round; over quota this returns NOT_YOUR_TURN, records nothing, and blocks anyway, which is a normal outcome and not a failure. The result carries every message that arrived while you waited, plus a NEXT line with the exact next call.",
+                    "[COUNCIL PROTOCOL] Say one thing to the council, then block until someone replies. This is the tool you spend the council in: posting and waiting are one call on purpose, because two calls would double your own token cost for nothing. Declare an intent; answer or concede first if anything is listed under OPEN TO YOU, then propose or refine. Set addressedTo when challenging or asking. Set replyToSeq to the seq you are responding to - that is what clears the obligation. clientKey must be a stable id you choose BEFORE the first attempt; reuse the exact same key if the call times out and you retry, and the retry returns the original message number instead of posting twice. You get 2 posts per round; over quota this returns NOT_YOUR_TURN, records nothing, and blocks anyway, which is a normal outcome and not a failure. The result carries every message that arrived while you waited, plus a NEXT line with the exact next call.",
                 inputSchema: {
                     sessionCode: z.string().min(1).describe("Session code, e.g. 'CN-4KQ2'."),
                     agentName: z.string().min(1).describe("Your council name."),
@@ -597,13 +597,13 @@ const handler = createMcpHandler(
                     const target = addressedTo ?? "all";
                     const validTargets = [...roster.map((p) => p.name), "all"];
                     if (!validTargets.includes(target)) {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR — nothing was recorded.\naddressedTo "${target}" is not on the roster. Valid values: ${validTargets.join(", ")}.\n\nNEXT → repeat your council_speak call with a valid addressedTo.` }] };
+                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\naddressedTo "${target}" is not on the roster. Valid values: ${validTargets.join(", ")}.\n\nNEXT → repeat your council_speak call with a valid addressedTo.` }] };
                     }
                     if (INTENTS_REQUIRING_TARGET.includes(intent as CouncilIntent) && target === "all") {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR — nothing was recorded.\nintent "${intent}" must name one participant in addressedTo. Valid values: ${validTargets.filter((n) => n !== "all").join(", ")}.\n\nNEXT → repeat your council_speak call with addressedTo set.` }] };
+                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\nintent "${intent}" must name one participant in addressedTo. Valid values: ${validTargets.filter((n) => n !== "all").join(", ")}.\n\nNEXT → repeat your council_speak call with addressedTo set.` }] };
                     }
                     if (INTENTS_REQUIRING_REPLY_TO.includes(intent as CouncilIntent) && replyToSeq === undefined) {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR — nothing was recorded.\nintent "${intent}" must set replyToSeq to the seq you are responding to; that is what clears the obligation.\n\nNEXT → repeat your council_speak call with replyToSeq set.` }] };
+                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\nintent "${intent}" must set replyToSeq to the seq you are responding to; that is what clears the obligation.\n\nNEXT → repeat your council_speak call with replyToSeq set.` }] };
                     }
 
                     const post = await appendMessage({
@@ -633,7 +633,7 @@ const handler = createMcpHandler(
                         }],
                     };
                 } catch (error) {
-                    return { content: [{ type: "text", text: `Speak failed: ${errMsg(error)}. This is not the council closing — check council_transcript before retrying with the SAME clientKey.` }] };
+                    return { content: [{ type: "text", text: `Speak failed: ${errMsg(error)}. This is not the council closing - check council_transcript before retrying with the SAME clientKey.` }] };
                 }
             },
         );
@@ -642,7 +642,7 @@ const handler = createMcpHandler(
             "council_conclude",
             {
                 description:
-                    "[COUNCIL PROTOCOL] Close the council and file the outcome. Only the participant named as closer at convene time may call this, and only once; anyone else, or a second call, gets a refusal and changes nothing. Writes the verdict, announces it to the human's Discord, and files the transcript as a quarantined vault page. Your verdict must state the decision, the reasoning that settled it, and who dissented and why; do not manufacture consensus the transcript does not show, and put anything genuinely unresolved in openQuestions where it becomes a follow-up rather than quietly disappearing. Call this when the debate has converged, when a result told you the council is concluding, or when the council was declared stalled. Returns the vault path — report it to your human.",
+                    "[COUNCIL PROTOCOL] Close the council and file the outcome. Only the participant named as closer at convene time may call this, and only once; anyone else, or a second call, gets a refusal and changes nothing. Writes the verdict, announces it to the human's Discord, and files the transcript as a quarantined vault page. Your verdict must state the decision, the reasoning that settled it, and who dissented and why; do not manufacture consensus the transcript does not show, and put anything genuinely unresolved in openQuestions where it becomes a follow-up rather than quietly disappearing. Call this when the debate has converged, when a result told you the council is concluding, or when the council was declared stalled. Returns the vault path - report it to your human.",
                 inputSchema: {
                     sessionCode: z.string().min(1).describe("Session code, e.g. 'CN-4KQ2'."),
                     agentName: z.string().min(1).describe("Your council name. Must match the closer named at convene time."),
@@ -659,7 +659,7 @@ const handler = createMcpHandler(
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
                     if (agentName !== session.closerName) {
-                        return { content: [{ type: "text", text: `NOT_YOUR_TURN — only ${session.closerName} may conclude ${session.code}. Nothing was changed.\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
+                        return { content: [{ type: "text", text: `NOT_YOUR_TURN - only ${session.closerName} may conclude ${session.code}. Nothing was changed.\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
                     }
                     const outcome = await closeCouncil({
                         session, closer: agentName, verdict, openQuestions: openQuestions ?? [],
@@ -704,7 +704,7 @@ const handler = createMcpHandler(
                         clientKey: `${agentName}-pass-r${session.round}-${done ? "done" : "round"}`,
                     });
                     if (!result.ok) {
-                        return { content: [{ type: "text", text: `NOT_YOUR_TURN — nothing was recorded (${result.reason}).\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
+                        return { content: [{ type: "text", text: `NOT_YOUR_TURN - nothing was recorded (${result.reason}).\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
                     }
 
                     if (done) {

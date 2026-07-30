@@ -2,6 +2,10 @@ import {
     buildOpenAIToolDeclarations, executeTool, type OpenAITool,
 } from "@/lib/ai/mcp-service";
 import { getProviderApiKey, type ChatModel, type ProviderConfig, type GenParams } from "@/lib/ai/providers";
+import {
+    joinContinuation, segmentText, trimOverlap, ANSWER_NOW_PROMPT, CONTINUATION_BUDGET_MS,
+    CONTINUE_PROMPT, MAX_CONTINUATIONS, TRUNCATION_NOTE, type Segment,
+} from "@/lib/ai/continuation";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
@@ -22,10 +26,14 @@ interface ChatChoiceMessage {
     tool_calls?: ToolCall[];
 }
 
+type TruncationCause = "timeout" | "stream_error" | "length";
+
 interface ChatCompletion {
     choices?: { message: ChatChoiceMessage; finish_reason?: string }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     error?: { message?: string };
+    /** Set when the stream ended before the model finished; content is partial. */
+    truncated?: TruncationCause;
 }
 
 type ContentPart =
@@ -41,13 +49,16 @@ interface ChatMessage {
 
 const MAX_TOOL_ROUNDS = 5;
 
+// Every gateway on this path (NIM, OpenRouter, OpenCode Zen, TokenRouter) can
+// end a request while the model is still writing, so long or reasoning-heavy
+// answers stop mid-sentence. The resume contract lives in ./continuation.
 const REQUEST_TIMEOUT_MS = 60_000;
 
 const THINK_PAIR_RE = /<(think|thinking|thought|reason|reasoning)>[\s\S]*?<\/\1>/gi;
 const THINK_OPEN_RE = /<(think|thinking|thought|reason|reasoning)>/i;
 const THINK_CLOSE_RE = /<\/(think|thinking|thought|reason|reasoning)>/gi;
 
-function stripThink(text: string): string {
+function stripThinkKeepSpace(text: string): string {
     let t = text.replace(THINK_PAIR_RE, "");
     if (!THINK_OPEN_RE.test(t)) {
         let cut = -1;
@@ -56,7 +67,19 @@ function stripThink(text: string): string {
         while ((m = THINK_CLOSE_RE.exec(t)) !== null) cut = m.index + m[0].length;
         if (cut !== -1) t = t.slice(cut);
     }
-    return t.trim();
+    return t;
+}
+
+function stripThink(text: string): string {
+    return stripThinkKeepSpace(text).trim();
+}
+
+// A cut stream can stop inside an unclosed reasoning block, which stripThink
+// deliberately leaves whole. Everything from that tag on is deliberation.
+function dropDanglingThink(text: string): string {
+    const t = text.replace(THINK_PAIR_RE, "");
+    const open = t.search(THINK_OPEN_RE);
+    return open === -1 ? t : t.slice(0, open);
 }
 
 interface RequestOpts {
@@ -105,7 +128,7 @@ export async function openaiCompatChat(params: {
     };
 
     // Each model turn gets a fresh sink whose first delta resets the client's
-    // forming bubble — a tool round's preamble text must not prefix the final
+    // forming bubble - a tool round's preamble text must not prefix the final
     // answer. Set on opts right before every postChat below.
     const nextTurnSink = () => {
         if (!params.onToken) return undefined;
@@ -114,6 +137,13 @@ export async function openaiCompatChat(params: {
             params.onToken!(text, first);
             first = false;
         };
+    };
+
+    // A continuation extends the answer already on screen, so its deltas append
+    // instead of resetting the bubble.
+    const appendSink = () => {
+        if (!params.onToken) return undefined;
+        return (text: string) => params.onToken!(text);
     };
 
     const isTextFile = !!file && isTextLikeAttachment(file.mimeType, file.name);
@@ -196,9 +226,61 @@ export async function openaiCompatChat(params: {
         trackUsage(data);
     }
 
-    let reply = extractContent(data);
+    // Resumes an answer the provider cut off. Continuations run tool-free and
+    // with reasoning off so the fresh window is spent finishing the prose.
+    const completeTruncated = async (): Promise<string> => {
+        const head = segmentPartial(data);
+        let text = head.text;
+        let seamSpaced = head.spaceAfter;
+        const reasoning = extractReasoning(data);
+        if (!text && !reasoning) return "";
 
-    if (!reply) {
+        const startedAt = Date.now();
+        for (let attempt = 0; attempt < MAX_CONTINUATIONS; attempt++) {
+            if (Date.now() - startedAt > CONTINUATION_BUDGET_MS) break;
+
+            const resumed: ChatMessage[] = [...messages];
+            if (text) {
+                resumed.push({ role: "assistant", content: text });
+                resumed.push({ role: "user", content: CONTINUE_PROMPT });
+            } else {
+                resumed.push({ role: "assistant", content: `<partial-reasoning>\n${reasoning}\n</partial-reasoning>` });
+                resumed.push({ role: "user", content: ANSWER_NOW_PROMPT });
+            }
+
+            let next: ChatCompletion;
+            try {
+                next = await postChat(provider, apiKey, model.id, resumed, undefined, {
+                    ...opts,
+                    thinking: false,
+                    onToken: text ? appendSink() : nextTurnSink(),
+                });
+            } catch (err) {
+                console.error(`[${provider.id}] continuation ${attempt + 1} failed:`, err);
+                break;
+            }
+            trackUsage(next);
+
+            const piece = next.truncated ? segmentPartial(next) : segmentContent(next);
+            if (!piece.text) break;
+            if (text) {
+                const cut = trimOverlap(text, piece.text);
+                const spaced = seamSpaced || (cut.spliced ? /^\s/.test(cut.text) : piece.spaceBefore);
+                text = joinContinuation(text, cut.text, spaced);
+            } else {
+                text = piece.text;
+            }
+            seamSpaced = piece.spaceAfter;
+            if (!next.truncated) return text;
+        }
+        return text ? text + TRUNCATION_NOTE : text;
+    };
+
+    let reply = data.truncated ? await completeTruncated() : extractContent(data);
+
+    // Truncation already spent its retries above; only a genuinely empty answer
+    // is worth another full window.
+    if (!reply && !data.truncated) {
         try {
             const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
             trackUsage(plain);
@@ -214,17 +296,32 @@ export async function openaiCompatChat(params: {
     return reply || "(The model returned an empty response.)";
 }
 
-function extractContent(data: ChatCompletion): string {
+function rawContent(data: ChatCompletion): string {
     const msg = data.choices?.[0]?.message;
     if (!msg) return "";
 
-    let raw = "";
-    if (typeof msg.content === "string") {
-        raw = msg.content;
-    } else if (Array.isArray(msg.content)) {
-        raw = msg.content.map((p) => (typeof p === "string" ? p : p?.text ?? "")).join("");
+    if (typeof msg.content === "string") return msg.content;
+    if (Array.isArray(msg.content)) {
+        return msg.content.map((p) => (typeof p === "string" ? p : p?.text ?? "")).join("");
     }
-    return stripThink(raw);
+    return "";
+}
+
+function extractContent(data: ChatCompletion): string {
+    return stripThink(rawContent(data));
+}
+
+function segment(raw: string): Segment {
+    return segmentText(stripThinkKeepSpace(raw));
+}
+
+function segmentContent(data: ChatCompletion): Segment {
+    return segment(rawContent(data));
+}
+
+/** Answer text salvaged from a stream that stopped before the model finished. */
+function segmentPartial(data: ChatCompletion): Segment {
+    return segment(dropDanglingThink(rawContent(data)));
 }
 
 function extractReasoning(data: ChatCompletion): string {
@@ -298,7 +395,7 @@ async function postChat(
             throw new Error(`${provider.label}: empty stream body.`);
         }
 
-        return await accumulateStream(res.body, provider.label, opts.onToken);
+        return await accumulateStream(res.body, provider.label, opts.onToken, () => !!opts.signal?.aborted);
     } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
             if (opts.signal?.aborted) throw err;
@@ -314,7 +411,8 @@ async function postChat(
 async function accumulateStream(
     stream: ReadableStream<Uint8Array>,
     providerLabel: string,
-    onToken?: (text: string) => void
+    onToken?: (text: string) => void,
+    callerAborted?: () => boolean
 ): Promise<ChatCompletion> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -362,21 +460,33 @@ async function accumulateStream(
         if (choice?.finish_reason) finishReason = choice.finish_reason;
     };
 
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-            const t = line.trim();
-            if (t.startsWith("data:")) handleData(t.slice(5).trim());
+    let truncated: TruncationCause | undefined;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+            for (const line of lines) {
+                const t = line.trim();
+                if (t.startsWith("data:")) handleData(t.slice(5).trim());
+            }
         }
+        if (buffer.trim().startsWith("data:")) handleData(buffer.trim().slice(5).trim());
+    } catch (err) {
+        // A caller cancel drops the whole turn upstream, so never salvage it.
+        if (callerAborted?.()) throw err;
+        // With nothing accumulated the error is the only signal there is.
+        if (!content && !reasoning && toolCalls.size === 0) throw err;
+        truncated = err instanceof Error && err.name === "AbortError" ? "timeout" : "stream_error";
+        console.warn(`[${providerLabel}] stream ended early, keeping partial output:`, err);
     }
-    if (buffer.trim().startsWith("data:")) handleData(buffer.trim().slice(5).trim());
+
+    if (!truncated && finishReason === "length") truncated = "length";
 
     const assembledCalls = [...toolCalls.values()]
-        .filter((c) => c.name)
+        .filter((c) => c.name && (!truncated || argsParse(c.args)))
         .map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.args } }));
 
     return {
@@ -389,5 +499,18 @@ async function accumulateStream(
             },
             finish_reason: finishReason,
         }],
+        truncated,
     };
+}
+
+// A cut stream leaves the last call's arguments mid-JSON; running it would
+// execute the tool with silently missing fields.
+function argsParse(args: string): boolean {
+    if (!args.trim()) return true;
+    try {
+        JSON.parse(args);
+        return true;
+    } catch {
+        return false;
+    }
 }

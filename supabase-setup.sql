@@ -191,7 +191,7 @@ $$;
 
 -- Second-brain vault page index. The vault itself (interlinked Markdown wiki
 -- pages) lives in a private GitHub repo (see vault-template/ and the
--- GITHUB_VAULT_* env vars); this table is only the semantic index over it —
+-- GITHUB_VAULT_* env vars); this table is only the semantic index over it -
 -- one row per wiki page with its embedding, so vault_search can do pgvector
 -- lookups without touching GitHub. Model-aware like the embeddings table.
 create table if not exists vault_pages (
@@ -503,7 +503,7 @@ $$;
 
 -- Same fusion over the raw-message knowledge base. The keyword arm keeps the
 -- model filter because the same note is stored once per embedding-model
--- partition — an unfiltered arm would return cross-partition duplicates.
+-- partition - an unfiltered arm would return cross-partition duplicates.
 create or replace function hybrid_match_knowledge(
   query_embedding vector,
   query_text text default '',
@@ -1445,3 +1445,44 @@ begin
   return jsonb_build_object('changed', true, 'round', v_row.round, 'messages', v_row.last_seq);
 end;
 $$;
+
+-- WebAuthn passkeys and TOTP recovery for the single private Zuychin account.
+-- Only the service-role client may read these tables: public keys are safe to
+-- store, but challenges and encrypted TOTP secrets must never be browser-visible.
+create table if not exists auth_passkeys (
+  credential_id text primary key,
+  user_id text not null default 'owner',
+  public_key text not null,
+  counter bigint not null default 0,
+  transports jsonb not null default '[]'::jsonb,
+  device_type text not null check (device_type in ('singleDevice', 'multiDevice')),
+  backed_up boolean not null default false,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz
+);
+create index if not exists idx_auth_passkeys_owner on auth_passkeys (user_id, created_at);
+
+create table if not exists auth_challenges (
+  id uuid primary key,
+  user_id text not null default 'owner',
+  purpose text not null check (purpose in ('passkey_auth', 'passkey_register', 'totp_recovery')),
+  challenge text not null,
+  attempts integer not null default 0 check (attempts >= 0 and attempts <= 5),
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_auth_challenges_expiry on auth_challenges (expires_at);
+
+create table if not exists auth_totp (
+  user_id text primary key default 'owner',
+  secret_ciphertext text not null,
+  enabled_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+alter table auth_passkeys enable row level security;
+alter table auth_challenges enable row level security;
+alter table auth_totp enable row level security;
+
+-- The application uses SUPABASE_SERVICE_ROLE_KEY. Do not add anon policies to
+-- these tables: every read and write is server-side after auth verification.

@@ -80,15 +80,15 @@ async function reviewContent(pages: VaultPage[]): Promise<string[]> {
     }
 
     const prompt = `You are the curator of a personal knowledge vault. Review these wiki pages for CONTENT problems only:
-1. Contradictions — two pages making incompatible claims about the same thing.
-2. Clearly stale claims — statements that were time-sensitive and are likely outdated.
+1. Contradictions - two pages making incompatible claims about the same thing.
+2. Clearly stale claims - statements that were time-sensitive and are likely outdated.
 3. Near-duplicate pages that should be merged.
 
-Ignore style, formatting, links, and structure. If there are no real findings, return an empty list — do not invent problems.
+Ignore style, formatting, links, and structure. If there are no real findings, return an empty list - do not invent problems.
 
 ${blocks.join("\n\n")}
 
-Return JSON {findings: string[]} — each finding one sentence naming the page path(s) involved.`;
+Return JSON {findings: string[]} - each finding one sentence naming the page path(s) involved.`;
 
     try {
         const resp = await ai.models.generateContent({
@@ -110,7 +110,7 @@ Return JSON {findings: string[]} — each finding one sentence naming the page p
         return (parsed.findings ?? []).filter((f) => typeof f === "string" && f.trim());
     } catch (error) {
         console.error("[Vault] Lint content review failed:", error);
-        return ["Content review (contradictions/staleness) was skipped — the reviewer call failed."];
+        return ["Content review (contradictions/staleness) was skipped - the reviewer call failed."];
     }
 }
 
@@ -134,7 +134,7 @@ ${params.fixes.map((f) => `- ${f}`).join("\n")}
 Files before/after:
 ${diffs}
 
-Return JSON {pass: boolean, reason: string} — one short sentence.`;
+Return JSON {pass: boolean, reason: string} - one short sentence.`;
 
     try {
         const resp = await ai.models.generateContent({
@@ -157,7 +157,7 @@ Return JSON {pass: boolean, reason: string} — one short sentence.`;
         return { pass: parsed.pass === true, reason: parsed.reason ?? "Verifier returned no reason." };
     } catch (error) {
         console.error("[Vault] Lint verifier failed:", error);
-        return { pass: false, reason: "Verifier call failed — commit withheld." };
+        return { pass: false, reason: "Verifier call failed - commit withheld." };
     }
 }
 
@@ -166,7 +166,7 @@ function buildReport(result: Omit<LintResult, "report">): string {
     const verb = result.mode === "auto" ? "fixed" : "auto-fixable";
     lines.push(
         `Vault lint (${result.mode}): ${result.fixes.length} ${verb}, ${result.warnings.length} warning(s)` +
-        (result.commit ? ` — committed ${result.commit.slice(0, 7)}` : ""),
+        (result.commit ? ` - committed ${result.commit.slice(0, 7)}` : ""),
     );
     if (result.fixes.length) {
         lines.push(`\n${result.mode === "auto" ? "Fixed" : "Would fix"}:`);
@@ -176,7 +176,7 @@ function buildReport(result: Omit<LintResult, "report">): string {
         lines.push("\nNeeds judgement:");
         for (const w of result.warnings) lines.push(`- ${w}`);
     }
-    if (!result.fixes.length && !result.warnings.length) lines.push("The vault is healthy — nothing to do.");
+    if (!result.fixes.length && !result.warnings.length) lines.push("The vault is healthy - nothing to do.");
     return lines.join("\n");
 }
 
@@ -229,7 +229,7 @@ export async function lintVault(params: {
                 const norm = raw.replace(/\.md$/, "");
                 if (!norm.startsWith("wiki/") || pageByPath.has(`${norm}.md`) || seen.has(raw)) continue;
                 seen.add(raw);
-                fixes.push(`${p.path}: dead link [[${raw}]] — unlink, keep the text.`);
+                fixes.push(`${p.path}: dead link [[${raw}]] - unlink, keep the text.`);
                 if (mode === "auto") edit(p.path, removeDeadLink(content.get(p.path)!, raw));
             }
         }
@@ -257,7 +257,7 @@ export async function lintVault(params: {
             const inbound = new Set(pages.flatMap((p) => p.outbound));
             for (const p of pages) {
                 if (!inbound.has(toWikilink(p.path))) {
-                    warnings.push(`${p.path}: orphan — no other page links to it. Link it from a related page or merge it.`);
+                    warnings.push(`${p.path}: orphan - no other page links to it. Link it from a related page or merge it.`);
                 }
             }
         }
@@ -268,12 +268,12 @@ export async function lintVault(params: {
         for (const p of pages) {
             if (listed.has(p.path)) continue;
             const summary = rowByPath.get(p.path)?.summary || p.path.split("/").pop()!.replace(/\.md$/, "").replace(/-/g, " ");
-            fixes.push(`index.md: missing entry for ${p.path} — add it.`);
+            fixes.push(`index.md: missing entry for ${p.path} - add it.`);
             if (mode === "auto") indexText = updateIndex(indexText, p.category, p.path, summary);
         }
         for (const l of listed) {
             if (pageByPath.has(l)) continue;
-            fixes.push(`index.md: entry points to missing page ${l} — remove the line.`);
+            fixes.push(`index.md: entry points to missing page ${l} - remove the line.`);
             if (mode === "auto") {
                 indexText = indexText
                     .split("\n")
@@ -286,11 +286,11 @@ export async function lintVault(params: {
         // 6. Semantic-index drift: pgvector rows vs actual pages.
         const missingRows = pages.filter((p) => !rowByPath.has(p.path));
         const staleRows = rows.filter((r) => !pageByPath.has(r.path));
-        for (const p of missingRows) fixes.push(`semantic index: ${p.path} is not embedded — vault_search cannot find it. Re-index it.`);
-        for (const r of staleRows) fixes.push(`semantic index: stale row for deleted page ${r.path} — remove it.`);
+        for (const p of missingRows) fixes.push(`semantic index: ${p.path} is not embedded - vault_search cannot find it. Re-index it.`);
+        for (const r of staleRows) fixes.push(`semantic index: stale row for deleted page ${r.path} - remove it.`);
         const models = new Set(rows.map((r) => r.embeddingModel));
         if (models.size > 1) {
-            warnings.push(`semantic index: pages are split across ${models.size} embedding models (${[...models].join(", ")}) — vault_search only sees the active model's partition. Re-ingest the minority pages with one model.`);
+            warnings.push(`semantic index: pages are split across ${models.size} embedding models (${[...models].join(", ")}) - vault_search only sees the active model's partition. Re-ingest the minority pages with one model.`);
         }
 
         // 7. Content review (contradictions / staleness / duplicates): warnings only.
@@ -332,7 +332,7 @@ export async function lintVault(params: {
                 content: appendLog(logFile?.text ?? "# Log\n", "lint", `fixed ${repoFixCount}, ${warnings.length} warning(s)`),
             });
 
-            ({ commit } = await commitFiles(cfg, changes, `curator: lint — fixed ${repoFixCount} issue(s)`));
+            ({ commit } = await commitFiles(cfg, changes, `curator: lint - fixed ${repoFixCount} issue(s)`));
 
             // Re-embed changed pages in their EXISTING model partition.
             for (const path of changedPages) {

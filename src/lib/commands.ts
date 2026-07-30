@@ -64,7 +64,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         usage: "/schedule <event, date & time>",
         description: "Add an event to the calendar",
         build: (args) =>
-            args ? `Add this to my calendar: ${args}` : "I want to schedule a calendar event — ask me what and when.",
+            args ? `Add this to my calendar: ${args}` : "I want to schedule a calendar event - ask me what and when.",
     },
     {
         id: "todo",
@@ -79,7 +79,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) =>
             args
                 ? `Set up a scheduled reminder with manage_scheduled_task: ${args}. One-off unless I said it repeats; deliver to Telegram unless I said otherwise. Confirm the next run time.`
-                : "I want to set a reminder — ask me what and when.",
+                : "I want to set a reminder - ask me what and when.",
     },
     {
         id: "automations",
@@ -91,7 +91,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         id: "note",
         usage: "/note <content>",
         description: "Save a note to memory",
-        build: (args) => (args ? `Save this note for me: ${args}` : "I want to save a note — ask me what to remember."),
+        build: (args) => (args ? `Save this note for me: ${args}` : "I want to save a note - ask me what to remember."),
     },
     {
         id: "new_app",
@@ -101,7 +101,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) =>
             args
                 ? `I have an idea for a new app (follow the new-app-kickoff skill, phase by phase with my go-ahead between phases): ${args}`
-                : "I want to kick off a new app idea (follow the new-app-kickoff skill) — ask me what the idea is first.",
+                : "I want to kick off a new app idea (follow the new-app-kickoff skill) - ask me what the idea is first.",
     },
     {
         id: "update_app",
@@ -111,7 +111,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) =>
             args
                 ? `Plan the next version of one of my existing apps (follow the update-kickoff skill, phase by phase with my go-ahead between phases): ${args}`
-                : "I want to plan the next version of one of my apps (follow the update-kickoff skill) — ask me which app and what the wave should contain.",
+                : "I want to plan the next version of one of my apps (follow the update-kickoff skill) - ask me which app and what the wave should contain.",
     },
     {
         id: "history",
@@ -120,7 +120,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         build: (args) =>
             args
                 ? `Search my past conversations with the search_history tool for "${args}" and show me what you find, keeping the [open](...) links so I can jump to a conversation.`
-                : "I want to search my past conversations — ask me what to look for.",
+                : "I want to search my past conversations - ask me what to look for.",
     },
     {
         id: "facts",
@@ -173,7 +173,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         description: "Rigorous code review: bugs, security, performance",
         agent: true,
         build: (args) =>
-            `Review this code rigorously (follow the code-review skill) — bugs first, then security, performance and style:\n${args || "(the code is in the attached file or previous message)"}`,
+            `Review this code rigorously (follow the code-review skill) - bugs first, then security, performance and style:\n${args || "(the code is in the attached file or previous message)"}`,
     },
     {
         id: "debug",
@@ -181,7 +181,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         description: "Root-cause an error and give the minimal fix",
         agent: true,
         build: (args) =>
-            `Debug this issue (follow the debug-issue skill) — find the root cause and give the minimal correct fix:\n${args || "(the error is in the attached file or previous message)"}`,
+            `Debug this issue (follow the debug-issue skill) - find the root cause and give the minimal correct fix:\n${args || "(the error is in the attached file or previous message)"}`,
     },
     {
         id: "refactor",

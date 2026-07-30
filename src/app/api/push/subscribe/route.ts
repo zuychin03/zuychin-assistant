@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
     if (error) {
         console.error("[Push] Subscribe failed:", error.message);
-        return NextResponse.json({ error: "Failed to store subscription — has the DDL been run?" }, { status: 503 });
+        return NextResponse.json({ error: "Failed to store subscription - has the DDL been run?" }, { status: 503 });
     }
     return NextResponse.json({ ok: true });
 }

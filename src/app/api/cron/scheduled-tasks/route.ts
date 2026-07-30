@@ -19,8 +19,8 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ message: "No tasks due.", ran: 0 });
         }
 
-        // Agent-mode tasks run for minutes — far past the cron client's
-        // timeout (cron-job.org caps at 30s) — so respond once the claim is
+        // Agent-mode tasks run for minutes - far past the cron client's
+        // timeout (cron-job.org caps at 30s) - so respond once the claim is
         // recorded and run after. Task output reaches its channel directly.
         after(() => runClaimed(tasks));
         return NextResponse.json({ accepted: true, claimed: tasks.length }, { status: 202 });
