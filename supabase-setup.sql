@@ -1624,3 +1624,53 @@ begin
   return true;
 end;
 $$;
+
+
+-- Conservative, user-approved conversation deletion suggestions.
+create table if not exists conversation_cleanup_recommendations (
+  conversation_id uuid primary key references conversations(id) on delete cascade,
+  title_snapshot text not null,
+  conversation_updated_at timestamptz not null,
+  score integer not null check (score between 0 and 100),
+  reason text not null,
+  reviewed_at timestamptz not null default now(),
+  dismissed_at timestamptz
+);
+
+create index if not exists idx_conversation_cleanup_pending
+  on conversation_cleanup_recommendations (reviewed_at desc)
+  where dismissed_at is null;
+
+alter table conversation_cleanup_recommendations enable row level security;
+
+drop policy if exists "Allow all access to conversation_cleanup_recommendations" on conversation_cleanup_recommendations;
+create policy "Allow all access to conversation_cleanup_recommendations"
+  on conversation_cleanup_recommendations for all using (true) with check (true);
+
+-- Conversation-owned records must leave with the conversation, not become orphans.
+alter table agent_runs drop constraint if exists agent_runs_conversation_id_fkey;
+alter table agent_runs add constraint agent_runs_conversation_id_fkey
+  foreign key (conversation_id) references conversations(id) on delete cascade;
+alter table scheduled_tasks drop constraint if exists scheduled_tasks_conversation_id_fkey;
+alter table scheduled_tasks add constraint scheduled_tasks_conversation_id_fkey
+  foreign key (conversation_id) references conversations(id) on delete cascade;
+
+create or replace function delete_conversation_with_associations(target_conversation_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count bigint;
+begin
+  -- Raw history embeddings carry their conversation link inside metadata.
+  delete from embeddings
+  where metadata ->> 'conversationId' = target_conversation_id::text
+     or metadata ->> 'conversation_id' = target_conversation_id::text;
+
+  delete from conversations where id = target_conversation_id;
+  get diagnostics deleted_count = row_count;
+  return deleted_count > 0;
+end;
+$$;

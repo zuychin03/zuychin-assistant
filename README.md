@@ -640,6 +640,7 @@ table.
 | `/api/cron/email-triggers` | Every 4 h | `{}` |
 | `/api/cron/initiative` | Every 1–2 h | `{}` |
 | `/api/cron/run-review` | Daily (quiet hour) | `{}` |
+| `/api/cron/conversation-cleanup` | Weekly (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
 | `/api/cron/council-sweep` | Every 5 min | `{}` |
@@ -654,6 +655,8 @@ the agent whether anything warrants reaching out - code gates (quiet hours, spac
 cap, user-active skip) run before any model call, so most invocations cost nothing.
 Run-review reads the previous day's agent runs and files draft skills for anything that
 failed or ran expensive; drafts wait for approval in `/admin`.
+Conversation cleanup reviews inactive chats weekly, surfaces only conservative deletion suggestions in
+Dashboard, and never deletes a conversation without your selection.
 
 ## Second Brain (optional)
 

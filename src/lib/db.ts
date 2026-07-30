@@ -370,13 +370,27 @@ export async function getConversation(
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-    const { error } = await supabase
-        .from("conversations")
-        .delete()
-        .eq("id", id);
+    const { error } = await supabase.rpc("delete_conversation_with_associations", {
+        target_conversation_id: id,
+    });
+    if (!error) return;
 
-    if (error) {
+    // Supports deployments that have not yet applied the latest setup SQL.
+    if (error.code !== "PGRST202") {
         console.error("[DB] Failed to delete conversation:", error.message);
+        throw new Error("Failed to delete conversation.");
+    }
+    const { error: embeddingError } = await supabase
+        .from("embeddings")
+        .delete()
+        .eq("metadata->>conversationId", id);
+    if (embeddingError) {
+        console.error("[DB] Failed to clear conversation embeddings:", embeddingError.message);
+        throw new Error("Failed to delete conversation.");
+    }
+    const { error: legacyError } = await supabase.from("conversations").delete().eq("id", id);
+    if (legacyError) {
+        console.error("[DB] Failed to delete conversation:", legacyError.message);
         throw new Error("Failed to delete conversation.");
     }
 }

@@ -35,7 +35,7 @@ export interface ProviderInfo {
 }
 
 export function SelectMenu({
-  icon, groups, value, onChange, ariaLabel, align = "left", compact = false, dropUp = false, wide = false,
+  icon, groups, value, onChange, ariaLabel, align = "left", compact = false, dropUp = false, wide = false, integrated = false,
 }: {
   icon: React.ReactNode;
   groups: { label: string; options: { value: string; label: string }[] }[];
@@ -47,6 +47,8 @@ export function SelectMenu({
   dropUp?: boolean;
   /** Lifts the trigger/menu width caps so long labels are not truncated. */
   wide?: boolean;
+  /** Uses the selector as the leading part of a related control group. */
+  integrated?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -63,11 +65,11 @@ export function SelectMenu({
   const current = groups.flatMap((g) => g.options).find((o) => o.value === value);
 
   return (
-    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}) }}>
+    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}), ...(integrated ? dropdown.wrapIntegrated : {}) }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        style={{ ...dropdown.trigger, ...(compact ? { width: "100%" } : {}), ...(open ? dropdown.triggerOpen : {}) }}
+        style={{ ...dropdown.trigger, ...(compact ? { width: "100%" } : {}), ...(integrated ? dropdown.triggerIntegrated : {}), ...(open ? dropdown.triggerOpen : {}) }}
         aria-label={ariaLabel}
         title={current?.label}
       >
@@ -323,6 +325,10 @@ const dropdown: Record<string, React.CSSProperties> = {
     flexShrink: 1,
     maxWidth: 220,
   },
+  wrapIntegrated: {
+    flex: 1,
+    maxWidth: "none",
+  },
   trigger: {
     display: "flex",
     alignItems: "center",
@@ -339,6 +345,12 @@ const dropdown: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     fontFamily: "var(--font-family)",
     transition: "border-color 0.15s ease, background 0.15s ease",
+  },
+  triggerIntegrated: {
+    width: "100%",
+    background: "transparent",
+    border: "none",
+    borderRadius: 9,
   },
   triggerOpen: {
     border: "1px solid var(--color-primary)",

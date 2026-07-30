@@ -191,7 +191,7 @@ export default function CouncilPage() {
                 <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
                 <Link href="/knowledge" style={styles.quickLink}><Brain size={15} /> Knowledge</Link>
                 <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
-                <Link href="/admin" style={styles.quickLink}><ShieldCheck size={15} /> Admin</Link>
+                <Link href="/admin" style={styles.quickLink}><ShieldCheck size={15} /> Dashboard</Link>
             </div>
 
             {loading && (

@@ -5,11 +5,13 @@ import Link from "next/link";
 import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
+import SecurityPanel from "./security-panel";
+import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import { Masonry } from "./masonry";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
     GitBranch, MessageSquare, RefreshCw, Save, ShieldCheck,
-    Sparkles, Wifi, XCircle,
+    LogOut, Sparkles, Wifi, XCircle,
 } from "lucide-react";
 
 interface BotStats {
@@ -60,7 +62,7 @@ interface VaultHealth {
     branch?: string;
 }
 
-export default function AdminPage() {
+export default function DashboardPage() {
     const [stats, setStats] = useState<BotStats | null>(null);
     const [providers, setProviders] = useState<ProviderInfo[]>([]);
     const [vaultHealth, setVaultHealth] = useState<VaultHealth | null>(null);
@@ -138,6 +140,11 @@ export default function AdminPage() {
         }
     };
 
+    const handleLogout = async () => {
+        await fetch("/api/auth", { method: "DELETE" }).catch(() => undefined);
+        window.location.assign("/login");
+    };
+
     const formatUptime = (seconds: number) => {
         const h = Math.floor(seconds / 3600);
         const m = Math.floor((seconds % 3600) / 60);
@@ -174,7 +181,7 @@ export default function AdminPage() {
             <header style={styles.header}>
                 <div>
                     <div style={styles.kicker}>Control Center</div>
-                    <h1 style={styles.title}>Zuychin Admin</h1>
+                    <h1 style={styles.title}>Zuychin Dashboard</h1>
                     <p style={styles.subtitle}>
                         Monitor the assistant, model providers, memory, vault and channel activity from one place.
                     </p>
@@ -186,6 +193,10 @@ export default function AdminPage() {
                     <button style={styles.refreshButton} onClick={fetchStats} disabled={refreshing}>
                         <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} />
                         Refresh
+                    </button>
+                    <button style={styles.refreshButton} onClick={() => void handleLogout()}>
+                        <LogOut size={14} />
+                        Log out
                     </button>
                 </div>
             </header>
@@ -205,6 +216,7 @@ export default function AdminPage() {
                     <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
                     <Link href="/knowledge" style={styles.quickLink}><Brain size={15} /> Knowledge</Link>
                     <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
+                    <a href="#security" style={styles.quickLink}><ShieldCheck size={15} /> Security</a>
                     <a href="/api/vault/health" style={styles.quickLink}><ShieldCheck size={15} /> Vault health</a>
                     <a href="/api/telegram/test" style={styles.quickLink}><Activity size={15} /> Telegram test</a>
                 </div>
@@ -288,6 +300,14 @@ export default function AdminPage() {
                         <Capability label="Gmail/Calendar tools" enabled={!!stats?.integrations.google} note="OAuth-backed personal tools" />
                         <Capability label="External channels" enabled={!!(stats?.integrations.discord || stats?.integrations.telegram)} note="Discord and Telegram entry points" />
                     </div>
+                </section>
+
+                <section style={styles.panel} id="security">
+                    <SecurityPanel />
+                </section>
+
+                <section style={styles.panel}>
+                    <ConversationCleanupPanel />
                 </section>
 
                 <section style={styles.panel}>

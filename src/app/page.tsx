@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, LogOut, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck } from "lucide-react";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -191,6 +191,7 @@ export default function Home() {
   const [chatSel, setChatSel] = useState("");
   const [embedSel, setEmbedSel] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [generationOpen, setGenerationOpen] = useState(false);
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
@@ -530,14 +531,6 @@ export default function Home() {
       localStorage.setItem("zuychin-agent-mode", String(next));
       return next;
     });
-  };
-
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth", { method: "DELETE" });
-    } finally {
-      window.location.href = "/login";
-    }
   };
 
   const loadConversation = async (convId: string) => {
@@ -1388,9 +1381,9 @@ export default function Home() {
           <Gavel size={14} color="var(--color-text-muted)" />
           <span>Council</span>
         </Link>
-        <Link href="/admin" style={linkStyle} aria-label="Admin" title="Admin">
+        <Link href="/admin" style={linkStyle} aria-label="Dashboard" title="Dashboard">
           <ShieldCheck size={14} color="var(--color-text-muted)" />
-          <span>Admin</span>
+          <span>Dashboard</span>
         </Link>
       </>
     );
@@ -1398,9 +1391,10 @@ export default function Home() {
 
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
-      <>
+      <div style={styles.modelControlCluster}>
         <SelectMenu
           compact={compact}
+          integrated
           align="right"
           ariaLabel="Chat model"
           icon={<Cpu size={14} color="var(--color-primary)" />}
@@ -1414,14 +1408,37 @@ export default function Home() {
         <button
           type="button"
           onClick={() => setModelInfoOpen(true)}
-          style={styles.infoBtn}
+          style={styles.modelClusterButton}
           aria-label="Model details"
           title="Model details"
           disabled={!currentChatModel}
         >
-          <Info size={17} color="var(--color-text-muted)" />
+          <Info size={17} />
         </button>
-      </>
+        <button
+          type="button"
+          onClick={() => setGenerationOpen((open) => !open)}
+          style={{ ...styles.modelClusterButton, ...(generationOpen ? styles.modelClusterButtonActive : {}) }}
+          aria-label="Generation settings"
+          title="Generation settings"
+        >
+          <SlidersHorizontal size={16} />
+        </button>
+        {generationOpen && (
+          <div style={styles.modelSettingsPopover} className="animate-fade-in-scale">
+            <div style={styles.settingsHeader}>
+              <span style={styles.settingsTitle}>Generation</span>
+              <button onClick={() => setGenerationOpen(false)} style={styles.filePreviewRemove} aria-label="Close generation settings">
+                <X size={14} />
+              </button>
+            </div>
+            <ParamRow label="Temperature" min={0} max={2} step={0.1} def={0.7} value={genParams.temperature} onChange={(v) => updateGenParams({ ...genParams, temperature: v })} />
+            <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
+            <ParamRow label="Max tokens" min={256} max={8192} step={256} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
+            <p style={styles.settingsNote}>Auto uses the selected model&apos;s provider default.</p>
+          </div>
+        )}
+      </div>
     ) : null;
 
   return (
@@ -1554,12 +1571,6 @@ export default function Home() {
           formatTime={formatTime}
         />
 
-        <a href="/security" style={{ ...styles.logoutBtn, textDecoration: "none" }}>Security</a>
-
-        <button onClick={handleLogout} style={styles.logoutBtn}>
-          <LogOut size={15} />
-          <span>Log out</span>
-        </button>
       </aside>
 
       <div style={isDesktop ? styles.containerDesktop : styles.container}>
@@ -1957,29 +1968,11 @@ export default function Home() {
           {settingsOpen && (
             <div style={styles.settingsPanel} className="animate-fade-in-scale">
               <div style={styles.settingsHeader}>
-                <span style={styles.settingsTitle}>Generation settings</span>
-                <button onClick={() => setSettingsOpen(false)} style={styles.filePreviewRemove} aria-label="Close settings">
+                <span style={styles.settingsTitle}>Assistant controls</span>
+                <button onClick={() => setSettingsOpen(false)} style={styles.filePreviewRemove} aria-label="Close assistant controls">
                   <X size={14} />
                 </button>
               </div>
-              <ParamRow
-                label="Temperature" min={0} max={2} step={0.1} def={0.7}
-                value={genParams.temperature}
-                onChange={(v) => updateGenParams({ ...genParams, temperature: v })}
-              />
-              <ParamRow
-                label="Top P" min={0} max={1} step={0.05} def={0.9}
-                value={genParams.topP}
-                onChange={(v) => updateGenParams({ ...genParams, topP: v })}
-              />
-              <ParamRow
-                label="Max tokens" min={256} max={8192} step={256} def={2048}
-                value={genParams.maxTokens}
-                onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })}
-              />
-              <p style={styles.settingsNote}>
-                Unset = provider default. Applied to the selected model where supported.
-              </p>
               {providers.some((p) => p.embeddingModels.length > 0) && (
                 <div style={styles.settingsEmbedRow}>
                   <span style={styles.settingsEmbedLabel}>Embedding</span>
@@ -2169,12 +2162,11 @@ export default function Home() {
               onClick={() => setSettingsOpen((o) => !o)}
               style={{
                 ...styles.attachBtn,
-                opacity: (genParams.temperature ?? genParams.topP ?? genParams.maxTokens) !== null ? 1 : 0.5,
               }}
-              aria-label="Generation settings"
-              title="Generation settings"
+              aria-label="Assistant controls"
+              title="Assistant controls"
             >
-              <SlidersHorizontal size={18} color={(genParams.temperature ?? genParams.topP ?? genParams.maxTokens) !== null ? "var(--color-primary)" : "var(--color-text-muted)"} />
+              <SlidersHorizontal size={18} color="var(--color-text-muted)" />
             </button>
             <textarea
               ref={inputRef}
