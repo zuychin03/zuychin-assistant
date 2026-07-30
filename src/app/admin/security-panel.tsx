@@ -95,10 +95,12 @@ export default function SecurityPanel() {
         </div>
 
         <div style={styles.confirmation}>
-            <LockKeyhole size={16} />
-            <div style={{ flex: 1 }}>
-                <div style={styles.confirmTitle}>Confirm before changing security</div>
-                <div style={styles.confirmCopy}>Your password is used only to approve this action.</div>
+            <div style={styles.confirmHeader}>
+                <LockKeyhole size={16} />
+                <div>
+                    <div style={styles.confirmTitle}>Confirm before changing security</div>
+                    <div style={styles.confirmCopy}>Your password is used only to approve this action.</div>
+                </div>
             </div>
             <input
                 style={styles.passwordInput}
@@ -168,10 +170,11 @@ const styles: Record<string, React.CSSProperties> = {
     protection: { display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, padding: "6px 8px", borderRadius: 999, color: "#31d07f", background: "color-mix(in srgb, #31d07f 12%, transparent)", fontSize: 11, fontWeight: 800 },
     protectionWarn: { color: "#e8b34b", background: "color-mix(in srgb, #e8b34b 12%, transparent)" },
     statusDot: { width: 6, height: 6, borderRadius: "50%", background: "currentColor" },
-    confirmation: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: 12, borderRadius: 14, color: "var(--color-text-primary)", background: "color-mix(in srgb, var(--color-background) 54%, transparent)", border: "1px solid color-mix(in srgb, var(--color-border) 55%, transparent)" },
+    confirmation: { display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 14, color: "var(--color-text-primary)", background: "color-mix(in srgb, var(--color-background) 54%, transparent)", border: "1px solid color-mix(in srgb, var(--color-border) 55%, transparent)" },
+    confirmHeader: { display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 },
     confirmTitle: { fontSize: 12.5, fontWeight: 750 },
-    confirmCopy: { marginTop: 2, fontSize: 11.5, color: "var(--color-text-muted)" },
-    passwordInput: { minWidth: 180, flex: "1 1 190px", padding: "9px 10px", borderRadius: 9, color: "var(--color-text-primary)", background: "var(--color-surface)", border: "1px solid var(--color-border)", font: "inherit", fontSize: 12 },
+    confirmCopy: { marginTop: 2, fontSize: 11.5, lineHeight: 1.4, color: "var(--color-text-muted)" },
+    passwordInput: { width: "100%", minWidth: 0, boxSizing: "border-box", padding: "9px 10px", borderRadius: 9, color: "var(--color-text-primary)", background: "var(--color-surface)", border: "1px solid var(--color-border)", font: "inherit", fontSize: 12 },
     grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 },
     card: { padding: 14, borderRadius: 17, background: "color-mix(in srgb, var(--color-background) 45%, transparent)", border: "1px solid color-mix(in srgb, var(--color-border) 55%, transparent)" },
     cardHead: { display: "flex", gap: 10, alignItems: "flex-start" },

@@ -974,18 +974,6 @@ export const styles: Record<string, CSSProperties> = {
     fontStyle: "italic",
   },
 
-  settingsPanel: {
-    background: "var(--color-surface)",
-    border: "1px solid var(--color-border)",
-    borderRadius: 14,
-    padding: "14px 16px",
-    marginBottom: 10,
-    display: "flex",
-    flexDirection: "column",
-    gap: 14,
-    boxShadow: "0 6px 24px rgba(0,0,0,0.10)",
-  },
-
   cmdMenu: {
     background: "var(--color-surface)",
     border: "1px solid var(--color-border)",
@@ -1051,8 +1039,6 @@ export const styles: Record<string, CSSProperties> = {
     color: "var(--color-text-muted)",
     flexShrink: 0,
   },
-  // Own row under the embedding select: sharing one row squeezed the select
-  // to nothing on narrow screens.
   settingsToggleRow: {
     display: "flex",
     alignItems: "center",

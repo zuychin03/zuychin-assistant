@@ -7,6 +7,7 @@ import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
 import SecurityPanel from "./security-panel";
 import ConversationCleanupPanel from "./conversation-cleanup-panel";
+import NotificationsPanel from "./notifications-panel";
 import { Masonry } from "./masonry";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
@@ -271,6 +272,10 @@ export default function DashboardPage() {
                         </div>
                         {vaultHealth?.repo && <div style={styles.vaultMeta}>{vaultHealth.repo}{vaultHealth.branch ? ` · ${vaultHealth.branch}` : ""}</div>}
                     </div>
+                </section>
+
+                <section style={styles.panel}>
+                    <NotificationsPanel />
                 </section>
 
                 <section style={styles.panel}>

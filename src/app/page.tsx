@@ -51,16 +51,6 @@ interface SpeechRecognitionLike {
   stop: () => void;
 }
 
-// Returns an ArrayBuffer-backed view: pushManager.subscribe's BufferSource
-// type rejects the default Uint8Array<ArrayBufferLike>.
-function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
-  const bytes = new Uint8Array(new ArrayBuffer(raw.length));
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  return bytes;
-}
-
 // Date-only strings (all-day events, bare due dates) skip the time part.
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
@@ -178,8 +168,6 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [today, setToday] = useState<TodayData | null>(null);
-  const [pushEnabled, setPushEnabled] = useState(false);
-  const [pushSupported, setPushSupported] = useState(false);
   // status: "confirm" shows the warning buttons; anything else is progress text.
   const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
@@ -190,7 +178,6 @@ export default function Home() {
 
   const [chatSel, setChatSel] = useState("");
   const [embedSel, setEmbedSel] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [generationOpen, setGenerationOpen] = useState(false);
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -238,57 +225,11 @@ export default function Home() {
       .catch(() => { });
   }, []);
 
-  // The service worker only handles push (no offline caching); register it
-  // unconditionally so subscriptions created elsewhere keep delivering.
+  // Push delivery has no offline cache, so register this worker for the browser session.
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
-    navigator.serviceWorker
-      .register("/sw.js")
-      .then((reg) => {
-        if ("PushManager" in window && process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
-          setPushSupported(true);
-          return reg.pushManager.getSubscription();
-        }
-        return null;
-      })
-      .then((sub) => { if (sub) setPushEnabled(true); })
-      .catch((err) => console.warn("SW registration failed:", err));
+    navigator.serviceWorker.register("/sw.js").catch((err) => console.warn("SW registration failed:", err));
   }, []);
-
-  const togglePush = async () => {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      if (pushEnabled) {
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) {
-          await fetch("/api/push/subscribe", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ endpoint: sub.endpoint }),
-          });
-          await sub.unsubscribe();
-        }
-        setPushEnabled(false);
-        return;
-      }
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") return;
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!),
-      });
-      const res = await fetch("/api/push/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sub),
-      });
-      if (!res.ok) throw new Error(`Subscribe failed (${res.status})`);
-      setPushEnabled(true);
-    } catch (err) {
-      console.error("Push toggle failed:", err);
-      alert("Couldn't change the notification setting.");
-    }
-  };
 
   // Today card on the empty state; dismissing it lasts for the browser session.
   useEffect(() => {
@@ -1436,6 +1377,49 @@ export default function Home() {
             <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
             <ParamRow label="Max tokens" min={256} max={8192} step={256} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
             <p style={styles.settingsNote}>Auto uses the selected model&apos;s provider default.</p>
+            {providers.some((p) => p.embeddingModels.length > 0) && (
+              <div style={styles.settingsEmbedRow}>
+                <span style={styles.settingsEmbedLabel}>Embedding</span>
+                <SelectMenu
+                  wide
+                  compact
+                  ariaLabel="Embedding model"
+                  icon={<Database size={14} color="var(--color-text-muted)" />}
+                  value={embedSel}
+                  onChange={handleEmbedSelChange}
+                  groups={providers
+                    .filter((p) => p.embeddingModels.length > 0)
+                    .map((p) => ({
+                      label: p.label,
+                      options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
+                    }))}
+                />
+              </div>
+            )}
+            <div style={styles.settingsToggleRow}>
+              <div style={styles.agentSwitchWrap}>
+                <span style={styles.settingsEmbedLabel}>Agent mode</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={agentEnabled}
+                  onClick={toggleAgent}
+                  style={{
+                    ...styles.switchTrack,
+                    ...(agentEnabled ? styles.switchTrackOn : {}),
+                  }}
+                  aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
+                  title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
+                >
+                  <span
+                    style={{
+                      ...styles.switchKnob,
+                      transform: agentEnabled ? "translateX(16px)" : "translateX(0)",
+                    }}
+                  />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -1965,85 +1949,6 @@ export default function Home() {
         )}
 
         <footer style={isDesktop ? styles.footer : { ...styles.footer, padding: "10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px)" }}>
-          {settingsOpen && (
-            <div style={styles.settingsPanel} className="animate-fade-in-scale">
-              <div style={styles.settingsHeader}>
-                <span style={styles.settingsTitle}>Assistant controls</span>
-                <button onClick={() => setSettingsOpen(false)} style={styles.filePreviewRemove} aria-label="Close assistant controls">
-                  <X size={14} />
-                </button>
-              </div>
-              {providers.some((p) => p.embeddingModels.length > 0) && (
-                <div style={styles.settingsEmbedRow}>
-                  <span style={styles.settingsEmbedLabel}>Embedding</span>
-                  <SelectMenu
-                    dropUp
-                    wide
-                    compact
-                    ariaLabel="Embedding model"
-                    icon={<Database size={14} color="var(--color-text-muted)" />}
-                    value={embedSel}
-                    onChange={handleEmbedSelChange}
-                    groups={providers
-                      .filter((p) => p.embeddingModels.length > 0)
-                      .map((p) => ({
-                        label: p.label,
-                        options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
-                      }))}
-                  />
-                </div>
-              )}
-              <div style={styles.settingsToggleRow}>
-                {pushSupported && (
-                  <div style={styles.agentSwitchWrap}>
-                    <span style={styles.settingsEmbedLabel}>Notifications</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={pushEnabled}
-                      onClick={togglePush}
-                      style={{
-                        ...styles.switchTrack,
-                        ...(pushEnabled ? styles.switchTrackOn : {}),
-                      }}
-                      aria-label={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
-                      title={pushEnabled ? "Push notifications ON for this browser" : "Get reminders and nudges as push notifications"}
-                    >
-                      <span
-                        style={{
-                          ...styles.switchKnob,
-                          transform: pushEnabled ? "translateX(16px)" : "translateX(0)",
-                        }}
-                      />
-                    </button>
-                  </div>
-                )}
-                <div style={styles.agentSwitchWrap}>
-                  <span style={styles.settingsEmbedLabel}>Agent mode</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={agentEnabled}
-                    onClick={toggleAgent}
-                    style={{
-                      ...styles.switchTrack,
-                      ...(agentEnabled ? styles.switchTrackOn : {}),
-                    }}
-                    aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
-                    title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
-                  >
-                    <span
-                      style={{
-                        ...styles.switchKnob,
-                        transform: agentEnabled ? "translateX(16px)" : "translateX(0)",
-                      }}
-                    />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {voiceLoop && (
             <div style={styles.replyPreview} className="animate-fade-in">
               {isRecording
@@ -2157,17 +2062,6 @@ export default function Home() {
                 <Brain size={18} color={thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setSettingsOpen((o) => !o)}
-              style={{
-                ...styles.attachBtn,
-              }}
-              aria-label="Assistant controls"
-              title="Assistant controls"
-            >
-              <SlidersHorizontal size={18} color="var(--color-text-muted)" />
-            </button>
             <textarea
               ref={inputRef}
               value={input}
