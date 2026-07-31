@@ -3,12 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-    Activity, Brain, CheckCircle2, Clock, GitBranch, Gavel, Maximize2, MessageSquare,
-    Minimize2, RefreshCw, ShieldCheck, Users, XCircle,
+    Activity, Brain, CheckCircle2, Clock, Cpu, GitBranch, Gavel, Maximize2, MessageSquare,
+    Minimize2, Play, Plug, RefreshCw, ShieldCheck, Square, Users, XCircle,
 } from "lucide-react";
+import {
+    findHost, forgetHost, pair, trimActivity, HostClient,
+    type HostActivity, type HostConnection, type HostSnapshot,
+} from "./host-client";
 
-// Live view over a council. Read-only by construction: watching a debate must
-// never advance it, so nothing on this page writes presence or claims the floor.
+// Live view over a council, plus control of the local ACP host when one is
+// reachable. The Zuychin half stays read-only by construction: watching a
+// debate must never advance it, so nothing here writes presence or claims the
+// floor. Everything that drives agents goes through the loopback host instead.
 
 const POLL_MS = 2500;
 // Matches PARTICIPANT_STALE_SECONDS: past this an agent is out of the
@@ -87,6 +93,68 @@ export default function CouncilPage() {
     const [monitor, setMonitor] = useState(false);
     const transcriptEnd = useRef<HTMLDivElement | null>(null);
     const lastSeqRef = useRef(0);
+
+    const [hostState, setHostState] = useState<HostConnection>("probing");
+    const [hostPort, setHostPort] = useState<number | null>(null);
+    const [host, setHost] = useState<HostSnapshot | null>(null);
+    const [activity, setActivity] = useState<HostActivity[]>([]);
+    const [hostError, setHostError] = useState("");
+    const [pairCode, setPairCode] = useState("");
+    const [convening, setConvening] = useState(false);
+    const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code" });
+    const clientRef = useRef<HostClient | null>(null);
+
+    const connect = useCallback((port: number, token: string) => {
+        clientRef.current?.close();
+        const client = new HostClient(port, token, {
+            onState: (snapshot) => { setHost(snapshot); setHostState("connected"); },
+            onActivity: (item) => setActivity((list) => trimActivity([...list, item])),
+            onError: (detail) => setHostError(detail),
+            onClose: () => { setHostState("observing"); setHost(null); },
+        });
+        clientRef.current = client;
+        client.open();
+    }, []);
+
+    // Once on mount, never on a timer: a denied Local Network Access permission
+    // cannot be re-requested programmatically, so retrying achieves nothing.
+    const probeHost = useCallback(async () => {
+        setHostState("probing");
+        setHostError("");
+        const found = await findHost();
+        if (!found) { setHostState("absent"); setHostPort(null); return; }
+        setHostPort(found.port);
+        if (!found.token) { setHostState("unpaired"); return; }
+        connect(found.port, found.token);
+    }, [connect]);
+
+    useEffect(() => {
+        void probeHost();
+        return () => clientRef.current?.close();
+    }, [probeHost]);
+
+    const submitPairing = useCallback(async () => {
+        if (!hostPort) return;
+        const token = await pair(hostPort, pairCode);
+        if (!token) { setHostError("That pairing code was not accepted."); return; }
+        setPairCode("");
+        setHostError("");
+        connect(hostPort, token);
+    }, [hostPort, pairCode, connect]);
+
+    const submitConvene = useCallback(() => {
+        const agents = form.agents.split(",").map((a) => a.trim()).filter(Boolean);
+        if (form.topic.trim().length === 0 || form.brief.trim().length === 0 || agents.length < 2) {
+            setHostError("A council needs a topic, a brief and at least two agents.");
+            return;
+        }
+        const closer = form.closer.trim() || agents[0];
+        if (!agents.includes(closer)) { setHostError(`Closer "${closer}" is not one of ${agents.join(", ")}.`); return; }
+        setHostError("");
+        setConvening(true);
+        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType });
+        setTimeout(() => setConvening(false), 8000);
+    }, [form]);
 
     useEffect(() => {
         const check = () => setIsNarrow(window.innerWidth < 900);
@@ -177,14 +245,20 @@ export default function CouncilPage() {
                         marks anyone present and never changes whose turn it is.
                     </p>
                 </div>
-                <button
-                    type="button"
-                    onClick={() => setLive((v) => !v)}
-                    style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
-                >
-                    <RefreshCw size={15} style={live ? styles.spin : undefined} />
-                    {live ? "Live" : "Paused"}
-                </button>
+                <div style={styles.headerActions}>
+                    <span style={{ ...styles.quickLink, ...(hostState === "connected" ? styles.liveOn : styles.hostChipOff) }}>
+                        <Plug size={15} />
+                        {hostState === "connected" ? `local host :${hostPort}` : hostState === "probing" ? "looking for a host" : "observing via Zuychin"}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setLive((v) => !v)}
+                        style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
+                    >
+                        <RefreshCw size={15} style={live ? styles.spin : undefined} />
+                        {live ? "Live" : "Paused"}
+                    </button>
+                </div>
             </header>
 
             <div style={styles.quickActions}>
@@ -193,6 +267,169 @@ export default function CouncilPage() {
                 <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
                 <Link href="/admin" style={styles.quickLink}><ShieldCheck size={15} /> Dashboard</Link>
             </div>
+
+            <section style={styles.panel}>
+                <div style={styles.panelHeadRow}>
+                    <PanelHeader
+                        title="Local host"
+                        description={
+                            hostState === "connected"
+                                ? `${host?.agents.length ?? 0} agents · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
+                                : hostState === "unpaired"
+                                    ? `a host is running on port ${hostPort} but this browser is not paired with it`
+                                    : hostState === "probing"
+                                        ? `probing 127.0.0.1:${8787}-8791`
+                                        : "no host reachable on this machine"
+                        }
+                        icon={<Cpu size={16} />}
+                    />
+                    {hostState !== "connected" && (
+                        <button type="button" onClick={() => void probeHost()} style={styles.quickLink}>
+                            <RefreshCw size={15} /> Retry
+                        </button>
+                    )}
+                    {hostState === "connected" && (
+                        <button
+                            type="button"
+                            onClick={() => { clientRef.current?.stop(); forgetHost(); }}
+                            style={{ ...styles.quickLink, ...styles.dangerLink }}
+                            title="Stop the host and every agent it owns"
+                        >
+                            <Square size={14} /> Stop host
+                        </button>
+                    )}
+                </div>
+
+                {hostError && <div style={styles.errorBox}>{hostError}</div>}
+
+                {hostState === "absent" && (
+                    <div style={styles.emptyText}>
+                        Observing through Zuychin. Agents can still join by hand, but nothing here can
+                        start one, mediate its file access or push it a turn. To take control, run{" "}
+                        <code style={styles.code}>npx tsx --env-file=.env.local scripts/council-host.mts --repo &lt;path&gt;</code>{" "}
+                        on the machine holding the repo, then Retry.
+                        <br />
+                        On a phone, or from the deployed site with the local-network prompt denied,
+                        this is the only mode available - there is no host to reach.
+                    </div>
+                )}
+
+                {hostState === "unpaired" && (
+                    <div style={styles.pairRow}>
+                        <span style={styles.emptyText}>Enter the pairing code the host printed:</span>
+                        <input
+                            value={pairCode}
+                            onChange={(e) => setPairCode(e.target.value.toUpperCase())}
+                            placeholder="ABCD2345"
+                            maxLength={8}
+                            style={{ ...styles.input, maxWidth: 160, letterSpacing: 2 }}
+                        />
+                        <button type="button" onClick={() => void submitPairing()} style={styles.quickLink}>Pair</button>
+                    </div>
+                )}
+
+                {hostState === "connected" && host && (
+                    <>
+                        {host.permissions.length > 0 && (
+                            <div style={styles.permissionQueue}>
+                                <div style={styles.obligationsTitle}>Waiting on you</div>
+                                {host.permissions.map((p) => (
+                                    <div key={p.id} style={styles.permissionRow}>
+                                        <span style={{ ...styles.smallPill, ...styles.pillWarn }}>{p.kind}</span>
+                                        <span style={styles.rosterName}>{p.agent}</span>
+                                        <span style={styles.permissionTitle}>{p.title}</span>
+                                        <span style={styles.permissionButtons}>
+                                            <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, true)} style={styles.quickLink}>Allow</button>
+                                            <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, false)} style={{ ...styles.quickLink, ...styles.dangerLink }}>Deny</button>
+                                        </span>
+                                        <span style={styles.workDetail}>{p.path ?? ""}{p.path ? " · " : ""}{p.reason} · denied automatically after 120s</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {host.agents.length > 0 && (
+                            <div style={styles.roster}>
+                                {host.agents.map((a) => (
+                                    <div key={a.name} style={styles.workRow}>
+                                        <span style={{
+                                            ...styles.dot,
+                                            background: a.state === "failed" || a.state === "exited"
+                                                ? "#ff8f6b"
+                                                : a.state === "busy" ? "#ffd166" : "#31d07f",
+                                        }} />
+                                        <span style={styles.rosterName}>{a.name}</span>
+                                        <span style={{ ...styles.smallPill, ...(a.mode === "acp" ? styles.pillGood : styles.pillMuted) }}>{a.mode}</span>
+                                        <span style={{ ...styles.smallPill, ...styles.pillMuted }}>{a.state}</span>
+                                        {host.floorHolder === a.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>has floor</span>}
+                                        <span style={styles.rosterMeta}>{a.detail}</span>
+                                        <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>
+                                        {a.warn && <span style={{ ...styles.workDetail, color: "#ffd166" }}>! {a.warn}</span>}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {activity.length > 0 && (
+                            <div style={styles.activityFeed}>
+                                {activity.slice().reverse().map((item, i) => (
+                                    <div key={`${item.at}-${i}`} style={styles.activityRow}>
+                                        <span style={styles.activityAgent}>{item.agent}</span>
+                                        <span style={styles.activityKind}>{item.kind}</span>
+                                        <span style={styles.activityDetail}>{item.detail.slice(0, 240)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {!host.code && (
+                            <div style={styles.conveneForm}>
+                                <div style={styles.obligationsTitle}>Convene</div>
+                                <input
+                                    value={form.topic}
+                                    onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                                    placeholder="One decidable question"
+                                    style={styles.input}
+                                />
+                                <textarea
+                                    value={form.brief}
+                                    onChange={(e) => setForm({ ...form, brief: e.target.value })}
+                                    placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
+                                    style={{ ...styles.input, minHeight: 80, resize: "vertical" }}
+                                />
+                                <div style={styles.conveneRow}>
+                                    <input
+                                        value={form.agents}
+                                        onChange={(e) => setForm({ ...form, agents: e.target.value })}
+                                        placeholder="claude-a, codex-1"
+                                        style={styles.input}
+                                    />
+                                    <input
+                                        value={form.closer}
+                                        onChange={(e) => setForm({ ...form, closer: e.target.value })}
+                                        placeholder="closer (defaults to the first)"
+                                        style={styles.input}
+                                    />
+                                    <select
+                                        value={form.councilType}
+                                        onChange={(e) => setForm({ ...form, councilType: e.target.value })}
+                                        style={styles.input}
+                                    >
+                                        {["debate", "code", "research", "audit", "debug"].map((t) => <option key={t} value={t}>{t}</option>)}
+                                    </select>
+                                    <button type="button" onClick={submitConvene} disabled={convening} style={{ ...styles.quickLink, ...(convening ? styles.hostChipOff : {}) }}>
+                                        <Play size={15} /> {convening ? "Convening…" : "Convene"}
+                                    </button>
+                                </div>
+                                <div style={styles.workDetail}>
+                                    Names must exist in scripts/council-agents.json. Each gets its own worktree off{" "}
+                                    {host.repo}, and every file and terminal call it makes is checked against that worktree.
+                                </div>
+                            </div>
+                        )}
+                    </>
+                )}
+            </section>
 
             {loading && (
                 <div style={styles.loadingCard}><Clock size={16} /> Loading councils…</div>
@@ -535,6 +772,39 @@ const styles: Record<string, React.CSSProperties> = {
     },
     liveOn: { color: "#31d07f", borderColor: "color-mix(in srgb, #31d07f 45%, transparent)" },
     spin: { animation: "spin 2s linear infinite" },
+    headerActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    hostChipOff: { color: "var(--color-text-muted)", opacity: 0.75 },
+    dangerLink: { color: "#ff8f6b", borderColor: "color-mix(in srgb, #ff8f6b 40%, transparent)" },
+    code: {
+        fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5,
+        padding: "2px 6px", borderRadius: 5,
+        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
+    },
+    input: {
+        flex: "1 1 180px", minWidth: 0, padding: "8px 10px", fontSize: 13,
+        borderRadius: 8, border: "1px solid var(--color-border)",
+        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
+        color: "var(--color-text-primary)", fontFamily: "inherit",
+    },
+    pairRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    conveneForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 14 },
+    conveneRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+    permissionQueue: {
+        display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, padding: 12,
+        borderRadius: 10, border: "1px solid color-mix(in srgb, #ff8f6b 40%, transparent)",
+        background: "color-mix(in srgb, #ff8f6b 8%, transparent)",
+    },
+    permissionRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    permissionTitle: { fontSize: 12.5, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" },
+    permissionButtons: { display: "flex", gap: 6, marginLeft: "auto" },
+    activityFeed: {
+        marginTop: 14, maxHeight: 190, overflowY: "auto", display: "flex",
+        flexDirection: "column", gap: 4,
+    },
+    activityRow: { display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5 },
+    activityAgent: { fontWeight: 750, flexShrink: 0 },
+    activityKind: { color: "var(--color-text-muted)", flexShrink: 0 },
+    activityDetail: { color: "var(--color-text-muted)", minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" },
     loadingCard: {
         minHeight: "30vh", display: "flex", alignItems: "center", justifyContent: "center",
         gap: 10, color: "var(--color-text-muted)",

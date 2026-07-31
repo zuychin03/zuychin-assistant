@@ -22,11 +22,11 @@ import {
     leaveCouncil, listOpenCouncils, listParticipants, readTranscript,
 } from "@/lib/council/store";
 import {
-    renderCloseOutcome, renderConveneResult, renderLeft, renderNotAParticipant, renderPassed,
-    renderRosterRejection, renderRulebook, renderSpeakResult, renderTranscript,
-    renderUnknownSession, renderWaitResult,
+    renderCloseOutcome, renderConveneResult, renderDispatchSpeakResult, renderDispatchWaitNote,
+    renderLeft, renderNotAParticipant, renderPassed, renderRosterRejection, renderRulebook,
+    renderSpeakResult, renderTranscript, renderTurn, renderUnknownSession, renderWaitResult,
 } from "@/lib/council/render";
-import { pollCouncil } from "@/lib/council/wait";
+import { dispatchCouncil, pollCouncil } from "@/lib/council/wait";
 import { closeCouncil } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
 import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
@@ -493,9 +493,10 @@ const handler = createMcpHandler(
                     sessionCode: z.string().min(1).describe("Session code from your human, e.g. 'CN-4KQ2'."),
                     agentName: z.string().min(1).describe("Your council name, exactly as your human gave it. Use it unchanged in every later call - a mismatch makes you invisible to the council."),
                     expertise: z.string().optional().describe("One line on what you bring. Shown to the other participants."),
+                    dispatchMode: z.boolean().optional().describe("Set by a local council host that owns this agent's turns over ACP; agents must not set it themselves. When true the agent is prompted with each turn instead of polling, and council_wait stops blocking for it. Omit to leave the current setting unchanged."),
                 },
             },
-            async ({ sessionCode, agentName, expertise }, extra) => {
+            async ({ sessionCode, agentName, expertise, dispatchMode }, extra) => {
                 const denied = requireCouncil(extra);
                 if (denied) return denied;
                 try {
@@ -503,7 +504,7 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const result = await joinCouncil({ sessionId: session.id, agentName, expertise });
+                    const result = await joinCouncil({ sessionId: session.id, agentName, expertise, dispatchMode });
                     const roster = await listParticipants(session.id);
                     if (!result.ok) {
                         return { content: [{ type: "text", text: renderRosterRejection({ session, participants: roster, attempted: agentName }) }] };
@@ -563,6 +564,13 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    // Enforcement, not instruction: a host-dispatched agent that
+                    // also polled would have its cursor acked twice, once by the
+                    // host and once by itself, and would silently skip messages.
+                    const me = await getParticipant(session.id, agentName);
+                    if (me?.dispatchMode) {
+                        return { content: [{ type: "text", text: renderDispatchWaitNote(session.code, agentName, sinceSeq ?? me.cursorSeq) }] };
+                    }
                     const result = await pollCouncil({
                         session,
                         agentName,
@@ -603,7 +611,8 @@ const handler = createMcpHandler(
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
                     const roster = await listParticipants(session.id);
-                    if (!roster.some((p) => p.name === agentName && p.kind === "agent")) {
+                    const me = roster.find((p) => p.name === agentName && p.kind === "agent");
+                    if (!me) {
                         return { content: [{ type: "text", text: renderNotAParticipant(session.code, agentName) }] };
                     }
 
@@ -626,6 +635,23 @@ const handler = createMcpHandler(
                         clientKey, addressedTo: target, replyToSeq, ackSeq: sinceSeq,
                     });
                     if (post.advanced) scheduleModeration(session.id, post.round);
+                    const receipt = {
+                        ...post, intent, addressedTo: target, replyToSeq,
+                        truncatedChars: message.length > MAX_BODY_CHARS ? message.length - MAX_BODY_CHARS : undefined,
+                    };
+
+                    // waitSeconds is ignored for a dispatched agent: it posts and
+                    // ends its turn, and the host delivers what arrives next.
+                    if (me.dispatchMode) {
+                        return {
+                            content: [{
+                                type: "text",
+                                text: renderDispatchSpeakResult({
+                                    post: receipt, session, agentName, cursor: sinceSeq ?? me.cursorSeq,
+                                }),
+                            }],
+                        };
+                    }
 
                     // The cursor for the block that follows is what the agent had
                     // READ, never the seq it just wrote: acking its own seq would
@@ -638,13 +664,7 @@ const handler = createMcpHandler(
                     return {
                         content: [{
                             type: "text",
-                            text: renderSpeakResult({
-                                post: {
-                                    ...post, intent, addressedTo: target, replyToSeq,
-                                    truncatedChars: message.length > MAX_BODY_CHARS ? message.length - MAX_BODY_CHARS : undefined,
-                                },
-                                result, session, agentName,
-                            }),
+                            text: renderSpeakResult({ post: receipt, result, session, agentName }),
                         }],
                     };
                 } catch (error) {
@@ -688,6 +708,85 @@ const handler = createMcpHandler(
             },
         );
 
+
+        server.registerTool(
+            "council_dispatch",
+            {
+                description:
+                    "[COUNCIL HOST] Non-blocking multi-agent read for a local council host that owns agents over ACP. NOT for participants: an agent must use council_wait or council_speak, which render prose and enforce the protocol. Returns JSON because the consumer is a program: one tick, the current floor holder, and for each named agent everything it has not read plus its open obligations. It never blocks and never spends wait-call budget. Delivery is at-least-once - pass the previous batch's agents in ackFor only once their prompt was accepted, and never ask for a new batch for an agent whose prompt is still unacknowledged.",
+                inputSchema: {
+                    sessionCode: z.string().min(1).describe("Session code, e.g. 'CN-4KQ2'."),
+                    agentNames: z.array(z.string().min(1)).min(1).max(5).describe("The agents this host owns. Also marks them alive, which is what keeps them eligible for floor election between turns."),
+                    ackFor: z.array(z.string().min(1)).max(5).optional().describe("Agents whose previously delivered batch reached them. This is the only thing that advances a dispatched agent's read cursor."),
+                },
+            },
+            async ({ sessionCode, agentNames, ackFor }, extra) => {
+                const denied = requireCouncil(extra);
+                if (denied) return denied;
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    if (!session) {
+                        return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session", sessionCode }) }] };
+                    }
+                    const outcome = await dispatchCouncil({ session, agentNames, ackFor });
+                    if (outcome.kind === "degraded") {
+                        return { content: [{ type: "text", text: JSON.stringify({ error: "degraded", sessionCode: session.code }) }] };
+                    }
+                    const { session: latest, floorHolder, view } = outcome;
+                    // The slice is what the host BRANCHES on; prompt is the same
+                    // turn already rendered, non-null exactly when there is a
+                    // turn to push. Rendering here keeps one copy of the
+                    // agent-facing prose instead of a second one in the host.
+                    const overdue = view.participants
+                        .filter((p) => p.kind === "agent" && p.status !== "left")
+                        .map((p) => p.name);
+                    const agents = Object.fromEntries(Object.entries(view.agents).map(([name, slice]) => {
+                        const turnDue = latest.status !== "open"
+                            || slice.fresh.length > 0
+                            || slice.hasFloor;
+                        return [name, {
+                            ...slice,
+                            prompt: turnDue
+                                ? renderTurn({
+                                    session: latest, agentName: name, fresh: slice.fresh,
+                                    openToYou: slice.openToYou, cursor: slice.cursor,
+                                    omittedBefore: slice.omittedBefore, hasFloor: slice.hasFloor,
+                                    moreRemain: slice.moreRemain,
+                                    overdue: overdue.filter((n) => n !== name),
+                                })
+                                : null,
+                        }];
+                    }));
+                    return {
+                        content: [{
+                            type: "text",
+                            text: JSON.stringify({
+                                sessionCode: latest.code,
+                                topic: latest.topic,
+                                status: latest.status,
+                                round: latest.round,
+                                maxRounds: latest.maxRounds,
+                                lastSeq: latest.lastSeq,
+                                lastMessageAt: latest.lastMessageAt,
+                                closerName: latest.closerName,
+                                verdict: latest.verdict,
+                                openQuestions: latest.openQuestions,
+                                vaultPath: latest.vaultPath,
+                                floorHolder,
+                                participants: view.participants.map((p) => ({
+                                    name: p.name, kind: p.kind, status: p.status,
+                                    postsTotal: p.postsTotal, cursorSeq: p.cursorSeq,
+                                    dispatchMode: p.dispatchMode, lastSeenAt: p.lastSeenAt,
+                                })),
+                                agents,
+                            }),
+                        }],
+                    };
+                } catch (error) {
+                    return { content: [{ type: "text", text: JSON.stringify({ error: errMsg(error) }) }] };
+                }
+            },
+        );
 
         server.registerTool(
             "council_work_next",

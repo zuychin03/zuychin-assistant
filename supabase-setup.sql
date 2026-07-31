@@ -1710,3 +1710,48 @@ alter table vault_page_links enable row level security;
 drop policy if exists "Allow all access to vault_page_links" on vault_page_links;
 create policy "Allow all access to vault_page_links"
   on vault_page_links for all using (true) with check (true);
+
+
+-- ===== Council ACP host wave =====
+
+-- Set for agents scripts/council-host.mts owns over ACP: it pushes their turns
+-- with session/prompt instead of them long-polling. The two must never both
+-- run for one participant - the host's ack would advance cursor_seq past
+-- messages the agent never read - so council_wait and council_speak refuse to
+-- block for a dispatch-mode participant.
+alter table council_participants
+  add column if not exists dispatch_mode boolean not null default false;
+
+-- Signature change: p_dispatch_mode is new. null means "leave it as it is", so
+-- a re-join to recover a truncated context cannot silently flip an agent out of
+-- host dispatch and back into long-polling.
+drop function if exists join_council(uuid, text, text);
+create or replace function join_council(
+  p_session_id uuid, p_agent_name text, p_expertise text default '',
+  p_dispatch_mode boolean default null
+)
+returns jsonb
+language plpgsql
+as $$
+declare v_kind text; v_live integer;
+begin
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_agent_name;
+  if v_kind is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_on_roster');
+  end if;
+  update council_participants
+     set status = case when status = 'invited' then 'active' else status end,
+         expertise = case when p_expertise <> '' then p_expertise else expertise end,
+         dispatch_mode = coalesce(p_dispatch_mode, dispatch_mode),
+         joined_at = coalesce(joined_at, now()), last_seen_at = now()
+   where session_id = p_session_id and name = p_agent_name;
+  select count(*) into v_live from council_participants
+   where session_id = p_session_id and kind = 'agent' and joined_at is not null;
+  if v_live >= 2 then
+    update council_sessions set quorum_at = coalesce(quorum_at, now())
+     where id = p_session_id;
+  end if;
+  return jsonb_build_object('ok', true, 'live', v_live);
+end;
+$$;

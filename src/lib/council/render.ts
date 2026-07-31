@@ -56,6 +56,20 @@ export function renderOpenToYou(open: CouncilMessage[]): string {
     return `\nOPEN TO YOU\n${lines.join("\n")}\n  ← clear these before proposing anything new`;
 }
 
+// The loop an agent is told to run differs by who drives the turn: a
+// long-polling agent blocks in the tool, a dispatched one is prompted by the
+// local host and must END its turn so the host can hand it the next one.
+function loopRule(dispatchMode: boolean): string {
+    if (!dispatchMode) {
+        return `1. The loop is: council_speak → (it blocks and returns what arrived) → council_speak again.
+   You are in that loop until you see "=== COUNCIL CLOSED ===". Nothing else releases you.`;
+    }
+    return `1. Your turns are PUSHED to you: the local host prompts you each time there is something to
+   read or the floor is yours. So post ONCE with council_speak({..., "waitSeconds": 0}) and then
+   end your turn and stop. Do not loop, and do not call council_wait - it returns immediately for
+   you. The next prompt you receive is your next turn.`;
+}
+
 export function renderRulebook(params: {
     session: CouncilSession;
     participants: CouncilParticipant[];
@@ -63,6 +77,7 @@ export function renderRulebook(params: {
     transcript: CouncilMessage[];
 }): string {
     const { session, participants, agentName, transcript } = params;
+    const dispatchMode = participants.find((p) => p.name === agentName)?.dispatchMode === true;
     const template = getCouncilTemplate(session.councilType);
     const isCloser = agentName === session.closerName;
     const history = transcript.length
@@ -82,8 +97,7 @@ ${template.instruction}
 Closing standard: ${template.closingCriteria}
 
 HOW THIS COUNCIL WORKS
-1. The loop is: council_speak → (it blocks and returns what arrived) → council_speak again.
-   You are in that loop until you see "=== COUNCIL CLOSED ===". Nothing else releases you.
+${loopRule(dispatchMode)}
 2. Every council result starts with one of six STATUS keywords and ends with a "NEXT →" line
    holding the exact call to make. Branch on the keyword. Make the NEXT call.
      YOUR_TURN          speak now
@@ -117,6 +131,7 @@ ${nextCall("council_speak", {
     addressedTo: "all",
     clientKey: `${agentName}-1`,
     sinceSeq: lastSeq,
+    ...(dispatchMode ? { waitSeconds: 0 } : {}),
     message: "<your opening position, stated so it is falsifiable>",
 })}`;
 }
@@ -178,7 +193,7 @@ export function renderKickoffBlock(
         : "";
 
     return `You are joining a Zuychin Council: a live multi-round debate with other AI agents, held over
-the zuychin-knowledge MCP server. Your council name is "${agentName}". The session code is ${session.code}.
+Zuychin's MCP server. Your council name is "${agentName}". The session code is ${session.code}.
 This is a ${getCouncilTemplate(session.councilType).label.toLowerCase()} council; council_join returns the mode-specific instructions.
 
 Do this now. Do not ask me anything first.
@@ -355,7 +370,11 @@ This post is exempt from the ${POSTS_PER_ROUND}-per-round quota - post even if y
     }
 }
 
-function waitNext(result: WaitResult, agentName: string): string {
+function waitNext(result: WaitResult, agentName: string, dispatchMode = false): string {
+    // A dispatched agent posts once and ends its turn, so every speak call it is
+    // handed carries waitSeconds 0. The server enforces this too; the rendered
+    // call agrees with it rather than contradicting it.
+    const pace = dispatchMode ? { waitSeconds: 0 } : {};
     switch (result.kind) {
         case "batch": {
             if (result.moreRemain) {
@@ -369,6 +388,7 @@ function waitNext(result: WaitResult, agentName: string): string {
                 ...(owed ? { replyToSeq: owed.seq, addressedTo: owed.speaker } : { addressedTo: "all" }),
                 clientKey: `${agentName}-r${result.session.round}-${result.cursor}`,
                 sinceSeq: result.cursor,
+                ...pace,
                 message: owed
                     ? `<answer ${owed.speaker}'s point, or use intent 'concede' if they are right>`
                     : "<your next position, stated so it is falsifiable>",
@@ -377,7 +397,7 @@ function waitNext(result: WaitResult, agentName: string): string {
         case "floor":
             return nextCall("council_speak", {
                 sessionCode: result.session.code, agentName, intent: "propose", addressedTo: "all",
-                clientKey: `${agentName}-floor-${result.session.round}`, sinceSeq: result.cursor,
+                clientKey: `${agentName}-floor-${result.session.round}`, sinceSeq: result.cursor, ...pace,
                 message: "<move the council forward: restate the open question and take a position>",
             });
         case "concluding":
@@ -389,7 +409,7 @@ function waitNext(result: WaitResult, agentName: string): string {
                 })
                 : nextCall("council_speak", {
                     sessionCode: result.session.code, agentName, intent: "refine", addressedTo: "all",
-                    clientKey: `${agentName}-final`, sinceSeq: result.cursor,
+                    clientKey: `${agentName}-final`, sinceSeq: result.cursor, ...pace,
                     message: "<your one final position>",
                 });
         case "waiting":
@@ -449,33 +469,22 @@ NEXT → nothing. You are done waiting on this council.`;
     return `${keywordLine(result, agentName)}\n${body}\n\n${waitNext(result, agentName)}`;
 }
 
-// The fused tool: the post outcome supplies the keyword and the receipt, and
-// the wait outcome supplies whatever arrived plus the single NEXT line.
-export function renderSpeakResult(params: {
-    post: {
-        ok: boolean; seq?: number; reason?: string; duplicate?: boolean;
-        posts?: number; truncatedChars?: number;
-        intent: string; addressedTo: string; replyToSeq?: number;
-    };
-    result: WaitResult;
-    session: CouncilSession;
-    agentName: string;
-}): string {
-    const { post, result, session, agentName } = params;
-    if (result.kind === "not_participant") return renderNotAParticipant(session.code, agentName);
-    if (result.kind === "closed") return renderClosed(result.session);
+interface PostOutcome {
+    ok: boolean; seq?: number; reason?: string; duplicate?: boolean;
+    posts?: number; truncatedChars?: number;
+    intent: string; addressedTo: string; replyToSeq?: number;
+}
 
-    const cursor = "cursor" in result ? result.cursor : 0;
-    const round = "session" in result ? result.session.round : session.round;
-    const body = waitBody(result, agentName);
-    const next = waitNext(result, agentName);
-    const tail = `${body ? `\n${body}` : ""}\n\n${next}`;
-
+// Keyword line plus receipt, shared by the fused tool and the dispatched
+// variant so a post reads identically whoever is driving the turn.
+function speakReceipt(
+    post: PostOutcome, session: CouncilSession, agentName: string, round: number, cursor: number,
+): string {
     if (!post.ok) {
         const why = post.reason === "quota"
             ? `Nothing was recorded. You have used both posts in round ${round}. This is a pacing rule, not a bug.\nYour message was not lost - say it again next round if it still matters.`
             : `Nothing was recorded (${post.reason}).`;
-        return `NOT_YOUR_TURN - round ${round} of ${session.maxRounds} · you are "${agentName}" · cursor ${cursor}\n${why}${tail}`;
+        return `NOT_YOUR_TURN - round ${round} of ${session.maxRounds} · you are "${agentName}" · cursor ${cursor}\n${why}`;
     }
 
     const dup = post.duplicate ? " (already recorded)" : "";
@@ -494,7 +503,112 @@ export function renderSpeakResult(params: {
     const dupNote = post.duplicate ? "\nIf your previous call appeared to fail, it actually succeeded." : "";
 
     return `POSTED - seq ${post.seq}${dup} · round ${round} of ${session.maxRounds} · you are "${agentName}" · cursor ${cursor}
-${recorded}${truncated}${quota}${dupNote}${tail}`;
+${recorded}${truncated}${quota}${dupNote}`;
+}
+
+// The fused tool: the post outcome supplies the keyword and the receipt, and
+// the wait outcome supplies whatever arrived plus the single NEXT line.
+export function renderSpeakResult(params: {
+    post: PostOutcome;
+    result: WaitResult;
+    session: CouncilSession;
+    agentName: string;
+    dispatchMode?: boolean;
+}): string {
+    const { post, result, session, agentName } = params;
+    if (result.kind === "not_participant") return renderNotAParticipant(session.code, agentName);
+    if (result.kind === "closed") return renderClosed(result.session);
+
+    const cursor = "cursor" in result ? result.cursor : 0;
+    const round = "session" in result ? result.session.round : session.round;
+    const body = waitBody(result, agentName);
+    const next = waitNext(result, agentName, params.dispatchMode === true);
+
+    return `${speakReceipt(post, session, agentName, round, cursor)}${body ? `\n${body}` : ""}\n\n${next}`;
+}
+
+// Dispatched agents post and stop: the host is already watching for their next
+// turn, so the fused wait would only hold the ACP prompt open and hand back
+// messages the host is about to deliver anyway.
+export function renderDispatchSpeakResult(params: {
+    post: PostOutcome;
+    session: CouncilSession;
+    agentName: string;
+    cursor: number;
+}): string {
+    const { post, session, agentName, cursor } = params;
+    return `${speakReceipt(post, session, agentName, session.round, cursor)}
+
+NEXT → end your turn and stop. The local host will prompt you again the moment there is something
+to read or the floor is yours. Do not call council_wait and do not post again until then.`;
+}
+
+// A dispatched turn arrives as an ACP prompt, not a tool result. These build the
+// same WaitResult shapes the long-poll does, so the NEXT line cannot disagree
+// between the two delivery paths.
+
+/** Appended to the kickoff block for an agent the local host will drive. */
+export function renderDispatchKickoff(sessionCode: string, agentName: string): string {
+    return `
+HOW YOUR TURNS ARRIVE - read this before you start
+A local host process on this machine owns your turns for ${sessionCode}. It watches the council and
+prompts you every time there is something to read or the floor is yours.
+
+- Post ONE council_speak per prompt, with "waitSeconds": 0, then END YOUR TURN and stop.
+- Do NOT loop on council_speak or council_wait waiting for a reply. council_wait returns
+  immediately for you by design; polling it burns tokens and tells you nothing.
+- Silence between your turns is the host holding you, not the council stalling. You will be
+  prompted again. You are released when a prompt contains "=== COUNCIL CLOSED ===".
+- Your first call is still council_join({"sessionCode":"${sessionCode}","agentName":"${agentName}"}).
+`;
+}
+
+/** council_wait for a dispatched agent: refuse to block, and say why. */
+export function renderDispatchWaitNote(sessionCode: string, agentName: string, cursor: number): string {
+    return `WAITING - your turns arrive by prompt, not by polling, so this call did not block.
+The local host is watching ${sessionCode} for you and will prompt you the moment there is something
+to read or the floor is yours. Calling this again changes nothing and costs you tokens.
+
+NEXT → end your turn and stop. If you have something to post right now, use
+council_speak({"sessionCode":"${sessionCode}","agentName":"${agentName}","waitSeconds":0,"sinceSeq":${cursor}, ...}) once, then stop.`;
+}
+
+export function renderTurn(params: {
+    session: CouncilSession;
+    agentName: string;
+    fresh: CouncilMessage[];
+    openToYou: CouncilMessage[];
+    cursor: number;
+    omittedBefore: number | null;
+    hasFloor: boolean;
+    moreRemain: boolean;
+    overdue: string[];
+}): string {
+    const { session, agentName, cursor } = params;
+
+    if (session.status === "closed") return renderClosed(session);
+
+    const result: WaitResult = session.status === "concluding" || session.status === "expired"
+        ? {
+            kind: "concluding", session, fresh: params.fresh,
+            omittedBefore: params.omittedBefore, cursor,
+        }
+        : params.fresh.length > 0
+            ? {
+                kind: "batch", session, fresh: params.fresh, openToYou: params.openToYou,
+                omittedBefore: params.omittedBefore, cursor, hasFloor: params.hasFloor,
+                moreRemain: params.moreRemain,
+            }
+            : { kind: "floor", session, overdue: params.overdue, cursor };
+
+    // moreRemain means the batch was split for length. The long-poll answer is
+    // "call council_wait again"; the dispatched answer is to say nothing, end
+    // the turn, and let the host deliver the rest on its next tick.
+    const next = params.moreRemain && result.kind === "batch"
+        ? `NEXT → nothing yet. This batch was split for length; end your turn without posting and the\nhost will hand you the rest before you reply.`
+        : waitNext(result, agentName, true);
+
+    return `${keywordLine(result, agentName)}\n${waitBody(result, agentName)}\n\n${next}`;
 }
 
 export function renderClosed(session: CouncilSession): string {

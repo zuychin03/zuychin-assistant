@@ -1,7 +1,13 @@
 {
-  "_comment": "Copy to council-agents.json (gitignored) and keep only the agents you actually run. The launcher takes the command ONLY from this file, never from the council record, so convening a council can never choose what executes on your machine.",
+  "_comment": "Copy to council-agents.json (gitignored) and keep only the agents you actually run. The host takes the command ONLY from this file, never from the council record, so convening a council can never choose what executes on your machine.",
 
   "mcpUrl": "http://localhost:3000/api/mcp/mcp",
+
+  "host": {
+    "_doc": "Loopback control channel for /council. port is the first tried; the host walks up to 8791 if it is taken. origins are ADDED to http://localhost:3000 and http://127.0.0.1:3000 - put your deployed PWA origin here to drive the council from it.",
+    "port": 8787,
+    "origins": []
+  },
 
   "instances": {
     "codex-1": { "provider": "codex", "expertise": "implementation and integration" },
@@ -12,35 +18,49 @@
   },
 
   "agents": {
+    "_doc": "mode 'acp' means the host owns the agent over the Agent Client Protocol: one session for the whole council, turns pushed as session/prompt, and the MCP bearer token passed over stdio so it never lands on disk. mode 'shell' is the old one-process-per-turn behaviour and keeps its on-disk --mcp-config. Optional 'env' is merged over the host's environment for that agent only; an object value is JSON-stringified, for a vendor that takes its whole config in one variable. Optional 'warn' is surfaced on the agent's card in /council - use it for anything that makes this agent weaker than the others. VERIFY the command with `scripts/council-acp-probe.mts --agent <name> --prompt` before trusting it: these are config, not code, and the vendors move.",
+
+    "_doc_containment": "The host path-checks fs/read_text_file, fs/write_text_file and any permission request carrying toolCall.locations, and forces terminal cwd to the worktree. An agent that does its own file IO is NOT covered by that gate: run the probe with --edit to find out which kind you have, and put a warn on the entry if it is the second kind. As of 2026-08-01 both codex and cursor are the second kind.",
+
+    "_doc_mcp_name": "The host injects the council MCP server as 'zuychin-council' (COUNCIL_MCP_SERVER_NAME in src/lib/council/protocol.ts). Do not rename it to match a server the agent already has configured: codex-acp silently DROPS a requested server whose name already exists in its own config unless DISABLE_MCP_CONFIG_FILTERING=true, which leaves the agent authenticating against the wrong endpoint with no error.",
+
     "claude-code": {
-      "_doc": "https://code.claude.com/docs/en/headless - -p runs the full agent loop non-interactively. --mcp-config is passed a file the launcher writes OUTSIDE the worktree, because it holds a bearer token. Do NOT add --bare: it skips MCP discovery.",
-      "command": "claude",
-      "args": [
-        "-p", "{prompt}",
-        "--mcp-config", "{mcpConfigFile}",
-        "--permission-mode", "acceptEdits",
-        "--allowedTools", "Bash,Read,Edit,Write,mcp__zuychin-knowledge"
-      ],
-      "mcpConfig": "claude"
+      "_doc": "VERIFIED 2026-07-31: `claude` itself has NO --acp flag; the ACP entry point is Zed's adapter, which wraps the Claude Code SDK. `npx -y @zed-industries/claude-code-acp` downloads it on first use; `npm i -g @zed-industries/claude-code-acp` then lets you use \"command\": \"claude-code-acp\" with no args.",
+      "mode": "acp",
+      "command": "npx",
+      "args": ["-y", "@zed-industries/claude-code-acp"]
     },
 
     "codex": {
-      "_doc": "https://github.com/openai/codex/issues/24135 - codex exec AUTO-CANCELS MCP tool calls non-interactively. The council is entirely MCP tool calls, so with these args codex will join and then stall. The only known workaround today is to add \"--dangerously-bypass-approvals-and-sandbox\", which disables the sandbox: uncomment it only if you accept that on this machine. MCP server must already be in ~/.codex/config.toml.",
-      "command": "codex",
-      "args": ["exec", "--full-auto", "{prompt}"],
-      "warn": "codex exec cancels MCP tool calls unless you add --dangerously-bypass-approvals-and-sandbox (openai/codex#24135) - it will likely stall after joining"
+      "_doc": "VERIFIED 2026-08-01 in a live council. Not `codex acp`: the desktop build's codex.exe is Access denied from a shell, so this runs @agentclientprotocol/codex-acp (a devDependency here) by absolute path under node. Install it with `npm i -D @agentclientprotocol/codex-acp` and point at your own checkout. ACP mode is what makes codex usable at all: `codex exec` auto-cancels MCP tool calls non-interactively (openai/codex#24135), and the only workaround was --dangerously-bypass-approvals-and-sandbox. In ACP mode approvals come back through the host, so that flag is not needed - the live council ran without it. CODEX_CONFIG below only disables unrelated plugins, which caused memory pressure; the council MCP server arrives over session/new and needs no codex-side config.",
+      "mode": "acp",
+      "command": "node",
+      "args": ["<absolute path to your repo>/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
+      "env": {
+        "CODEX_CONFIG": {
+          "plugins": {
+            "browser@openai-bundled": { "enabled": false }
+          }
+        }
+      },
+      "warn": "writes files without calling fs/write_text_file and sends no toolCall.locations, so the host can neither see nor path-check its file access"
     },
 
     "cursor": {
-      "_doc": "https://cursor.com/docs/cli/headless - --force pre-approves edits in print mode. MCP server must already be in ~/.cursor/mcp.json. Known upstream bug: -p can hang without releasing the terminal on some early-2026 builds.",
+      "_doc": "VERIFIED 2026-08-01 in a live council: `cursor-agent acp` serves ACP natively. `agent` is the same shim but too generic a name to claim on PATH. Needs spawnResolved - Node refuses to spawn the .cmd shim directly (CVE-2024-27980). ACP mode also sidesteps the print-mode bug where -p could hang without releasing the terminal.",
+      "mode": "acp",
       "command": "cursor-agent",
-      "args": ["-p", "--force", "{prompt}"]
+      "args": ["acp"],
+      "warn": "writes files without calling fs/write_text_file and without requesting permission at all, so the host can neither see nor path-check its file access"
     },
 
     "antigravity": {
-      "_doc": "https://antigravity.google/docs/cli/headless - --print-timeout defaults to 5m, far below a 90m council, so it is raised here. Shell commands are soft-denied in headless mode unless allowed: add permissions.allow rules in ~/.gemini/antigravity-cli/settings.json (preferred) or append --dangerously-skip-permissions.",
+      "_doc": "https://antigravity.google/docs/cli/headless - no --acp upstream yet, so this stays on the shell adapter and behaves exactly as it did before: one process per turn, prompt in argv, MCP config written outside the worktree because it holds a bearer token. --print-timeout defaults to 5m, far below a 90m council, so it is raised here. Shell commands are soft-denied headlessly unless allowed: add permissions.allow rules in ~/.gemini/antigravity-cli/settings.json (preferred) or append --dangerously-skip-permissions.",
+      "mode": "shell",
       "command": "agy",
-      "args": ["-p", "{prompt}", "--print-timeout", "95m"]
+      "args": ["-p", "{prompt}", "--print-timeout", "95m"],
+      "mcpConfig": "claude",
+      "warn": "shell mode: no --acp upstream yet, so no permission mediation, no streamed activity and no turn dispatch - this agent long-polls its own turns"
     }
   }
 }

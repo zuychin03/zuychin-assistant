@@ -3,9 +3,9 @@ import {
     TOUCH_MS, pollIntervalMs, sleep,
 } from "./protocol";
 import {
-    buildView, electFloor, expireSessionIfDue, getParticipant, getSessionById,
-    readTick, touchParticipant,
-    type CouncilMessage, type CouncilParticipant, type CouncilSession,
+    buildDispatchViews, buildView, electFloor, expireSessionIfDue, getParticipant, getSessionById,
+    markParticipantsAlive, readTick, stagePendingAck, touchParticipant,
+    type CouncilDispatchView, type CouncilMessage, type CouncilParticipant, type CouncilSession,
 } from "./store";
 
 // The wake problem inverted: an MCP server can never reach an idle agent, but an
@@ -177,4 +177,57 @@ export async function pollCouncil(params: {
     }
 
     return { kind: "waiting", session: latest, cursor, lastMessageAt: latest.lastMessageAt, waitCalls };
+}
+
+export type DispatchResult =
+    | { kind: "degraded" }
+    | { kind: "ok"; session: CouncilSession; floorHolder: string | null; view: CouncilDispatchView };
+
+/**
+ * The host's counterpart to pollCouncil: one tick, one optional election, one
+ * batch per owned agent, then return. Never blocks and never spends waitCalls.
+ * Authority stays server-side; the host computes no floor of its own.
+ */
+export async function dispatchCouncil(params: {
+    session: CouncilSession;
+    agentNames: string[];
+    ackFor?: string[];
+}): Promise<DispatchResult> {
+    const sessionId = params.session.id;
+    const tick = await readTick(sessionId);
+    if (!tick) return { kind: "degraded" };
+
+    if (Date.parse(tick.expiresAt) <= Date.now()) await expireSessionIfDue(sessionId);
+
+    // An expired grant is not a grant: the same freshness test pollCouncil
+    // applies before it tells an agent the floor is its.
+    let floorHolder = isFresh(tick.floorGrantedAt, FLOOR_TTL_SECONDS) ? tick.floorHolder : null;
+    const silentMs = Date.now() - Date.parse(tick.lastMessageAt);
+    if (floorHolder === null && tick.quorumAt !== null && silentMs >= SILENCE_GRANT_SECONDS * 1000) {
+        // Whoever ticks first grants on everyone's behalf, host or agent.
+        const elected = await electFloor({ sessionId, epoch: tick.floorEpoch, lastSeq: tick.lastSeq });
+        if (elected.granted && elected.holder) floorHolder = elected.holder;
+    }
+
+    // The host confirming the PREVIOUS batch reached its agent. This is the only
+    // thing that advances a dispatched agent's cursor.
+    for (const name of params.ackFor ?? []) {
+        await touchParticipant({ sessionId, agentName: name, countWait: false });
+    }
+    // Presence for agents that never call a council tool between turns; the host
+    // being alive is what keeps them in the election.
+    await markParticipantsAlive(sessionId, params.agentNames);
+
+    const session = (await getSessionById(sessionId)) ?? params.session;
+    const view = await buildDispatchViews({ session, agentNames: params.agentNames, floorHolder });
+
+    for (const [name, slice] of Object.entries(view.agents)) {
+        if (slice.fresh.length === 0) continue;
+        const me = view.participants.find((p) => p.name === name);
+        await stagePendingAck({
+            sessionId, agentName: name, delivered: slice.delivered, current: me?.pendingAckSeq ?? 0,
+        });
+    }
+
+    return { kind: "ok", session, floorHolder, view };
 }

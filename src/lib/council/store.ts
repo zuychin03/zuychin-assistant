@@ -38,7 +38,12 @@ export interface CouncilParticipant {
     name: string; kind: "agent" | "moderator"; expertise: string;
     status: "invited" | "active" | "passed" | "left";
     postsTotal: number; postsThisRound: number; cursorSeq: number;
+    pendingAckSeq: number;
     expiredGrants: number; waitCalls: number; joinedSeq: number; lastSeenAt: string;
+    // True when council-host.mts owns this agent's turns over ACP. Such an agent
+    // must never also long-poll, or the host's ack advances its cursor past
+    // messages it never read.
+    dispatchMode: boolean;
 }
 
 // Everything render.ts needs, assembled once per tool call.
@@ -69,7 +74,9 @@ interface ParticipantRow {
     name: string; kind: "agent" | "moderator"; expertise: string;
     status: "invited" | "active" | "passed" | "left";
     posts_total: number; posts_this_round: number; cursor_seq: number;
+    pending_ack_seq: number;
     expired_grants: number; wait_calls: number; joined_seq: number; last_seen_at: string;
+    dispatch_mode: boolean;
 }
 
 const SESSION_COLUMNS =
@@ -82,7 +89,7 @@ const MESSAGE_COLUMNS =
 
 const PARTICIPANT_COLUMNS =
     "name, kind, expertise, status, posts_total, posts_this_round, cursor_seq, " +
-    "expired_grants, wait_calls, joined_seq, last_seen_at";
+    "pending_ack_seq, expired_grants, wait_calls, joined_seq, last_seen_at, dispatch_mode";
 
 function mapSession(row: SessionRow): CouncilSession {
     return {
@@ -139,10 +146,12 @@ function mapParticipant(row: ParticipantRow): CouncilParticipant {
         postsTotal: row.posts_total,
         postsThisRound: row.posts_this_round,
         cursorSeq: row.cursor_seq,
+        pendingAckSeq: row.pending_ack_seq,
         expiredGrants: row.expired_grants,
         waitCalls: row.wait_calls,
         joinedSeq: row.joined_seq,
         lastSeenAt: row.last_seen_at,
+        dispatchMode: row.dispatch_mode === true,
     };
 }
 
@@ -306,12 +315,16 @@ export async function joinCouncil(params: {
     sessionId: string;
     agentName: string;
     expertise?: string;
+    dispatchMode?: boolean;
 }): Promise<{ ok: boolean; reason?: string; live?: number }> {
     try {
         const { data, error } = await supabase.rpc("join_council", {
             p_session_id: params.sessionId,
             p_agent_name: params.agentName,
             p_expertise: params.expertise ?? "",
+            // null, not false: a re-join to recover a truncated context must not
+            // flip a host-owned agent back into long-polling.
+            p_dispatch_mode: params.dispatchMode ?? null,
         });
         if (error) throw new Error(error.message);
         return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; live?: number };
@@ -379,6 +392,38 @@ export async function touchParticipant(params: {
         console.warn("[Council] touchParticipant failed:", err);
         return true;
     }
+}
+
+// Keeps host-owned agents inside WAITER_FRESH_SECONDS between turns. Not
+// touch_council_participant: that promotes pending_ack_seq into cursor_seq, and
+// a dispatched agent's delivery is proven by the host's ack, not by a tick.
+export async function markParticipantsAlive(sessionId: string, names: string[]): Promise<void> {
+    if (names.length === 0) return;
+    const { error } = await supabase
+        .from("council_participants")
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq("session_id", sessionId)
+        .in("name", names)
+        .neq("status", "left");
+    if (error) console.warn("[Council] markParticipantsAlive failed:", error.message);
+}
+
+// Stages what the host is about to deliver. Monotonic in JS because PostgREST
+// cannot express greatest(col, val); the owning host is the only writer.
+export async function stagePendingAck(params: {
+    sessionId: string;
+    agentName: string;
+    delivered: number;
+    current: number;
+}): Promise<void> {
+    const next = Math.max(params.current, params.delivered);
+    if (next === params.current) return;
+    const { error } = await supabase
+        .from("council_participants")
+        .update({ pending_ack_seq: next, last_seen_at: new Date().toISOString() })
+        .eq("session_id", params.sessionId)
+        .eq("name", params.agentName);
+    if (error) console.warn("[Council] stagePendingAck failed:", error.message);
 }
 
 export async function electFloor(params: {
@@ -496,6 +541,21 @@ function baseKeyword(session: CouncilSession, you: CouncilParticipant | null): C
     return "WAITING";
 }
 
+// On overflow the OLDEST are dropped and replaced with a pointer: bodies are
+// rendered in full because truncating a peer's argument degrades the debate.
+function trimBatch(batch: CouncilMessage[]): { fresh: CouncilMessage[]; omittedBefore: number | null } {
+    let fresh = batch;
+    let omittedBefore: number | null = null;
+    let chars = fresh.reduce((n, m) => n + m.body.length, 0);
+    while (fresh.length > 1 && chars > MAX_BATCH_CHARS) {
+        const dropped = fresh[0];
+        chars -= dropped.body.length;
+        fresh = fresh.slice(1);
+        omittedBefore = dropped.seq;
+    }
+    return { fresh, omittedBefore };
+}
+
 export async function buildView(params: {
     sessionId: string;
     agentName: string;
@@ -511,23 +571,11 @@ export async function buildView(params: {
     // otherwise resume from what the server recorded as acknowledged.
     const cursor = params.sinceSeq ?? you?.cursorSeq ?? 0;
 
-    const batch = await readTranscript({
+    const { fresh, omittedBefore } = trimBatch(await readTranscript({
         sessionId: params.sessionId,
         fromSeq: cursor,
         limit: MAX_BATCH_MESSAGES,
-    });
-
-    // On overflow the OLDEST are dropped and replaced with a pointer: bodies are
-    // rendered in full because truncating a peer's argument degrades the debate.
-    let fresh = batch;
-    let omittedBefore: number | null = null;
-    let chars = fresh.reduce((n, m) => n + m.body.length, 0);
-    while (fresh.length > 1 && chars > MAX_BATCH_CHARS) {
-        const dropped = fresh[0];
-        chars -= dropped.body.length;
-        fresh = fresh.slice(1);
-        omittedBefore = dropped.seq;
-    }
+    }));
 
     return {
         session,
@@ -539,6 +587,59 @@ export async function buildView(params: {
         omittedBefore,
         keyword: baseKeyword(session, you),
     };
+}
+
+/** One host-owned agent's slice of a council_dispatch payload. */
+export interface CouncilDispatchSlice {
+    fresh: CouncilMessage[];
+    openToYou: CouncilMessage[];
+    cursor: number;
+    /** Highest seq in this slice: what the host acknowledges once delivered. */
+    delivered: number;
+    omittedBefore: number | null;
+    hasFloor: boolean;
+    moreRemain: boolean;
+    status: CouncilParticipant["status"];
+    dispatchMode: boolean;
+}
+
+export interface CouncilDispatchView {
+    session: CouncilSession;
+    participants: CouncilParticipant[];
+    agents: Record<string, CouncilDispatchSlice>;
+}
+
+// buildView per agent would re-read the session and the roster once per agent.
+// The host asks about every agent it owns on the same 1.5s tick, so those two
+// reads happen once and only the per-agent transcript slice is repeated.
+export async function buildDispatchViews(params: {
+    session: CouncilSession;
+    agentNames: string[];
+    floorHolder: string | null;
+}): Promise<CouncilDispatchView> {
+    const participants = await listParticipants(params.session.id);
+    const agents: Record<string, CouncilDispatchSlice> = {};
+
+    for (const name of params.agentNames) {
+        const me = participants.find((p) => p.name === name && p.kind === "agent");
+        if (!me) continue;
+        const cursor = me.cursorSeq;
+        const { fresh, omittedBefore } = trimBatch(await readTranscript({
+            sessionId: params.session.id, fromSeq: cursor, limit: MAX_BATCH_MESSAGES,
+        }));
+        agents[name] = {
+            fresh,
+            openToYou: await readOpenToYou(params.session.id, name),
+            cursor,
+            delivered: fresh.length ? fresh[fresh.length - 1].seq : cursor,
+            omittedBefore,
+            hasFloor: params.floorHolder === name,
+            moreRemain: fresh.length >= MAX_BATCH_MESSAGES,
+            status: me.status,
+            dispatchMode: me.dispatchMode,
+        };
+    }
+    return { session: params.session, participants, agents };
 }
 
 export async function concludeCouncil(params: {

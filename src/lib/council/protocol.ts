@@ -19,6 +19,23 @@ export const POLL_JITTER_MS = 400;
 export const TOUCH_MS = 10_000;
 export const KEEPALIVE_MS = 15_000;
 
+// Host dispatch. council-host.mts is a local process with no per-tool-call
+// timeout, so it never long-polls: it point-reads the tick on this interval and
+// pushes the turn over ACP. Cheaper than holding a serverless invocation open.
+export const DISPATCH_POLL_MS = 1_500;
+// A permission prompt nobody answers is DENIED, so an unattended council cannot
+// wedge on the user's attention.
+export const PERMISSION_PROMPT_TIMEOUT_MS = 120_000;
+// Loopback control channel. The host increments past a taken port and records
+// the winner in campaign-run.json; the PWA probes the whole range.
+export const HOST_PORT_FIRST = 8787;
+export const HOST_PORT_LAST = 8791;
+
+// Name the host gives the MCP server it passes in session/new. Must not collide
+// with one the agent already has configured: codex-acp silently drops a
+// requested server whose name is already in its own config.
+export const COUNCIL_MCP_SERVER_NAME = "zuychin-council";
+
 // Fastest interval that cannot fire while a peer is mid-post (one round trip
 // plus lock hold is sub-second).
 export const SILENCE_GRANT_SECONDS = 8;

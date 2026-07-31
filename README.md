@@ -31,7 +31,7 @@ edited and deleted in place.
 - Passkey-first PWA sign-in: WebAuthn device biometrics, PIN or a hardware security key with
   short-lived signed sessions; password confirmation protects enrolment and TOTP provides a
   recovery path
-- Council workspace: a live view at `/council` for open and completed external-agent debates
+- Council workspace: a live view at `/council` for external-agent debates, plus a local ACP host that starts the agents, pushes each turn and mediates their file access
 - Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
   to the model natively (it hears you, not a transcript) and the reply is spoken back with
   Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
@@ -154,6 +154,7 @@ edited and deleted in place.
 | 3D graph | 3d-force-graph (three.js + d3-force-3d), three (sprite stars, planet bodies, bloom), HTML label overlay |
 | Integrations | Google Calendar API, Gmail API |
 | Messaging | Discord.js, Telegram Bot API |
+| Agent council | Agent Client Protocol (`@agentclientprotocol/sdk`) over stdio, `ws` loopback control channel, git worktree isolation |
 | Export | docx, pdfkit |
 | Hosting | Vercel (web/API), Render (Discord bot) |
 
@@ -492,28 +493,32 @@ your **other AI agents and chatbots** can share the knowledge base:
 | `council_work_complete` | write | Submit a committed, verified task for closer review |
 | `council_work_block` | write | Record a human or external dependency blocker |
 | `council_work_review` | write | Closer-only: accept a task or return it with feedback |
+| `council_dispatch` | write | Local host only: non-blocking multi-agent read returning JSON plus each owned agent's rendered turn |
 
 ### zuychin-council
 
-The seven debate tools plus six `council_work_*` tools make a **bounded decision room** and a
-**durable implementation campaign** for your external coding agents. Ask the assistant to convene one, paste the generated block into each agent's
-terminal, and read the verdict in Discord `#coworking`.
+The debate tools plus six `council_work_*` tools make a **bounded decision room** and a
+**durable implementation campaign** for your external coding agents. Ask the assistant to convene
+one and paste the generated block into each agent's terminal, or let the local host start and
+drive them for you (below), then read the verdict in Discord `#coworking`.
 
 An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
 tools - so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
 handoff is sub-second, and it runs on stateless serverless with no daemon. Ordering is total
 per session (compare-and-swap on one row); deadlock is covered by a quorum gate, an 8 s
 silence election, a 50 s floor TTL, an SQL-derived escalation ladder, hard caps and a
-5-minute sweep cron.
+5-minute sweep cron. Agents driven by the local ACP host skip the long poll entirely - the host
+has no per-tool-call timeout, so it pushes their turns instead - but they go through the same
+server-side ordering, which is what lets pushed and hand-attached agents share one council.
 
 Council output is filed to the vault as `trust: untrusted`, `status: suggested` at
 `wiki/synthesis/council-<code>.md`, so an unreviewed agent debate cannot outrank
 human-reviewed material in the assistant's own recall. Promote it yourself with `vault_ingest`
 if it earns it. Council messages are never embedded or indexed anywhere else.
 
-The council and campaign tables live in the `-- ===== Council wave =====` and
-`-- ===== Council work campaign wave =====` blocks at the bottom of `supabase-setup.sql`; run
-both in the Supabase SQL Editor before first use.
+The council and campaign tables live in the `-- ===== Council wave =====`,
+`-- ===== Council work campaign wave =====` and `-- ===== Council ACP host wave =====` blocks at
+the bottom of `supabase-setup.sql`; run all three in the Supabase SQL Editor before first use.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -540,45 +545,93 @@ Or test locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`, t
 "Streamable HTTP"). Note that anything saved through `save_note` later surfaces in the
 assistant's own context - only hand the key to agents you trust.
 
-### Launch a council into isolated worktrees
+### Run a council on the local ACP host
 
-The dashboard at `/council` lets you watch the roster, live transcript and outcome. To run
-several local coding agents without pasting kickoff blocks or letting them edit the same
-checkout, use the launcher:
+`scripts/council-host.mts` is a long-lived local process that owns the agents. Zuychin is
+serverless and cannot start anything on your machine, and a browser page has no `child_process`,
+so the host is the only place the Agent Client Protocol client can live. It holds **one ACP
+session per agent for the whole council** (so agents keep their context between turns), mediates
+every file and terminal call against that agent's worktree, pushes each turn with
+`session/prompt`, and serves a loopback control channel to `/council`.
 
-1. Copy `scripts/council-agents.example.json` to `scripts/council-agents.json`. This file is
-   gitignored because it describes local commands and may point to local MCP configuration.
-2. `agents` contains one adapter per provider. Add optional `instances` with unique participant names that point to those adapters, for example `codex-1` and `codex-2` both using `codex`, or three Claude instances using `claude-code`.
-3. Choose a template with `--type`: `debate` for decisions and dissent, `code` for implementation and test planning, `research` for evidence and confidence, `audit` for ranked risk findings, or `debug` for reproduction and root-cause work.
-4. Run a dry run first:
+Setup:
+
+1. Copy `scripts/council-agents.example.json` to `scripts/council-agents.json`. It is gitignored
+   because it describes local commands. **The host takes the command only from this file, never
+   from the council record**, so convening a council can never choose what runs on your machine.
+2. `agents` holds one adapter per provider, each with a `mode`. `acp` means the host drives it;
+   `shell` is the old one-process-per-turn behaviour. Verify the ACP entry point against your
+   installed version - `claude` itself has no `--acp` flag, so `claude-code` uses Zed's adapter
+   (`npx -y @zed-industries/claude-code-acp`). `scripts/council-acp-probe.mts` starts a candidate
+   command exactly as the host will and reports whether the handshake, the MCP server passed in
+   `session/new`, streaming and permission requests all work:
+   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --prompt -- codex acp`.
+   Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself.
+3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
+   and `codex-2` both on `codex`, or three Claude instances on `claude-code`.
+4. Run the `-- ===== Council ACP host wave =====` block at the bottom of `supabase-setup.sql`.
+
+Convene with the CLI, which starts the host if it is not already running:
 
 ```bash
 npx tsx --env-file=.env.local scripts/council-launch.mts \
   --topic "Should we adopt X?" --brief "Constraints and current evidence" \
-  --agents codex-1,codex-2,claude-a,claude-b,claude-c --closer claude-a \
+  --agents claude-a,claude-b,codex-1 --closer claude-a \
   --type code --repo /path/to/repo --dry-run
 ```
 
-5. Remove `--dry-run` to convene the council, make one worktree per participant and launch
-   the configured CLIs. The launcher only reads commands from your local adapter file, never
-   from council messages or the server response.
+`--dry-run` stops before anything exists in Postgres or on disk. Remove it to convene. Pick the
+discussion template with `--type`: `debate` for decisions and dissent, `code` for implementation
+and test planning, `research` for evidence and confidence, `audit` for ranked risk findings, or
+`debug` for reproduction and root-cause work. The host keeps running after the CLI exits; stop it
+from `/council` or by killing the printed PID.
+
+**Isolation is enforced, not conventional.** Each agent gets its own git worktree and branch, and
+every `fs/read_text_file`, `fs/write_text_file` and permission request is checked against it with
+`path.relative` over `realpath`, so neither a sibling directory sharing the same prefix nor a
+symlink planted inside the tree gets out. Terminals are created with `cwd` forced to the worktree.
+Anything outside it prompts you in `/council` and is **denied** if nobody answers within 120 s.
+
+**Turn dispatch.** The host polls `council_dispatch` every 1.5 s and pushes a rendered turn to any
+agent with something to read or the floor. Ordering, quorum and floor election all stay in
+Postgres: the host reads a tick and calls the same server-side election every long-polling agent
+does, and computes no floor of its own. Delivery is at-least-once - the read cursor advances only
+when the host confirms a turn landed, so killing the host mid-turn redelivers that batch instead of
+skipping it. Agents it owns are marked `dispatch_mode`, which makes `council_wait` return
+immediately for them and `council_speak` stop blocking, so an agent can never be driven twice.
+
+`/council` shows the connection state, each agent's worktree, branch and live ACP activity, the
+permission queue, and a convene form. It reaches the host at `127.0.0.1:8787-8791` with a token
+you pair once using the code the host prints; requests without it get 401, and only allow-listed
+origins are answered. From `localhost:3000` there is no browser permission prompt; from a deployed
+origin Chrome raises its Local Network Access prompt, and denying it leaves the page in
+observe-only mode. A phone is observe-only by definition - there is no host on it.
+
+Agents whose vendor has no ACP support yet (antigravity today) stay on `shell` mode: they get a
+worktree and their turns still work, but through the old long-poll with no permission mediation
+and no streamed activity. The adapter's `warn` string is surfaced in `/council` so a degraded
+participant is visible rather than silently different.
 
 When the closer includes `workItems` in `council_conclude`, each agent claims only its assigned
 work from `council_work_next`. It heartbeats progress, commits and verifies its change, then stops
 at `awaiting_review`; the closer accepts it with `council_work_review` or sends it back with
-feedback. The campaign becomes complete only when every item is verified.
+feedback. The campaign completes only when every item is verified. The host supervises this on the
+same ACP sessions, so a separate supervisor script is no longer needed.
 
-The generated run directory beside the repository contains logs and `campaign-run.json`. If an
-agent terminal or the machine restarts, resume unfinished assigned work with:
+If the host or the machine restarts, reattach to a running council - the agents get fresh sessions,
+keep their worktrees, and are redelivered whatever they never acknowledged:
 
 ```bash
-npx tsx --env-file=.env.local scripts/council-campaign-supervise.mts \
-  --run-dir /path/to/.council-run-cn-xxxx
+npx tsx --env-file=.env.local scripts/council-host.mts --repo /path/to/repo --attach CN-XXXX
 ```
 
-The supervisor polls durable campaign state, starts only agents with queued or in-progress tasks,
-and exits when the campaign completes. Review and merge the named worktree branches yourself
-after the campaign is complete.
+Attaching is also how you get a **mixed council**, because convening from the host makes every
+named participant host-owned. Convene the ordinary way with all the names, paste the kickoff block
+into whatever you are driving by hand, then attach. The host claims only participants that are
+configured locally *and* either still `invited` or already in `dispatch_mode`, so an agent someone
+is already polling by hand is left alone rather than run twice under one name.
+
+Review and merge the named worktree branches yourself when the campaign is complete.
 
 ## Models on Discord / Telegram
 
@@ -814,6 +867,9 @@ src/
 │   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
 │   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
+│   ├── council/
+│   │   ├── page.tsx                    # Live council view + local-host control surface
+│   │   └── host-client.ts              # Loopback host probe, pairing, WebSocket client
 │   ├── login/page.tsx                  # Login page
 │   ├── admin/                          # Dashboard + run-trace, memory and skills panels
 │   └── api/
@@ -854,6 +910,7 @@ src/
 │   │   ├── embedding-override.ts       # Runtime knowledge-store partition override
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
 │   │   └── skills/                     # Skill registry: built-in playbooks + agent-authored custom skills
+│   ├── council/                        # Deliberation room: protocol constants, store, long-poll + host dispatch, renderers, campaign
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
@@ -863,6 +920,14 @@ public/sw.js                            # Service worker: push display + click-t
 discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
 └── Procfile                            # Render deployment
+scripts/
+├── council-host.mts                    # Local ACP host: agent sessions, permission gate, dispatch loop, control channel
+├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
+├── council-launch.mts                  # CLI onto the host: preflight, start or attach, convene
+├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host will run it
+├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
+├── evaluate-knowledge.ts               # Knowledge-store retrieval eval
+└── reembed-knowledge.ts                # Manual store re-embed
 supabase-setup.sql                      # One-shot database setup script
 ```
 
