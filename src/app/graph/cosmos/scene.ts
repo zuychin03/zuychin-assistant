@@ -121,12 +121,12 @@ function bodyScale(chars: number, min: number, max: number): number {
 // the core put the inner orbits inside the corona and the bloom, where a planet is a
 // speck against a wall of light. Scaling off the star also means a big hub gets a big
 // system and a small page a small one, instead of one fixed envelope for both.
-const ORBIT_BASE_OF_HALO = 1.35;
-const ORBIT_SPAN_OF_HALO = 3.2;
-const ORBIT_GAP_MAX_OF_HALO = 0.5;
+const ORBIT_BASE_OF_HALO = 1.75;
+const ORBIT_SPAN_OF_HALO = 4.3;
+const ORBIT_GAP_MAX_OF_HALO = 0.64;
 // Floor is set by the widest planet, so neighbouring orbits can never let their bodies
 // touch however many sections a page has.
-const ORBIT_GAP_MIN_OF_PLANET = 1.25;
+const ORBIT_GAP_MIN_OF_PLANET = 1.55;
 // Successive planets sit ~137.5 degrees apart, so no two line up radially and the
 // system never resolves into spokes.
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -460,13 +460,13 @@ export function createCosmos(
 
             const moonMax = scale * MOON_OF_PLANET_MAX;
             const moonMin = scale * MOON_OF_PLANET_MIN;
-            const moonBase = scale * BODY_FILL * 0.62 + moonMax + 2.2;
+            const moonBase = scale * BODY_FILL * 0.8 + moonMax + 3.4;
             // Budgeted from this planet's lane so a moon family does not wander into the
             // next orbit. The floor wins for a section with many subsections, and there
             // the tilt spread below is what separates them.
-            const moonSpan = Math.min(gap * 0.34, 14);
+            const moonSpan = Math.min(gap * 0.42, 20);
             const moonGap = planet.moons.length > 1
-                ? Math.max(moonMax * 1.3, moonSpan / (planet.moons.length - 1))
+                ? Math.max(moonMax * 1.55, moonSpan / (planet.moons.length - 1))
                 : 0;
 
             const moons: OrbitingBody[] = planet.moons.map((moon, moonIndex) => {
