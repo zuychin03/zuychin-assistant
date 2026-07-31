@@ -102,7 +102,11 @@ const ORBIT_OPACITY = 0.42;
 // purpose: a neighbour is the exit from this system, so it has to sit clear of the
 // orbits and stay big enough to aim at from a zoomed-out view.
 // Room for the outermost orbit AND a magnified neighbour's own corona beyond it.
-const SYSTEM_CLEARANCE = 250;
+const SYSTEM_CLEARANCE = 430;
+// Extra repulsion between everything rendered while a system is open. Clearance alone
+// only pushes neighbours off the ROOT: without this they settle at that distance but
+// bunch together on one side of it.
+const SYSTEM_REPEL_BOOST = 2.4;
 
 // Core size as a fraction of the corona, matching STAR_CORE_FRACTION's readable disc.
 const CORE_RELATIVE_SIZE = 0.46;
@@ -342,6 +346,18 @@ export function createCosmos(
     graph.lights([new THREE.AmbientLight(0xffffff, 0.4)]);
 
     graph.d3Force("cluster", createClusterForce(() => physics.cluster));
+
+    /**
+     * Repulsion, boosted while a system is open so its neighbours spread around it
+     * rather than clumping on one side of the clearance radius.
+     */
+    function applyChargeStrength() {
+        const force = graph.d3Force("charge") as
+            { strength?: (accessor: number | ((node: GNode) => number)) => void } | undefined;
+        force?.strength?.(() => (
+            view.systemFocus === null ? -physics.repel : -physics.repel * SYSTEM_REPEL_BOOST
+        ));
+    }
 
     /**
      * Link length, per link. A link touching the open system's root is stretched past
@@ -889,9 +905,10 @@ export function createCosmos(
         setSystem(spec) {
             if (!spec) clearSystem();
             else buildSystem(spec);
-            // The link lengths depend on the system's radius, so they have to be
-            // recomputed and the layout reheated whenever the system changes.
+            // Link lengths and repulsion both depend on the system, so they have to be
+            // recomputed and the layout reheated whenever it changes.
             applyLinkDistance();
+            applyChargeStrength();
             if (graph.graphData().nodes.length > 0) graph.d3ReheatSimulation();
         },
 
@@ -958,7 +975,7 @@ export function createCosmos(
 
         applyPhysics(settings) {
             physics = { ...settings };
-            (graph.d3Force("charge") as { strength?: (v: number) => void } | undefined)?.strength?.(-settings.repel);
+            applyChargeStrength();
             applyLinkDistance();
             (graph.d3Force("center") as { strength?: (v: number) => void } | undefined)?.strength?.(settings.center);
             // Reheating before the first graphData() crashes tickFrame (state.layout is undefined).
