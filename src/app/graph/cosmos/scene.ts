@@ -1,12 +1,13 @@
 import * as THREE from "three";
 import type { ForceGraph3DInstance } from "3d-force-graph";
 import {
-    createBodySprite, createNebulaSprite, createOrbitRing, createSelectionRing,
-    createStarfield, createStarMaterial, getTexture,
+    bodyLook, CORE_OVERDRIVE, createAtmosphere, createBodySprite, createNebulaSprite,
+    createOrbitRing, createPlanetRing, createSelectionRing, createStarCoreMaterial,
+    createStarfield, createStarMaterial, getTexture, STAR_CORE_FRACTION,
 } from "./textures";
 import type { VaultSection } from "./sections";
 import {
-    CATEGORY_COLORS, classifyStar, COSMOS, clusterColor, lensColor, lensOpacity, starSize,
+    classifyStar, COSMOS, clusterColor, lensColor, lensOpacity, starSize,
 } from "./palette";
 import {
     endpoints, linkKey, pairKey, SYSTEM_BACKGROUND_OPACITY,
@@ -55,8 +56,14 @@ export interface SystemSpec {
 
 interface OrbitingBody {
     sprite: THREE.Sprite;
+    /** Limb glow, on worlds that have an atmosphere. Moves with the sprite. */
+    atmosphere: THREE.Sprite | null;
+    ring: THREE.Mesh | null;
+    /** Scale before any hover growth, so the highlight is reversible. */
+    baseScale: number;
     sectionId: string;
     title: string;
+    kind: "planet" | "moon";
     radius: number;
     angle: number;
     speed: number;
@@ -65,40 +72,67 @@ interface OrbitingBody {
     moons: OrbitingBody[];
 }
 
-// A planet's size comes from how much prose sits under its heading, clamped so a
-// one-line section is still clickable and an essay does not eclipse the star.
-const PLANET_MIN = 5.5;
-const PLANET_MAX = 13;
-const MOON_MIN = 3;
-const MOON_MAX = 6;
+// The size hierarchy is expressed as ratios of the parent body, never as independent
+// constants. Fixed values had inverted it: on a page with few links the star's disc
+// measured 0.25x its own largest planet, so a system read as planets orbiting a speck.
+// Ratios cannot invert.
+// System view magnifies EVERY star by the same factor, so the size relationships
+// between pages read exactly as they do in the full view. Boosting only the root made
+// its neighbours look shrunken next to it and too small to aim at.
+const SYSTEM_ZOOM = 2.6;
+const PLANET_OF_SUN_MAX = 0.42;
+const PLANET_OF_SUN_MIN = 0.2;
+const MOON_OF_PLANET_MAX = 0.4;
+const MOON_OF_PLANET_MIN = 0.22;
+// A world's sprite is filled by its disc, unlike a star's, so any comparison between
+// the two goes through STAR_CORE_FRACTION on one side and this on the other.
+const BODY_FILL = 0.9;
 const SYSTEM_FRAME_MS = 33;
+// Generous, with the nearest body inside it winning. Sprite raycasting demanded a
+// direct hit on a shape a few pixels across, which is unusable with a fingertip.
+const PICK_RADIUS_FLOOR = 17;
+// Orbits were drawn in COSMOS.filament at 0.18, which is all but invisible against the
+// background. They are the structure that makes a system read as a system.
+const ORBIT_COLOR = "#8ea3d2";
+const ORBIT_OPACITY = 0.42;
+// Gap held between the outermost orbit and the nearest neighbouring star. Wide on
+// purpose: a neighbour is the exit from this system, so it has to sit clear of the
+// orbits and stay big enough to aim at from a zoomed-out view.
+// Room for the outermost orbit AND a magnified neighbour's own corona beyond it.
+const SYSTEM_CLEARANCE = 250;
+
+// Core size as a fraction of the corona, matching STAR_CORE_FRACTION's readable disc.
+const CORE_RELATIVE_SIZE = 0.46;
+const WHITE = new THREE.Color("#ffffff");
 
 function bodyScale(chars: number, min: number, max: number): number {
     const t = Math.min(1, Math.sqrt(chars) / 55);
     return min + (max - min) * t;
 }
 
-// One orbit per planet, never a shared ring. An earlier draft packed six planets
-// onto ring 1, and since most vault pages have six or fewer sections that made
-// nearly every system a single flat circle of identical bodies.
+// One orbit per planet, never a shared ring. An earlier draft packed six planets onto
+// ring 1, and since most vault pages have six or fewer sections that made nearly every
+// system a single flat circle of identical bodies.
 //
-// The gap shrinks as sections multiply so a 20-section page stays inside roughly
-// the same envelope as a 4-section one, and the floor keeps adjacent orbits far
-// enough apart to be told apart and tapped.
-//
-// The span is budgeted against DEFAULT_PHYSICS.linkDist: outermost radius works out
-// near base + ORBIT_SPAN, and a system wider than the distance to its nearest star
-// would hang its own sections over a neighbour.
-const ORBIT_SPAN = 110;
-const ORBIT_GAP_MIN = 8.5;
-const ORBIT_GAP_MAX = 17;
+// Every distance is a multiple of the sun's HALO radius, not its core. Measuring from
+// the core put the inner orbits inside the corona and the bloom, where a planet is a
+// speck against a wall of light. Scaling off the star also means a big hub gets a big
+// system and a small page a small one, instead of one fixed envelope for both.
+const ORBIT_BASE_OF_HALO = 1.35;
+const ORBIT_SPAN_OF_HALO = 3.2;
+const ORBIT_GAP_MAX_OF_HALO = 0.5;
+// Floor is set by the widest planet, so neighbouring orbits can never let their bodies
+// touch however many sections a page has.
+const ORBIT_GAP_MIN_OF_PLANET = 1.25;
 // Successive planets sit ~137.5 degrees apart, so no two line up radially and the
 // system never resolves into spokes.
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-function orbitGap(count: number): number {
-    if (count <= 1) return ORBIT_GAP_MAX;
-    return Math.max(ORBIT_GAP_MIN, Math.min(ORBIT_GAP_MAX, ORBIT_SPAN / count));
+function orbitGap(count: number, halo: number, planetMax: number): number {
+    const gapMax = halo * ORBIT_GAP_MAX_OF_HALO;
+    const gapMin = planetMax * ORBIT_GAP_MIN_OF_PLANET;
+    if (count <= 1) return gapMax;
+    return Math.max(gapMin, Math.min(gapMax, (halo * ORBIT_SPAN_OF_HALO) / count));
 }
 
 /** Kepler's third law, so outer bodies visibly lag rather than turning in lockstep. */
@@ -121,6 +155,8 @@ export interface Cosmos {
     setClusters(clusters: GraphCluster[]): void;
     setSystem(spec: SystemSpec | null): void;
     flyTo(node: GNode, distance?: number): void;
+    /** Frame the open system, sized from its own extent. */
+    frameSystem(): void;
     releaseFocus(): void;
     frameAll(): void;
     frameNodes(ids: Set<string>): void;
@@ -191,7 +227,10 @@ export function createCosmos(
 ): Cosmos {
     const graph = new ForceGraph3D(element) as Graph;
 
-    const starById = new Map<string, THREE.Sprite>();
+    // Each star is two additive sprites in a group: a coloured corona and a white-hot
+    // core. Scaling the group scales both, so sizing stays one number.
+    interface StarObject { group: THREE.Group; corona: THREE.Sprite; core: THREE.Sprite; }
+    const starById = new Map<string, StarObject>();
     const nodeById = new Map<string, GNode>();
     const nebulaById = new Map<number, THREE.Sprite>();
     let clusters: GraphCluster[] = [];
@@ -209,11 +248,17 @@ export function createCosmos(
         .nodeRelSize(1)
         .nodeThreeObjectExtend(false)
         .nodeThreeObject((node) => {
-            const sprite = new THREE.Sprite(createStarMaterial(classifyStar(node)));
-            sprite.scale.setScalar(starSize(node));
-            starById.set(node.id, sprite);
+            const corona = new THREE.Sprite(createStarMaterial(classifyStar(node)));
+            corona.scale.setScalar(1);
+            const core = new THREE.Sprite(createStarCoreMaterial());
+            core.scale.setScalar(CORE_RELATIVE_SIZE);
+            const group = new THREE.Group();
+            // Corona first: additive, so ordering only matters for the depth-sorted pass.
+            group.add(corona, core);
+            group.scale.setScalar(starSize(node));
+            starById.set(node.id, { group, corona, core });
             styleDirty = true;
-            return sprite;
+            return group;
         })
         .nodeLabel(() => "")
         .linkColor((link) => {
@@ -250,12 +295,12 @@ export function createCosmos(
                 const { s, t } = endpoints(link);
                 if (s !== view.systemFocus && t !== view.systemFocus) return 0.3;
             }
-            return link.kind === "suggestion" ? 0.5 : 0.9;
+            return link.kind === "suggestion" ? 0.4 : 0.7;
         })
         // Suggestions arc rather than run straight, so a proposed connection never
         // reads as an existing one even at a glance.
         .linkCurvature((link) => (link.kind === "suggestion" ? 0.26 : 0))
-        .linkOpacity(0.42)
+        .linkOpacity(0.24)
         .linkLabel((link) => {
             const { s, t } = endpoints(link);
             const name = (id: string) => nodeById.get(id)?.title ?? id;
@@ -295,6 +340,23 @@ export function createCosmos(
 
     graph.d3Force("cluster", createClusterForce(() => physics.cluster));
 
+    /**
+     * Link length, per link. A link touching the open system's root is stretched past
+     * that system's outermost orbit, so entering a system pushes the neighbouring stars
+     * clear of it instead of leaving them sitting among its planets.
+     */
+    function applyLinkDistance() {
+        const force = graph.d3Force("link") as
+            { distance?: (accessor: (link: GLink) => number) => void } | undefined;
+        force?.distance?.((link) => {
+            const focus = view.systemFocus;
+            if (focus === null || systemOuterRadius <= 0) return physics.linkDist;
+            const { s: source, t: target } = endpoints(link);
+            if (source !== focus && target !== focus) return physics.linkDist;
+            return Math.max(physics.linkDist, systemOuterRadius + SYSTEM_CLEARANCE);
+        });
+    }
+
     // ---- Section system overlay ----
     // These bodies are NOT graph nodes. Injecting them into the simulation would
     // make a page's own sections repel its neighbours and tear the neighbourhood
@@ -305,23 +367,43 @@ export function createCosmos(
     scene.add(systemGroup);
 
     let system: { rootId: string; bodies: OrbitingBody[] } | null = null;
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
+    // Outermost orbit of the open system, so the layout can hold neighbouring stars
+    // outside it. At the default linkDist a neighbour settles at 115 while a system
+    // with several sections reaches past 130, which put other stars inside the orbits.
+    let systemOuterRadius = 0;
+    let systemSunHalo = 0;
     let hoveredBody: OrbitingBody | null = null;
     let systemRaf = 0;
     let lastSystemPaint = 0;
+    const bodyWorld = new THREE.Vector3();
+    const projected = new THREE.Vector3();
+
+    // Hover label for orbiting bodies. Its own element rather than part of the star
+    // label layer: it tracks a body that keeps moving, and it names a section rather
+    // than a page, so it must not compete for the star labels' collision budget.
+    const tooltip = document.createElement("div");
+    tooltip.style.cssText =
+        "position:absolute;left:0;top:0;z-index:6;pointer-events:none;opacity:0;"
+        + "padding:4px 9px;border-radius:9px;white-space:nowrap;font-size:11.5px;"
+        + "font-weight:650;color:#eaf0ff;background:rgba(9,12,20,0.93);"
+        + "border:1px solid rgba(126,141,184,0.34);box-shadow:0 10px 26px rgba(0,0,0,0.55);"
+        + "transform:translate(-50%,-100%);transition:opacity 0.12s ease;";
+    element.appendChild(tooltip);
 
     function clearSystem() {
         for (const child of [...systemGroup.children]) {
             systemGroup.remove(child);
             if (child instanceof THREE.Sprite) (child.material as THREE.SpriteMaterial).dispose();
-            if (child instanceof THREE.Line) {
+            if (child instanceof THREE.Line || child instanceof THREE.Mesh) {
                 child.geometry.dispose();
-                (child.material as THREE.LineBasicMaterial).dispose();
+                (child.material as THREE.Material).dispose();
             }
         }
         system = null;
+        systemOuterRadius = 0;
+        systemSunHalo = 0;
         hoveredBody = null;
+        tooltip.style.opacity = "0";
         systemGroup.visible = false;
     }
 
@@ -330,42 +412,73 @@ export function createCosmos(
         const root = nodeById.get(spec.rootId);
         if (!root || spec.planets.length === 0) return;
 
-        const base = starSize(root) * 0.8 + 18;
-        const gap = orbitGap(spec.planets.length);
+        // Every size below is measured against the sun's visible DISC, not its sprite
+        // box, and divided back through BODY_FILL because a world fills its own sprite
+        // while a star does not.
+        const sunSprite = starSize(root) * SYSTEM_ZOOM;
+        const sunDisc = sunSprite * STAR_CORE_FRACTION;
+        // Half the sprite: where the corona actually fades out, which is what a planet
+        // has to clear to be visible at all.
+        const sunHalo = sunSprite * 0.5;
+        const planetMax = (sunDisc * PLANET_OF_SUN_MAX) / BODY_FILL;
+        const planetMin = (sunDisc * PLANET_OF_SUN_MIN) / BODY_FILL;
+        const base = sunHalo * ORBIT_BASE_OF_HALO + planetMax + 12;
+        const gap = orbitGap(spec.planets.length, sunHalo, planetMax);
+        systemSunHalo = sunHalo;
         const bodies: OrbitingBody[] = [];
 
         spec.planets.forEach((planet, index) => {
             const radius = base + index * gap;
             const tilt = orbitTilt(index);
 
-            const orbit = createOrbitRing(radius, COSMOS.filament, 0.18);
+            const orbit = createOrbitRing(radius, ORBIT_COLOR, ORBIT_OPACITY);
             orbit.rotation.x = tilt;
             systemGroup.add(orbit);
 
-            const scale = bodyScale(planet.chars, PLANET_MIN, PLANET_MAX);
-            const sprite = createBodySprite("planet", CATEGORY_COLORS[root.category] ?? "#9fb6e8", scale);
+            const look = bodyLook(planet.id, planet.chars);
+            const scale = bodyScale(planet.chars, planetMin, planetMax);
+
+            // Glow first, then the ring, then the body. Sprites carry depthWrite false,
+            // so draw order is what puts the limb glow behind the surface.
+            const atmosphere = createAtmosphere(look.type, scale);
+            if (atmosphere) systemGroup.add(atmosphere);
+
+            let ring: THREE.Mesh | null = null;
+            if (look.ringed) {
+                const mesh = createPlanetRing(scale, look.variant);
+                // Tipped well off the orbital plane, or it presents edge-on and vanishes.
+                mesh.rotation.set(Math.PI / 2 + tilt * 0.5 + 0.38, 0, 0.24);
+                systemGroup.add(mesh);
+                ring = mesh;
+            }
+
+            const sprite = createBodySprite(look.type, look.variant, scale);
             systemGroup.add(sprite);
 
-            // Moons start clear of their planet's disc and step outward, so a section
-            // with several subsections reads as a family rather than one blurred ring.
-            // Their spread is budgeted from this planet's orbit lane, and the floor
-            // wins when a section has many subsections: at that point the tilt spread
-            // below is what separates them, since no lane fits eight distinct radii.
-            const moonBase = scale * 0.62 + 3.4;
-            const moonSpan = Math.min(gap * 0.55, 22);
+            const moonMax = scale * MOON_OF_PLANET_MAX;
+            const moonMin = scale * MOON_OF_PLANET_MIN;
+            const moonBase = scale * BODY_FILL * 0.62 + moonMax + 2.2;
+            // Budgeted from this planet's lane so a moon family does not wander into the
+            // next orbit. The floor wins for a section with many subsections, and there
+            // the tilt spread below is what separates them.
+            const moonSpan = Math.min(gap * 0.34, 14);
             const moonGap = planet.moons.length > 1
-                ? Math.max(2.5, moonSpan / (planet.moons.length - 1))
+                ? Math.max(moonMax * 1.3, moonSpan / (planet.moons.length - 1))
                 : 0;
 
             const moons: OrbitingBody[] = planet.moons.map((moon, moonIndex) => {
-                const moonScale = bodyScale(moon.chars, MOON_MIN, MOON_MAX);
-                const moonSprite = createBodySprite("moon", "#c8d2e8", moonScale);
+                const moonScale = bodyScale(moon.chars, moonMin, moonMax);
+                const moonSprite = createBodySprite("moon", (moonIndex + look.variant) % 3, moonScale);
                 systemGroup.add(moonSprite);
                 const moonRadius = moonBase + moonIndex * moonGap;
                 return {
                     sprite: moonSprite,
+                    atmosphere: null,
+                    ring: null,
+                    baseScale: moonScale,
                     sectionId: moon.id,
                     title: moon.title,
+                    kind: "moon" as const,
                     radius: moonRadius,
                     angle: moonIndex * GOLDEN_ANGLE,
                     speed: orbitSpeed(moonBase, moonRadius, 0.0135),
@@ -376,8 +489,12 @@ export function createCosmos(
 
             bodies.push({
                 sprite,
+                atmosphere,
+                ring,
+                baseScale: scale,
                 sectionId: planet.id,
                 title: planet.title,
+                kind: "planet",
                 radius,
                 angle: index * GOLDEN_ANGLE,
                 speed: orbitSpeed(base, radius, 0.0032),
@@ -387,6 +504,7 @@ export function createCosmos(
         });
 
         system = { rootId: spec.rootId, bodies };
+        systemOuterRadius = bodies.length > 0 ? bodies[bodies.length - 1].radius + planetMax : 0;
         systemGroup.visible = true;
     }
 
@@ -397,6 +515,8 @@ export function createCosmos(
         orbitOffset.set(Math.cos(body.angle) * body.radius, 0, Math.sin(body.angle) * body.radius);
         orbitOffset.applyAxisAngle(xAxis, body.tilt);
         body.sprite.position.copy(centre).add(orbitOffset);
+        body.atmosphere?.position.copy(body.sprite.position);
+        body.ring?.position.copy(body.sprite.position);
     }
 
     function animateSystem(now: number) {
@@ -424,34 +544,92 @@ export function createCosmos(
                 placeBody(moon, planet.sprite.position);
             }
         }
+        // The label has to track the body it names while that body is still moving.
+        if (hoveredBody) showBodyTooltip(hoveredBody);
     }
     systemRaf = requestAnimationFrame(animateSystem);
 
-    function pickBody(event: PointerEvent | MouseEvent): OrbitingBody | null {
+    function allBodies(): OrbitingBody[] {
+        if (!system) return [];
+        return system.bodies.flatMap((planet) => [planet, ...planet.moons]);
+    }
+
+    /** Canvas-space centre and radius of a body, in CSS pixels. */
+    function projectBody(body: OrbitingBody, rect: DOMRect) {
+        const camera = graph.camera() as THREE.PerspectiveCamera;
+        body.sprite.getWorldPosition(bodyWorld);
+        const distance = camera.position.distanceTo(bodyWorld);
+        projected.copy(bodyWorld).project(camera);
+        if (projected.z < -1 || projected.z > 1) return null;
+        const pxPerUnit = rect.height
+            / (2 * Math.tan((camera.fov * Math.PI) / 360) * Math.max(distance, 0.001));
+        return {
+            x: (projected.x * 0.5 + 0.5) * rect.width,
+            y: (-projected.y * 0.5 + 0.5) * rect.height,
+            radius: body.sprite.scale.x * 0.5 * BODY_FILL * pxPerUnit,
+        };
+    }
+
+    /**
+     * Nearest body within a generous screen-space radius, rather than a raycast against
+     * the sprite quad. A planet is a handful of pixels across at normal zoom, so an
+     * exact hit test is unusable with a fingertip and barely usable with a mouse.
+     */
+    function pickBody(clientX: number, clientY: number): OrbitingBody | null {
         if (!system) return null;
         const rect = element.getBoundingClientRect();
-        pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(pointer, graph.camera() as THREE.Camera);
+        const px = clientX - rect.left;
+        const py = clientY - rect.top;
+        let best: OrbitingBody | null = null;
+        let bestDistance = Infinity;
+        for (const body of allBodies()) {
+            const point = projectBody(body, rect);
+            if (!point) continue;
+            const distance = Math.hypot(point.x - px, point.y - py);
+            if (distance > Math.max(point.radius, PICK_RADIUS_FLOOR)) continue;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = body;
+            }
+        }
+        return best;
+    }
 
-        const all = system.bodies.flatMap((planet) => [planet, ...planet.moons]);
-        const hits = raycaster.intersectObjects(all.map((b) => b.sprite), false);
-        if (hits.length === 0) return null;
-        return all.find((b) => b.sprite === hits[0].object) ?? null;
+    function showBodyTooltip(body: OrbitingBody) {
+        const point = projectBody(body, element.getBoundingClientRect());
+        if (!point) {
+            tooltip.style.opacity = "0";
+            return;
+        }
+        tooltip.textContent = body.title;
+        tooltip.style.left = point.x + "px";
+        tooltip.style.top = (point.y - Math.max(point.radius, 9) - 7) + "px";
+        tooltip.style.opacity = "1";
     }
 
     function setHoveredBody(body: OrbitingBody | null) {
         if (hoveredBody === body) return;
-        if (hoveredBody) (hoveredBody.sprite.material as THREE.SpriteMaterial).opacity = 1;
+        if (hoveredBody) {
+            hoveredBody.sprite.scale.setScalar(hoveredBody.baseScale);
+            hoveredBody.atmosphere?.scale.setScalar(hoveredBody.baseScale * 1.5);
+        }
         hoveredBody = body;
-        if (body) (body.sprite.material as THREE.SpriteMaterial).opacity = 0.72;
+        if (!body) {
+            tooltip.style.opacity = "0";
+            return;
+        }
+        // Grow, do not dim. The previous handler dropped the hovered body's opacity to
+        // 0.72, which reads as pushing it away rather than picking it out.
+        body.sprite.scale.setScalar(body.baseScale * 1.2);
+        body.atmosphere?.scale.setScalar(body.baseScale * 1.8);
+        showBodyTooltip(body);
     }
 
     const onSystemPointerMove = (event: PointerEvent) => {
-        // Touch has no hover, and raycasting every move of a drag would both cost
-        // frames and leave a planet stuck in its hovered state after the finger lifts.
+        // Touch has no hover, and picking on every move of a drag would both cost frames
+        // and leave a planet stuck enlarged after the finger lifts.
         if (event.pointerType === "touch") return;
-        const body = pickBody(event);
+        const body = pickBody(event.clientX, event.clientY);
         setHoveredBody(body);
         if (body) element.style.cursor = "pointer";
         // The graph's own hover handler will not fire when leaving a planet, so the
@@ -461,17 +639,19 @@ export function createCosmos(
     // Capture phase: a hit must not also reach the graph, which would read it as a
     // background click and clear the selection.
     const onSystemClick = (event: MouseEvent) => {
-        const body = pickBody(event);
+        const body = pickBody(event.clientX, event.clientY);
         if (!body) return;
         event.stopPropagation();
         event.preventDefault();
+        setHoveredBody(body);
         handlers.onSectionClick(body.sectionId, body.title);
     };
     element.addEventListener("pointermove", onSystemPointerMove);
     element.addEventListener("click", onSystemClick, true);
 
-    function applyStarStyle(node: GNode, sprite: THREE.Sprite) {
-        const material = sprite.material as THREE.SpriteMaterial;
+    function applyStarStyle(node: GNode, star: StarObject) {
+        const material = star.corona.material as THREE.SpriteMaterial;
+        const coreMaterial = star.core.material as THREE.SpriteMaterial;
         const isSelected = view.selectedNode === node.id;
         let color = lensColor(node, view.lens);
         let opacity = 0.92;
@@ -496,8 +676,12 @@ export function createCosmos(
             }
         } else if (view.hover) {
             if (view.highlightNodes.has(node.id)) {
-                opacity = 1;
-                scale = view.hover === node.id ? 1.18 : 1.06;
+                // Barely above the resting state. Stars already sit at the bloom
+                // threshold, so a real brightness jump blows the hovered star and its
+                // whole neighbourhood into overlapping white discs. Hover is signalled
+                // by dimming everything else, not by lighting these up further.
+                opacity = 0.96;
+                scale = view.hover === node.id ? 1.05 : 1;
             } else {
                 color = COSMOS.dust;
                 opacity = 0.22;
@@ -513,10 +697,7 @@ export function createCosmos(
             // route it would dim the very stars those modes just lit, and hovering a
             // neighbour would leave the root as the brightest thing on screen.
             const focus = view.systemFocus;
-            if (focus !== null && node.id !== focus) {
-                opacity *= SYSTEM_BACKGROUND_OPACITY;
-                scale = Math.min(scale, 0.92);
-            }
+            if (focus !== null && node.id !== focus) opacity *= SYSTEM_BACKGROUND_OPACITY;
         }
 
         if (isSelected) {
@@ -524,16 +705,30 @@ export function createCosmos(
             scale = Math.max(scale, 1.2);
         }
 
+        // Applied to every star, and after the selection override which would clamp it.
+        // The root is this system's sun at the scale its planets were sized against; its
+        // neighbours keep their natural proportion to it rather than being shrunk.
+        if (view.systemFocus !== null) scale *= SYSTEM_ZOOM;
+
         material.color.set(color);
         material.opacity = opacity;
         material.map = getTexture(classifyStar(node));
-        sprite.scale.setScalar(starSize(node) * scale);
+
+        // The core is driven past 1 so a lone star clears the bloom threshold on its
+        // own, and is mixed toward white so the colour reads as corona rather than as a
+        // flat tint over the whole disc. A protostar has no resolved core to burn.
+        const resolved = classifyStar(node) !== "protostar";
+        coreMaterial.visible = resolved && opacity > 0.25;
+        coreMaterial.color.set(color).lerp(WHITE, 0.72).multiplyScalar(CORE_OVERDRIVE);
+        coreMaterial.opacity = opacity;
+
+        star.group.scale.setScalar(starSize(node) * scale);
     }
 
     function applyNodeStyles() {
-        for (const [id, sprite] of starById) {
+        for (const [id, star] of starById) {
             const node = nodeById.get(id);
-            if (node) applyStarStyle(node, sprite);
+            if (node) applyStarStyle(node, star);
         }
     }
 
@@ -605,6 +800,17 @@ export function createCosmos(
         if (tickCount % NEBULA_EVERY_TICKS === 0) updateNebulae();
     });
 
+    function flyToNode(node: GNode, distance: number) {
+        if (node.x === undefined) return;
+        const length = Math.hypot(node.x, node.y ?? 0, node.z ?? 0) || 1;
+        const factor = 1 + distance / length;
+        graph.cameraPosition(
+            { x: node.x * factor, y: (node.y ?? 0) * factor, z: (node.z ?? 0) * factor },
+            { x: node.x, y: node.y ?? 0, z: node.z ?? 0 },
+            900,
+        );
+    }
+
     async function ensureBloom(width: number, height: number) {
         const nodeCount = nodeById.size;
         const renderer = graph.renderer();
@@ -627,7 +833,7 @@ export function createCosmos(
             // Threshold has to clear the planets: they are normal-blended lit discs, so
             // a low threshold haloes them into stars. Stars are additive and their cores
             // stack well past this, so strength carries the glow instead.
-            const pass = bloom?.pass ?? new UnrealBloomPass(new THREE.Vector2(width, height), 0.86, 0.8, 0.62);
+            const pass = bloom?.pass ?? new UnrealBloomPass(new THREE.Vector2(width, height), 1.18, 0.82, 0.62);
             const composer = graph.postProcessingComposer() as unknown as { addPass(pass: unknown): void };
             composer.addPass(pass);
             bloom = { pass, enabled: true };
@@ -678,20 +884,30 @@ export function createCosmos(
         setSystem(spec) {
             if (!spec) clearSystem();
             else buildSystem(spec);
+            // The link lengths depend on the system's radius, so they have to be
+            // recomputed and the layout reheated whenever the system changes.
+            applyLinkDistance();
+            if (graph.graphData().nodes.length > 0) graph.d3ReheatSimulation();
         },
 
         // Standoff is derived from filament length, not fixed: at a hard 150 the camera
         // sat proportionally much closer once linkDist went 62 -> 115, so clicking a
         // star pushed its whole neighbourhood off-screen and read as a lock-on.
         flyTo(node, distance = physics.linkDist * FLY_STANDOFF) {
-            if (node.x === undefined) return;
-            const length = Math.hypot(node.x, node.y ?? 0, node.z ?? 0) || 1;
-            const factor = 1 + distance / length;
-            graph.cameraPosition(
-                { x: node.x * factor, y: (node.y ?? 0) * factor, z: (node.z ?? 0) * factor },
-                { x: node.x, y: node.y ?? 0, z: node.z ?? 0 },
-                900,
-            );
+            flyToNode(node, distance);
+        },
+
+        frameSystem() {
+            if (!system) return;
+            const root = nodeById.get(system.rootId);
+            if (!root) return;
+            // Sized from the system's own extent. Entering a system widens the layout to
+            // hold neighbours clear of the orbits, which otherwise leaves the sun off
+            // frame at whatever zoom the previous view happened to be at.
+            // Floored against the sun's own halo so a one-planet system is not framed so
+            // close that the star fills the viewport.
+            const extent = Math.max(systemOuterRadius, systemSunHalo * 3.4);
+            flyToNode(root, Math.max(extent * 2.4, physics.linkDist * FLY_STANDOFF));
         },
 
         // flyTo parks the trackball pivot on the star it framed, and nothing else ever
@@ -738,7 +954,7 @@ export function createCosmos(
         applyPhysics(settings) {
             physics = { ...settings };
             (graph.d3Force("charge") as { strength?: (v: number) => void } | undefined)?.strength?.(-settings.repel);
-            (graph.d3Force("link") as { distance?: (v: number) => void } | undefined)?.distance?.(settings.linkDist);
+            applyLinkDistance();
             (graph.d3Force("center") as { strength?: (v: number) => void } | undefined)?.strength?.(settings.center);
             // Reheating before the first graphData() crashes tickFrame (state.layout is undefined).
             if (graph.graphData().nodes.length > 0) graph.d3ReheatSimulation();
@@ -765,6 +981,7 @@ export function createCosmos(
             element.removeEventListener("pointermove", onSystemPointerMove);
             element.removeEventListener("click", onSystemClick, true);
             clearSystem();
+            tooltip.remove();
             scene.remove(systemGroup);
             for (const sprite of nebulaById.values()) {
                 scene.remove(sprite);

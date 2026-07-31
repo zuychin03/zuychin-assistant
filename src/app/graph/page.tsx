@@ -398,7 +398,13 @@ export default function GraphPage() {
             setSelected(null);
             cosmosRef.current?.releaseFocus();
         },
-        onSectionClick: (sectionId, title) => setFocusedSection({ id: sectionId, title }),
+        onSectionClick: (sectionId, title) => {
+            setFocusedSection({ id: sectionId, title });
+            // Clicking a planet is a request to READ that section. At a third of the
+            // screen the dock scrolls a pane the user cannot see, so the click looked
+            // like it did nothing at all.
+            if (window.innerWidth < MOBILE_BREAKPOINT) setDock("tall");
+        },
     };
 
     useEffect(() => {
@@ -479,7 +485,13 @@ export default function GraphPage() {
     }, [localRoot, selected, pageMd, nodeById]);
 
     useEffect(() => {
-        if (ready) cosmosRef.current?.setSystem(systemSpec);
+        if (!ready) return;
+        cosmosRef.current?.setSystem(systemSpec);
+        if (!systemSpec) return;
+        // Entering a system stretches the layout to hold neighbours outside the orbits,
+        // so the camera has to be re-aimed once that has settled.
+        const timer = window.setTimeout(() => cosmosRef.current?.frameSystem?.(), 700);
+        return () => window.clearTimeout(timer);
     }, [ready, systemSpec]);
 
     useEffect(() => { setFocusedSection(null); }, [localRoot, selected]);

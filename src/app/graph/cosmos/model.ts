@@ -86,8 +86,12 @@ export interface CosmosView {
     labelSafeArea: { left: number; right: number };
 }
 
-/** Dimming applied to a neighbouring system while one system is entered. */
-export const SYSTEM_BACKGROUND_OPACITY = 0.26;
+/**
+ * Dimming applied to a neighbouring system while one system is entered. They stay
+ * aimable through SIZE rather than brightness now, since system view magnifies every
+ * star, so this can sit low enough to leave the open system clearly in front.
+ */
+export const SYSTEM_BACKGROUND_OPACITY = 0.3;
 
 export function createView(): CosmosView {
     return {

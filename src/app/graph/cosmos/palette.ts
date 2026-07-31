@@ -208,5 +208,7 @@ export const LABEL_VISIBILITY_FLOOR = 0.35;
 
 /** Sprite scale: mass from degree, with centrality adding a little swell. */
 export function starSize(node: GraphNode): number {
-    return (5 + Math.cbrt(1 + node.links) * 4.4) * (0.85 + node.centrality * 0.55);
+    // Raised ~1.45x over the first pass, where stars carried no more visual weight than
+    // the filaments running between them. A star is the subject; a filament is joinery.
+    return (7.5 + Math.cbrt(1 + node.links) * 6.2) * (0.85 + node.centrality * 0.55);
 }
