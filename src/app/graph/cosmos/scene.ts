@@ -80,6 +80,9 @@ interface OrbitingBody {
 // between pages read exactly as they do in the full view. Boosting only the root made
 // its neighbours look shrunken next to it and too small to aim at.
 const SYSTEM_ZOOM = 2.6;
+// Neighbours sit slightly under their true proportion, which is what marks them as
+// context without touching their glow.
+const SYSTEM_NEIGHBOUR_SHRINK = 0.78;
 const PLANET_OF_SUN_MAX = 0.42;
 const PLANET_OF_SUN_MIN = 0.2;
 const MOON_OF_PLANET_MAX = 0.4;
@@ -691,13 +694,6 @@ export function createCosmos(
             // attention carry the eye.
             opacity *= lensOpacity(node, view.lens);
 
-            // Entering a system sinks its neighbours into the background, so the root
-            // and its orbiting sections are the only thing reading as foreground.
-            // Confined to this branch on purpose: applied after hover, search or a
-            // route it would dim the very stars those modes just lit, and hovering a
-            // neighbour would leave the root as the brightest thing on screen.
-            const focus = view.systemFocus;
-            if (focus !== null && node.id !== focus) opacity *= SYSTEM_BACKGROUND_OPACITY;
         }
 
         if (isSelected) {
@@ -705,9 +701,18 @@ export function createCosmos(
             scale = Math.max(scale, 1.2);
         }
 
-        // Applied to every star, and after the selection override which would clamp it.
-        // The root is this system's sun at the scale its planets were sized against; its
-        // neighbours keep their natural proportion to it rather than being shrunk.
+        // Neighbours are set apart by SIZE, not by brightness: they keep close to their
+        // normal glow and sit a little under their true proportion. Dimming them to a
+        // third looked washed out, and because the treatment used to live only in the
+        // resting branch, hovering removed it altogether and threw a neighbour plus all
+        // of ITS neighbours from a third to near-full at 2.6x size, which is what blew
+        // them into one white glob. Applying it in every branch keeps hover a nudge.
+        if (view.systemFocus !== null && node.id !== view.systemFocus) {
+            opacity *= SYSTEM_BACKGROUND_OPACITY;
+            scale *= SYSTEM_NEIGHBOUR_SHRINK;
+        }
+
+        // Every star in system view, after the selection override which would clamp it.
         if (view.systemFocus !== null) scale *= SYSTEM_ZOOM;
 
         material.color.set(color);
