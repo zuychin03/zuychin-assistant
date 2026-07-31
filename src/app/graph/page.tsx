@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-    ArrowLeft, Clock, Crosshair, Layers, Loader2, RefreshCw, Route, SlidersHorizontal, Type,
+    ArrowLeft, ChevronDown, ChevronUp, Clock, Crosshair, Layers, Loader2, RefreshCw, Route,
+    SlidersHorizontal, Type, X,
 } from "lucide-react";
 import { COSMOS, LENSES, TRUST_BUCKETS, type Lens, type TrustBucket } from "./cosmos/palette";
 import { styles } from "./cosmos/styles";
@@ -23,17 +24,14 @@ import TimelineBar from "./panels/timeline-bar";
 
 type Selection = { type: "node"; id: string } | { type: "link"; link: SelectedLink } | null;
 
-// Below this the right rail becomes a bottom sheet; above it, the desktop rails stand.
-const SHEET_BREAKPOINT = 760;
-type SheetHeight = "peek" | "half" | "full";
-// Peek still shows the title, path and badges, so the graph keeps ~70% of the screen.
-const SHEET_MAX_HEIGHT: Record<SheetHeight, string> = {
-    peek: "30vh",
-    half: "56vh",
-    full: "90vh",
-};
-const SHEET_NEXT: Record<SheetHeight, SheetHeight> = { peek: "half", half: "full", full: "peek" };
-const SHEET_LABEL: Record<SheetHeight, string> = { peek: "Expand", half: "Expand", full: "Collapse" };
+// Below this the layout splits into a graph region and a docked region instead of
+// floating rails over a full-bleed canvas.
+const MOBILE_BREAKPOINT = 760;
+type DockSize = "third" | "half" | "tall";
+// Share of the viewport the dock claims. The graph gets the rest and is sized to it,
+// which is the whole point of the split.
+const DOCK_SHARE: Record<DockSize, number> = { third: 0.34, half: 0.5, tall: 0.82 };
+const DOCK_NEXT: Record<DockSize, DockSize> = { third: "half", half: "tall", tall: "third" };
 
 const MARKDOWN_CSS = `
 .graph-markdown h1,.graph-markdown h2,.graph-markdown h3{font-size:13.5px;font-weight:700;margin:12px 0 5px;color:#e8ecf8}
@@ -75,7 +73,8 @@ export default function GraphPage() {
     const bannerRef = useRef<HTMLDivElement>(null);
     const [contentTop, setContentTop] = useState(68);
     const [bannerHeight, setBannerHeight] = useState(0);
-    const [sheet, setSheet] = useState<SheetHeight>("half");
+    const [dock, setDock] = useState<DockSize>("half");
+    const mobileInit = useRef(false);
     const [lens, setLens] = useState<Lens>("category");
     const [categoryFilter, setCategoryFilter] = useState<Record<string, boolean>>({});
     const [showOrphans, setShowOrphans] = useState(true);
@@ -278,7 +277,7 @@ export default function GraphPage() {
 
     const openNode = useCallback((id: string) => {
         setSelected({ type: "node", id });
-        setSheet("half");
+        setDock("half");
         setEditMode(false);
         setConfirming(null);
         setLinkQuery("");
@@ -337,12 +336,12 @@ export default function GraphPage() {
         void openNode(id);
     }, [openNode]);
 
-    // Collapsing the sheet is the point of entering a system: the planets are what was
-    // asked for, and at half height on a phone the sheet covers all of them. The page
-    // stays selected because systemSpec needs it, so the sheet shrinks and never closes.
+    // Shrinking the dock is the point of entering a system: the planets are what was
+    // asked for. The page stays selected because systemSpec needs it, so the dock gives
+    // the graph more room rather than closing.
     const enterSystem = useCallback((id: string) => {
         setLocalRoot(id);
-        setSheet("peek");
+        setDock("third");
     }, []);
 
     // ---- Cosmos instance ----
@@ -430,11 +429,16 @@ export default function GraphPage() {
             labelsRef.current = createLabelLayer({ container: element, graph: cosmos.graph, view: viewRef.current });
             labelsRef.current.start();
 
-            const onResize = () => cosmos.resize(window.innerWidth, window.innerHeight);
-            onResize();
-            window.addEventListener("resize", onResize);
+            // Sized from the container's own box, never the window. This is what makes
+            // the mobile split work: with a window-sized renderer the camera's centre
+            // sits behind the dock, so every star flyTo framed was hidden no matter how
+            // short the dock was. A ResizeObserver also covers the dock changing size.
+            const sizeToBox = () => cosmos.resize(element.clientWidth, element.clientHeight);
+            sizeToBox();
+            const boxObserver = new ResizeObserver(sizeToBox);
+            boxObserver.observe(element);
             (element as HTMLDivElement & { __cleanup?: () => void }).__cleanup = () => {
-                window.removeEventListener("resize", onResize);
+                boxObserver.disconnect();
             };
             setReady(true);
         })();
@@ -813,15 +817,30 @@ export default function GraphPage() {
     const rightPanelOpen = Boolean(selected) || Boolean(routeFrom || routeTo);
     // Both rails cannot fit side by side on a narrow window, and the right one is
     // always the thing the user just asked for.
-    const leftRailVisible = railOpen && !(viewport.width < 1080 && rightPanelOpen);
-    const sheetMode = viewport.width < SHEET_BREAKPOINT;
+    const mobile = viewport.width < MOBILE_BREAKPOINT;
     const railTop = contentTop + bannerHeight;
+    // On a phone the controls move into the dock, so the left rail never renders there.
+    const leftRailVisible = !mobile && railOpen && !(viewport.width < 1080 && rightPanelOpen);
+    // Selection wins the dock: it is what the user just asked for. Controls take it only
+    // when nothing is open, so the region always has one obvious occupant.
+    const dockContent: "page" | "controls" | null = !mobile
+        ? null
+        : rightPanelOpen ? "page" : railOpen ? "controls" : null;
+    const dockHeight = dockContent ? Math.round(viewport.height * DOCK_SHARE[dock]) : 0;
 
     useEffect(() => {
         const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
         onResize();
         window.addEventListener("resize", onResize);
         return () => window.removeEventListener("resize", onResize);
+    }, []);
+
+    // Controls default open, which is right on a desktop and wrong on a phone: there the
+    // dock would claim half the screen before the user has asked for anything.
+    useEffect(() => {
+        if (mobileInit.current) return;
+        mobileInit.current = true;
+        if (window.innerWidth < MOBILE_BREAKPOINT) setRailOpen(false);
     }, []);
 
     useEffect(() => {
@@ -851,26 +870,179 @@ export default function GraphPage() {
     useEffect(() => {
         viewRef.current.labelSafeArea = {
             left: leftRailVisible ? 316 : 0,
-            // A sheet runs along the bottom, so it occupies no band on the right.
-            right: !sheetMode && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
+            // The dock claims its own space below the canvas, so it shadows no band
+            // of the graph and needs no allowance here.
+            right: !mobile && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
         };
-    }, [leftRailVisible, rightPanelOpen, viewport.width, sheetMode]);
+    }, [leftRailVisible, rightPanelOpen, viewport.width, mobile]);
+
+    const controlPanels = (
+        <>
+            <ExplorePanel
+                query={query}
+                onQueryChange={setQuery}
+                searching={searching}
+                hits={hits}
+                activeHit={activeHit}
+                onPickHit={focusNode}
+                visibleNodes={visible.nodes.length}
+                visibleLinks={visible.links.length}
+                totalNodes={data?.nodes.length ?? 0}
+                categoryFilter={categoryFilter}
+                onToggleCategory={(category) =>
+                    setCategoryFilter((current) => ({ ...current, [category]: current[category] === false }))
+                }
+                showOrphans={showOrphans}
+                onShowOrphans={setShowOrphans}
+                showSuggestions={showSuggestions}
+                onShowSuggestions={setShowSuggestions}
+                suggestionCount={data?.suggestions.length ?? 0}
+                physics={physics}
+                onPhysics={setPhysics}
+                quality={quality}
+                onQuality={setQuality}
+                bloomActive={bloomActive}
+                searchInputRef={searchInputRef}
+            />
+            <LensPanel
+                lens={lens}
+                onLens={setLens}
+                clusters={data?.clusters ?? []}
+                nodes={data?.nodes ?? []}
+                trustFilter={trustFilter}
+                onToggleTrust={(bucket) =>
+                    setTrustFilter((current) =>
+                        current.includes(bucket)
+                            ? current.filter((item) => item !== bucket)
+                            : [...current, bucket],
+                    )
+                }
+            />
+            <ClustersPanel clusters={data?.clusters ?? []} onFocus={focusNode} />
+            {data && (
+                <HealthPanel
+                    health={data.health}
+                    nodes={data.nodes}
+                    activeFindings={findings}
+                    onToggleFinding={(finding) =>
+                        setFindings((current) =>
+                            current.includes(finding)
+                                ? current.filter((item) => item !== finding)
+                                : [...current, finding],
+                        )
+                    }
+                    onFocus={focusNode}
+                />
+            )}
+            <HubsPanel nodes={data?.nodes ?? []} onFocus={focusNode} />
+        </>
+    );
+
+    const selectionPanels = (
+        <>
+        {(routeFrom || routeTo) && (
+            <PathPanel
+                from={routeFrom}
+                to={routeTo}
+                path={path}
+                titleOf={titleOf}
+                onFocus={focusNode}
+                onClear={() => { setRouteFrom(null); setRouteTo(null); }}
+                onSwap={() => { setRouteFrom(routeTo); setRouteTo(routeFrom); }}
+            />
+        )}
+
+        {selectedNode && selected?.type === "node" && (
+            <PagePanel
+                node={selectedNode}
+                markdown={pageMd}
+                loading={pageLoading}
+                editMode={editMode}
+                editText={editText}
+                busy={busy}
+                confirming={confirming}
+                suggestions={suggestions}
+                suggestionsLoading={suggestionsLoading}
+                selectedSuggestions={selectedSuggestions}
+                linkQuery={linkQuery}
+                linkTargets={linkTargets}
+                linkTargetId={linkTargetId}
+                linkLabel={linkLabel}
+                focusedSection={focusedSection}
+                onClearSection={() => setFocusedSection(null)}
+                titleOf={titleOf}
+                onClose={() => {
+                    setSelected(null);
+                    setConfirming(null);
+                    cosmosRef.current?.releaseFocus();
+                }}
+                onEdit={() => setEditMode(true)}
+                onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
+                onEditText={setEditText}
+                onSave={() => void savePage()}
+                onDelete={() => void deletePage()}
+                onConfirm={setConfirming}
+                onFocus={focusNode}
+                onLocal={() => enterSystem(selected.id)}
+                onRouteFrom={() => setRouteFrom(selected.id)}
+                onRouteTo={() => setRouteTo(selected.id)}
+                onToggleSuggestion={(target) =>
+                    setSelectedSuggestions((current) => {
+                        const next = new Set(current);
+                        if (next.has(target)) next.delete(target);
+                        else next.add(target);
+                        return next;
+                    })
+                }
+                onAcceptSuggestion={(target) => void linkOne(selected.id, target, "related")}
+                onLinkSelected={() => void linkSelectedSuggestions()}
+                onLinkQuery={setLinkQuery}
+                onLinkTarget={setLinkTargetId}
+                onLinkLabel={setLinkLabel}
+                onCreateLink={() => {
+                    if (linkTargetId) void linkOne(selected.id, linkTargetId, linkLabel || "related");
+                }}
+            />
+        )}
+
+        {selected?.type === "link" && (
+            <LinkPanel
+                source={selected.link.source}
+                target={selected.link.target}
+                kind={selected.link.kind}
+                similarity={selected.link.similarity}
+                titleOf={titleOf}
+                busy={busy}
+                confirming={confirming}
+                onConfirm={setConfirming}
+                onUnlink={() => void deleteLink()}
+                onAccept={() => void linkOne(selected.link.source, selected.link.target, "related")}
+                onClose={() => { setSelected(null); setConfirming(null); }}
+            />
+        )}
+        </>
+    );
 
     return (
         <div style={styles.root}>
             <style>{MARKDOWN_CSS}</style>
             <div style={styles.nebulaOne} />
             <div style={styles.nebulaTwo} />
-            <div ref={containerRef} style={styles.canvas} />
+            <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight }} />
 
-            <div style={styles.topBar} ref={topBarRef}>
+            <div
+                style={mobile ? { ...styles.topBar, flexWrap: "nowrap" as const } : styles.topBar}
+                ref={topBarRef}
+            >
                 <div style={styles.topBarGroup}>
                     <Link href="/" style={styles.backBtn} aria-label="Back to chat" title="Back to chat">
                         <ArrowLeft size={16} />
                     </Link>
+                    {/* The eyebrow is the first thing to go on a phone: it is what forced the
+                        bar onto a second row, and every row costs the graph its height. */}
                     <div style={styles.titleStack}>
-                        <span style={styles.eyebrow}>Second Brain</span>
-                        <span style={styles.pageTitle}>Knowledge Cosmos</span>
+                        {!mobile && <span style={styles.eyebrow}>Second Brain</span>}
+                        <span style={styles.pageTitle}>{mobile ? "Cosmos" : "Knowledge Cosmos"}</span>
                     </div>
                 </div>
 
@@ -925,7 +1097,9 @@ export default function GraphPage() {
                 </div>
             </div>
 
-            {localRoot && (
+            {/* Desktop only. On a phone this floated over the panel and clipped off the
+                right edge; its content now lives in the dock header instead. */}
+            {localRoot && !mobile && (
                 <div ref={bannerRef} style={{ ...styles.banner, top: contentTop }} className="animate-fade-in-scale">
                     <Crosshair size={12} style={{ flexShrink: 0 }} />
                     <span style={styles.bannerLabel}>System: <b>{titleOf(localRoot)}</b></span>
@@ -943,164 +1117,73 @@ export default function GraphPage() {
 
             {leftRailVisible && (
                 <div style={{ ...styles.leftRail, top: railTop }} className="cosmos-rail">
-                    <ExplorePanel
-                        query={query}
-                        onQueryChange={setQuery}
-                        searching={searching}
-                        hits={hits}
-                        activeHit={activeHit}
-                        onPickHit={focusNode}
-                        visibleNodes={visible.nodes.length}
-                        visibleLinks={visible.links.length}
-                        totalNodes={data?.nodes.length ?? 0}
-                        categoryFilter={categoryFilter}
-                        onToggleCategory={(category) =>
-                            setCategoryFilter((current) => ({ ...current, [category]: current[category] === false }))
-                        }
-                        showOrphans={showOrphans}
-                        onShowOrphans={setShowOrphans}
-                        showSuggestions={showSuggestions}
-                        onShowSuggestions={setShowSuggestions}
-                        suggestionCount={data?.suggestions.length ?? 0}
-                        physics={physics}
-                        onPhysics={setPhysics}
-                        quality={quality}
-                        onQuality={setQuality}
-                        bloomActive={bloomActive}
-                        searchInputRef={searchInputRef}
-                    />
-                    <LensPanel
-                        lens={lens}
-                        onLens={setLens}
-                        clusters={data?.clusters ?? []}
-                        nodes={data?.nodes ?? []}
-                        trustFilter={trustFilter}
-                        onToggleTrust={(bucket) =>
-                            setTrustFilter((current) =>
-                                current.includes(bucket)
-                                    ? current.filter((item) => item !== bucket)
-                                    : [...current, bucket],
-                            )
-                        }
-                    />
-                    <ClustersPanel clusters={data?.clusters ?? []} onFocus={focusNode} />
-                    {data && (
-                        <HealthPanel
-                            health={data.health}
-                            nodes={data.nodes}
-                            activeFindings={findings}
-                            onToggleFinding={(finding) =>
-                                setFindings((current) =>
-                                    current.includes(finding)
-                                        ? current.filter((item) => item !== finding)
-                                        : [...current, finding],
-                                )
-                            }
-                            onFocus={focusNode}
-                        />
-                    )}
-                    <HubsPanel nodes={data?.nodes ?? []} onFocus={focusNode} />
+                    {controlPanels}
                 </div>
             )}
 
-            <div
-                style={sheetMode
-                    ? { ...styles.rightSheet, maxHeight: SHEET_MAX_HEIGHT[sheet] }
-                    : { ...styles.rightRail, top: railTop }}
-                className="cosmos-rail"
-            >
-                {sheetMode && rightPanelOpen && (
-                    <button
-                        style={styles.sheetHandle}
-                        onClick={() => setSheet(SHEET_NEXT[sheet])}
-                        aria-label={`${SHEET_LABEL[sheet]} panel`}
-                    >
-                        <span style={styles.sheetGrip} />
-                        {SHEET_LABEL[sheet]}
-                    </button>
-                )}
+            {!mobile && (
+                <div style={{ ...styles.rightRail, top: railTop }} className="cosmos-rail">
+                    {selectionPanels}
+                </div>
+            )}
 
-                {(routeFrom || routeTo) && (
-                    <PathPanel
-                        from={routeFrom}
-                        to={routeTo}
-                        path={path}
-                        titleOf={titleOf}
-                        onFocus={focusNode}
-                        onClear={() => { setRouteFrom(null); setRouteTo(null); }}
-                        onSwap={() => { setRouteFrom(routeTo); setRouteTo(routeFrom); }}
-                    />
-                )}
-
-                {selectedNode && selected?.type === "node" && (
-                    <PagePanel
-                        node={selectedNode}
-                        markdown={pageMd}
-                        loading={pageLoading}
-                        editMode={editMode}
-                        editText={editText}
-                        busy={busy}
-                        confirming={confirming}
-                        suggestions={suggestions}
-                        suggestionsLoading={suggestionsLoading}
-                        selectedSuggestions={selectedSuggestions}
-                        linkQuery={linkQuery}
-                        linkTargets={linkTargets}
-                        linkTargetId={linkTargetId}
-                        linkLabel={linkLabel}
-                        focusedSection={focusedSection}
-                        onClearSection={() => setFocusedSection(null)}
-                        titleOf={titleOf}
-                        onClose={() => {
-                            setSelected(null);
-                            setConfirming(null);
-                            cosmosRef.current?.releaseFocus();
-                        }}
-                        onEdit={() => setEditMode(true)}
-                        onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
-                        onEditText={setEditText}
-                        onSave={() => void savePage()}
-                        onDelete={() => void deletePage()}
-                        onConfirm={setConfirming}
-                        onFocus={focusNode}
-                        onLocal={() => enterSystem(selected.id)}
-                        onRouteFrom={() => setRouteFrom(selected.id)}
-                        onRouteTo={() => setRouteTo(selected.id)}
-                        onToggleSuggestion={(target) =>
-                            setSelectedSuggestions((current) => {
-                                const next = new Set(current);
-                                if (next.has(target)) next.delete(target);
-                                else next.add(target);
-                                return next;
-                            })
-                        }
-                        onAcceptSuggestion={(target) => void linkOne(selected.id, target, "related")}
-                        onLinkSelected={() => void linkSelectedSuggestions()}
-                        onLinkQuery={setLinkQuery}
-                        onLinkTarget={setLinkTargetId}
-                        onLinkLabel={setLinkLabel}
-                        onCreateLink={() => {
-                            if (linkTargetId) void linkOne(selected.id, linkTargetId, linkLabel || "related");
-                        }}
-                    />
-                )}
-
-                {selected?.type === "link" && (
-                    <LinkPanel
-                        source={selected.link.source}
-                        target={selected.link.target}
-                        kind={selected.link.kind}
-                        similarity={selected.link.similarity}
-                        titleOf={titleOf}
-                        busy={busy}
-                        confirming={confirming}
-                        onConfirm={setConfirming}
-                        onUnlink={() => void deleteLink()}
-                        onAccept={() => void linkOne(selected.link.source, selected.link.target, "related")}
-                        onClose={() => { setSelected(null); setConfirming(null); }}
-                    />
-                )}
-            </div>
+            {dockContent && (
+                <div style={{ ...styles.mobileDock, height: dockHeight }}>
+                    <div style={styles.mobileDockHeader}>
+                        <button
+                            style={styles.mobileGrip}
+                            onClick={() => setDock(DOCK_NEXT[dock])}
+                            aria-label={dock === "tall" ? "Give the graph more room" : "Give the panel more room"}
+                        >
+                            {dock === "tall" ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                        </button>
+                        <span style={styles.mobileDockLabel}>
+                            {dockContent === "controls"
+                                ? "Controls"
+                                : localRoot
+                                    ? `System: ${titleOf(localRoot)}`
+                                    : selected?.type === "node"
+                                        ? titleOf(selected.id)
+                                        : "Connection"}
+                        </span>
+                        {dockContent === "page" && localRoot && (
+                            <>
+                                <button
+                                    style={{ ...styles.chip, flexShrink: 0 }}
+                                    title={`Showing ${localDepth} hop${localDepth > 1 ? "s" : ""}`}
+                                    onClick={() => setLocalDepth((depth) => (depth === 1 ? 2 : 1))}
+                                >
+                                    {localDepth}h
+                                </button>
+                                <button
+                                    style={{ ...styles.chip, flexShrink: 0 }}
+                                    onClick={() => setLocalRoot(null)}
+                                >
+                                    Exit
+                                </button>
+                            </>
+                        )}
+                        <button
+                            style={styles.mobileGrip}
+                            onClick={() => {
+                                if (dockContent === "controls") {
+                                    setRailOpen(false);
+                                    return;
+                                }
+                                setSelected(null);
+                                setConfirming(null);
+                                cosmosRef.current?.releaseFocus();
+                            }}
+                            aria-label="Close"
+                        >
+                            <X size={15} />
+                        </button>
+                    </div>
+                    <div style={styles.mobileDockBody} className="cosmos-rail">
+                        {dockContent === "page" ? selectionPanels : controlPanels}
+                    </div>
+                </div>
+            )}
 
             {timeActive && (
                 <TimelineBar

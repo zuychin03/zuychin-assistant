@@ -38,7 +38,10 @@ export const styles: Record<string, CSSProperties> = {
         fontFamily: "var(--font-family, system-ui)",
         fontSize: 13,
     },
-    canvas: { position: "absolute", inset: 0, zIndex: 1 },
+    // Explicit edges rather than `inset`, because the mobile split overrides top and
+    // bottom inline and a shorthand would fight it. The renderer is sized from this
+    // element's own box, so the camera centres on what is actually visible.
+    canvas: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 1 },
 
     nebulaOne: {
         position: "absolute",
@@ -178,49 +181,69 @@ export const styles: Record<string, CSSProperties> = {
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
     },
 
-    // Narrow viewports get the same cards as a bottom sheet instead. A side rail is the
-    // wrong shape on a phone: its width clamps to the viewport, so it covered ~92% of
-    // the width and three quarters of the height, hiding the graph it describes.
-    // maxHeight comes from the snap state, so it is set inline.
-    rightSheet: {
+    // Phones get a docked region rather than a floating overlay. Two earlier attempts
+    // failed for the same reason: whatever height the overlay took, the canvas stayed
+    // window-sized, so flyTo centred the selected star in the middle of the WINDOW,
+    // which is behind the panel. The dock claims real space and the canvas shrinks to
+    // what is left, so the star it framed is centred in the visible half.
+    mobileDock: {
         position: "absolute",
-        left: 8,
-        right: 8,
-        bottom: 8,
-        zIndex: 9,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 12,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        background: COSMOS.panel,
+        borderTop: `1px solid ${COSMOS.border}`,
+        borderTopLeftRadius: 18,
+        borderTopRightRadius: 18,
+        backdropFilter: "blur(18px)",
+        WebkitBackdropFilter: "blur(18px)",
+        boxShadow: "0 -18px 48px rgba(0,0,0,0.6)",
+        color: COSMOS.text,
+    },
+    // One row replacing three overlapping things: the snap handle, the floating system
+    // banner and a second close affordance.
+    mobileDockHeader: {
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "9px 10px",
+        borderBottom: `1px solid ${COSMOS.border}`,
+    },
+    mobileDockLabel: {
+        flex: 1,
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        fontSize: 12,
+        fontWeight: 650,
+    },
+    mobileDockBody: {
+        flex: 1,
+        minHeight: 0,
         display: "flex",
         flexDirection: "column",
         gap: 10,
         overflowY: "auto",
         overflowX: "hidden",
-        borderRadius: 16,
-        pointerEvents: "none",
+        padding: 10,
         scrollbarWidth: "thin",
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
     },
-    sheetHandle: {
-        position: "sticky",
-        top: 0,
-        zIndex: 2,
-        flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 7,
-        width: "100%",
-        padding: "7px 0 9px",
-        border: "none",
-        borderRadius: "16px 16px 0 0",
-        // Opaque at the top so cards scrolling under the handle do not bleed through it.
-        background: "linear-gradient(rgba(8,10,18,0.95) 55%, rgba(8,10,18,0))",
+    mobileGrip: {
+        ...controlBase,
+        width: 34,
+        height: 28,
+        display: "grid",
+        placeItems: "center",
         color: COSMOS.muted,
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        cursor: "pointer",
+        flexShrink: 0,
     },
-    sheetGrip: { width: 40, height: 4, borderRadius: 999, background: "rgba(126,141,184,0.55)" },
 
     panel: { ...card, padding: "13px 14px", flexShrink: 0 },
     panelHeader: { display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 11 },
@@ -528,10 +551,12 @@ export const styles: Record<string, CSSProperties> = {
         gap: 9,
         padding: "7px 12px",
         fontSize: 11.5,
-        // Without a cap a long page title grew the banner past the viewport and wrapped
-        // it into a five-line block. One line, clipped, keeps the rails' offset a single
-        // predictable height.
-        maxWidth: "calc(100vw - 32px)",
+        // width:max-content WITH a cap, not a cap alone. Anchored at left:50% the box is
+        // shrink-to-fit, and a nowrap child's minimum content width then wins over the
+        // available space, which is how it ended up hanging off the right edge. Giving
+        // the width a definite basis is also what makes the label's ellipsis fire.
+        width: "max-content",
+        maxWidth: "min(560px, calc(100vw - 32px))",
         ...card,
     },
     bannerLabel: {
