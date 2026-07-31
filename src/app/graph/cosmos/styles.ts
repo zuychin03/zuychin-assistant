@@ -136,6 +136,11 @@ export const styles: Record<string, CSSProperties> = {
     // clipped on a curve instead of ending in a hard flat edge. scrollbarColor is the
     // standard property: Chromium ignores ::-webkit-scrollbar once it is set, so the
     // dark thumb here is what actually renders.
+    //
+    // pointerEvents none on the rail itself, auto on its cards (.cosmos-rail > *):
+    // the width clamps to calc(100vw - 32px), so on a phone a rail spans nearly the
+    // whole viewport and its EMPTY area below the last card would otherwise swallow
+    // every tap and drag meant for the canvas.
     leftRail: {
         position: "absolute",
         top: 68,
@@ -150,6 +155,7 @@ export const styles: Record<string, CSSProperties> = {
         overflowX: "hidden",
         paddingRight: 4,
         borderRadius: 16,
+        pointerEvents: "none",
         scrollbarWidth: "thin",
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
     },
@@ -167,6 +173,7 @@ export const styles: Record<string, CSSProperties> = {
         overflowX: "hidden",
         paddingRight: 4,
         borderRadius: 16,
+        pointerEvents: "none",
         scrollbarWidth: "thin",
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
     },

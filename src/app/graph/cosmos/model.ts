@@ -76,9 +76,18 @@ export interface CosmosView {
     pathLinks: Set<string>;
     pathActive: boolean;
     labelsOn: boolean;
+    /**
+     * Id of the page whose system is open, or null. deriveVisible has already dropped
+     * everything beyond localDepth hops, so this only says which of the survivors is
+     * the root: it stays lit, its neighbours sink into the background.
+     */
+    systemFocus: string | null;
     /** Screen bands covered by the side rails; labels there would sit under a panel. */
     labelSafeArea: { left: number; right: number };
 }
+
+/** Dimming applied to a neighbouring system while one system is entered. */
+export const SYSTEM_BACKGROUND_OPACITY = 0.26;
 
 export function createView(): CosmosView {
     return {
@@ -94,6 +103,7 @@ export function createView(): CosmosView {
         pathLinks: new Set(),
         pathActive: false,
         labelsOn: true,
+        systemFocus: null,
         labelSafeArea: { left: 0, right: 0 },
     };
 }

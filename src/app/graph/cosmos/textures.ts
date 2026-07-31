@@ -66,17 +66,20 @@ function bodyTexture(size: number, moon: boolean): THREE.Texture {
         centre - radius * 0.42, centre - radius * 0.45, radius * 0.05,
         centre, centre, radius * 1.35,
     );
-    const peak = moon ? 0.74 : 1;
+    // Peak stays under the bloom pass's luminance threshold. At full white a planet
+    // gets a halo from the composer and reads as another star, which defeats the
+    // whole point of drawing it as a lit body.
+    const peak = moon ? 0.56 : 0.72;
     lit.addColorStop(0, `rgba(255,255,255,${peak})`);
     lit.addColorStop(0.45, `rgba(255,255,255,${peak * 0.62})`);
     lit.addColorStop(0.78, `rgba(255,255,255,${peak * 0.24})`);
-    lit.addColorStop(1, "rgba(255,255,255,0.06)");
+    lit.addColorStop(1, "rgba(255,255,255,0.05)");
     ctx.fillStyle = lit;
     ctx.fillRect(0, 0, size, size);
     ctx.restore();
 
     // Rim light on the dark limb keeps the silhouette readable against the void.
-    ctx.strokeStyle = `rgba(255,255,255,${moon ? 0.22 : 0.34})`;
+    ctx.strokeStyle = `rgba(255,255,255,${moon ? 0.2 : 0.3})`;
     ctx.lineWidth = size * 0.016;
     ctx.beginPath();
     ctx.arc(centre, centre, radius, 0, Math.PI * 2);

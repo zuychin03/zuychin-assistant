@@ -131,13 +131,18 @@ export function createLabelLayer(options: {
             }
             placed.push(box);
 
+            // A background system's name must fade with its star, or the labels are the
+            // only thing still reading as foreground.
+            const backgrounded = view.systemFocus !== null && node.id !== view.systemFocus;
+
             const element = take(used++);
             element.textContent = node.title;
             element.style.transform = `translate(-50%,0) translate(${centre}px,${top}px)`;
             element.style.fontSize = `${size}px`;
             element.style.fontWeight = forced || node.centrality > 0.5 ? "650" : "500";
-            element.style.color = forced ? COSMOS.text : COSMOS.muted;
-            element.style.opacity = String(forced ? 1 : fade * 0.9);
+            element.style.color = forced && !backgrounded ? COSMOS.text : COSMOS.muted;
+            const base = forced ? 1 : fade * 0.9;
+            element.style.opacity = String(backgrounded ? base * 0.45 : base);
             element.style.display = "block";
             return true;
         };

@@ -37,6 +37,7 @@ const MARKDOWN_CSS = `
 .cosmos-rail::-webkit-scrollbar{width:7px}
 .cosmos-rail::-webkit-scrollbar-thumb{background:rgba(126,141,184,0.26);border-radius:99px}
 .cosmos-rail::-webkit-scrollbar-track{background:transparent}
+.cosmos-rail>*{pointer-events:auto}
 `;
 
 export default function GraphPage() {
@@ -207,12 +208,19 @@ export default function GraphPage() {
         const to = params.get("to");
         if (from) setRouteFrom(from);
         if (to) setRouteTo(to);
-        const local = params.get("local");
         const node = params.get("node");
-        if (node) {
-            setSelected({ type: "node", id: node });
-            if (local === "1" || local === "2") {
-                setLocalRoot(node);
+        if (node) setSelected({ type: "node", id: node });
+
+        // The system root is recorded separately from the open page, because the two
+        // diverge the moment a neighbour is opened from inside a system. Deriving the
+        // root from ?node= silently re-rooted the system onto whatever was last
+        // clicked. Links written before ?root= existed only ever carried the open page,
+        // so those still fall back to it.
+        const local = params.get("local");
+        if (local === "1" || local === "2") {
+            const root = params.get("root") ?? node;
+            if (root) {
+                setLocalRoot(root);
                 setLocalDepth(local === "2" ? 2 : 1);
             }
         }
@@ -236,7 +244,10 @@ export default function GraphPage() {
         if (routeFrom) params.set("from", routeFrom);
         if (routeTo) params.set("to", routeTo);
         if (selected?.type === "node") params.set("node", selected.id);
-        if (localRoot) params.set("local", String(localDepth));
+        if (localRoot) {
+            params.set("root", localRoot);
+            params.set("local", String(localDepth));
+        }
         if (timeActive) params.set("t", new Date(timeValue).toISOString().slice(0, 10));
         if (trustFilter.length > 0) params.set("trust", trustFilter.join(","));
         const disabled = Object.entries(categoryFilter).filter(([, on]) => on === false);
@@ -358,8 +369,11 @@ export default function GraphPage() {
         onBackgroundClick: () => {
             if (editMode) return;
             setContextMenu(null);
-            setSelected(null);
             setConfirming(null);
+            // Guarded: a background click with nothing open must not move the camera.
+            if (!selected) return;
+            setSelected(null);
+            cosmosRef.current?.releaseFocus();
         },
         onSectionClick: (sectionId, title) => setFocusedSection({ id: sectionId, title }),
     };
@@ -441,6 +455,22 @@ export default function GraphPage() {
     }, [ready, systemSpec]);
 
     useEffect(() => { setFocusedSection(null); }, [localRoot, selected]);
+
+    // Gated on the same condition as systemSpec, not on localRoot alone. The dimming is
+    // what says "you are inside this system", so it has to leave together with the
+    // planets: keyed only on localRoot it survived deselection, and the graph was left
+    // dark around one lit star with nothing on screen accounting for it. The visibility
+    // check covers the other half, where a category toggle, the time scrubber, a health
+    // filter or a stale ?node= deep link removes the root and dims everything with
+    // nothing lit at all.
+    useEffect(() => {
+        const open = localRoot !== null
+            && selected?.type === "node"
+            && selected.id === localRoot
+            && visible.nodes.some((node) => node.id === localRoot);
+        viewRef.current.systemFocus = open ? localRoot : null;
+        cosmosRef.current?.restyle();
+    }, [localRoot, selected, visible]);
 
     useEffect(() => { if (ready) cosmosRef.current?.applyPhysics(physics); }, [ready, physics]);
 
@@ -536,7 +566,7 @@ export default function GraphPage() {
                 // Bring the constellation the query lit up into view; without this the
                 // hits can sit behind a rail and the graph just looks dark.
                 const top = combined[0] && nodeCache.current.get(combined[0].path);
-                if (top) cosmosRef.current?.flyTo(top, 190);
+                if (top) cosmosRef.current?.flyTo(top);
             } catch {
                 // The local pass already gave usable results.
             } finally {
@@ -714,7 +744,12 @@ export default function GraphPage() {
             if (event.key === "Escape") {
                 if (editMode) return;
                 if (contextMenu) { setContextMenu(null); return; }
-                if (selected) { setSelected(null); setConfirming(null); return; }
+                if (selected) {
+                    setSelected(null);
+                    setConfirming(null);
+                    cosmosRef.current?.releaseFocus();
+                    return;
+                }
                 if (routeFrom || routeTo) { setRouteFrom(null); setRouteTo(null); return; }
                 if (localRoot) { setLocalRoot(null); return; }
                 if (timeActive) { setTimeActive(false); setTimePlaying(false); }
@@ -954,7 +989,11 @@ export default function GraphPage() {
                         focusedSection={focusedSection}
                         onClearSection={() => setFocusedSection(null)}
                         titleOf={titleOf}
-                        onClose={() => { setSelected(null); setConfirming(null); }}
+                        onClose={() => {
+                            setSelected(null);
+                            setConfirming(null);
+                            cosmosRef.current?.releaseFocus();
+                        }}
                         onEdit={() => setEditMode(true)}
                         onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
                         onEditText={setEditText}
