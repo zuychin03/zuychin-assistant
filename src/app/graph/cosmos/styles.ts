@@ -178,6 +178,50 @@ export const styles: Record<string, CSSProperties> = {
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
     },
 
+    // Narrow viewports get the same cards as a bottom sheet instead. A side rail is the
+    // wrong shape on a phone: its width clamps to the viewport, so it covered ~92% of
+    // the width and three quarters of the height, hiding the graph it describes.
+    // maxHeight comes from the snap state, so it is set inline.
+    rightSheet: {
+        position: "absolute",
+        left: 8,
+        right: 8,
+        bottom: 8,
+        zIndex: 9,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        overflowY: "auto",
+        overflowX: "hidden",
+        borderRadius: 16,
+        pointerEvents: "none",
+        scrollbarWidth: "thin",
+        scrollbarColor: "rgba(126,141,184,0.42) transparent",
+    },
+    sheetHandle: {
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 7,
+        width: "100%",
+        padding: "7px 0 9px",
+        border: "none",
+        borderRadius: "16px 16px 0 0",
+        // Opaque at the top so cards scrolling under the handle do not bleed through it.
+        background: "linear-gradient(rgba(8,10,18,0.95) 55%, rgba(8,10,18,0))",
+        color: COSMOS.muted,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+    },
+    sheetGrip: { width: 40, height: 4, borderRadius: 999, background: "rgba(126,141,184,0.55)" },
+
     panel: { ...card, padding: "13px 14px", flexShrink: 0 },
     panelHeader: { display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 11 },
     panelIcon: {
@@ -484,7 +528,17 @@ export const styles: Record<string, CSSProperties> = {
         gap: 9,
         padding: "7px 12px",
         fontSize: 11.5,
+        // Without a cap a long page title grew the banner past the viewport and wrapped
+        // it into a five-line block. One line, clipped, keeps the rails' offset a single
+        // predictable height.
+        maxWidth: "calc(100vw - 32px)",
         ...card,
+    },
+    bannerLabel: {
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
     },
     overlay: {
         position: "absolute",

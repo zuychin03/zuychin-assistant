@@ -23,6 +23,18 @@ import TimelineBar from "./panels/timeline-bar";
 
 type Selection = { type: "node"; id: string } | { type: "link"; link: SelectedLink } | null;
 
+// Below this the right rail becomes a bottom sheet; above it, the desktop rails stand.
+const SHEET_BREAKPOINT = 760;
+type SheetHeight = "peek" | "half" | "full";
+// Peek still shows the title, path and badges, so the graph keeps ~70% of the screen.
+const SHEET_MAX_HEIGHT: Record<SheetHeight, string> = {
+    peek: "30vh",
+    half: "56vh",
+    full: "90vh",
+};
+const SHEET_NEXT: Record<SheetHeight, SheetHeight> = { peek: "half", half: "full", full: "peek" };
+const SHEET_LABEL: Record<SheetHeight, string> = { peek: "Expand", half: "Expand", full: "Collapse" };
+
 const MARKDOWN_CSS = `
 .graph-markdown h1,.graph-markdown h2,.graph-markdown h3{font-size:13.5px;font-weight:700;margin:12px 0 5px;color:#e8ecf8}
 .graph-markdown p{margin:0 0 8px}
@@ -60,7 +72,10 @@ export default function GraphPage() {
     const [viewport, setViewport] = useState({ width: 1440, height: 900 });
     // The top bar wraps on narrow panes, so the rails cannot use a fixed offset.
     const topBarRef = useRef<HTMLDivElement>(null);
-    const [railTop, setRailTop] = useState(68);
+    const bannerRef = useRef<HTMLDivElement>(null);
+    const [contentTop, setContentTop] = useState(68);
+    const [bannerHeight, setBannerHeight] = useState(0);
+    const [sheet, setSheet] = useState<SheetHeight>("half");
     const [lens, setLens] = useState<Lens>("category");
     const [categoryFilter, setCategoryFilter] = useState<Record<string, boolean>>({});
     const [showOrphans, setShowOrphans] = useState(true);
@@ -263,6 +278,7 @@ export default function GraphPage() {
 
     const openNode = useCallback((id: string) => {
         setSelected({ type: "node", id });
+        setSheet("half");
         setEditMode(false);
         setConfirming(null);
         setLinkQuery("");
@@ -321,6 +337,14 @@ export default function GraphPage() {
         void openNode(id);
     }, [openNode]);
 
+    // Collapsing the sheet is the point of entering a system: the planets are what was
+    // asked for, and at half height on a phone the sheet covers all of them. The page
+    // stays selected because systemSpec needs it, so the sheet shrinks and never closes.
+    const enterSystem = useCallback((id: string) => {
+        setLocalRoot(id);
+        setSheet("peek");
+    }, []);
+
     // ---- Cosmos instance ----
 
     const handlersRef = useRef({
@@ -338,7 +362,7 @@ export default function GraphPage() {
             void openNode(node.id);
             cosmosRef.current?.flyTo(node);
         },
-        onNodeDoubleClick: (node) => setLocalRoot(node.id),
+        onNodeDoubleClick: (node) => enterSystem(node.id),
         onNodeRightClick: (node, event) => {
             event.preventDefault();
             setContextMenu({ x: event.clientX, y: event.clientY, id: node.id });
@@ -790,6 +814,8 @@ export default function GraphPage() {
     // Both rails cannot fit side by side on a narrow window, and the right one is
     // always the thing the user just asked for.
     const leftRailVisible = railOpen && !(viewport.width < 1080 && rightPanelOpen);
+    const sheetMode = viewport.width < SHEET_BREAKPOINT;
+    const railTop = contentTop + bannerHeight;
 
     useEffect(() => {
         const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -802,18 +828,33 @@ export default function GraphPage() {
         const element = topBarRef.current;
         if (!element) return;
         const observer = new ResizeObserver(([entry]) => {
-            setRailTop(Math.round(entry.contentRect.height) + 22);
+            setContentTop(Math.round(entry.contentRect.height) + 22);
         });
         observer.observe(element);
         return () => observer.disconnect();
     }, []);
 
+    // The banner sits at contentTop and the rails start below it. Measured, not assumed:
+    // it used to share the rails' exact top, which is why it covered the page panel's
+    // close button. offsetHeight because contentRect omits its padding and border.
+    useEffect(() => {
+        const element = bannerRef.current;
+        if (!element) {
+            setBannerHeight(0);
+            return;
+        }
+        const observer = new ResizeObserver(() => setBannerHeight(element.offsetHeight + 8));
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [localRoot]);
+
     useEffect(() => {
         viewRef.current.labelSafeArea = {
             left: leftRailVisible ? 316 : 0,
-            right: rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
+            // A sheet runs along the bottom, so it occupies no band on the right.
+            right: !sheetMode && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
         };
-    }, [leftRailVisible, rightPanelOpen, viewport.width]);
+    }, [leftRailVisible, rightPanelOpen, viewport.width, sheetMode]);
 
     return (
         <div style={styles.root}>
@@ -885,13 +926,18 @@ export default function GraphPage() {
             </div>
 
             {localRoot && (
-                <div style={{ ...styles.banner, top: railTop }} className="animate-fade-in-scale">
-                    <Crosshair size={12} />
-                    <span>System: <b>{titleOf(localRoot)}</b></span>
-                    <button style={styles.chip} onClick={() => setLocalDepth((depth) => (depth === 1 ? 2 : 1))}>
+                <div ref={bannerRef} style={{ ...styles.banner, top: contentTop }} className="animate-fade-in-scale">
+                    <Crosshair size={12} style={{ flexShrink: 0 }} />
+                    <span style={styles.bannerLabel}>System: <b>{titleOf(localRoot)}</b></span>
+                    <button
+                        style={{ ...styles.chip, flexShrink: 0 }}
+                        onClick={() => setLocalDepth((depth) => (depth === 1 ? 2 : 1))}
+                    >
                         {localDepth} hop{localDepth > 1 ? "s" : ""}
                     </button>
-                    <button style={styles.chip} onClick={() => setLocalRoot(null)}>Exit (Esc)</button>
+                    <button style={{ ...styles.chip, flexShrink: 0 }} onClick={() => setLocalRoot(null)}>
+                        Exit
+                    </button>
                 </div>
             )}
 
@@ -957,7 +1003,23 @@ export default function GraphPage() {
                 </div>
             )}
 
-            <div style={{ ...styles.rightRail, top: railTop }} className="cosmos-rail">
+            <div
+                style={sheetMode
+                    ? { ...styles.rightSheet, maxHeight: SHEET_MAX_HEIGHT[sheet] }
+                    : { ...styles.rightRail, top: railTop }}
+                className="cosmos-rail"
+            >
+                {sheetMode && rightPanelOpen && (
+                    <button
+                        style={styles.sheetHandle}
+                        onClick={() => setSheet(SHEET_NEXT[sheet])}
+                        aria-label={`${SHEET_LABEL[sheet]} panel`}
+                    >
+                        <span style={styles.sheetGrip} />
+                        {SHEET_LABEL[sheet]}
+                    </button>
+                )}
+
                 {(routeFrom || routeTo) && (
                     <PathPanel
                         from={routeFrom}
@@ -1001,7 +1063,7 @@ export default function GraphPage() {
                         onDelete={() => void deletePage()}
                         onConfirm={setConfirming}
                         onFocus={focusNode}
-                        onLocal={() => setLocalRoot(selected.id)}
+                        onLocal={() => enterSystem(selected.id)}
                         onRouteFrom={() => setRouteFrom(selected.id)}
                         onRouteTo={() => setRouteTo(selected.id)}
                         onToggleSuggestion={(target) =>
@@ -1063,7 +1125,7 @@ export default function GraphPage() {
                     <button style={styles.contextItem} onClick={() => { setRouteTo(contextMenu.id); setContextMenu(null); }}>
                         <Route size={13} /> Route to here
                     </button>
-                    <button style={styles.contextItem} onClick={() => { setLocalRoot(contextMenu.id); setContextMenu(null); }}>
+                    <button style={styles.contextItem} onClick={() => { enterSystem(contextMenu.id); setContextMenu(null); }}>
                         <Crosshair size={13} /> Isolate this system
                     </button>
                     <button style={styles.contextItem} onClick={() => { focusNode(contextMenu.id); setContextMenu(null); }}>
