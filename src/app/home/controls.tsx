@@ -24,6 +24,7 @@ export interface ProviderModel {
   supportsVision?: boolean;
   supportsThinking?: boolean;
   supportsSearch?: boolean;
+  supportsStructuredOutput?: boolean;
   /** Verified output-token ceiling; bounds the max-tokens slider. */
   maxOutputTokens?: number;
   meta?: ModelMeta | null;
@@ -185,6 +186,7 @@ export function ModelInfoModal({
   if (model.supportsVision) caps.push("Vision");
   if (model.supportsThinking) caps.push("Reasoning toggle");
   if (model.supportsSearch) caps.push("Web search");
+  if (model.supportsStructuredOutput) caps.push("Structured output");
 
   return (
     <div style={modal.overlay} className="animate-overlay-in" onClick={onClose}>
