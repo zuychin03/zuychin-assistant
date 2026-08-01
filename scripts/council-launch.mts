@@ -10,7 +10,7 @@
  * because a failure is cheapest there.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOST_PORT_FIRST, HOST_PORT_LAST, councilBranch, councilWorktreeDir } from "../src/lib/council/protocol.ts";
@@ -151,12 +151,17 @@ let host = await liveHost();
 if (host) {
     console.log(`Using the council host already running on port ${host.port}.`);
 } else {
-    // Detached so the council outlives this terminal.
+    // Detached so the council outlives this terminal. --import tsx, never
+    // --experimental-strip-types: the council library uses extensionless
+    // relative imports and the "@/" alias, neither of which plain node ESM
+    // resolves. Output goes to a file because a detached process with
+    // stdio:"ignore" fails invisibly.
     mkdirSync(hostDir, { recursive: true });
+    const bootLog = openSync(join(hostDir, "host.log"), "a");
     const child = spawn(process.execPath, [
-        "--no-warnings", "--experimental-strip-types",
+        "--no-warnings", "--import", "tsx", `--env-file=${join(repo, ".env.local")}`,
         join(HERE, "council-host.mts"), "--repo", repo, "--base", base,
-    ], { detached: true, stdio: "ignore", env: process.env });
+    ], { detached: true, stdio: ["ignore", bootLog, bootLog], env: process.env, cwd: repo });
     child.unref();
     console.log("Starting the council host...");
     host = await waitForHost(30_000);

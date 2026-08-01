@@ -21,7 +21,7 @@ import { COUNCIL_MCP_SERVER_NAME } from "../src/lib/council/protocol.ts";
 interface ProbeAdapter {
     command: string;
     args: string[];
-    env?: Record<string, string | Record<string, unknown>>;
+    env?: Record<string, string | Record<string, unknown> | null>;
 }
 
 const split = process.argv.indexOf("--");
@@ -35,32 +35,35 @@ const adapterName = flags[flags.indexOf("--agent") + 1];
 let command: string;
 let args: string[];
 let adapterEnv: NodeJS.ProcessEnv = process.env;
+let mcpUrl = process.env.COUNCIL_MCP_URL ?? "http://localhost:3000/api/mcp/mcp";
+const mcpKey = process.env.MCP_API_KEY;
 
 // --agent probes the entry as CONFIGURED, env and all, which is the question
 // that actually matters once council-agents.json has been written.
 if (flags.includes("--agent")) {
     const configFile = join(dirname(fileURLToPath(import.meta.url)), "council-agents.json");
-    const adapters = (JSON.parse(readFileSync(configFile, "utf8")) as { agents: Record<string, ProbeAdapter> }).agents;
-    const adapter = adapters[adapterName];
+    const parsed = JSON.parse(readFileSync(configFile, "utf8")) as { mcpUrl?: string; agents: Record<string, ProbeAdapter> };
+    // The endpoint the HOST will use, not a hardcoded default, or the probe can
+    // pass against localhost while the council runs against production.
+    if (parsed.mcpUrl && !process.env.COUNCIL_MCP_URL) mcpUrl = parsed.mcpUrl;
+    const adapter = parsed.agents[adapterName];
     if (!adapter?.command) {
         console.error(`no adapter "${adapterName}" in council-agents.json`);
         process.exit(2);
     }
     command = adapter.command;
     args = adapter.args ?? [];
-    adapterEnv = {
-        ...process.env,
-        ...Object.fromEntries(Object.entries(adapter.env ?? {})
-            .map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])),
-    };
+    adapterEnv = { ...process.env };
+    for (const [k, v] of Object.entries(adapter.env ?? {})) {
+        if (v === null) delete adapterEnv[k];
+        else adapterEnv[k] = typeof v === "string" ? v : JSON.stringify(v);
+    }
 } else if (split >= 0 && process.argv[split + 1]) {
     [command, ...args] = process.argv.slice(split + 1);
 } else {
     console.error("usage: ... acp-probe.mts [--prompt] (--agent <name> | -- <command> [args...])");
     process.exit(2);
 }
-const mcpUrl = process.env.COUNCIL_MCP_URL ?? "http://localhost:3000/api/mcp/mcp";
-const mcpKey = process.env.MCP_API_KEY;
 
 const cwd = mkdtempSync(join(tmpdir(), "acp-probe-"));
 const results: string[] = [];

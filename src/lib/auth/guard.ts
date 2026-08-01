@@ -20,8 +20,12 @@ function bearer(req: NextRequest): string | null {
     return header?.startsWith("Bearer ") ? header.slice(7) : null;
 }
 
-function unauthorized() {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// The reason is safe to state and is the whole diagnostic: a cron caller sees
+// only the status code, and "missing header" and "wrong secret" need completely
+// different fixes. It reveals nothing the caller does not already know - never
+// the expected value, its length, or how close a wrong one was.
+function unauthorized(reason?: string) {
+    return NextResponse.json({ error: "Unauthorized", ...(reason ? { reason } : {}) }, { status: 401 });
 }
 
 /**
@@ -45,9 +49,16 @@ export function requireCron(req: NextRequest): NextResponse | null {
     if (!expected) {
         if (process.env.NODE_ENV === "production") {
             console.error("[Auth] CRON_SECRET is not set; refusing cron request.");
-            return unauthorized();
+            return unauthorized("CRON_SECRET is not configured on the server");
         }
         return null;
     }
-    return secretMatches(bearer(req), expected) ? null : unauthorized();
+    const provided = bearer(req);
+    if (!provided) {
+        const header = req.headers.get("authorization");
+        return unauthorized(header
+            ? "Authorization header is not a Bearer token; it must read exactly: Bearer <CRON_SECRET>"
+            : "no Authorization header; this endpoint needs: Authorization: Bearer <CRON_SECRET>");
+    }
+    return secretMatches(provided, expected) ? null : unauthorized("bearer token does not match CRON_SECRET");
 }

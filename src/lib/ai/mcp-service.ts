@@ -8,7 +8,7 @@ import {
     formatEmailSummary,
 } from "@/lib/integrations/gmail-service";
 import { ARTIFACT_TOOLS, executeArtifactTool } from "@/lib/ai/tools/artifacts";
-import type { ArtifactDescriptor } from "@/lib/types";
+import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 
 export interface McpToolParam {
     type: "string" | "number" | "integer" | "boolean" | "array" | "object";
@@ -29,6 +29,8 @@ export interface ToolContext {
     conversationId?: string;
     userProfileId?: string;
     onArtifact?: (artifact: ArtifactDescriptor) => void;
+    /** Only the web chat renders a proposal card; elsewhere the tool is a no-op. */
+    onCouncilProposal?: (proposal: CouncilProposal) => void;
 }
 
 export const WEB_SEARCH_TOOL: McpTool = {
@@ -51,9 +53,44 @@ export const WEB_SEARCH_TOOL: McpTool = {
 
 export const COUNCIL_TOOLS: McpTool[] = [
     {
+        name: "council_propose",
+        description:
+            "Draft a council for Duy to launch with one click on the machine his agents run on. This is the DEFAULT way to start a council: prefer it over council_convene whenever he is at the app. It creates nothing - no session, no code, no expiry - so a proposal he ignores costs him nothing. The proposal renders as a card under your reply with a Launch button; say in your reply what you proposed and why, and never invent a session code, because there is not one yet. Use council_convene instead only when he needs paste-in kickoff blocks for agents in desktop apps.",
+        parameters: {
+            topic: { type: "string", description: "The question or job, as one decidable question.", required: true },
+            brief: {
+                type: "string",
+                description:
+                    "Everything the agents need and cannot see: constraints, what has been tried, what a good answer looks like, and which files or areas are in scope. For a build council, instruct the closer to author workItems and to give each agent file-disjoint work - a build council whose closer omits them ends with every agent idle on NO_WORK_CAMPAIGN.",
+                required: true,
+            },
+            participants: {
+                type: "array",
+                description: "2-5 agents. Use the instance names his host advertises (claude-a, codex-1, ...) when you know them; he can edit them before launching.",
+                required: true,
+                items: {
+                    type: "object",
+                    description: "One participant.",
+                    properties: {
+                        name: { type: "string", description: "Agent instance name, e.g. 'codex-1'." },
+                        expertise: { type: "string", description: "One line on what it brings and what it should own." },
+                    },
+                },
+            },
+            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names.", required: true },
+            councilType: {
+                type: "string",
+                enum: ["debate", "code", "research", "audit", "debug"],
+                description: "'debate' to decide, 'code' to build, 'research' to investigate, 'audit' to review, 'debug' to find a root cause. Each sets the house rules, budgets and closing criteria.",
+                required: true,
+            },
+            maxRounds: { type: "number", description: "Rounds before it must conclude. Omit to take the type's default.", required: false },
+        },
+    },
+    {
         name: "council_convene",
         description:
-            "Open a council: a live multi-round debate between Duy's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use when he asks to convene a council, get his agents to debate or decide something together, or wants disagreement rather than a single answer. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
+            "Open a council immediately: a live multi-round debate between Duy's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
         parameters: {
             topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
             brief: { type: "string", description: "Context every participant needs: constraints, what has been tried, what a good answer looks like.", required: true },
@@ -588,6 +625,8 @@ export async function executeTool(
         case "search_web":
             return runWebSearch(args.query as string, args.depth === "thorough" ? "thorough" : "quick");
 
+        case "council_propose":
+            return executeCouncilPropose(args, ctx);
         case "council_convene":
             return executeCouncilConvene(args);
         case "council_status":
@@ -1438,6 +1477,49 @@ ${toolList}
 // --- zuychin-council: Duy convenes and closes from chat, so he never needs to
 // learn a session code from an agent's terminal. ---
 
+function readParticipants(args: Record<string, unknown>): { name: string; expertise: string }[] {
+    const raw = (args.participants ?? []) as { name?: string; expertise?: string }[];
+    return raw
+        .filter((p) => p && typeof p.name === "string" && p.name.trim())
+        .map((p) => ({ name: p.name!.trim(), expertise: (p.expertise ?? "").trim() || "unspecified" }));
+}
+
+async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
+    const { MODERATOR_NAME } = await import("@/lib/council/protocol");
+    const { COUNCIL_TYPES } = await import("@/lib/council/templates");
+
+    if (!ctx?.onCouncilProposal) {
+        return "A proposal card can only be shown in the web chat. Use council_convene here and give him the kickoff blocks instead.";
+    }
+
+    const participants = readParticipants(args);
+    const names = participants.map((p) => p.name);
+    const closerName = String(args.closerName ?? "").trim();
+    const councilType = String(args.councilType ?? "debate").trim();
+    const topic = String(args.topic ?? "").trim();
+    const brief = String(args.brief ?? "").trim();
+
+    // Validated here rather than at launch: the host rejects the same things,
+    // but it does so after he has clicked, with no way back to the model.
+    if (!topic) return "A council needs a topic. Nothing was proposed.";
+    if (!brief) return "A council needs a brief. Nothing was proposed.";
+    if (participants.length < 2) return "A council needs at least 2 participants. Nothing was proposed.";
+    if (participants.length > 5) return "A council takes at most 5 participants. Nothing was proposed.";
+    if (new Set(names).size !== names.length) return `Participant names must be unique; got ${names.join(", ")}. Nothing was proposed.`;
+    if (names.includes(MODERATOR_NAME)) return `"${MODERATOR_NAME}" is reserved for the moderator. Nothing was proposed.`;
+    if (!names.includes(closerName)) return `closerName "${closerName}" is not one of ${names.join(", ")}. Nothing was proposed.`;
+    if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) {
+        return `councilType must be one of ${COUNCIL_TYPES.join(", ")}. Nothing was proposed.`;
+    }
+
+    const maxRounds = typeof args.maxRounds === "number" && args.maxRounds > 0 ? Math.floor(args.maxRounds) : undefined;
+    ctx.onCouncilProposal({ topic, brief, participants, closerName, councilType, ...(maxRounds ? { maxRounds } : {}) });
+
+    return `Proposed a ${councilType} council on "${topic}" with ${names.join(", ")}, closed by ${closerName}. `
+        + "The card is under your reply with a Launch button. Nothing has been created and there is no session code yet; "
+        + "summarise what you proposed and stop.";
+}
+
 async function executeCouncilConvene(args: Record<string, unknown>): Promise<string> {
     const {
         createCouncilSession, listOpenCouncils, listParticipants,
@@ -1445,10 +1527,7 @@ async function executeCouncilConvene(args: Record<string, unknown>): Promise<str
     const { renderConveneResult } = await import("@/lib/council/render");
     const { MAX_OPEN_COUNCILS, MODERATOR_NAME } = await import("@/lib/council/protocol");
 
-    const raw = (args.participants ?? []) as { name?: string; expertise?: string }[];
-    const participants = raw
-        .filter((p) => p && typeof p.name === "string" && p.name.trim())
-        .map((p) => ({ name: p.name!.trim(), expertise: (p.expertise ?? "").trim() || "unspecified" }));
+    const participants = readParticipants(args);
     const closerName = String(args.closerName ?? "").trim();
     const names = participants.map((p) => p.name);
 

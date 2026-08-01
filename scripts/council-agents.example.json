@@ -5,8 +5,10 @@
 
   "host": {
     "_doc": "Loopback control channel for /council. port is the first tried; the host walks up to 8791 if it is taken. origins are ADDED to http://localhost:3000 and http://127.0.0.1:3000 - put your deployed PWA origin here to drive the council from it.",
+    "_doc_autoAdopt": "true lets an idle host claim an open council it can run IN FULL - every live participant configured here and none already driven by hand - without anyone clicking. That is what makes a council convened from a phone actually start. Leave it off unless you want vendor processes starting unattended: a permission request outside a worktree is denied automatically after 120s if nobody is watching.",
     "port": 8787,
-    "origins": []
+    "origins": [],
+    "autoAdopt": false
   },
 
   "instances": {
@@ -20,7 +22,7 @@
   "agents": {
     "_doc": "mode 'acp' means the host owns the agent over the Agent Client Protocol: one session for the whole council, turns pushed as session/prompt, and the MCP bearer token passed over stdio so it never lands on disk. mode 'shell' is the old one-process-per-turn behaviour and keeps its on-disk --mcp-config. Optional 'env' is merged over the host's environment for that agent only; an object value is JSON-stringified, for a vendor that takes its whole config in one variable. Optional 'warn' is surfaced on the agent's card in /council - use it for anything that makes this agent weaker than the others. VERIFY the command with `scripts/council-acp-probe.mts --agent <name> --prompt` before trusting it: these are config, not code, and the vendors move.",
 
-    "_doc_containment": "The host path-checks fs/read_text_file, fs/write_text_file and any permission request carrying toolCall.locations, and forces terminal cwd to the worktree. An agent that does its own file IO is NOT covered by that gate: run the probe with --edit to find out which kind you have, and put a warn on the entry if it is the second kind. As of 2026-08-01 both codex and cursor are the second kind.",
+    "_doc_containment": "The host path-checks fs/read_text_file, fs/write_text_file and any permission request carrying toolCall.locations, and forces terminal cwd to the worktree. An agent that does its own file IO is NOT covered by that gate: run the probe with --edit to find out which kind you have, and put a warn on the entry if it is the second kind. Measured 2026-08-01: claude-code writes through the client's fs methods and IS covered; codex and cursor do their own file IO and are NOT.",
 
     "_doc_mcp_name": "The host injects the council MCP server as 'zuychin-council' (COUNCIL_MCP_SERVER_NAME in src/lib/council/protocol.ts). Do not rename it to match a server the agent already has configured: codex-acp silently DROPS a requested server whose name already exists in its own config unless DISABLE_MCP_CONFIG_FILTERING=true, which leaves the agent authenticating against the wrong endpoint with no error.",
 

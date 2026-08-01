@@ -10,7 +10,7 @@ import { createDraftSkill } from "@/lib/ai/skills/custom-store";
 import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
-import type { ArtifactDescriptor } from "@/lib/types";
+import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 
 const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's request end-to-end:
 1. Call update_plan first with a short plan (2–6 steps), and update it as you progress.
@@ -58,7 +58,7 @@ export async function runAgent(opts: {
     onEvent?: AgentEventSink;
     resumePrefix?: string;
     signal?: AbortSignal;
-}): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[] }> {
+}): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[]; councilProposal?: CouncilProposal }> {
     const { rag, message, conversationId, userProfileId, resumePrefix, signal } = opts;
 
     const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
@@ -68,6 +68,7 @@ export async function runAgent(opts: {
     if (runId) onEvent({ type: "run", runId });
 
     const artifacts: ArtifactDescriptor[] = [];
+    let councilProposal: CouncilProposal | undefined;
     const toolCtx: ToolContext = {
         conversationId,
         userProfileId,
@@ -75,6 +76,7 @@ export async function runAgent(opts: {
             artifacts.push(a);
             onEvent?.({ type: "artifact", artifact: a });
         },
+        onCouncilProposal: (p) => { councilProposal = p; },
     };
 
     let steps: PlanStep[] = [];
@@ -160,7 +162,7 @@ export async function runAgent(opts: {
             signal,
         });
         await runBuffer.finish({ status: "done", reply, usage: { ...usage, workerTokens } });
-        return { reply, artifacts, steps };
+        return { reply, artifacts, steps, councilProposal };
     } catch (err) {
         await runBuffer.finish({
             status: "error",

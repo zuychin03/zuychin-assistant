@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
             }, 15000);
 
             try {
-                const { reply, messageId, artifacts } = await ragChat({
+                const { reply, messageId, artifacts, councilProposal } = await ragChat({
                     message: message.trim(),
                     channel,
                     imageBase64: body.imageBase64 as string | undefined,
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
                     genParams: sanitizeGenParams(body.genParams),
                     signal: ac.signal,
                 }, send);
-                send({ type: "done", reply, messageId, artifacts });
+                send({ type: "done", reply, messageId, artifacts, councilProposal });
                 if (sawAgentRun && reply) {
                     const convId = body.conversationId as string | undefined;
                     await broadcastPush({

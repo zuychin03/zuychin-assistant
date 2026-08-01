@@ -710,6 +710,38 @@ const handler = createMcpHandler(
 
 
         server.registerTool(
+            "council_open",
+            {
+                description:
+                    "[COUNCIL HOST] List the open councils and their rosters, as JSON. Written for a local council host deciding whether there is anything here it could take over; a participant has no use for it and an observer should use council_transcript. Each participant carries the status and dispatchMode a host needs to tell an unclaimed seat from one a human is already driving by hand.",
+                inputSchema: {},
+            },
+            async (_args, extra) => {
+                const denied = requireCouncil(extra);
+                if (denied) return denied;
+                try {
+                    const sessions = await listOpenCouncils();
+                    const councils = await Promise.all(sessions.map(async (session) => ({
+                        code: session.code,
+                        topic: session.topic,
+                        councilType: session.councilType,
+                        status: session.status,
+                        round: session.round,
+                        maxRounds: session.maxRounds,
+                        createdAt: session.createdAt,
+                        expiresAt: session.expiresAt,
+                        participants: (await listParticipants(session.id))
+                            .filter((p) => p.kind === "agent")
+                            .map((p) => ({ name: p.name, status: p.status, dispatchMode: p.dispatchMode })),
+                    })));
+                    return { content: [{ type: "text", text: JSON.stringify({ councils }) }] };
+                } catch (error) {
+                    return { content: [{ type: "text", text: JSON.stringify({ error: errMsg(error) }) }] };
+                }
+            },
+        );
+
+        server.registerTool(
             "council_dispatch",
             {
                 description:

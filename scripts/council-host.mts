@@ -48,17 +48,23 @@ interface Adapter {
     args: string[];
     /**
      * Extra environment for this agent's process, merged over the host's own.
-     * An object value is stringified, so a vendor that takes its whole config in
-     * one variable can be configured readably instead of as one escaped blob.
+     * An object value is stringified for a vendor that takes its whole config in
+     * one variable; null REMOVES an inherited variable.
      */
-    env?: Record<string, string | Record<string, unknown>>;
+    env?: Record<string, string | Record<string, unknown> | null>;
     mcpConfig?: "claude";
     warn?: string;
 }
 interface AgentInstance { provider: string; expertise?: string }
 interface HostConfig {
     mcpUrl: string;
-    host?: { port?: number; origins?: string[] };
+    /**
+     * autoAdopt lets an idle host claim a council convened elsewhere, which is
+     * what makes "ask Zuychin from the phone" work. Off unless set: it starts
+     * vendor processes with nobody at the keyboard, and a permission prompt
+     * outside a worktree auto-denies after 120s unseen.
+     */
+    host?: { port?: number; origins?: string[]; autoAdopt?: boolean };
     agents: Record<string, Adapter>;
     instances?: Record<string, AgentInstance>;
 }
@@ -108,6 +114,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<st
     const payload = JSON.parse(line ? line.slice(5).trim() : raw);
     if (payload.error) throw new Error(`${name} failed: ${payload.error.message ?? JSON.stringify(payload.error)}`);
     const text = payload.result?.content?.[0]?.text;
+    // An unknown tool or a rejected key comes back as a RESULT carrying isError,
+    // not as a JSON-RPC error. Returning that prose would hand a JSON caller a
+    // parse failure instead of the reason, which is how "council_open not found"
+    // reads as a syntax error.
+    if (payload.result?.isError) throw new Error(`${name} failed: ${typeof text === "string" ? text : "unknown error"}`);
     if (typeof text !== "string") throw new Error(`${name} returned no text`);
     return text;
 }
@@ -217,13 +228,38 @@ const state: HostState = {
     stopping: false,
 };
 
+function seatExpertise(name: string, provider: string): string {
+    return config.instances?.[name]?.expertise ?? `${provider} coding agent`;
+}
+
 function resolveAgent(name: string): { adapter: Adapter; provider: string; expertise: string } {
     const instance = config.instances?.[name];
     const provider = instance?.provider ?? name;
     const adapter = config.agents[provider];
     if (!adapter) die(`no provider adapter for "${name}" (provider "${provider}") in council-agents.json`);
-    return { adapter, provider, expertise: instance?.expertise ?? `${provider} coding agent` };
+    return { adapter, provider, expertise: seatExpertise(name, provider) };
 }
+
+/**
+ * The seats this machine can actually fill, so the app proposes names that
+ * exist instead of guessing. A seat whose provider has no adapter is omitted:
+ * it could only fail at spawn.
+ */
+const seats = (() => {
+    const named = Object.keys(config.instances ?? {});
+    return (named.length > 0 ? named : Object.keys(config.agents)).flatMap((name) => {
+        const provider = config.instances?.[name]?.provider ?? name;
+        const adapter = config.agents[provider];
+        if (!adapter) return [];
+        return [{
+            name,
+            provider,
+            mode: adapter.mode ?? "acp",
+            expertise: seatExpertise(name, provider),
+            warn: adapter.warn ?? null,
+        }];
+    });
+})();
 
 function agentView(agent: AgentRuntime) {
     return {
@@ -244,6 +280,10 @@ function snapshot() {
     return {
         version: HOST_VERSION,
         code: state.code,
+        // Same rule convene() and attach() refuse on, so the app can grey out a
+        // Launch button instead of learning by error.
+        busy: state.code !== null,
+        instances: seats,
         topic: state.topic,
         status: state.status,
         round: state.round,
@@ -261,9 +301,31 @@ function snapshot() {
 
 // ---------------------------------------------------------------- control channel
 
-const token = randomBytes(32).toString("hex");
-const pairingCode = Array.from(randomBytes(8), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+// Minted eagerly so the control channel is never briefly tokenless, then
+// replaced by adoptIdentity() once the port is known.
+let token = randomBytes(32).toString("hex");
+let pairingCode = Array.from(randomBytes(8), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
 let pairFailures = 0;
+
+/**
+ * Reuses the previous run's token and pairing code so a browser stays paired
+ * across a restart. The host starts hidden at login, where a fresh code would
+ * be one nobody can read. Same secret, same file, same 0600: only its lifetime
+ * changes.
+ */
+function adoptIdentity(file: string): boolean {
+    try {
+        const saved = JSON.parse(readFileSync(file, "utf8")) as { token?: unknown; pairingCode?: unknown };
+        if (typeof saved.token !== "string" || !/^[0-9a-f]{64}$/.test(saved.token)) return false;
+        if (typeof saved.pairingCode !== "string") return false;
+        if (!new RegExp(`^[${CODE_ALPHABET}]{${pairingCode.length}}$`).test(saved.pairingCode)) return false;
+        token = saved.token;
+        pairingCode = saved.pairingCode;
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 const allowedOrigins = new Set([
     "http://localhost:3000",
@@ -551,11 +613,15 @@ function relayUpdate(agent: AgentRuntime, update: acp.SessionUpdate): void {
 }
 
 function adapterEnv(agent: AgentRuntime): NodeJS.ProcessEnv {
-    const extra = Object.fromEntries(
-        Object.entries(agent.adapter.env ?? {})
-            .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]),
-    );
-    return { ...process.env, ...extra };
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const [key, value] of Object.entries(agent.adapter.env ?? {})) {
+        // Removal matters as much as setting: an agent that refuses to run when
+        // it detects its own vendor's session variable cannot be started from a
+        // host launched inside one.
+        if (value === null) delete env[key];
+        else env[key] = typeof value === "string" ? value : JSON.stringify(value);
+    }
+    return env;
 }
 
 function mcpServersFor(): acp.McpServer[] {
@@ -970,6 +1036,47 @@ async function superviseTick(): Promise<void> {
     }
 }
 
+// ---------------------------------------------------------------- auto-adopt
+
+interface OpenCouncilsPayload {
+    councils?: {
+        code: string;
+        topic: string;
+        participants: { name: string; status: string; dispatchMode: boolean }[];
+    }[];
+}
+
+let autoAdopting = false;
+
+/**
+ * Claims a council convened from somewhere this host cannot be reached, e.g.
+ * the phone. Deliberately stricter than attach(): it takes a council only if it
+ * can run ALL of it, because a half-adopted council leaves seats nobody is
+ * driving and no human present to notice.
+ */
+async function autoAdoptTick(): Promise<void> {
+    if (!config.host?.autoAdopt || state.code || state.stopping || autoAdopting) return;
+    autoAdopting = true;
+    try {
+        const payload = JSON.parse(await callTool("council_open", {})) as OpenCouncilsPayload;
+        for (const council of payload.councils ?? []) {
+            const live = council.participants.filter((p) => p.status !== "left");
+            if (live.length === 0) continue;
+            if (!live.every((p) => config.instances?.[p.name] || config.agents[p.name])) continue;
+            if (!live.every((p) => p.status === "invited" || p.dispatchMode)) continue;
+
+            log(`AUTO-ADOPT: claiming ${council.code} (${live.map((p) => p.name).join(", ")}) - ${council.topic}`);
+            broadcast({ type: "auto_adopt", code: council.code, topic: council.topic });
+            await attach(council.code);
+            return;
+        }
+    } catch (error) {
+        log(`auto-adopt: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+        autoAdopting = false;
+    }
+}
+
 // ---------------------------------------------------------------- main
 
 async function shutdown(code: number): Promise<void> {
@@ -994,13 +1101,15 @@ const { port: hostPort } = await startControlChannel();
 const hostDir = join(state.repo, "..", ".council-host");
 mkdirSync(hostDir, { recursive: true });
 const hostFile = join(hostDir, `host-${hostPort}.json`);
+const reused = adoptIdentity(hostFile);
 writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 
 console.log(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);
-console.log(`  pairing code  ${pairingCode}`);
+console.log(`  pairing code  ${pairingCode}${reused ? " (reused; delete the token file to rotate)" : ""}`);
 console.log(`  token file    ${hostFile}`);
 console.log(`  origins       ${[...allowedOrigins].join(", ")}`);
-console.log(`  repo          ${state.repo} (base ${state.baseBranch})\n`);
+console.log(`  repo          ${state.repo} (base ${state.baseBranch})`);
+console.log(`  auto-adopt    ${config.host?.autoAdopt ? "ON - will claim an open council it can run in full" : "off"}\n`);
 
 process.on("SIGINT", () => void shutdown(0));
 process.on("SIGTERM", () => void shutdown(0));
@@ -1017,8 +1126,13 @@ if (attachCode) {
         councilType: arg("type") ?? "debate",
     }).catch((error) => die(String(error instanceof Error ? error.message : error)));
 } else {
-    log("idle - waiting for a convene from /council or council-launch.mts");
+    log(config.host?.autoAdopt
+        ? "idle - watching for a council to auto-adopt, or a convene from /council"
+        : "idle - waiting for a convene from /council or council-launch.mts");
 }
 
 setInterval(() => void dispatchTick(), DISPATCH_POLL_MS);
 setInterval(() => void superviseTick(), CAMPAIGN_POLL_MS);
+// Campaign cadence, not dispatch: nothing here is time-critical, and a council
+// waiting 30s for a host nobody asked for has lost nothing.
+if (config.host?.autoAdopt) setInterval(() => void autoAdoptTick(), CAMPAIGN_POLL_MS);

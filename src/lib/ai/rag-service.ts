@@ -21,7 +21,7 @@ import { expandSlashCommand } from "@/lib/commands";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
-import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor, ReplyRef } from "@/lib/types";
+import type { MessageChannel, FileAttachment, Message, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
 import type { GenerateContentResponse } from "@google/genai";
 
 const RAG_CONFIG = {
@@ -530,7 +530,7 @@ export async function ragChat(params: {
     resumeRunId?: string;
     replyTo?: ReplyRef;
     signal?: AbortSignal;
-}, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[] }> {
+}, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal }> {
     const {
         message, channel, imageBase64, file, conversationId,
         thinking = false, search = false, provider, model, embeddingModel,
@@ -580,6 +580,8 @@ export async function ragChat(params: {
     });
 
     const artifacts: ArtifactDescriptor[] = [];
+    // Last one wins: a turn that proposes twice meant to replace the first.
+    let councilProposal: CouncilProposal | undefined;
 
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
     let mode: "chat" | "agent" = "chat";
@@ -600,11 +602,14 @@ export async function ragChat(params: {
             });
             reply = res.reply;
             artifacts.push(...res.artifacts);
+            // The agent loop has no channel; only the web chat renders a card.
+            councilProposal = channel === "web" ? res.councilProposal : undefined;
         } else {
             const toolCtx: ToolContext = {
                 conversationId,
                 userProfileId: profile?.id,
                 onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
+                onCouncilProposal: channel === "web" ? (p) => { councilProposal = p; } : undefined,
             };
             // Chat-path replies stream to the client as they generate; the
             // done event still carries the authoritative final text.
@@ -661,7 +666,9 @@ export async function ragChat(params: {
             channel,
             userProfileId: profile?.id,
             conversationId,
-            metadata: artifacts.length > 0 ? { artifacts } : undefined,
+            metadata: artifacts.length > 0 || councilProposal
+                ? { ...(artifacts.length > 0 ? { artifacts } : {}), ...(councilProposal ? { councilProposal } : {}) }
+                : undefined,
         });
         if (artifacts.length > 0) {
             await linkArtifactsToMessage(artifacts.map((a) => a.id), assistantMsgId);
@@ -697,7 +704,7 @@ export async function ragChat(params: {
         } catch { }
     }
 
-    return { reply, messageId: userMsgId, artifacts };
+    return { reply, messageId: userMsgId, artifacts, councilProposal };
 }
 
 export type TokenSink = (text: string, reset?: boolean) => void;

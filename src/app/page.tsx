@@ -9,7 +9,8 @@ import { styles } from "./home/styles";
 import { chatMarkdownComponents } from "./home/markdown";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
-import type { ArtifactDescriptor } from "@/lib/types";
+import { CouncilProposalCard } from "./home/council-card";
+import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -21,6 +22,8 @@ interface ChatMessage {
   fileName?: string;
   fileMimeType?: string;
   artifacts?: ArtifactDescriptor[];
+  /** A council Zuychin drafted; the card under the reply is what launches it. */
+  councilProposal?: CouncilProposal;
   /** Which model produced this reply (only known for messages sent this session). */
   modelLabel?: string;
   /** ISO timestamp shown under assistant replies. */
@@ -72,7 +75,11 @@ interface ServerMessage {
   role: string;
   content: string;
   createdAt?: string;
-  metadata?: { artifacts?: ArtifactDescriptor[]; replyTo?: { role: "user" | "assistant"; content: string } };
+  metadata?: {
+    artifacts?: ArtifactDescriptor[];
+    replyTo?: { role: "user" | "assistant"; content: string };
+    councilProposal?: CouncilProposal;
+  };
 }
 
 const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
@@ -81,6 +88,7 @@ const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
     role: m.role as "user" | "assistant",
     content: m.content,
     artifacts: m.metadata?.artifacts,
+    councilProposal: m.metadata?.councilProposal,
     replyTo: m.metadata?.replyTo,
     at: m.createdAt,
   }));
@@ -723,7 +731,7 @@ export default function Home() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let done: { reply: string; artifacts?: ArtifactDescriptor[] } | null = null;
+      let done: { reply: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal } | null = null;
       let streamError = "";
       let runId = "";
 
@@ -772,7 +780,7 @@ export default function Home() {
               setMessages((prev) => prev.map((m) => (m.id === sid ? { ...m, content: reset ? text : m.content + text } : m)));
             }
           } else if (evt.type === "done") {
-            done = { reply: evt.reply, artifacts: evt.artifacts };
+            done = { reply: evt.reply, artifacts: evt.artifacts, councilProposal: evt.councilProposal };
           } else if (evt.type === "error") {
             streamError = evt.message;
           }
@@ -801,6 +809,7 @@ export default function Home() {
         role: "assistant",
         content: done.reply,
         artifacts: done.artifacts,
+        councilProposal: done.councilProposal,
         modelLabel: currentChatModel?.label,
         at: new Date().toISOString(),
       };
@@ -1787,6 +1796,9 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
+                )}
+                {msg.role === "assistant" && msg.councilProposal && (
+                  <CouncilProposalCard proposal={msg.councilProposal} />
                 )}
                 {msg.role === "assistant" && msg.resume && (
                   <div style={styles.exportRow}>

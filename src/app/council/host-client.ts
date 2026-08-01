@@ -32,9 +32,21 @@ export interface HostPermission {
     createdAt: string;
 }
 
+/** A seat this machine can fill, as configured in scripts/council-agents.json. */
+export interface HostInstance {
+    name: string;
+    provider: string;
+    mode: "acp" | "shell";
+    expertise: string;
+    warn: string | null;
+}
+
 export interface HostSnapshot {
     version: string;
     code: string | null;
+    /** Both absent from a host older than the build that added them. */
+    busy?: boolean;
+    instances?: HostInstance[];
     topic: string | null;
     status: string;
     round: number;
@@ -77,7 +89,7 @@ function writeStored(value: Stored | null): void {
     }
 }
 
-async function probe(port: number, token?: string): Promise<{ ok: boolean; paired: boolean }> {
+async function probe(port: number, token?: string): Promise<{ ok: boolean; snapshot: HostSnapshot | null }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
@@ -85,12 +97,14 @@ async function probe(port: number, token?: string): Promise<{ ok: boolean; paire
             signal: controller.signal,
             headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
-        if (!res.ok) return { ok: false, paired: false };
+        if (!res.ok) return { ok: false, snapshot: null };
         const body = await res.json() as { service?: string; agents?: unknown };
-        if (body.service !== "zuychin-council-host") return { ok: false, paired: false };
-        return { ok: true, paired: Array.isArray(body.agents) };
+        if (body.service !== "zuychin-council-host") return { ok: false, snapshot: null };
+        // The unauthenticated shape carries no agents; that array is what marks
+        // the reply as the full state rather than the bare probe.
+        return { ok: true, snapshot: Array.isArray(body.agents) ? body as unknown as HostSnapshot : null };
     } catch {
-        return { ok: false, paired: false };
+        return { ok: false, snapshot: null };
     } finally {
         clearTimeout(timer);
     }
@@ -102,7 +116,7 @@ async function probe(port: number, token?: string): Promise<{ ok: boolean; paire
  * failed probe means "no local host", never an error, and the WebSocket is only
  * opened once the permission is already settled.
  */
-export async function findHost(): Promise<{ port: number; token: string | null } | null> {
+export async function findHost(): Promise<{ port: number; token: string | null; snapshot: HostSnapshot | null } | null> {
     const stored = readStored();
     const ports = [];
     for (let p = HOST_PORT_FIRST; p <= HOST_PORT_LAST; p++) ports.push(p);
@@ -112,8 +126,8 @@ export async function findHost(): Promise<{ port: number; token: string | null }
         const token = stored?.port === port ? stored.token : undefined;
         const result = await probe(port, token);
         if (!result.ok) continue;
-        if (result.paired && token) return { port, token };
-        return { port, token: null };
+        if (result.snapshot && token) return { port, token, snapshot: result.snapshot };
+        return { port, token: null, snapshot: null };
     }
     return null;
 }
@@ -169,6 +183,14 @@ export class HostClient {
                         at: new Date().toISOString(),
                     });
                     break;
+                case "auto_adopt":
+                    this.handlers.onActivity({
+                        agent: "host",
+                        kind: "auto-adopt",
+                        detail: `claimed ${String(message.code ?? "")} - ${String(message.topic ?? "")}`,
+                        at: new Date().toISOString(),
+                    });
+                    break;
                 case "permission_request":
                 case "permission_resolved":
                     // Both only change the queue, which arrives in full on the
@@ -221,4 +243,49 @@ export class HostClient {
 
 export function trimActivity(list: HostActivity[]): HostActivity[] {
     return list.length > MAX_ACTIVITY ? list.slice(list.length - MAX_ACTIVITY) : list;
+}
+
+// Cloning a repo per agent and starting three vendor CLIs is slow, and the code
+// only lands once every worktree exists.
+const LAUNCH_TIMEOUT_MS = 120_000;
+
+/**
+ * One council, from a caller that holds no connection. Convene is a WebSocket
+ * message, so this opens a short-lived one: the host sends a state frame on
+ * connect, which is both the go-ahead and the check that it is not already busy.
+ */
+export function launchCouncil(
+    port: number,
+    token: string,
+    params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string },
+): Promise<{ code: string } | { error: string }> {
+    return new Promise((settle) => {
+        let asked = false;
+        let done = false;
+        const finish = (result: { code: string } | { error: string }) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            client.close();
+            settle(result);
+        };
+        const timer = setTimeout(() => finish({ error: "the local host did not answer in time" }), LAUNCH_TIMEOUT_MS);
+        const client = new HostClient(port, token, {
+            onState: (snapshot) => {
+                if (!asked) {
+                    asked = true;
+                    // A code on the FIRST frame is someone else's council, not
+                    // the answer to a convene we have not sent yet.
+                    if (snapshot.code) finish({ error: `that host is already running ${snapshot.code}` });
+                    else client.convene(params);
+                    return;
+                }
+                if (snapshot.code) finish({ code: snapshot.code });
+            },
+            onActivity: () => { },
+            onError: (detail) => finish({ error: detail }),
+            onClose: () => finish({ error: "the connection to the local host closed" }),
+        });
+        client.open();
+    });
 }

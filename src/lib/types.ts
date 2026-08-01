@@ -24,9 +24,25 @@ export interface ReplyRef {
     content: string;
 }
 
+/**
+ * A council Zuychin has drafted but not created. Nothing exists server-side
+ * until the user launches it: no session, no TTL, no open-council slot. Only a
+ * loopback host can start one, and Zuychin runs on Vercel, so the browser is
+ * the courier.
+ */
+export interface CouncilProposal {
+    topic: string;
+    brief: string;
+    participants: { name: string; expertise: string }[];
+    closerName: string;
+    councilType: string;
+    maxRounds?: number;
+}
+
 export interface MessageMetadata {
     artifacts?: ArtifactDescriptor[];
     replyTo?: ReplyRef;
+    councilProposal?: CouncilProposal;
     [key: string]: unknown;
 }
 

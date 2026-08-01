@@ -1,4 +1,4 @@
-import type { ArtifactDescriptor } from "@/lib/types";
+import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 
 export interface PlanStep {
     title: string;
@@ -14,7 +14,7 @@ export type AgentEvent =
     | { type: "artifact"; artifact: ArtifactDescriptor }
     /** Text delta of the forming reply; reset replaces everything shown so far (new model turn). */
     | { type: "token"; text: string; reset?: boolean }
-    | { type: "done"; reply: string; messageId: string; artifacts: ArtifactDescriptor[] }
+    | { type: "done"; reply: string; messageId: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal }
     | { type: "error"; message: string };
 
 export type AgentEventSink = (event: AgentEvent) => void;

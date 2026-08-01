@@ -31,7 +31,8 @@ edited and deleted in place.
 - Passkey-first PWA sign-in: WebAuthn device biometrics, PIN or a hardware security key with
   short-lived signed sessions; password confirmation protects enrolment and TOTP provides a
   recovery path
-- Council workspace: a live view at `/council` for external-agent debates, plus a local ACP host that starts the agents, pushes each turn and mediates their file access
+- Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
+  at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
 - Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
   to the model natively (it hears you, not a transcript) and the reply is spoken back with
   Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
@@ -454,6 +455,10 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `vault_write` | Direct wiki page write (index/log/embedding kept consistent) |
 | `vault_delete` | Permanently delete a wiki page + every reference to it, in one commit |
 | `vault_lint` | Vault health check / auto-fix curator |
+| `council_propose` | Draft a council and render a Launch card in chat; creates nothing until you click |
+| `council_convene` | Open a council now and return a paste-in kickoff block per agent |
+| `council_status` | How the open councils are going, or one council's state and recent transcript |
+| `council_close` | Force a council closed and file the outcome, writing a verdict if none was given |
 
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
 (downloadable artifacts - generated documents are auto-embedded into the knowledge base),
@@ -494,13 +499,16 @@ your **other AI agents and chatbots** can share the knowledge base:
 | `council_work_block` | write | Record a human or external dependency blocker |
 | `council_work_review` | write | Closer-only: accept a task or return it with feedback |
 | `council_dispatch` | write | Local host only: non-blocking multi-agent read returning JSON plus each owned agent's rendered turn |
+| `council_open` | write | Local host only: open councils and their rosters as JSON, so an idle host can tell an unclaimed seat from a hand-driven one |
 
 ### zuychin-council
 
 The debate tools plus six `council_work_*` tools make a **bounded decision room** and a
-**durable implementation campaign** for your external coding agents. Ask the assistant to convene
-one and paste the generated block into each agent's terminal, or let the local host start and
-drive them for you (below), then read the verdict in Discord `#coworking`.
+**durable implementation campaign** for your external coding agents. Ask the assistant for a
+council and it drafts one: a card appears under its reply with a **Launch** button that starts
+the whole thing on the local host. Nothing exists until you click - no session, no expiry, no
+slot. For agents in desktop apps or on another machine, ask it to convene instead and paste the
+generated block into each terminal. Either way the verdict lands in Discord `#coworking`.
 
 An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
 tools - so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
@@ -566,10 +574,25 @@ Setup:
    command exactly as the host will and reports whether the handshake, the MCP server passed in
    `session/new`, streaming and permission requests all work:
    `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --prompt -- codex acp`.
-   Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself.
+   Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself (`docs/` is
+   gitignored, so that guide lives only in the working copy).
 3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
    and `codex-2` both on `codex`, or three Claude instances on `claude-code`.
 4. Run the `-- ===== Council ACP host wave =====` block at the bottom of `supabase-setup.sql`.
+
+**Where the host points.** `mcpUrl` in `council-agents.json` decides which app instance serves the
+council. Pointed at the deployed URL, a council needs no local dev server at all and `/council` on
+the deployed site shows it; pointed at `http://localhost:3000/api/mcp/mcp`, you get local changes but
+must keep `npm run dev` running. Both hit the same Supabase, so the councils are the same councils.
+
+**Running the host.** `scripts/council-host-start.cmd` starts one for this checkout, deriving every
+path from its own location. An idle host is a single ~88 MB node process with two timers that return
+immediately, so leaving it running costs approximately nothing. To have it always available, drop a
+one-line shim in your Startup folder that runs that script hidden:
+
+```bash
+node --no-warnings --import tsx --env-file=.env.local scripts/council-host.mts --repo .
+```
 
 Convene with the CLI, which starts the host if it is not already running:
 
@@ -603,9 +626,19 @@ immediately for them and `council_speak` stop blocking, so an agent can never be
 `/council` shows the connection state, each agent's worktree, branch and live ACP activity, the
 permission queue, and a convene form. It reaches the host at `127.0.0.1:8787-8791` with a token
 you pair once using the code the host prints; requests without it get 401, and only allow-listed
-origins are answered. From `localhost:3000` there is no browser permission prompt; from a deployed
-origin Chrome raises its Local Network Access prompt, and denying it leaves the page in
+origins are answered. The token and code are reused from `../.council-host/host-<port>.json` across
+restarts, so a host that starts hidden at login does not silently invalidate your pairing - delete
+that file to rotate them. From `localhost:3000` there is no browser permission prompt; from a
+deployed origin Chrome raises its Local Network Access prompt, and denying it leaves the page in
 observe-only mode. A phone is observe-only by definition - there is no host on it.
+
+An open council the host did not create gets an **Adopt** button in the same rail, which hands it
+over on the spot. Set `"autoAdopt": true` under `host` in `council-agents.json` to have an idle
+host do that unprompted, which is what makes a council convened from a phone actually start. It is
+off by default and deliberately stricter than the button: it claims a council only when it can run
+*every* live participant, since a half-adopted council leaves seats nobody is driving and nobody
+watching. Authenticated `/health` also lists the instances this machine can run, which is how the
+chat proposal card knows a name will not fail at spawn.
 
 Agents whose vendor has no ACP support yet (antigravity today) stay on `shell` mode: they get a
 worktree and their turns still work, but through the old long-poll with no permission mediation
@@ -624,6 +657,12 @@ keep their worktrees, and are redelivered whatever they never acknowledged:
 ```bash
 npx tsx --env-file=.env.local scripts/council-host.mts --repo /path/to/repo --attach CN-XXXX
 ```
+
+An agent on **another machine** needs none of this: no host, no ACP adapter, no checkout of this
+repo. It adds the MCP server itself and joins by hand. `/council` has a **Show brief** panel
+holding a paste-in setup brief for exactly that, with the API key left as a placeholder to fill in.
+Give that seat a name this machine has *not* configured (`codex-remote`, `workstation-1`), or the
+local host's claim rule takes it while it is still `invited`, before the remote agent joins.
 
 Attaching is also how you get a **mixed council**, because convening from the host makes every
 named participant host-owned. Convene the ordinary way with all the names, paste the kickoff block
@@ -700,7 +739,7 @@ Point an external scheduler (for example cron-job.org) at these endpoints with t
 (`src/lib/messaging/router.ts`): each notification type routes to its dedicated Discord
 channel, with push mirrored only for time-sensitive types and Telegram reserved for
 conversational chat plus initiative nudges. See `docs/messaging-redesign.md` for the routing
-table.
+table (`docs/` is gitignored, so it lives only in the working copy).
 
 | Endpoint | Schedule | Body |
 |----------|----------|------|
@@ -865,11 +904,13 @@ src/
 │   ├── home/
 │   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
 │   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
+│   │   ├── council-card.tsx            # Proposed-council card in chat, with the Launch button
 │   │   └── styles.ts                   # Chat page style objects
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── council/
 │   │   ├── page.tsx                    # Live council view + local-host control surface
-│   │   └── host-client.ts              # Loopback host probe, pairing, WebSocket client
+│   │   ├── host-client.ts              # Loopback host probe, pairing, WebSocket client, launch
+│   │   └── remote-setup.ts             # Paste-in brief for agents on other machines
 │   ├── login/page.tsx                  # Login page
 │   ├── admin/                          # Dashboard + run-trace, memory and skills panels
 │   └── api/
@@ -925,6 +966,7 @@ scripts/
 ├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
 ├── council-launch.mts                  # CLI onto the host: preflight, start or attach, convene
 ├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host will run it
+├── council-host-start.cmd              # Start a host for this checkout (portable; used by the Startup shim)
 ├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
 ├── evaluate-knowledge.ts               # Knowledge-store retrieval eval
 └── reembed-knowledge.ts                # Manual store re-embed

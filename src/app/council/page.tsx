@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-    Activity, Brain, CheckCircle2, Clock, Cpu, GitBranch, Gavel, Maximize2, MessageSquare,
-    Minimize2, Play, Plug, RefreshCw, ShieldCheck, Square, Users, XCircle,
+    Activity, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Cpu, GitBranch,
+    Gavel, Maximize2, MessageSquare, Minimize2, Play, Plug, RefreshCw, ShieldCheck, Square,
+    Laptop, Users, XCircle,
 } from "lucide-react";
 import {
     findHost, forgetHost, pair, trimActivity, HostClient,
     type HostActivity, type HostConnection, type HostSnapshot,
 } from "./host-client";
+import { remoteAgentSetup } from "./remote-setup";
 
 // Live view over a council, plus control of the local ACP host when one is
 // reachable. The Zuychin half stays read-only by construction: watching a
@@ -101,15 +103,23 @@ export default function CouncilPage() {
     const [hostError, setHostError] = useState("");
     const [pairCode, setPairCode] = useState("");
     const [convening, setConvening] = useState(false);
+    const [adopting, setAdopting] = useState<string | null>(null);
+    const [showRemote, setShowRemote] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [origin, setOrigin] = useState("");
     const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code" });
     const clientRef = useRef<HostClient | null>(null);
 
     const connect = useCallback((port: number, token: string) => {
         clientRef.current?.close();
         const client = new HostClient(port, token, {
-            onState: (snapshot) => { setHost(snapshot); setHostState("connected"); },
+            onState: (snapshot) => {
+                setHost(snapshot);
+                setHostState("connected");
+                if (snapshot.code) { setAdopting(null); setConvening(false); }
+            },
             onActivity: (item) => setActivity((list) => trimActivity([...list, item])),
-            onError: (detail) => setHostError(detail),
+            onError: (detail) => { setHostError(detail); setAdopting(null); setConvening(false); },
             onClose: () => { setHostState("observing"); setHost(null); },
         });
         clientRef.current = client;
@@ -155,6 +165,8 @@ export default function CouncilPage() {
         clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType });
         setTimeout(() => setConvening(false), 8000);
     }, [form]);
+
+    useEffect(() => setOrigin(window.location.origin), []);
 
     useEffect(() => {
         const check = () => setIsNarrow(window.innerWidth < 900);
@@ -230,6 +242,10 @@ export default function CouncilPage() {
 
     const s = detail?.session;
     const isRunning = s?.status === "open" || s?.status === "concluding";
+    // One host owns one council, so Adopt is offered only while it owns none.
+    const canAdopt = hostState === "connected" && !!host && !host.code;
+    const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(origin);
+    const remoteBrief = remoteAgentSetup(`${origin || "https://your-deployment"}/api/mcp/mcp`);
 
     return (
         <div style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
@@ -431,6 +447,58 @@ export default function CouncilPage() {
                 )}
             </section>
 
+            <section style={styles.panel}>
+                <div style={styles.panelHeadRow}>
+                    <PanelHeader
+                        title="Agents on other machines"
+                        description="A brief they can self-configure from, so they can join a council by code"
+                        icon={<Laptop size={16} />}
+                    />
+                    <button type="button" onClick={() => setShowRemote((v) => !v)} style={styles.quickLink}>
+                        {showRemote ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                        {showRemote ? "Hide" : "Show brief"}
+                    </button>
+                </div>
+
+                {showRemote && (
+                    <>
+                        <div style={styles.emptyText}>
+                            Paste this into a coding agent on another device. It joins over MCP by hand and
+                            never touches the local host, so it needs no ACP adapter - but its council name
+                            must be on the roster when the council is convened, and must NOT be one this
+                            machine has configured, or the host would claim that seat first.
+                            {isLoopback && (
+                                <>
+                                    <br />
+                                    <strong>You are viewing this on localhost, so the URL below points at this
+                                    machine.</strong> Open this page on your deployed site before copying, or
+                                    swap the host in by hand.
+                                </>
+                            )}
+                            <br />
+                            Replace <code style={styles.code}>&lt;PASTE_DUY&apos;S_MCP_API_KEY_HERE&gt;</code> with
+                            your read-write MCP key. It is never shown here.
+                        </div>
+                        <div style={styles.remoteActions}>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void navigator.clipboard.writeText(remoteBrief).then(() => {
+                                        setCopied(true);
+                                        setTimeout(() => setCopied(false), 2000);
+                                    });
+                                }}
+                                style={{ ...styles.quickLink, ...(copied ? styles.liveOn : {}) }}
+                            >
+                                {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
+                                {copied ? "Copied" : "Copy brief"}
+                            </button>
+                        </div>
+                        <pre style={styles.remoteBrief}>{remoteBrief}</pre>
+                    </>
+                )}
+            </section>
+
             {loading && (
                 <div style={styles.loadingCard}><Clock size={16} /> Loading councils…</div>
             )}
@@ -457,26 +525,42 @@ export default function CouncilPage() {
                             />
                             {open.length === 0 && <div style={styles.emptyText}>None running.</div>}
                             {open.map((c) => (
-                                <button
-                                    key={c.code}
-                                    type="button"
-                                    onClick={() => { setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
-                                    style={{ ...styles.railItem, ...(selected === c.code ? styles.railItemActive : {}) }}
-                                >
-                                    <div style={styles.railTop}>
-                                        <span style={styles.railCode}>{c.code}</span>
-                                        <span style={{ ...styles.smallPill, ...styles.pillGood }}>
-                                            r{c.round}/{c.maxRounds}
-                                        </span>
-                                    </div>
-                                    <div style={styles.railTopic}>{c.topic}</div>
-                                    <div style={styles.railMeta}>
-                                        {c.messages} msgs · quiet {ago(c.lastMessageAt)} · {until(c.expiresAt)}
-                                    </div>
-                                    {c.waitingOn.length > 0 && (
-                                        <div style={styles.railWaiting}>waiting on {c.waitingOn.join(", ")}</div>
+                                <div key={c.code}>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
+                                        style={{
+                                            ...styles.railItem,
+                                            ...(selected === c.code ? styles.railItemActive : {}),
+                                            ...(canAdopt ? styles.railItemAdoptable : {}),
+                                        }}
+                                    >
+                                        <div style={styles.railTop}>
+                                            <span style={styles.railCode}>{c.code}</span>
+                                            <span style={{ ...styles.smallPill, ...styles.pillGood }}>
+                                                r{c.round}/{c.maxRounds}
+                                            </span>
+                                        </div>
+                                        <div style={styles.railTopic}>{c.topic}</div>
+                                        <div style={styles.railMeta}>
+                                            {c.messages} msgs · quiet {ago(c.lastMessageAt)} · {until(c.expiresAt)}
+                                        </div>
+                                        {c.waitingOn.length > 0 && (
+                                            <div style={styles.railWaiting}>waiting on {c.waitingOn.join(", ")}</div>
+                                        )}
+                                    </button>
+                                    {canAdopt && (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
+                                            disabled={adopting !== null}
+                                            style={{ ...styles.railAdopt, ...(adopting ? styles.hostChipOff : {}) }}
+                                            title="Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."
+                                        >
+                                            <Plug size={13} /> {adopting === c.code ? "Adopting…" : "Adopt"}
+                                        </button>
                                     )}
-                                </button>
+                                </div>
                             ))}
                         </section>
 
@@ -763,11 +847,14 @@ const styles: Record<string, React.CSSProperties> = {
     quickActions: {
         position: "relative", zIndex: 1, display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18,
     },
+    // Longhand border, because liveOn and dangerLink override borderColor alone:
+    // React warns when a shorthand and its longhand are mixed across a rerender.
     quickLink: {
         display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 11px", borderRadius: 14,
         textDecoration: "none", color: "var(--color-text-primary)",
         background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
+        borderWidth: 1, borderStyle: "solid",
+        borderColor: "color-mix(in srgb, var(--color-border) 62%, transparent)",
         fontSize: 12.5, fontWeight: 650, cursor: "pointer", fontFamily: "inherit",
     },
     liveOn: { color: "#31d07f", borderColor: "color-mix(in srgb, #31d07f 45%, transparent)" },
@@ -787,6 +874,14 @@ const styles: Record<string, React.CSSProperties> = {
         color: "var(--color-text-primary)", fontFamily: "inherit",
     },
     pairRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+    remoteActions: { display: "flex", gap: 8, flexWrap: "wrap", padding: "0 12px 10px" },
+    remoteBrief: {
+        margin: 0, padding: 14, borderRadius: 14, maxHeight: 380, overflow: "auto",
+        fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5, lineHeight: 1.6,
+        whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--color-text-muted)",
+        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
+    },
     conveneForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 14 },
     conveneRow: { display: "flex", gap: 8, flexWrap: "wrap" },
     permissionQueue: {
@@ -876,11 +971,20 @@ const styles: Record<string, React.CSSProperties> = {
         borderRadius: 16, cursor: "pointer", fontFamily: "inherit",
         color: "var(--color-text-primary)",
         background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 45%, transparent)",
+        borderWidth: 1, borderStyle: "solid",
+        borderColor: "color-mix(in srgb, var(--color-border) 45%, transparent)",
     },
     railItemActive: {
         background: "color-mix(in srgb, var(--color-secondary) 14%, transparent)",
         borderColor: "color-mix(in srgb, var(--color-secondary) 45%, transparent)",
+    },
+    railItemAdoptable: { marginBottom: 4 },
+    railAdopt: {
+        display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 10, padding: "5px 11px",
+        borderRadius: 999, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+        color: "var(--color-text-primary)",
+        background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
     },
     railTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
     railCode: { fontSize: 12.5, fontWeight: 800, letterSpacing: "-0.01em" },
