@@ -55,7 +55,7 @@ export const COUNCIL_TOOLS: McpTool[] = [
     {
         name: "council_propose",
         description:
-            "Draft a council for Duy to launch with one click on the machine his agents run on. This is the DEFAULT way to start a council: prefer it over council_convene whenever he is at the app. It creates nothing - no session, no code, no expiry - so a proposal he ignores costs him nothing. The proposal renders as a card under your reply with a Launch button; say in your reply what you proposed and why, and never invent a session code, because there is not one yet. Use council_convene instead only when he needs paste-in kickoff blocks for agents in desktop apps.",
+            "Draft a council for the user to launch with one click on the machine his agents run on. This is the DEFAULT way to start a council: prefer it over council_convene whenever he is at the app. It creates nothing - no session, no code, no expiry - so a proposal he ignores costs him nothing. The proposal renders as a card under your reply with a Launch button; say in your reply what you proposed and why, and never invent a session code, because there is not one yet. Use council_convene instead only when he needs paste-in kickoff blocks for agents in desktop apps.",
         parameters: {
             topic: { type: "string", description: "The question or job, as one decidable question.", required: true },
             brief: {
@@ -90,7 +90,7 @@ export const COUNCIL_TOOLS: McpTool[] = [
     {
         name: "council_convene",
         description:
-            "Open a council immediately: a live multi-round debate between Duy's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
+            "Open a council immediately: a live multi-round debate between the user's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
         parameters: {
             topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
             brief: { type: "string", description: "Context every participant needs: constraints, what has been tried, what a good answer looks like.", required: true },
@@ -114,7 +114,7 @@ export const COUNCIL_TOOLS: McpTool[] = [
     {
         name: "council_status",
         description:
-            "Check on running councils. With no sessionCode, lists every open council with who it is waiting on and how long they have been quiet. With one, gives that council's state and recent transcript. Use when Duy asks how a council is going or what his agents are up to.",
+            "Check on running councils. With no sessionCode, lists every open council with who it is waiting on and how long they have been quiet. With one, gives that council's state and recent transcript. Use when the user asks how a council is going or what his agents are up to.",
         parameters: {
             sessionCode: { type: "string", description: "Optional session code, e.g. 'CN-4KQ2'. Omit to list all open councils.", required: false },
         },
@@ -122,7 +122,7 @@ export const COUNCIL_TOOLS: McpTool[] = [
     {
         name: "council_close",
         description:
-            "Duy's override: force a council closed and file the outcome, even if its closer never concluded. Writes a verdict from the transcript when none is supplied. Use when he says to close, stop, kill or retire a council.",
+            "Owner override: force a council closed and file the outcome, even if its closer never concluded. Writes a verdict from the transcript when none is supplied. Use when he says to close, stop, kill or retire a council.",
         parameters: {
             sessionCode: { type: "string", description: "Session code to close, e.g. 'CN-4KQ2'.", required: true },
             verdict: { type: "string", description: "Optional verdict text. Omitted, one is written from the transcript.", required: false },
@@ -1474,7 +1474,7 @@ ${toolList}
 `.trim();
 }
 
-// --- zuychin-council: Duy convenes and closes from chat, so he never needs to
+// --- zuychin-council: the user convenes and closes from chat, so he never needs to
 // learn a session code from an agent's terminal. ---
 
 function readParticipants(args: Record<string, unknown>): { name: string; expertise: string }[] {
@@ -1610,10 +1610,10 @@ async function executeCouncilClose(sessionCode: string, verdict?: string): Promi
         const messages = await readTranscript({ sessionId: session.id, limit: 200 });
         const speakers = [...new Set(messages.filter((m) => m.role === "agent").map((m) => m.speaker))];
         text = messages.length
-            ? `Closed by Duy before the council concluded on its own. ${speakers.join(", ")} exchanged `
+            ? `Closed manually before the council concluded on its own. ${speakers.join(", ")} exchanged `
               + `${messages.length} messages over ${session.round} round(s) on "${session.topic}". `
               + `No agent verdict was written; read the transcript before relying on this.`
-            : `Closed by Duy. Nothing was said in this council.`;
+            : `Closed manually. Nothing was said in this council.`;
     }
 
     // closer = "zuychin" is the human override running the same single-writer CAS.

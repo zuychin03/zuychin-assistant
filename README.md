@@ -222,8 +222,8 @@ Optional auth, integrations, channels and cron:
 | `APP_TIMEZONE` | Timezone for the date/time the model is given each request (default `Australia/Sydney`) |
 | `ACCESS_PASSWORD` | Recovery password and confirmation for passkey or TOTP enrolment. Set it for a private deployment. |
 | `AUTH_SESSION_SECRET` | A stable, random 32-byte secret for signed sessions and encrypted TOTP data. Required for production auth. |
-| `AUTH_RP_ID` | Passkey relying-party ID, for example `zuychinassistant.quest`. |
-| `AUTH_ORIGIN` | Exact public application origin without a trailing slash, for example `https://zuychinassistant.quest`. |
+| `AUTH_RP_ID` | Passkey relying-party ID, for example `your-app.example.com`. |
+| `AUTH_ORIGIN` | Exact public application origin without a trailing slash, for example `https://your-app.example.com`. |
 | `AUTH_OWNER_NAME` / `AUTH_TOTP_ISSUER` | Display label for the owner and authenticator app. |
 | `CHAT_API_KEY` | Bearer token for non-browser calls to `/api/chat`, including the Discord bot. Set the same value in both environments. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
@@ -232,8 +232,8 @@ Optional auth, integrations, channels and cron:
 | `DISCORD_CH_BRIEFING` / `_REMINDERS` / `_TASKS` / `_CALENDAR` / `_BILLS` / `_COWORKING` / `_SYSTEM` | Per-purpose notification channels; each falls back to `DISCORD_CHANNEL_ID` (`_SYSTEM` stays silent unless set) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
-| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); both unset = push disabled |
-| `VAPID_SUBJECT` | `mailto:` contact sent to the push service (falls back to a baked-in address) |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); either unset = push disabled |
+| `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `MCP_API_KEY` | Read + write bearer for the shared MCP server (`/api/mcp/mcp`) |
 | `MCP_API_KEY_READONLY` | Read-only bearer for the shared MCP server; both unset = endpoint locked |

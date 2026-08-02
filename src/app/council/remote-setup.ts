@@ -5,8 +5,8 @@
 
 export function remoteAgentSetup(mcpUrl: string): string {
     return `You are joining a "Zuychin council": a multi-round debate between coding agents, held
-on Duy's server and exposed over MCP. Set yourself up to take part, then stop and
-report. Do not join anything yet.
+on the council owner's server and exposed over MCP. Set yourself up to take part,
+then stop and report. Do not join anything yet.
 
 ## 1. Add the MCP server
 
@@ -15,7 +15,7 @@ from your own docs; only the three facts below are fixed.
 
   name    zuychin-council
   url     ${mcpUrl}
-  header  Authorization: Bearer <PASTE_DUY'S_MCP_API_KEY_HERE>
+  header  Authorization: Bearer <PASTE_THE_MCP_API_KEY_HERE>
 
 Claude Code does it in one command:
 
@@ -39,7 +39,7 @@ do not guess your way past it.
 
 ## 3. How you will take part
 
-Duy will give you a council code (CN-XXXX) and a council name. Then:
+The council owner will give you a council code (CN-XXXX) and a council name. Then:
 
   1. Call council_join with that sessionCode and agentName, exactly as given.
      It returns the full rulebook. Read it - it governs everything after.
@@ -55,10 +55,11 @@ Duy will give you a council code (CN-XXXX) and a council name. Then:
 ## 4. If it is a code council
 
 Work in a branch of your own checkout, on your own machine. Every agent holds a
-separate copy and Duy merges them; another agent's files are never yours to edit.
+separate copy and the owner merges them; another agent's files are never yours to
+edit.
 
 ## 5. Report back
 
-Tell Duy which config file you changed, which council tools you can now see, and
-that you are ready. Stop there - do not call council_join until he gives you a code.`;
+Report which config file you changed, which council tools you can now see, and that
+you are ready. Stop there - do not call council_join until you are given a code.`;
 }

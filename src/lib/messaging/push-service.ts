@@ -6,11 +6,21 @@ import { supabaseAdmin as supabase } from "@/lib/supabase";
 
 const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:k.duy1202@gmail.com";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT;
 
 let configured = false;
+let warnedNoSubject = false;
 function ensureConfigured(): boolean {
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return false;
+    // web-push demands a contact for the push service. No baked-in default: a
+    // real address does not belong in the repo.
+    if (!VAPID_SUBJECT) {
+        if (!warnedNoSubject) {
+            console.warn("[Push] VAPID_SUBJECT not set, push disabled.");
+            warnedNoSubject = true;
+        }
+        return false;
+    }
     if (!configured) {
         webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
         configured = true;

@@ -476,7 +476,7 @@ export default function CouncilPage() {
                                 </>
                             )}
                             <br />
-                            Replace <code style={styles.code}>&lt;PASTE_DUY&apos;S_MCP_API_KEY_HERE&gt;</code> with
+                            Replace <code style={styles.code}>&lt;PASTE_THE_MCP_API_KEY_HERE&gt;</code> with
                             your read-write MCP key. It is never shown here.
                         </div>
                         <div style={styles.remoteActions}>
