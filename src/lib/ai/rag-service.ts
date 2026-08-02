@@ -1,5 +1,5 @@
-import { ai, MODEL, cutShortAtMaxTokens } from "@/lib/gemini";
-import { ThinkingLevel } from "@google/genai";
+import { ai, MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
+import { ThinkingLevel, type GoogleGenAI } from "@google/genai";
 import { searchEmbeddings, storeEmbedding, getRecentMessages, saveMessage, deleteMessage, getDefaultProfile, getConversation, updateConversationTitle, updateProfilePreferences, listTodos, countUserMessagesSince } from "@/lib/db";
 import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
 import { classifyIntent } from "@/lib/ai/agent/router";
@@ -11,7 +11,7 @@ import { extractMemories } from "@/lib/ai/memory/extractor";
 import { getConversationProject } from "@/lib/projects";
 import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -620,7 +620,8 @@ export async function ragChat(params: {
                 reply = await generateGeminiReply({
                     contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
                     thinking: rag.allowThinking, search: rag.allowSearch,
-                    model: rag.chat.model.id, embRef: rag.embRef, genParams, ctx: toolCtx, signal,
+                    model: rag.chat.model.id, apiKey: getProviderApiKey(rag.chat.provider),
+                    embRef: rag.embRef, genParams, ctx: toolCtx, signal,
                     onToken,
                 });
             } else {
@@ -713,6 +714,7 @@ export type TokenSink = (text: string, reset?: boolean) => void;
 // configs that carry NO functionDeclarations (googleSearch/urlContext/maps
 // run server-side), so chunks can never contain client function calls.
 async function streamGeminiText(
+    client: GoogleGenAI,
     model: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     contents: any[],
@@ -720,7 +722,7 @@ async function streamGeminiText(
     onToken?: TokenSink
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<{ text: string; candidate: any; truncated: boolean }> {
-    const stream = await ai.models.generateContentStream({ model, contents, config });
+    const stream = await client.models.generateContentStream({ model, contents, config });
     let text = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let candidate: any;
@@ -750,6 +752,8 @@ async function generateGeminiReply(opts: {
     thinking: boolean;
     search: boolean;
     model: string;
+    /** Key of the provider the model was chosen from; absent means the default. */
+    apiKey?: string;
     embRef: ResolvedEmbedding;
     genParams: GenParams;
     ctx?: ToolContext;
@@ -757,6 +761,7 @@ async function generateGeminiReply(opts: {
     onToken?: TokenSink;
 }): Promise<string> {
     const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx, signal, onToken } = opts;
+    const client = geminiClient(opts.apiKey);
 
     const genConfig: Record<string, number> = {};
     if (genParams.temperature !== undefined) genConfig.temperature = genParams.temperature;
@@ -810,7 +815,7 @@ async function generateGeminiReply(opts: {
                 { role: "model", parts: [{ text: soFar }] },
                 { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
             ];
-            const r = await ai.models.generateContent({ model, contents: resumed, config: continueConfig });
+            const r = await client.models.generateContent({ model, contents: resumed, config: continueConfig });
             return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
         },
     });
@@ -821,12 +826,12 @@ async function generateGeminiReply(opts: {
     };
 
     if (search) {
-        const { text, candidate, truncated } = await streamGeminiText(model, contents, groundingConfig, onToken);
+        const { text, candidate, truncated } = await streamGeminiText(client, model, contents, groundingConfig, onToken);
         const full = truncated ? await resume(text, contents) : text;
         return channel === "telegram" ? full : addCitationsText(full, candidate);
     }
 
-    let response = await ai.models.generateContent({ model, contents, config: mcpConfig });
+    let response = await client.models.generateContent({ model, contents, config: mcpConfig });
 
     let usedTool = false;
     for (let round = 0; round < RAG_CONFIG.maxToolRounds; round++) {
@@ -850,7 +855,7 @@ async function generateGeminiReply(opts: {
             })),
         });
 
-        response = await ai.models.generateContent({ model, contents, config: mcpConfig });
+        response = await client.models.generateContent({ model, contents, config: mcpConfig });
     }
 
     // Same guard as the agent loop (gemini-loop.ts): if the tool budget runs
@@ -870,7 +875,7 @@ async function generateGeminiReply(opts: {
             })),
         });
         const wrapConfig = { ...thinkingOpts, ...genConfig };
-        response = await ai.models.generateContent({ model, contents, config: wrapConfig });
+        response = await client.models.generateContent({ model, contents, config: wrapConfig });
     }
 
     if (!usedTool) {
@@ -879,7 +884,7 @@ async function generateGeminiReply(opts: {
         const fallbackConfig = isLocationQuery(message) ? mapsConfig : groundingConfig;
         const label = isLocationQuery(message) ? "Maps" : "Search";
         try {
-            const { text, candidate, truncated } = await streamGeminiText(model, contents, fallbackConfig, onToken);
+            const { text, candidate, truncated } = await streamGeminiText(client, model, contents, fallbackConfig, onToken);
             if (text) {
                 const full = truncated ? await resume(text, contents) : text;
                 return channel === "telegram" ? full : addCitationsText(full, candidate);

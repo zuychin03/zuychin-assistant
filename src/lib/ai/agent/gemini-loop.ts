@@ -1,5 +1,5 @@
-import { ai, MODEL, cutShortAtMaxTokens } from "@/lib/gemini";
-import { ThinkingLevel } from "@google/genai";
+import { MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
+import { ThinkingLevel, type GoogleGenAI } from "@google/genai";
 import type { GeminiToolDeclarations } from "@/lib/ai/mcp-service";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
@@ -13,6 +13,8 @@ export interface LoopUsage {
 
 export interface GeminiLoopOpts {
     model?: string;
+    /** Key of the provider the model came from; absent means the default. */
+    apiKey?: string;
     systemPrompt: string;
     userMessage: string;
     toolDeclarations: GeminiToolDeclarations;
@@ -47,7 +49,7 @@ function summarizeText(contents: any[]): string {
 // context grows past the threshold. contents is [task, (model, fnResponse)*],
 // so cutting a multiple of 2 from the end keeps functionCall/functionResponse
 // pairs intact - never separate them or the API rejects the transcript.
-async function compactContents(contents: any[], model: string): Promise<any[]> {
+async function compactContents(client: GoogleGenAI, contents: any[], model: string): Promise<any[]> {
     const keepTail = AGENT_CONFIG.compactionKeepPairs * 2;
     if (contents.length < keepTail + 3) return contents;
 
@@ -60,7 +62,7 @@ async function compactContents(contents: any[], model: string): Promise<any[]> {
 
     let condensed: string;
     try {
-        const response = await ai.models.generateContent({
+        const response = await client.models.generateContent({
             model,
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: summaryConfig,
@@ -76,7 +78,7 @@ async function compactContents(contents: any[], model: string): Promise<any[]> {
                 label: "AgentLoop/compaction",
                 maxAttempts: 1,
                 generate: async (soFar) => {
-                    const r = await ai.models.generateContent({
+                    const r = await client.models.generateContent({
                         model,
                         contents: [
                             { role: "user", parts: [{ text: prompt }] },
@@ -117,6 +119,7 @@ async function compactContents(contents: any[], model: string): Promise<any[]> {
 
 export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: string; usage: LoopUsage }> {
     const model = opts.model ?? MODEL;
+    const client = geminiClient(opts.apiKey);
     let contents: any[] = [
         { role: "user", parts: [{ text: `${opts.systemPrompt}\n\n## Task\n${opts.userMessage}` }] },
     ];
@@ -143,7 +146,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
         usage.totalTokens += meta.totalTokenCount ?? 0;
     };
 
-    let response = await ai.models.generateContent({ model, contents, config });
+    let response = await client.models.generateContent({ model, contents, config });
     trackUsage(response);
 
     for (let round = 0; round < opts.maxRounds; round++) {
@@ -170,11 +173,11 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
             lastPromptTokens > AGENT_CONFIG.compactionTokenThreshold ||
             JSON.stringify(contents).length > AGENT_CONFIG.compactionCharFallback
         ) {
-            contents = await compactContents(contents, model);
+            contents = await compactContents(client, contents, model);
             lastPromptTokens = 0;
         }
 
-        response = await ai.models.generateContent({ model, contents, config });
+        response = await client.models.generateContent({ model, contents, config });
         trackUsage(response);
     }
 
@@ -193,7 +196,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
                 },
             })),
         });
-        response = await ai.models.generateContent({ model, contents, config: toolFreeConfig });
+        response = await client.models.generateContent({ model, contents, config: toolFreeConfig });
         trackUsage(response);
     }
 
@@ -212,7 +215,7 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
                     { role: "model", parts: [{ text: soFar }] },
                     { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
                 ];
-                const r = await ai.models.generateContent({ model, contents: resumed, config: toolFreeConfig });
+                const r = await client.models.generateContent({ model, contents: resumed, config: toolFreeConfig });
                 trackUsage(r);
                 return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
             },

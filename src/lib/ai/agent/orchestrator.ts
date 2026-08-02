@@ -8,6 +8,7 @@ import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
 import { buildSkillIndexAsync, getSkillInstructionsAsync } from "@/lib/ai/skills/registry";
 import { createDraftSkill } from "@/lib/ai/skills/custom-store";
 import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
+import { getProviderApiKey } from "@/lib/ai/providers";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
 import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
@@ -61,7 +62,11 @@ export async function runAgent(opts: {
 }): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[]; councilProposal?: CouncilProposal }> {
     const { rag, message, conversationId, userProfileId, resumePrefix, signal } = opts;
 
-    const model = rag.chat.provider.kind === "gemini" ? rag.chat.model.id : MODEL;
+    const isGemini = rag.chat.provider.kind === "gemini";
+    const model = isGemini ? rag.chat.model.id : MODEL;
+    // Only honour the chosen provider's key when its model is the one running;
+    // the MODEL fallback belongs to the default project.
+    const geminiApiKey = isGemini ? getProviderApiKey(rag.chat.provider) : undefined;
     const runId = await createAgentRun({ message, conversationId, userProfileId, model });
     const runBuffer = new RunEventBuffer(runId);
     const onEvent = runBuffer.wrap(opts.onEvent);
@@ -153,6 +158,7 @@ export async function runAgent(opts: {
     try {
         const { text: reply, usage } = await runGeminiLoop({
             model,
+            apiKey: geminiApiKey,
             systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
             userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
             toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),

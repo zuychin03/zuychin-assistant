@@ -30,8 +30,9 @@ export interface ChatModel {
 // the value the NIM path already backfills, so it is not a regression.
 export const UNVERIFIED_MAX_OUTPUT_TOKENS = 8192;
 
-// The widest verified ceiling across every provider; the request-level guard.
-export const MAX_OUTPUT_TOKENS_CEILING = 131072;
+// The widest ceiling across every provider; the request-level guard. DeepSeek's
+// published 384K raised it from 131072.
+export const MAX_OUTPUT_TOKENS_CEILING = 393216;
 
 export interface EmbeddingModel {
     id: string;
@@ -47,6 +48,13 @@ export interface ProviderConfig {
     baseUrl?: string;
     apiKeyEnv: string;
     extraHeaders?: Record<string, string>;
+    /**
+     * Bills per token. The sub-agent pool recruits any fast tool-capable model
+     * it finds, which was safe only while every openai-compatible provider here
+     * was a free gateway; a paid one has to opt out or a single agent run fans
+     * out into paid workers.
+     */
+    metered?: boolean;
     chatModels: ChatModel[];
     embeddingModels: EmbeddingModel[];
 }
@@ -64,6 +72,21 @@ export const PROVIDERS: ProviderConfig[] = [
         embeddingModels: [
             { id: "gemini-embedding-2-preview", label: "Gemini Embedding 2 (768d)", name: "gemini-embedding-2", dimension: 768 },
         ],
+    },
+    {
+        // The same models on a key belonging to a free-tier Google project.
+        // Model ids are the ones the Gemini API expects, so they necessarily
+        // repeat the paid provider's; the provider id is what separates them,
+        // and every resolver here is keyed on `providerId::modelId`.
+        id: "gemini-free",
+        label: "Google Gemini (free)",
+        kind: "gemini",
+        apiKeyEnv: "GEMINI_FREE_API_KEY",
+        chatModels: [
+            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (free)", name: "gemini-3.6-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+        ],
+        embeddingModels: [],
     },
     {
         id: "openrouter",
@@ -105,6 +128,24 @@ export const PROVIDERS: ProviderConfig[] = [
             { id: "nvidia/llama-nemotron-embed-1b-v2", label: "Llama Nemotron Embed 1B v2 (free, 2048d)", name: "nemotron-embed-1b", dimension: 2048 },
             { id: "nvidia/llama-embed-nemotron-8b", label: "Llama Embed Nemotron 8B (free, 4096d)", name: "llama-embed-8b", dimension: 4096 },
         ],
+    },
+    {
+        // DeepSeek's own API rather than a gateway: thinking is a first-class
+        // parameter here, context caching is automatic and priced separately,
+        // and the ceilings are the model's rather than a reseller's.
+        id: "deepseek",
+        label: "DeepSeek",
+        kind: "openai-compatible",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        metered: true,
+        chatModels: [
+            // No supportsStructuredOutput: response_format accepts json_object
+            // but not json_schema, so a schema would be silently ignored.
+            { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", name: "deepseek-v4-flash-api", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
+            { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", name: "deepseek-v4-pro-api", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
+        ],
+        embeddingModels: [],
     },
     {
         id: "opencode-zen",
@@ -266,7 +307,7 @@ export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
     }
     for (const c of WORKER_PREFERRED) push(resolveAvailable(c.providerId, c.modelId));
     for (const provider of PROVIDERS) {
-        if (provider.kind === "gemini" || !isProviderAvailable(provider)) continue;
+        if (provider.kind === "gemini" || provider.metered || !isProviderAvailable(provider)) continue;
         for (const model of provider.chatModels) {
             if (model.supportsTools && getModelMeta(model.id)?.strengths.includes("Fast")) {
                 push({ provider, model });

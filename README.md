@@ -1,7 +1,7 @@
 # Zuychin Assistant
 
 A personal AI chatbot you can talk to from the web, Discord, or Telegram. It lets you
-switch chat model providers per message (Google Gemini, OpenRouter, NVIDIA NIM, OpenCode Zen),
+switch chat model providers per message (Google Gemini, DeepSeek, OpenRouter, NVIDIA NIM, OpenCode Zen),
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
 grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
@@ -15,9 +15,10 @@ edited and deleted in place.
 
 ## Features
 
-- Multi-provider chat: switch the model per message between Gemini, OpenRouter (Nemotron,
-  Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Step, GLM, Gemma 4) and
-  OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash), straight from the chat header
+- Multi-provider chat: switch the model per message between Gemini (paid or a free-tier key),
+  DeepSeek (V4 Flash, V4 Pro), OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM
+  (MiniMax M3, DeepSeek V4, Step, GLM, Gemma 4) and OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1,
+  Ling 3.0 Flash), straight from the chat header
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -146,7 +147,7 @@ edited and deleted in place.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.6 / 3.5 Flash, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
+| Chat models | Gemini 3.6 / 3.5 Flash (paid or free-tier key), DeepSeek V4 Flash / Pro, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
 | Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
@@ -205,6 +206,8 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 | `OPENROUTER_API_KEY` | OpenRouter key (Nemotron / Laguna / Gemma 4 chat) |
 | `OPENROUTER_SITE_URL` | Optional `HTTP-Referer` for OpenRouter rankings |
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
+| `GEMINI_FREE_API_KEY` | Second Google AI Studio key on a free-tier project. Lists the same Gemini models a second time as "(free)", and calls made with them go to that key's quota rather than the paid project's |
+| `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): V4 Flash and V4 Pro on DeepSeek's own API. **Metered** - unlike the other optional providers here it bills per token, so it is excluded from the free sub-agent pool |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + Llama Nemotron, the default embedding model for the knowledge store |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
 | `TOKENROUTER_API_KEY` | TokenRouter key ([tokenrouter.com](https://www.tokenrouter.com)): Kimi K3 chat |
@@ -390,6 +393,8 @@ so add models or providers there.
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
 | Google Gemini | native | `gemini-3.6-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
+| Google Gemini (free) | native | the same two ids | Same models on a free-tier project's key. Picking one routes the call through that key's own client, so it draws on the free quota instead of the paid project |
+| DeepSeek | OpenAI-compatible | `deepseek-v4-flash`, `deepseek-v4-pro` | DeepSeek's own API. **Metered**, so it is kept out of the free sub-agent pool. Thinks by default: `/think` off sends `thinking: {type: "disabled"}` rather than paying for reasoning on every turn. `json_object` only, no `json_schema` |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it` | Chat only |
 | NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `stepfun-ai/step-3.7-flash`, `z-ai/glm-5.2` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
 | OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free`, `laguna-s-2.1-free`, `ling-3.0-flash-free` | Chat only; every model here takes a 131,072-token output budget |
@@ -403,8 +408,10 @@ How it works:
   without them.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
-  can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning` and
-  NIM `chat_template_kwargs.enable_thinking`.
+  can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning`,
+  NIM `chat_template_kwargs.enable_thinking` and DeepSeek `thinking` + `reasoning_effort`.
+  DeepSeek is the one provider that reasons unless told not to, so its branch runs on every
+  request rather than only when `/think` is on.
 - Web search works two ways depending on the model. Gemini uses native Google Search/Maps
   grounding. The OpenAI-compatible models can't reach the internet, so they get a `search_web`
   tool (backed by Tavily, see `TAVILY_API_KEY`): they call it on their own when an answer needs
@@ -413,11 +420,12 @@ How it works:
 - Hyperparameters (temperature, top_p, max tokens) are optional, sanitized on the server and
   mapped per provider. NIM requests backfill NVIDIA's recommended defaults so models like
   MiniMax M3 always get a token budget.
-- Max tokens is bounded **per model** by that model's verified output ceiling rather than one
-  global cap, so the slider goes to 131,072 on MiniMax M3 or DeepSeek V4 Pro, 65,536 on Gemini
-  3.6 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each platform
-  (`models.get` for Gemini, `top_provider.max_completion_tokens` for OpenRouter, and direct
-  `chat/completions` probes for NVIDIA NIM and OpenCode Zen, whose model lists omit them).
+- Max tokens is bounded **per model** by that model's output ceiling rather than one
+  global cap, so the slider goes to 393,216 on DeepSeek's own V4 models, 131,072 on MiniMax M3,
+  65,536 on Gemini 3.6 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each
+  platform (`models.get` for Gemini, `top_provider.max_completion_tokens` for OpenRouter, and
+  direct `chat/completions` probes for NVIDIA NIM and OpenCode Zen, whose model lists omit them);
+  DeepSeek's is read from its published 384K rather than probed.
   Requests are clamped to the resolved model's ceiling server-side, because exceeding it makes
   the provider reject the whole call instead of quietly truncating.
 - Embeddings are model-aware: each embedding model writes and reads its own partition of the

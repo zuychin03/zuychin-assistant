@@ -143,6 +143,22 @@ const DEEPSEEK_V4_FLASH: ModelMeta = {
     strengths: ["Coding", "Reasoning", "Fast", "High throughput", "Long context"],
 };
 
+// Separate entries for the first-party API, where the ceilings are the model's
+// own rather than a gateway's and thinking is a priced, controllable parameter.
+const DEEPSEEK_V4_PRO_API: ModelMeta = {
+    ...DEEPSEEK_V4_PRO,
+    description:
+        `${DEEPSEEK_V4_PRO.description} Billed direct on DeepSeek's own API at $0.435/M input (cache miss), $0.003625/M on a cache hit, and $0.87/M output; caching is automatic. Thinks by default, at "high" or "max" effort only.`,
+    maxOutput: "384K",
+};
+
+const DEEPSEEK_V4_FLASH_API: ModelMeta = {
+    ...DEEPSEEK_V4_FLASH,
+    description:
+        `${DEEPSEEK_V4_FLASH.description} Billed direct on DeepSeek's own API at $0.14/M input (cache miss), $0.0028/M on a cache hit, and $0.28/M output; caching is automatic. Thinks by default.`,
+    maxOutput: "384K",
+};
+
 const MIMO_V25: ModelMeta = {
     developer: "Xiaomi",
     description:
@@ -198,6 +214,8 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "minimaxai/minimax-m3": MINIMAX_M3,
     "deepseek-ai/deepseek-v4-pro": DEEPSEEK_V4_PRO,
     "deepseek-ai/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
+    "deepseek-v4-pro": DEEPSEEK_V4_PRO_API,
+    "deepseek-v4-flash": DEEPSEEK_V4_FLASH_API,
     "nvidia/nemotron-3-ultra-550b-a55b": NEMOTRON_3_ULTRA,
     "google/gemma-4-31b-it": GEMMA_4_31B,
     "google/diffusiongemma-26b-a4b-it": DIFFUSIONGEMMA_26B,

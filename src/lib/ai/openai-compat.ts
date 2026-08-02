@@ -54,6 +54,17 @@ const MAX_TOOL_ROUNDS = 5;
 // answers stop mid-sentence. The resume contract lives in ./continuation.
 const REQUEST_TIMEOUT_MS = 60_000;
 
+// DeepSeek reasons before it emits anything, and v4-pro's minimum effort is
+// "high", so first-token latency alone can outrun the default. Still inside
+// CONTINUATION_BUDGET_MS, so a genuinely stuck request loses nothing.
+const PROVIDER_TIMEOUT_MS: Record<string, number> = {
+    deepseek: 120_000,
+};
+
+function requestTimeoutMs(providerId: string): number {
+    return PROVIDER_TIMEOUT_MS[providerId] ?? REQUEST_TIMEOUT_MS;
+}
+
 const THINK_PAIR_RE = /<(think|thinking|thought|reason|reasoning)>[\s\S]*?<\/\1>/gi;
 const THINK_OPEN_RE = /<(think|thinking|thought|reason|reasoning)>/i;
 const THINK_CLOSE_RE = /<\/(think|thinking|thought|reason|reasoning)>/gi;
@@ -369,8 +380,18 @@ async function postChat(
         }
     }
 
+    // DeepSeek thinks by DEFAULT, so this branch runs whether or not the user
+    // asked for it: leaving it out silently bills reasoning tokens on every
+    // turn. reasoning_effort is not uniform - v4-pro rejects "low" - so the
+    // thinking-off case turns the mode off rather than dialling the effort down.
+    if (provider.id === "deepseek") {
+        body.thinking = { type: thinking ? "enabled" : "disabled" };
+        if (thinking) body.reasoning_effort = "high";
+    }
+
+    const timeoutMs = requestTimeoutMs(provider.id);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const onCallerAbort = () => controller.abort();
     opts.signal?.addEventListener("abort", onCallerAbort);
     if (opts.signal?.aborted) controller.abort();
@@ -399,7 +420,7 @@ async function postChat(
     } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
             if (opts.signal?.aborted) throw err;
-            throw new Error(`${provider.label}: request timed out after ${REQUEST_TIMEOUT_MS / 1000}s.`);
+            throw new Error(`${provider.label}: request timed out after ${timeoutMs / 1000}s.`);
         }
         throw err;
     } finally {
