@@ -246,6 +246,9 @@ export default function CouncilPage() {
     const canAdopt = hostState === "connected" && !!host && !host.code;
     const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(origin);
     const remoteBrief = remoteAgentSetup(`${origin || "https://your-deployment"}/api/mcp/mcp`);
+    // Rendered copy masks the host so a screenshot of this panel carries no
+    // deployment address; the clipboard still gets the real one.
+    const remoteBriefShown = remoteAgentSetup("https://<your-host>/api/mcp/mcp");
 
     return (
         <div style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
@@ -470,14 +473,15 @@ export default function CouncilPage() {
                             {isLoopback && (
                                 <>
                                     <br />
-                                    <strong>You are viewing this on localhost, so the URL below points at this
-                                    machine.</strong> Open this page on your deployed site before copying, or
-                                    swap the host in by hand.
+                                    <strong>You are viewing this on localhost, so the copied brief points at
+                                    this machine.</strong> Open this page on your deployed site before copying,
+                                    or swap the host in by hand.
                                 </>
                             )}
                             <br />
                             Replace <code style={styles.code}>&lt;PASTE_THE_MCP_API_KEY_HERE&gt;</code> with
-                            your read-write MCP key. It is never shown here.
+                            your read-write MCP key. It is never shown here. The host is masked below so
+                            this panel is safe to screenshot - <strong>Copy brief</strong> fills in the real one.
                         </div>
                         <div style={styles.remoteActions}>
                             <button
@@ -494,7 +498,7 @@ export default function CouncilPage() {
                                 {copied ? "Copied" : "Copy brief"}
                             </button>
                         </div>
-                        <pre style={styles.remoteBrief}>{remoteBrief}</pre>
+                        <pre style={styles.remoteBrief}>{remoteBriefShown}</pre>
                     </>
                 )}
             </section>
