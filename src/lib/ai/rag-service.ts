@@ -485,7 +485,8 @@ export async function buildRagContext(params: {
 
 // Summarizes an interrupted run so a fresh agent pass can pick up where it
 // stopped instead of redoing completed work. No transcript replay - the new
-// run re-derives context and treats this as briefing notes.
+// run re-derives context and treats this as briefing notes. The prose is a
+// hint; agent/journal.ts is what actually stops a mutation happening twice.
 async function buildResumePrefix(resumeRunId: string): Promise<string | undefined> {
     try {
         const run = await getAgentRun(resumeRunId);
@@ -507,7 +508,7 @@ async function buildResumePrefix(resumeRunId: string): Promise<string | undefine
             })
             .filter(Boolean)
             .join("\n");
-        return `A previous attempt at this task was interrupted (status: ${run.status}). Its plan and progress:\n${planLines || "(no plan recorded)"}\n\nLast recorded activity:\n${eventLines || "(none)"}\n\nDo not redo completed work - artifacts already created were delivered. Continue from where it stopped.\n\n## Original Task\n`;
+        return `A previous attempt at this task was interrupted (status: ${run.status}). Its plan and progress:\n${planLines || "(no plan recorded)"}\n\nLast recorded activity:\n${eventLines || "(none)"}\n\nDo not redo completed work - artifacts already created were delivered. Anything that changed state outside this conversation is journalled: repeating one with the same arguments returns the earlier result instead of doing it twice, and an interrupted send is refused rather than reissued. Continue from where it stopped.\n\n## Original Task\n`;
     } catch (err) {
         console.warn("[RAG] Failed to build resume prefix:", err);
         return undefined;
@@ -598,7 +599,8 @@ export async function ragChat(params: {
             onEvent?.({ type: "status", message: "Understanding your request…" });
             const resumePrefix = params.resumeRunId ? await buildResumePrefix(params.resumeRunId) : undefined;
             const res = await runAgent({
-                rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent, resumePrefix, signal,
+                rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
+                resumePrefix, resumeRunId: params.resumeRunId, signal,
             });
             reply = res.reply;
             artifacts.push(...res.artifacts);

@@ -9,9 +9,19 @@ export interface RunUsage {
     workerTokens?: number;
 }
 
+// status says whether the run threw; stopReason says why it stopped. A run can
+// be status 'done' and still have exhausted its budget or lost a worker.
+export type RunStopReason =
+    | "complete"
+    | "budget_exhausted"
+    | "partial_worker_timeout"
+    | "cancelled"
+    | "error";
+
 export interface AgentRunSummary {
     id: string;
     status: "running" | "done" | "error" | "timeout";
+    stopReason: RunStopReason | null;
     message: string;
     model: string | null;
     plan: PlanStep[];
@@ -38,7 +48,22 @@ export async function createAgentRun(params: {
     conversationId?: string;
     userProfileId?: string;
     model: string;
-}): Promise<string | null> {
+    /** Set when this run continues an interrupted one. */
+    resumeRunId?: string;
+}): Promise<{ id: string; rootRunId: string } | null> {
+    // A resumption inherits its predecessor's root so the mutation journal keys
+    // on the logical task rather than the attempt. A first run is its own root,
+    // which cannot be written until the id exists.
+    let root: string | null = null;
+    if (params.resumeRunId) {
+        const { data: prior } = await supabase
+            .from("agent_runs")
+            .select("root_run_id")
+            .eq("id", params.resumeRunId)
+            .maybeSingle();
+        root = (prior?.root_run_id as string | null) ?? params.resumeRunId;
+    }
+
     const { data, error } = await supabase
         .from("agent_runs")
         .insert({
@@ -46,15 +71,21 @@ export async function createAgentRun(params: {
             conversation_id: params.conversationId ?? null,
             user_profile_id: params.userProfileId ?? null,
             model: params.model,
+            root_run_id: root,
         })
-        .select("id")
+        .select("id, root_run_id")
         .single();
 
     if (error) {
         console.warn("[AgentRun] Failed to create run row:", error.message);
         return null;
     }
-    return data.id as string;
+    const id = data.id as string;
+    const rootRunId = (data.root_run_id as string | null) ?? id;
+    if (!data.root_run_id) {
+        await supabase.from("agent_runs").update({ root_run_id: id }).eq("id", id);
+    }
+    return { id, rootRunId };
 }
 
 // Tees agent events into the run row without slowing the run down: events are
@@ -104,6 +135,7 @@ export class RunEventBuffer {
 
     async finish(params: {
         status: "done" | "error";
+        stopReason?: RunStopReason;
         reply?: string;
         error?: string;
         usage: Partial<RunUsage>;
@@ -111,6 +143,7 @@ export class RunEventBuffer {
         if (!this.runId) return;
         await this.flush({
             status: params.status,
+            stop_reason: params.stopReason ?? null,
             reply: params.reply ?? null,
             error: params.error?.slice(0, 2000) ?? null,
             usage: params.usage,
@@ -123,7 +156,7 @@ async function sweepStaleRuns(): Promise<void> {
     const cutoff = new Date(Date.now() - STALE_RUNNING_MINUTES * 60_000).toISOString();
     const { error } = await supabase
         .from("agent_runs")
-        .update({ status: "timeout", finished_at: new Date().toISOString() })
+        .update({ status: "timeout", stop_reason: "cancelled", finished_at: new Date().toISOString() })
         .eq("status", "running")
         .lt("started_at", cutoff);
     if (error) console.warn("[AgentRun] Stale sweep failed:", error.message);
@@ -134,6 +167,7 @@ function toSummary(row: any): AgentRunSummary {
     return {
         id: row.id,
         status: row.status,
+        stopReason: row.stop_reason ?? null,
         message: row.message,
         model: row.model,
         plan: Array.isArray(row.plan) ? row.plan : [],
@@ -148,7 +182,7 @@ export async function listAgentRuns(limit = 25): Promise<AgentRunSummary[]> {
     await sweepStaleRuns();
     const { data, error } = await supabase
         .from("agent_runs")
-        .select("id, status, message, model, plan, usage, started_at, finished_at")
+        .select("id, status, stop_reason, message, model, plan, usage, started_at, finished_at")
         .order("started_at", { ascending: false })
         .limit(limit);
 

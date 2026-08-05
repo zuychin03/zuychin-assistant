@@ -12,6 +12,10 @@ import {
     type HostActivity, type HostConnection, type HostSnapshot,
 } from "./host-client";
 import { remoteAgentSetup } from "./remote-setup";
+import { OwnerChannelPanel } from "./owner-channel-panel";
+import { DecisionPanel } from "./decision-panel";
+import { SeatKeysPanel } from "./seat-keys-panel";
+import { IntegrationPanel } from "./integration-panel";
 
 // Live view over a council, plus control of the local ACP host when one is
 // reachable. The Zuychin half stays read-only by construction: watching a
@@ -47,13 +51,17 @@ interface Detail {
         maxRounds: number; messages: number; closerName: string; lastMessageAt: string;
         expiresAt: string; verdict: string | null; openQuestions: string[];
         vaultPath: string | null; archiveStatus: string; floorHolder: string | null;
+        paused: boolean; pausedAt: string | null;
+        standbyExpiresAt: string | null; continueCount: number;
     };
     participants: Participant[];
     messages: Message[];
     openObligations: { seq: number; from: string; to: string; intent: string }[];
     campaign: {
         id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
-        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; verification: string | null; blockedReason: string | null }[];
+        integratorAgent: string | null; integrationBranch: string | null; integrationStatus: string | null;
+        integrationReport: string | null; integrationCheckedAt: string | null;
+        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
     } | null;
 }
 
@@ -479,9 +487,10 @@ export default function CouncilPage() {
                                 </>
                             )}
                             <br />
-                            Replace <code style={styles.code}>&lt;PASTE_THE_MCP_API_KEY_HERE&gt;</code> with
-                            your read-write MCP key. It is never shown here. The host is masked below so
-                            this panel is safe to screenshot - <strong>Copy brief</strong> fills in the real one.
+                            Replace <code style={styles.code}>&lt;PASTE_YOUR_SEAT_KEY_HERE&gt;</code> with a
+                            seat key minted for that agent on the council page below — <strong>not</strong> your
+                            MCP key, which would hand over the whole knowledge base. The host is masked below
+                            so this panel is safe to screenshot; <strong>Copy brief</strong> fills in the real one.
                         </div>
                         <div style={styles.remoteActions}>
                             <button
@@ -598,10 +607,33 @@ export default function CouncilPage() {
                                 <section style={styles.panel}>
                                     <PanelHeader
                                         title={`${s.code} - ${s.topic}`}
-                                        description={`${s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} messages · closer ${s.closerName}`}
+                                        description={`${s.paused ? "stalled" : s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} messages · closer ${s.closerName}`}
                                         icon={<Users size={16} />}
                                     />
                                     <div style={styles.brief}><strong>{s.councilType} council</strong><br />{s.brief}</div>
+                                    {s.status === "awaiting_owner" && (
+                                        <DecisionPanel
+                                            code={s.code}
+                                            verdict={s.verdict}
+                                            openQuestions={s.openQuestions}
+                                            standbyExpiresAt={s.standbyExpiresAt}
+                                            continueCount={s.continueCount}
+                                            onDecided={() => { void fetchDetail(s.code); }}
+                                        />
+                                    )}
+                                    {isRunning && (
+                                        <OwnerChannelPanel
+                                            code={s.code}
+                                            paused={s.paused}
+                                            onStateChange={() => { void fetchDetail(s.code); }}
+                                        />
+                                    )}
+                                    {isRunning && (
+                                        <SeatKeysPanel
+                                            code={s.code}
+                                            agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
+                                        />
+                                    )}
                                     <div style={styles.roster}>
                                         {detail.participants.filter((p) => p.kind === "agent").map((p) => {
                                             const stale = (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS;
@@ -675,11 +707,24 @@ export default function CouncilPage() {
                                                     <span style={styles.rosterName}>{item.agentName}</span>
                                                     <span style={{ ...styles.smallPill, ...(item.status === "verified" ? styles.pillGood : item.status === "blocked" ? styles.pillWarn : styles.pillMuted) }}>{item.status}</span>
                                                     <span style={styles.workTitle}>{item.title}</span>
+                                                    {/* Host-observed, not the agent's own account of its work. */}
+                                                    {item.status === "awaiting_review" && (
+                                                        <span style={{ ...styles.smallPill, ...(item.hostVerified === true ? styles.pillGood : item.hostVerified === false ? styles.pillWarn : styles.pillMuted) }}>
+                                                            {item.hostVerified === true ? "host ✓" : item.hostVerified === false ? "host ✗" : "host pending"}
+                                                        </span>
+                                                    )}
                                                     {item.blockedReason && <span style={styles.workDetail}>{item.blockedReason}</span>}
-                                                    {!item.blockedReason && item.progress && <span style={styles.workDetail}>{item.progress}</span>}
+                                                    {!item.blockedReason && item.hostVerification && <span style={styles.workDetail}>{item.hostVerification.split("\n").find((l) => l.startsWith("FAIL")) ?? item.progress}</span>}
+                                                    {!item.blockedReason && !item.hostVerification && item.progress && <span style={styles.workDetail}>{item.progress}</span>}
                                                 </div>
                                             ))}
                                         </div>
+                                        <IntegrationPanel
+                                            code={s.code}
+                                            campaign={detail.campaign}
+                                            agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
+                                            onChange={() => { void fetchDetail(s.code); }}
+                                        />
                                     </section>
                                 )}
 

@@ -4,7 +4,7 @@ import {
     MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
     SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
-    CODE_ALPHABET, generateCouncilCode,
+    CODE_ALPHABET, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
     type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
 } from "./protocol";
 
@@ -19,6 +19,8 @@ export interface CouncilSession {
     archiveStatus: "pending" | "filed" | "failed" | "skipped";
     vaultPath: string | null; expiresAt: string; closedAt: string | null; createdAt: string;
     repoPath: string | null; baseBranch: string | null;
+    pausedAt: string | null; pausedTotalSeconds: number;
+    verdictProposedAt: string | null; standbyExpiresAt: string | null; continueCount: number;
 }
 
 // Exactly the columns one poll tick reads: a ~180-byte primary-key point read.
@@ -26,6 +28,12 @@ export interface CouncilTick {
     lastSeq: number; round: number; status: CouncilStatus; lastMessageAt: string;
     floorHolder: string | null; floorGrantedAt: string | null; floorEpoch: number;
     silentGrants: number; quorumAt: string | null; expiresAt: string;
+    pausedAt: string | null;
+}
+
+export interface CouncilOwnerMessage {
+    id: string; role: "owner" | "zuychin"; body: string;
+    relayedSeq: number | null; createdAt: string;
 }
 
 export interface CouncilMessage {
@@ -62,6 +70,8 @@ interface SessionRow {
     archive_status: "pending" | "filed" | "failed" | "skipped";
     vault_path: string | null; expires_at: string; closed_at: string | null; created_at: string;
     repo_path: string | null; base_branch: string | null;
+    paused_at: string | null; paused_total_seconds: number;
+    verdict_proposed_at: string | null; standby_expires_at: string | null; continue_count: number;
 }
 
 interface MessageRow {
@@ -82,7 +92,8 @@ interface ParticipantRow {
 const SESSION_COLUMNS =
     "id, code, topic, brief, closer_name, council_type, status, round, max_rounds, max_messages, last_seq, " +
     "last_message_at, quorum_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, " +
-    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at, repo_path, base_branch";
+    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at, repo_path, base_branch, " +
+    "paused_at, paused_total_seconds, verdict_proposed_at, standby_expires_at, continue_count";
 
 const MESSAGE_COLUMNS =
     "seq, round, speaker, role, addressed_to, intent, reply_to_seq, body, answered, created_at";
@@ -119,6 +130,11 @@ function mapSession(row: SessionRow): CouncilSession {
         createdAt: row.created_at,
         repoPath: row.repo_path,
         baseBranch: row.base_branch,
+        pausedAt: row.paused_at,
+        pausedTotalSeconds: row.paused_total_seconds ?? 0,
+        verdictProposedAt: row.verdict_proposed_at,
+        standbyExpiresAt: row.standby_expires_at,
+        continueCount: row.continue_count ?? 0,
     };
 }
 
@@ -289,7 +305,7 @@ export async function getSessionById(id: string): Promise<CouncilSession | null>
 export async function readTick(sessionId: string): Promise<CouncilTick | null> {
     const { data, error } = await supabase
         .from("council_sessions")
-        .select("last_seq, round, status, last_message_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, quorum_at, expires_at")
+        .select("last_seq, round, status, last_message_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, quorum_at, expires_at, paused_at")
         .eq("id", sessionId)
         .maybeSingle();
     if (error || !data) {
@@ -308,6 +324,7 @@ export async function readTick(sessionId: string): Promise<CouncilTick | null> {
         silentGrants: row.silent_grants,
         quorumAt: row.quorum_at,
         expiresAt: row.expires_at,
+        pausedAt: row.paused_at,
     };
 }
 
@@ -346,6 +363,7 @@ export async function appendMessage(params: {
 }): Promise<{
     ok: boolean; seq?: number; round: number; reason?: string;
     duplicate?: boolean; advanced?: boolean; posts?: number;
+    cleared?: boolean; status?: CouncilStatus;
 }> {
     try {
         const { data, error } = await supabase.rpc("append_council_message", {
@@ -365,10 +383,33 @@ export async function appendMessage(params: {
         return (data ?? { ok: false, reason: "no_result", round: 0 }) as {
             ok: boolean; seq?: number; round: number; reason?: string;
             duplicate?: boolean; advanced?: boolean; posts?: number;
+            cleared?: boolean; status?: CouncilStatus;
         };
     } catch (err) {
         return throwWrite("appendMessage", err);
     }
+}
+
+// Checked BEFORE the conclude CAS. create_council_campaign raises on a bad work
+// plan, and the campaign is created after the verdict commits, so without this
+// an invalid plan leaves a durable verdict with no transcript and no notice.
+export async function validateWorkItems(params: {
+    sessionId: string;
+    createdBy: string;
+    workItems: { agentName: string; title: string; instructions: string; acceptanceCriteria: string[] }[];
+}): Promise<string | null> {
+    const { data, error } = await supabase.rpc("validate_council_work_items", {
+        p_session_id: params.sessionId,
+        p_created_by: params.createdBy,
+        p_work_items: params.workItems.map((item) => ({
+            agent_name: item.agentName,
+            title: item.title,
+            instructions: item.instructions,
+            acceptance_criteria: item.acceptanceCriteria,
+        })),
+    });
+    if (error) throw new Error(error.message);
+    return (data as string | null) ?? null;
 }
 
 // Best-effort: presence is judged by age on read, so a missed touch costs
@@ -462,14 +503,64 @@ export async function getParticipant(sessionId: string, name: string): Promise<C
 // Best-effort, and issued only when the transition actually applies: an
 // unconditional per-window UPDATE would fire the updated_at trigger and take a
 // row-exclusive lock on the one hot row the entire poll reads.
+// is("paused_at", null) on every expiry path: a paused council is waiting on a
+// human, not on its agents. resume_council adds the paused span back to
+// expires_at, so the deadline it is eventually judged against is unchanged.
 export async function expireSessionIfDue(sessionId: string): Promise<void> {
     const { error } = await supabase
         .from("council_sessions")
         .update({ status: "expired" })
         .eq("id", sessionId)
         .in("status", ["open", "concluding"])
+        .is("paused_at", null)
         .lt("expires_at", new Date().toISOString());
     if (error) console.warn("[Council] expireSessionIfDue failed:", error.message);
+}
+
+export async function pauseCouncil(sessionId: string): Promise<{ ok: boolean; already?: boolean; reason?: string }> {
+    const { data, error } = await supabase.rpc("pause_council", { p_session_id: sessionId });
+    if (error) throw new Error(error.message);
+    return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; already?: boolean; reason?: string };
+}
+
+export async function resumeCouncil(sessionId: string): Promise<{ ok: boolean; already?: boolean; pausedSeconds?: number; reason?: string }> {
+    const { data, error } = await supabase.rpc("resume_council", { p_session_id: sessionId });
+    if (error) throw new Error(error.message);
+    const row = (data ?? { ok: false, reason: "no_result" }) as {
+        ok: boolean; already?: boolean; paused_seconds?: number; reason?: string;
+    };
+    return { ok: row.ok, already: row.already, pausedSeconds: row.paused_seconds, reason: row.reason };
+}
+
+// The private owner/Zuychin thread. Never joined into the transcript: agents do
+// not see it, and closeCouncil does not file it.
+export async function appendOwnerMessage(params: {
+    sessionId: string; role: "owner" | "zuychin"; body: string; relayedSeq?: number;
+}): Promise<void> {
+    const { error } = await supabase.from("council_owner_messages").insert({
+        session_id: params.sessionId,
+        role: params.role,
+        body: params.body.slice(0, 6000),
+        relayed_seq: params.relayedSeq ?? null,
+    });
+    if (error) throw new Error(error.message);
+}
+
+export async function readOwnerThread(sessionId: string, limit = 100): Promise<CouncilOwnerMessage[]> {
+    const { data, error } = await supabase
+        .from("council_owner_messages")
+        .select("id, role, body, relayed_seq, created_at")
+        .eq("session_id", sessionId)
+        .order("created_at", { ascending: true })
+        .limit(limit);
+    if (error) {
+        console.error("[Council] readOwnerThread failed:", error.message);
+        return [];
+    }
+    return (data ?? []).map((row) => {
+        const r = row as { id: string; role: "owner" | "zuychin"; body: string; relayed_seq: number | null; created_at: string };
+        return { id: r.id, role: r.role, body: r.body, relayedSeq: r.relayed_seq, createdAt: r.created_at };
+    });
 }
 
 // Shrinks the round-advance quorum immediately instead of waiting out the 180s
@@ -662,6 +753,108 @@ export async function concludeCouncil(params: {
     }
 }
 
+export interface CouncilWorkItemPlan {
+    agentName: string; title: string; instructions: string; acceptanceCriteria: string[];
+}
+
+interface WorkItemPlanRow {
+    agent_name?: unknown; title?: unknown; instructions?: unknown; acceptance_criteria?: unknown;
+}
+
+// The closer records a verdict; it is not final until the owner accepts. The
+// work plan rides along because the campaign is created on accept, not here.
+export async function proposeVerdict(params: {
+    sessionId: string;
+    closer: string;
+    verdict: string;
+    openQuestions: string[];
+    workItems?: CouncilWorkItemPlan[];
+    standbySeconds?: number;
+}): Promise<{ changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string; vaultPath?: string | null; round?: number; messages?: number }> {
+    try {
+        const { data, error } = await supabase.rpc("propose_council_verdict", {
+            p_session_id: params.sessionId,
+            p_closer: params.closer,
+            p_verdict: params.verdict,
+            p_open_questions: params.openQuestions,
+            p_work_items: params.workItems?.length
+                ? params.workItems.map((i) => ({
+                    agent_name: i.agentName, title: i.title,
+                    instructions: i.instructions, acceptance_criteria: i.acceptanceCriteria,
+                }))
+                : null,
+            p_standby_seconds: params.standbySeconds ?? STANDBY_TTL_SECONDS,
+        });
+        if (error) throw new Error(error.message);
+        return (data ?? { changed: false }) as { changed: boolean; status?: CouncilStatus };
+    } catch (err) {
+        return throwWrite("proposeVerdict", err);
+    }
+}
+
+export async function acceptVerdict(sessionId: string): Promise<{
+    changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string;
+    vaultPath?: string | null; workItems: CouncilWorkItemPlan[];
+}> {
+    try {
+        const { data, error } = await supabase.rpc("accept_council_verdict", { p_session_id: sessionId });
+        if (error) throw new Error(error.message);
+        const row = (data ?? { changed: false }) as {
+            changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string;
+            vault_path?: string | null; work_items?: WorkItemPlanRow[] | null;
+        };
+        return {
+            changed: row.changed,
+            status: row.status,
+            verdict: row.verdict,
+            closer: row.closer,
+            vaultPath: row.vault_path ?? null,
+            workItems: (row.work_items ?? []).map((i) => ({
+                agentName: String(i.agent_name ?? ""),
+                title: String(i.title ?? ""),
+                instructions: String(i.instructions ?? ""),
+                acceptanceCriteria: Array.isArray(i.acceptance_criteria) ? i.acceptance_criteria.map(String) : [],
+            })),
+        };
+    } catch (err) {
+        return throwWrite("acceptVerdict", err);
+    }
+}
+
+export async function continueCouncil(params: {
+    sessionId: string; extraRounds?: number;
+}): Promise<{ ok: boolean; round?: number; maxRounds?: number; continueCount?: number; reason?: string }> {
+    try {
+        const { data, error } = await supabase.rpc("continue_council", {
+            p_session_id: params.sessionId,
+            p_extra_rounds: params.extraRounds ?? CONTINUE_EXTRA_ROUNDS,
+        });
+        if (error) throw new Error(error.message);
+        const row = (data ?? { ok: false }) as {
+            ok: boolean; round?: number; max_rounds?: number; continue_count?: number; reason?: string;
+        };
+        return { ok: row.ok, round: row.round, maxRounds: row.max_rounds, continueCount: row.continue_count, reason: row.reason };
+    } catch (err) {
+        return throwWrite("continueCouncil", err);
+    }
+}
+
+// Standby that ran out. Accepting on expiry rather than discarding: the verdict
+// is already written by this point, and binning finished work to tidy up is the
+// worse of the two failures.
+export async function listStandbyExpired(): Promise<CouncilSession[]> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .eq("status", "awaiting_owner")
+        .lt("standby_expires_at", new Date().toISOString());
+    if (error) {
+        console.error("[Council] listStandbyExpired failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
 export async function markArchive(params: {
     sessionId: string;
     status: "filed" | "failed" | "skipped";
@@ -700,6 +893,9 @@ export async function listSessionsNeedingVerdict(olderThanMs: number): Promise<C
         .select(SESSION_COLUMNS)
         .in("status", ["expired", "concluding"])
         .is("verdict", null)
+        // A paused council is on hold, not stalled. Auto-verdicting one would
+        // write over a debate the owner deliberately stopped to think about.
+        .is("paused_at", null)
         .lt("last_message_at", cutoff);
     if (error) {
         console.error("[Council] listSessionsNeedingVerdict failed:", error.message);
@@ -708,14 +904,19 @@ export async function listSessionsNeedingVerdict(olderThanMs: number): Promise<C
     return (data as unknown as SessionRow[]).map(mapSession);
 }
 
-export async function listFailedArchives(): Promise<CouncilSession[]> {
+// 'failed' means filing threw and was recorded. 'pending' past the grace period
+// means the process died between the verdict CAS and markArchive - or the close
+// path threw before reaching it - so nothing ever recorded a failure to retry.
+// Only the first was swept before, which left those councils unfiled forever.
+export async function listUnfiledArchives(graceMs: number): Promise<CouncilSession[]> {
+    const cutoff = new Date(Date.now() - graceMs).toISOString();
     const { data, error } = await supabase
         .from("council_sessions")
         .select(SESSION_COLUMNS)
-        .eq("archive_status", "failed")
-        .eq("status", "closed");
+        .eq("status", "closed")
+        .or(`archive_status.eq.failed,and(archive_status.eq.pending,closed_at.lt.${cutoff})`);
     if (error) {
-        console.error("[Council] listFailedArchives failed:", error.message);
+        console.error("[Council] listUnfiledArchives failed:", error.message);
         return [];
     }
     return (data as unknown as SessionRow[]).map(mapSession);
@@ -726,6 +927,7 @@ export async function expireOverdueSessions(): Promise<CouncilSession[]> {
         .from("council_sessions")
         .update({ status: "expired" })
         .in("status", ["open", "concluding"])
+        .is("paused_at", null)
         .lt("expires_at", new Date().toISOString())
         .select(SESSION_COLUMNS);
     if (error) {

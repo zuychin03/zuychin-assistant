@@ -1603,6 +1603,12 @@ begin
 end;
 $$;
 
+-- Dropped first so this file stays re-runnable. The P6 block near the end
+-- redefines this with a jsonb return, and Postgres will not change a return
+-- type in place; a second run of the whole file would otherwise die here.
+-- DROP identifies a function by name and argument types alone, so the same
+-- statement clears whichever version is currently installed.
+drop function if exists review_council_work_item(uuid, text, boolean, text);
 create or replace function review_council_work_item(p_item_id uuid, p_reviewer text, p_accepted boolean, p_note text)
 returns boolean language plpgsql as $$
 declare v_campaign_id uuid; v_closer text;
@@ -1753,5 +1759,1106 @@ begin
      where id = p_session_id;
   end if;
   return jsonb_build_object('ok', true, 'live', v_live);
+end;
+$$;
+
+-- ===== P1: council correctness wave =====
+-- Lease duration lives in these function bodies rather than in a new parameter:
+-- adding an argument to an existing function creates an OVERLOAD, not a
+-- replacement, and PostgREST then cannot resolve the named-argument call.
+
+alter table council_work_items
+  add column if not exists lease_owner text,
+  add column if not exists lease_expires_at timestamptz,
+  add column if not exists max_attempts integer not null default 3;
+
+-- Split out of create_council_campaign so the close path can check a work plan
+-- BEFORE the verdict CAS commits. Deliberately omits the 'closed' status check:
+-- at validation time the council is still open. Returns null when valid.
+create or replace function validate_council_work_items(
+  p_session_id uuid, p_created_by text, p_work_items jsonb
+) returns text language plpgsql as $$
+declare v_session council_sessions; v_item jsonb; v_index integer := 0;
+begin
+  select * into v_session from council_sessions where id = p_session_id;
+  if v_session.id is null then return 'council session not found'; end if;
+  if v_session.closer_name <> p_created_by then return 'only the designated closer can create a campaign'; end if;
+  if v_session.repo_path is null or v_session.base_branch is null then return 'this council has no registered workspace'; end if;
+  if jsonb_typeof(p_work_items) <> 'array' or jsonb_array_length(p_work_items) = 0 then return 'a campaign needs at least one work item'; end if;
+  for v_item in select value from jsonb_array_elements(p_work_items) loop
+    v_index := v_index + 1;
+    if not exists (select 1 from council_participants where session_id = p_session_id and name = coalesce(v_item->>'agent_name', '') and kind = 'agent') then
+      return format('work item %s has an agent outside the council roster', v_index);
+    end if;
+    if coalesce(char_length(v_item->>'title'), 0) = 0 or coalesce(char_length(v_item->>'instructions'), 0) = 0 then
+      return format('work item %s needs a title and instructions', v_index);
+    end if;
+  end loop;
+  return null;
+end;
+$$;
+
+create or replace function create_council_campaign(p_session_id uuid, p_created_by text, p_work_items jsonb)
+returns jsonb language plpgsql as $$
+declare v_session council_sessions; v_campaign council_campaigns; v_reason text;
+begin
+  select * into v_session from council_sessions where id = p_session_id for update;
+  if v_session.id is null then raise exception 'council session not found'; end if;
+  if v_session.status <> 'closed' then raise exception 'council must be closed before work begins'; end if;
+  select * into v_campaign from council_campaigns where session_id = p_session_id;
+  if v_campaign.id is not null then return jsonb_build_object('campaign_id', v_campaign.id, 'created', false); end if;
+  v_reason := validate_council_work_items(p_session_id, p_created_by, p_work_items);
+  if v_reason is not null then raise exception '%', v_reason; end if;
+  insert into council_campaigns (session_id, repo_path, base_branch)
+  values (p_session_id, v_session.repo_path, v_session.base_branch) returning * into v_campaign;
+  insert into council_work_items (campaign_id, sequence, agent_name, title, instructions, acceptance_criteria)
+  select v_campaign.id, row_number() over (), item->>'agent_name', item->>'title', item->>'instructions', coalesce(item->'acceptance_criteria', '[]'::jsonb)
+    from jsonb_array_elements(p_work_items) item;
+  return jsonb_build_object('campaign_id', v_campaign.id, 'created', true);
+end;
+$$;
+
+create or replace function append_council_message(
+  p_session_id uuid,
+  p_speaker text,
+  p_role text,
+  p_intent text,
+  p_body text,
+  p_client_key text,
+  p_addressed_to text default 'all',
+  p_reply_to_seq integer default null,
+  p_ack_seq integer default null,
+  p_posts_per_round integer default 2,
+  p_stale_seconds integer default 180
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_status text; v_max_msgs integer; v_floor text; v_granted timestamptz;
+  v_rnd integer; v_posts integer; v_kind text; v_seq integer; v_hash text;
+  v_pending integer; v_advanced boolean := false; v_existing integer;
+  v_ob_intent text; v_ob_target text; v_ob_answered boolean;
+  v_cleared boolean := false; v_new_status text;
+begin
+  -- FOR UPDATE, not FOR SHARE: share locks are mutually compatible, so two
+  -- concurrent appends would both pass and collide on unique(session_id, seq).
+  select status, round, max_messages, floor_holder, floor_granted_at
+    into v_status, v_rnd, v_max_msgs, v_floor, v_granted
+  from council_sessions where id = p_session_id for update;
+  if v_status is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session');
+  end if;
+
+  -- Dedupe BEFORE quota: a retry of a message that already committed must
+  -- report success, not "nothing was recorded" about something that was.
+  v_hash := md5(v_rnd || ':' || p_intent || ':' || p_body);
+  select seq into v_existing from council_messages
+   where session_id = p_session_id and speaker = p_speaker
+     and (client_key = p_client_key or body_hash = v_hash)
+   order by seq desc limit 1;
+  if v_existing is not null then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'seq', v_existing, 'round', v_rnd);
+  end if;
+
+  if v_status = 'closed' then
+    return jsonb_build_object('ok', false, 'reason', 'closed', 'round', v_rnd);
+  end if;
+  if p_role = 'agent' then
+    select posts_this_round, kind into v_posts, v_kind
+    from council_participants where session_id = p_session_id and name = p_speaker;
+    if v_kind is null then
+      return jsonb_build_object('ok', false, 'reason', 'not_a_participant');
+    end if;
+    -- The floor grant carries a quota override. Without it a stuck round hands
+    -- the floor to an agent whose every post is then rejected on quota, and
+    -- since only a successful append clears floor_holder the floor is never
+    -- released: the exact deadlock the grant exists to break.
+    if p_intent <> 'pass' and v_posts >= p_posts_per_round
+       and coalesce(v_floor, '') <> p_speaker then
+      return jsonb_build_object('ok', false, 'reason', 'quota', 'round', v_rnd, 'posts', v_posts);
+    end if;
+    if v_status = 'expired' then
+      return jsonb_build_object('ok', false, 'reason', 'expired', 'round', v_rnd);
+    end if;
+  end if;
+
+  -- Obligation discipline. Without these checks any agent could mark any
+  -- question answered, including one owed by somebody else, and the caller was
+  -- told the obligation cleared whether or not a row actually changed.
+  if p_reply_to_seq is not null then
+    select intent, addressed_to, answered
+      into v_ob_intent, v_ob_target, v_ob_answered
+      from council_messages where session_id = p_session_id and seq = p_reply_to_seq;
+    if v_ob_intent is null then
+      return jsonb_build_object('ok', false, 'reason', 'no_such_seq', 'round', v_rnd);
+    end if;
+    if p_intent in ('answer', 'concede') then
+      if v_ob_intent not in ('challenge', 'ask') then
+        return jsonb_build_object('ok', false, 'reason', 'not_an_obligation', 'round', v_rnd);
+      end if;
+      if v_ob_answered then
+        return jsonb_build_object('ok', false, 'reason', 'already_answered', 'round', v_rnd);
+      end if;
+      if v_ob_target <> p_speaker and v_ob_target <> 'all' then
+        return jsonb_build_object('ok', false, 'reason', 'not_addressed_to_you', 'round', v_rnd);
+      end if;
+    end if;
+  end if;
+
+  update council_sessions
+     set last_seq = last_seq + 1,
+         last_message_at = now(),
+         floor_holder = null,
+         floor_granted_at = null,
+         -- Only a real agent turn resets the stall counter. A moderator nudge
+         -- resetting it would restart the escalation ladder that fired it.
+         silent_grants = case when p_role = 'agent' then 0 else silent_grants end,
+         -- The final permitted message must also end the debate. Without this
+         -- the session stays 'open' while every further append is refused on
+         -- the cap, and the agents spin until the session expires.
+         status = case when last_seq + 1 >= v_max_msgs and status = 'open'
+                       then 'concluding' else status end
+   where id = p_session_id and last_seq < v_max_msgs
+  returning last_seq, status into v_seq, v_new_status;
+  if v_seq is null then
+    return jsonb_build_object('ok', false, 'reason', 'message_cap', 'round', v_rnd);
+  end if;
+
+  insert into council_messages (
+    session_id, seq, round, speaker, role, addressed_to, intent,
+    reply_to_seq, body, client_key, body_hash
+  ) values (
+    p_session_id, v_seq, v_rnd, p_speaker, p_role, coalesce(p_addressed_to, 'all'),
+    p_intent, p_reply_to_seq, left(p_body, 6000), p_client_key, v_hash
+  );
+
+  if p_reply_to_seq is not null and p_intent in ('answer', 'concede') then
+    update council_messages set answered = true
+     where session_id = p_session_id and seq = p_reply_to_seq and not answered;
+    v_cleared := found;
+  end if;
+
+  if p_role = 'agent' then
+    update council_participants
+       set posts_total = posts_total + 1,
+           posts_this_round = posts_this_round + 1,
+           expired_grants = 0,
+           last_seen_at = now(),
+           status = case when p_intent = 'pass' then 'passed' else 'active' end,
+           -- Explicit ack only. greatest() keeps it monotonic and idempotent.
+           cursor_seq = greatest(cursor_seq, coalesce(p_ack_seq, pending_ack_seq, cursor_seq))
+     where session_id = p_session_id and name = p_speaker;
+
+    -- Round advances when every LIVE agent has used its full allowance or
+    -- passed. Stale and never-joined participants are excluded, or one absent
+    -- agent blocks the advance forever and everyone starves on quota.
+    -- The condition is posts_this_round < p_posts_per_round, not = 0: a = 0
+    -- quorum flips the round after one pass around the table and silently
+    -- evaporates everyone's second slot.
+    select count(*) into v_pending
+      from council_participants
+     where session_id = p_session_id and kind = 'agent'
+       and status in ('invited', 'active')
+       and posts_this_round < p_posts_per_round
+       and last_seen_at > now() - make_interval(secs => p_stale_seconds);
+    if v_pending = 0 then
+      v_advanced := true;
+      update council_participants
+         set posts_this_round = 0,
+             status = case when status = 'passed' then 'active' else status end
+       where session_id = p_session_id and status <> 'left';
+      update council_sessions
+         set round = round + 1,
+             status = case when round + 1 > max_rounds and status = 'open'
+                           then 'concluding' else status end
+       where id = p_session_id
+      returning status into v_new_status;
+    end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'duplicate', false, 'seq', v_seq,
+                            'round', v_rnd, 'advanced', v_advanced,
+                            'cleared', v_cleared, 'status', v_new_status);
+end;
+$$;
+
+-- Reclaims lapsed leases before serving new work. Without this a dead agent
+-- holds an item in 'in_progress' forever: the old body only ever re-served an
+-- in_progress item to the SAME agent, so the campaign could never finish.
+create or replace function claim_council_work_item(p_session_id uuid, p_agent_name text)
+returns jsonb language plpgsql as $$
+declare v_item council_work_items; v_campaign council_campaigns; v_status text;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null or v_campaign.status <> 'running' then return null; end if;
+
+  update council_work_items
+     set status = case when attempts >= max_attempts then 'blocked' else 'queued' end,
+         blocked_reason = case when attempts >= max_attempts
+                               then 'abandoned after ' || attempts || ' attempt(s); lease expired'
+                               else blocked_reason end,
+         lease_owner = null, lease_expires_at = null, heartbeat_at = null
+   where campaign_id = v_campaign.id
+     and status = 'in_progress'
+     and lease_expires_at is not null
+     and lease_expires_at < now();
+
+  -- A reclaim that blocks the last live item ends the campaign, matching what
+  -- block_council_work_item already does on the cooperative path.
+  update council_campaigns set status = 'blocked'
+   where id = v_campaign.id
+     and not exists (select 1 from council_work_items
+                      where campaign_id = v_campaign.id
+                        and status in ('queued', 'in_progress', 'awaiting_review'));
+  select status into v_status from council_campaigns where id = v_campaign.id;
+  if v_status <> 'running' then return null; end if;
+
+  select w.* into v_item from council_work_items w
+   where w.campaign_id = v_campaign.id and w.agent_name = p_agent_name
+     and w.status = 'in_progress' order by w.sequence limit 1 for update;
+  if v_item.id is null then
+    select w.* into v_item from council_work_items w
+     where w.campaign_id = v_campaign.id and w.agent_name = p_agent_name
+       and w.status = 'queued' order by w.sequence limit 1 for update skip locked;
+    if v_item.id is null then return null; end if;
+    update council_work_items
+       set status = 'in_progress', attempts = attempts + 1,
+           started_at = coalesce(started_at, now()), heartbeat_at = now(),
+           lease_owner = p_agent_name, lease_expires_at = now() + interval '15 minutes'
+     where id = v_item.id returning * into v_item;
+  else
+    update council_work_items
+       set heartbeat_at = now(), lease_owner = p_agent_name,
+           lease_expires_at = now() + interval '15 minutes'
+     where id = v_item.id returning * into v_item;
+  end if;
+  return to_jsonb(v_item);
+end;
+$$;
+
+create or replace function heartbeat_council_work_item(p_item_id uuid, p_agent_name text, p_progress text)
+returns boolean language plpgsql as $$
+begin
+  update council_work_items
+     set heartbeat_at = now(), progress = coalesce(p_progress, progress),
+         lease_expires_at = now() + interval '15 minutes'
+   where id = p_item_id and agent_name = p_agent_name and status = 'in_progress';
+  return found;
+end;
+$$;
+
+-- ===== P2: harness containment =====
+-- Why a column and not the status enum: status records whether the run threw,
+-- stop_reason records why it stopped. A run can be 'done' and still have
+-- exhausted its round budget or lost a worker to its deadline, and recording
+-- that as plain success was the misleading part.
+alter table agent_runs add column if not exists stop_reason text;
+
+-- ===== P3: owner channel and live control =====
+-- Pause is a flag, not a status: a council can be frozen while 'open' or
+-- 'concluding' and must thaw into exactly the state it left, and every existing
+-- status check would otherwise have to learn about pausing.
+
+alter table council_sessions
+  add column if not exists paused_at timestamptz,
+  add column if not exists paused_total_seconds integer not null default 0;
+
+-- The private thread between the owner and Zuychin. Deliberately NOT
+-- council_messages: agents never see this, and it is excluded from the filed
+-- transcript. relayed_seq links a turn to the moderator message it produced.
+create table if not exists council_owner_messages (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  role text not null check (role in ('owner', 'zuychin')),
+  body text not null,
+  relayed_seq integer,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_council_owner_messages
+  on council_owner_messages (session_id, created_at);
+alter table council_owner_messages enable row level security;
+
+create or replace function pause_council(p_session_id uuid)
+returns jsonb language plpgsql as $$
+declare v_row council_sessions;
+begin
+  update council_sessions set paused_at = now()
+   where id = p_session_id and status in ('open', 'concluding') and paused_at is null
+  returning * into v_row;
+  if v_row.id is not null then
+    return jsonb_build_object('ok', true, 'already', false);
+  end if;
+  select * into v_row from council_sessions where id = p_session_id;
+  if v_row.id is null then return jsonb_build_object('ok', false, 'reason', 'no_session'); end if;
+  if v_row.paused_at is not null then return jsonb_build_object('ok', true, 'already', true); end if;
+  return jsonb_build_object('ok', false, 'reason', 'not_running', 'status', v_row.status);
+end;
+$$;
+
+create or replace function resume_council(p_session_id uuid)
+returns jsonb language plpgsql as $$
+declare v_row council_sessions; v_paused integer;
+begin
+  select * into v_row from council_sessions where id = p_session_id for update;
+  if v_row.id is null then return jsonb_build_object('ok', false, 'reason', 'no_session'); end if;
+  if v_row.paused_at is null then return jsonb_build_object('ok', true, 'already', true); end if;
+  v_paused := greatest(0, floor(extract(epoch from (now() - v_row.paused_at)))::integer);
+
+  -- Every clock the protocol reads is wall time, so a pause has to be added
+  -- back or resuming looks like a catastrophe: the session would be closer to
+  -- expiry, the silence grant would fire immediately, and the moderator would
+  -- start nudging agents that were deliberately stopped.
+  update council_sessions
+     set paused_at = null,
+         paused_total_seconds = paused_total_seconds + v_paused,
+         expires_at = expires_at + make_interval(secs => v_paused),
+         last_message_at = last_message_at + make_interval(secs => v_paused),
+         floor_holder = null,
+         floor_granted_at = null
+   where id = p_session_id;
+
+  -- Otherwise every participant is 180s stale the instant work resumes and
+  -- drops out of the round-advance quorum.
+  update council_participants set last_seen_at = now()
+   where session_id = p_session_id and status in ('invited', 'active');
+
+  return jsonb_build_object('ok', true, 'already', false, 'paused_seconds', v_paused);
+end;
+$$;
+
+create or replace function append_council_message(
+  p_session_id uuid,
+  p_speaker text,
+  p_role text,
+  p_intent text,
+  p_body text,
+  p_client_key text,
+  p_addressed_to text default 'all',
+  p_reply_to_seq integer default null,
+  p_ack_seq integer default null,
+  p_posts_per_round integer default 2,
+  p_stale_seconds integer default 180
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_status text; v_max_msgs integer; v_floor text; v_granted timestamptz;
+  v_rnd integer; v_posts integer; v_kind text; v_seq integer; v_hash text;
+  v_pending integer; v_advanced boolean := false; v_existing integer;
+  v_ob_intent text; v_ob_target text; v_ob_answered boolean;
+  v_cleared boolean := false; v_new_status text; v_paused timestamptz;
+begin
+  -- FOR UPDATE, not FOR SHARE: share locks are mutually compatible, so two
+  -- concurrent appends would both pass and collide on unique(session_id, seq).
+  select status, round, max_messages, floor_holder, floor_granted_at, paused_at
+    into v_status, v_rnd, v_max_msgs, v_floor, v_granted, v_paused
+  from council_sessions where id = p_session_id for update;
+  if v_status is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session');
+  end if;
+
+  -- Dedupe BEFORE quota: a retry of a message that already committed must
+  -- report success, not "nothing was recorded" about something that was.
+  v_hash := md5(v_rnd || ':' || p_intent || ':' || p_body);
+  select seq into v_existing from council_messages
+   where session_id = p_session_id and speaker = p_speaker
+     and (client_key = p_client_key or body_hash = v_hash)
+   order by seq desc limit 1;
+  if v_existing is not null then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'seq', v_existing, 'round', v_rnd);
+  end if;
+
+  if v_status = 'closed' then
+    return jsonb_build_object('ok', false, 'reason', 'closed', 'round', v_rnd);
+  end if;
+
+  -- The moderator still speaks while paused: that is the channel the owner's
+  -- relay, the pause notice and the resume notice all travel on.
+  if v_paused is not null and p_role = 'agent' then
+    return jsonb_build_object('ok', false, 'reason', 'paused', 'round', v_rnd);
+  end if;
+
+  if p_role = 'agent' then
+    select posts_this_round, kind into v_posts, v_kind
+    from council_participants where session_id = p_session_id and name = p_speaker;
+    if v_kind is null then
+      return jsonb_build_object('ok', false, 'reason', 'not_a_participant');
+    end if;
+    -- The floor grant carries a quota override. Without it a stuck round hands
+    -- the floor to an agent whose every post is then rejected on quota, and
+    -- since only a successful append clears floor_holder the floor is never
+    -- released: the exact deadlock the grant exists to break.
+    if p_intent <> 'pass' and v_posts >= p_posts_per_round
+       and coalesce(v_floor, '') <> p_speaker then
+      return jsonb_build_object('ok', false, 'reason', 'quota', 'round', v_rnd, 'posts', v_posts);
+    end if;
+    if v_status = 'expired' then
+      return jsonb_build_object('ok', false, 'reason', 'expired', 'round', v_rnd);
+    end if;
+  end if;
+
+  -- Obligation discipline. Without these checks any agent could mark any
+  -- question answered, including one owed by somebody else, and the caller was
+  -- told the obligation cleared whether or not a row actually changed.
+  if p_reply_to_seq is not null then
+    select intent, addressed_to, answered
+      into v_ob_intent, v_ob_target, v_ob_answered
+      from council_messages where session_id = p_session_id and seq = p_reply_to_seq;
+    if v_ob_intent is null then
+      return jsonb_build_object('ok', false, 'reason', 'no_such_seq', 'round', v_rnd);
+    end if;
+    if p_intent in ('answer', 'concede') then
+      if v_ob_intent not in ('challenge', 'ask') then
+        return jsonb_build_object('ok', false, 'reason', 'not_an_obligation', 'round', v_rnd);
+      end if;
+      if v_ob_answered then
+        return jsonb_build_object('ok', false, 'reason', 'already_answered', 'round', v_rnd);
+      end if;
+      if v_ob_target <> p_speaker and v_ob_target <> 'all' then
+        return jsonb_build_object('ok', false, 'reason', 'not_addressed_to_you', 'round', v_rnd);
+      end if;
+    end if;
+  end if;
+
+  update council_sessions
+     set last_seq = last_seq + 1,
+         last_message_at = now(),
+         -- A moderator post must NOT revoke a granted floor. The grant exists
+         -- to unstick a silent round; an owner relay landing mid-grant would
+         -- strand exactly the round it was meant to help.
+         floor_holder = case when p_role = 'agent' then null else floor_holder end,
+         floor_granted_at = case when p_role = 'agent' then null else floor_granted_at end,
+         -- Only a real agent turn resets the stall counter. A moderator nudge
+         -- resetting it would restart the escalation ladder that fired it.
+         silent_grants = case when p_role = 'agent' then 0 else silent_grants end,
+         -- The final permitted AGENT message ends the debate. Moderator posts
+         -- are exempt from the cap (below) so relays cannot shorten a council,
+         -- and so they must not trigger the transition either.
+         status = case when p_role = 'agent' and last_seq + 1 >= v_max_msgs and status = 'open'
+                       then 'concluding' else status end
+   where id = p_session_id and (p_role <> 'agent' or last_seq < v_max_msgs)
+  returning last_seq, status into v_seq, v_new_status;
+  if v_seq is null then
+    return jsonb_build_object('ok', false, 'reason', 'message_cap', 'round', v_rnd);
+  end if;
+
+  insert into council_messages (
+    session_id, seq, round, speaker, role, addressed_to, intent,
+    reply_to_seq, body, client_key, body_hash
+  ) values (
+    p_session_id, v_seq, v_rnd, p_speaker, p_role, coalesce(p_addressed_to, 'all'),
+    p_intent, p_reply_to_seq, left(p_body, 6000), p_client_key, v_hash
+  );
+
+  if p_reply_to_seq is not null and p_intent in ('answer', 'concede') then
+    update council_messages set answered = true
+     where session_id = p_session_id and seq = p_reply_to_seq and not answered;
+    v_cleared := found;
+  end if;
+
+  if p_role = 'agent' then
+    update council_participants
+       set posts_total = posts_total + 1,
+           posts_this_round = posts_this_round + 1,
+           expired_grants = 0,
+           last_seen_at = now(),
+           status = case when p_intent = 'pass' then 'passed' else 'active' end,
+           -- Explicit ack only. greatest() keeps it monotonic and idempotent.
+           cursor_seq = greatest(cursor_seq, coalesce(p_ack_seq, pending_ack_seq, cursor_seq))
+     where session_id = p_session_id and name = p_speaker;
+
+    -- Round advances when every LIVE agent has used its full allowance or
+    -- passed. Stale and never-joined participants are excluded, or one absent
+    -- agent blocks the advance forever and everyone starves on quota.
+    -- The condition is posts_this_round < p_posts_per_round, not = 0: a = 0
+    -- quorum flips the round after one pass around the table and silently
+    -- evaporates everyone's second slot.
+    select count(*) into v_pending
+      from council_participants
+     where session_id = p_session_id and kind = 'agent'
+       and status in ('invited', 'active')
+       and posts_this_round < p_posts_per_round
+       and last_seen_at > now() - make_interval(secs => p_stale_seconds);
+    if v_pending = 0 then
+      v_advanced := true;
+      update council_participants
+         set posts_this_round = 0,
+             status = case when status = 'passed' then 'active' else status end
+       where session_id = p_session_id and status <> 'left';
+      update council_sessions
+         set round = round + 1,
+             status = case when round + 1 > max_rounds and status = 'open'
+                           then 'concluding' else status end
+       where id = p_session_id
+      returning status into v_new_status;
+    end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'duplicate', false, 'seq', v_seq,
+                            'round', v_rnd, 'advanced', v_advanced,
+                            'cleared', v_cleared, 'status', v_new_status);
+end;
+$$;
+
+-- ===== P4: owner-gated closure =====
+-- 'awaiting_owner' sits between concluding and closed: the closer records a
+-- verdict but does not finalise it. The existing invariant that every
+-- non-closed state stays concludeable is preserved, because by the time a
+-- session is in this state the verdict already exists.
+
+alter table council_sessions drop constraint if exists council_sessions_status_check;
+alter table council_sessions add constraint council_sessions_status_check
+  check (status in ('open', 'concluding', 'awaiting_owner', 'closed', 'expired'));
+
+alter table council_sessions
+  add column if not exists verdict_proposed_at timestamptz,
+  add column if not exists standby_expires_at timestamptz,
+  add column if not exists continue_count integer not null default 0,
+  -- Held until the owner accepts: the campaign is created on accept, not on
+  -- conclude, so the plan has to survive the wait somewhere.
+  add column if not exists proposed_work_items jsonb;
+
+create or replace function propose_council_verdict(
+  p_session_id uuid, p_closer text, p_verdict text,
+  p_open_questions jsonb default '[]',
+  p_work_items jsonb default null,
+  p_standby_seconds integer default 86400
+) returns jsonb language plpgsql as $$
+declare v_row council_sessions;
+begin
+  update council_sessions
+     set status = 'awaiting_owner',
+         verdict = p_verdict,
+         open_questions = coalesce(p_open_questions, '[]'::jsonb),
+         proposed_work_items = p_work_items,
+         verdict_proposed_at = now(),
+         standby_expires_at = now() + make_interval(secs => p_standby_seconds),
+         floor_holder = null, floor_granted_at = null
+   where id = p_session_id and status in ('open', 'concluding', 'expired')
+  returning * into v_row;
+  if v_row.id is null then
+    select * into v_row from council_sessions where id = p_session_id;
+    return jsonb_build_object('changed', false, 'status', v_row.status,
+                              'verdict', v_row.verdict, 'closer', v_row.closer_name,
+                              'vault_path', v_row.vault_path);
+  end if;
+  return jsonb_build_object('changed', true, 'round', v_row.round, 'messages', v_row.last_seq);
+end;
+$$;
+
+-- The CAS that actually ends a council. Returns the held work plan so the
+-- caller can create the campaign in the same step the verdict becomes final.
+create or replace function accept_council_verdict(p_session_id uuid)
+returns jsonb language plpgsql as $$
+declare v_row council_sessions;
+begin
+  update council_sessions set status = 'closed', closed_at = now()
+   where id = p_session_id and status = 'awaiting_owner'
+  returning * into v_row;
+  if v_row.id is null then
+    select * into v_row from council_sessions where id = p_session_id;
+    return jsonb_build_object('changed', false, 'status', v_row.status,
+                              'verdict', v_row.verdict, 'closer', v_row.closer_name,
+                              'vault_path', v_row.vault_path);
+  end if;
+  return jsonb_build_object('changed', true, 'verdict', v_row.verdict,
+                            'closer', v_row.closer_name,
+                            'work_items', v_row.proposed_work_items);
+end;
+$$;
+
+-- Reopening without redistributing work reproduces the stall that ended the
+-- round, so the caller posts an assignment; this only restores the capacity to
+-- act on it. Budgets are extended rather than reset: the transcript so far is
+-- still the council's history.
+create or replace function continue_council(p_session_id uuid, p_extra_rounds integer default 3)
+returns jsonb language plpgsql as $$
+declare v_row council_sessions; v_extra integer;
+begin
+  v_extra := greatest(1, coalesce(p_extra_rounds, 3));
+  update council_sessions
+     set status = 'open',
+         verdict = null,
+         open_questions = '[]'::jsonb,
+         proposed_work_items = null,
+         verdict_proposed_at = null,
+         standby_expires_at = null,
+         continue_count = continue_count + 1,
+         max_rounds = max_rounds + v_extra,
+         max_messages = max_messages + v_extra * 10,
+         last_message_at = now(),
+         expires_at = greatest(expires_at, now() + interval '90 minutes'),
+         floor_holder = null, floor_granted_at = null
+   where id = p_session_id and status = 'awaiting_owner'
+  returning * into v_row;
+  if v_row.id is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_awaiting_owner');
+  end if;
+  -- Everyone gets their slots back and stops looking stale, or the first round
+  -- after a resume starves on quota and drops agents from the quorum.
+  update council_participants
+     set posts_this_round = 0,
+         last_seen_at = now(),
+         status = case when status = 'passed' then 'active' else status end
+   where session_id = p_session_id and status <> 'left';
+  return jsonb_build_object('ok', true, 'round', v_row.round,
+                            'max_rounds', v_row.max_rounds,
+                            'continue_count', v_row.continue_count);
+end;
+$$;
+
+-- Agents hold in standby while the owner decides. The moderator still speaks:
+-- that is how the standby notice and any continue assignment reach them.
+create or replace function append_council_message(
+  p_session_id uuid,
+  p_speaker text,
+  p_role text,
+  p_intent text,
+  p_body text,
+  p_client_key text,
+  p_addressed_to text default 'all',
+  p_reply_to_seq integer default null,
+  p_ack_seq integer default null,
+  p_posts_per_round integer default 2,
+  p_stale_seconds integer default 180
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_status text; v_max_msgs integer; v_floor text; v_granted timestamptz;
+  v_rnd integer; v_posts integer; v_kind text; v_seq integer; v_hash text;
+  v_pending integer; v_advanced boolean := false; v_existing integer;
+  v_ob_intent text; v_ob_target text; v_ob_answered boolean;
+  v_cleared boolean := false; v_new_status text; v_paused timestamptz;
+begin
+  -- FOR UPDATE, not FOR SHARE: share locks are mutually compatible, so two
+  -- concurrent appends would both pass and collide on unique(session_id, seq).
+  select status, round, max_messages, floor_holder, floor_granted_at, paused_at
+    into v_status, v_rnd, v_max_msgs, v_floor, v_granted, v_paused
+  from council_sessions where id = p_session_id for update;
+  if v_status is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session');
+  end if;
+
+  -- Dedupe BEFORE quota: a retry of a message that already committed must
+  -- report success, not "nothing was recorded" about something that was.
+  v_hash := md5(v_rnd || ':' || p_intent || ':' || p_body);
+  select seq into v_existing from council_messages
+   where session_id = p_session_id and speaker = p_speaker
+     and (client_key = p_client_key or body_hash = v_hash)
+   order by seq desc limit 1;
+  if v_existing is not null then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'seq', v_existing, 'round', v_rnd);
+  end if;
+
+  if v_status = 'closed' then
+    return jsonb_build_object('ok', false, 'reason', 'closed', 'round', v_rnd);
+  end if;
+
+  -- The moderator still speaks while paused or in standby: that is the channel
+  -- the owner's relay, the pause notice and the standby notice travel on.
+  if v_paused is not null and p_role = 'agent' then
+    return jsonb_build_object('ok', false, 'reason', 'paused', 'round', v_rnd);
+  end if;
+  if v_status = 'awaiting_owner' and p_role = 'agent' then
+    return jsonb_build_object('ok', false, 'reason', 'awaiting_owner', 'round', v_rnd);
+  end if;
+
+  if p_role = 'agent' then
+    select posts_this_round, kind into v_posts, v_kind
+    from council_participants where session_id = p_session_id and name = p_speaker;
+    if v_kind is null then
+      return jsonb_build_object('ok', false, 'reason', 'not_a_participant');
+    end if;
+    -- The floor grant carries a quota override. Without it a stuck round hands
+    -- the floor to an agent whose every post is then rejected on quota, and
+    -- since only a successful append clears floor_holder the floor is never
+    -- released: the exact deadlock the grant exists to break.
+    if p_intent <> 'pass' and v_posts >= p_posts_per_round
+       and coalesce(v_floor, '') <> p_speaker then
+      return jsonb_build_object('ok', false, 'reason', 'quota', 'round', v_rnd, 'posts', v_posts);
+    end if;
+    if v_status = 'expired' then
+      return jsonb_build_object('ok', false, 'reason', 'expired', 'round', v_rnd);
+    end if;
+  end if;
+
+  -- Obligation discipline. Without these checks any agent could mark any
+  -- question answered, including one owed by somebody else, and the caller was
+  -- told the obligation cleared whether or not a row actually changed.
+  if p_reply_to_seq is not null then
+    select intent, addressed_to, answered
+      into v_ob_intent, v_ob_target, v_ob_answered
+      from council_messages where session_id = p_session_id and seq = p_reply_to_seq;
+    if v_ob_intent is null then
+      return jsonb_build_object('ok', false, 'reason', 'no_such_seq', 'round', v_rnd);
+    end if;
+    if p_intent in ('answer', 'concede') then
+      if v_ob_intent not in ('challenge', 'ask') then
+        return jsonb_build_object('ok', false, 'reason', 'not_an_obligation', 'round', v_rnd);
+      end if;
+      if v_ob_answered then
+        return jsonb_build_object('ok', false, 'reason', 'already_answered', 'round', v_rnd);
+      end if;
+      if v_ob_target <> p_speaker and v_ob_target <> 'all' then
+        return jsonb_build_object('ok', false, 'reason', 'not_addressed_to_you', 'round', v_rnd);
+      end if;
+    end if;
+  end if;
+
+  update council_sessions
+     set last_seq = last_seq + 1,
+         last_message_at = now(),
+         -- A moderator post must NOT revoke a granted floor. The grant exists
+         -- to unstick a silent round; an owner relay landing mid-grant would
+         -- strand exactly the round it was meant to help.
+         floor_holder = case when p_role = 'agent' then null else floor_holder end,
+         floor_granted_at = case when p_role = 'agent' then null else floor_granted_at end,
+         -- Only a real agent turn resets the stall counter. A moderator nudge
+         -- resetting it would restart the escalation ladder that fired it.
+         silent_grants = case when p_role = 'agent' then 0 else silent_grants end,
+         -- The final permitted AGENT message ends the debate. Moderator posts
+         -- are exempt from the cap (below) so relays cannot shorten a council,
+         -- and so they must not trigger the transition either.
+         status = case when p_role = 'agent' and last_seq + 1 >= v_max_msgs and status = 'open'
+                       then 'concluding' else status end
+   where id = p_session_id and (p_role <> 'agent' or last_seq < v_max_msgs)
+  returning last_seq, status into v_seq, v_new_status;
+  if v_seq is null then
+    return jsonb_build_object('ok', false, 'reason', 'message_cap', 'round', v_rnd);
+  end if;
+
+  insert into council_messages (
+    session_id, seq, round, speaker, role, addressed_to, intent,
+    reply_to_seq, body, client_key, body_hash
+  ) values (
+    p_session_id, v_seq, v_rnd, p_speaker, p_role, coalesce(p_addressed_to, 'all'),
+    p_intent, p_reply_to_seq, left(p_body, 6000), p_client_key, v_hash
+  );
+
+  if p_reply_to_seq is not null and p_intent in ('answer', 'concede') then
+    update council_messages set answered = true
+     where session_id = p_session_id and seq = p_reply_to_seq and not answered;
+    v_cleared := found;
+  end if;
+
+  if p_role = 'agent' then
+    update council_participants
+       set posts_total = posts_total + 1,
+           posts_this_round = posts_this_round + 1,
+           expired_grants = 0,
+           last_seen_at = now(),
+           status = case when p_intent = 'pass' then 'passed' else 'active' end,
+           -- Explicit ack only. greatest() keeps it monotonic and idempotent.
+           cursor_seq = greatest(cursor_seq, coalesce(p_ack_seq, pending_ack_seq, cursor_seq))
+     where session_id = p_session_id and name = p_speaker;
+
+    -- Round advances when every LIVE agent has used its full allowance or
+    -- passed. Stale and never-joined participants are excluded, or one absent
+    -- agent blocks the advance forever and everyone starves on quota.
+    -- The condition is posts_this_round < p_posts_per_round, not = 0: a = 0
+    -- quorum flips the round after one pass around the table and silently
+    -- evaporates everyone's second slot.
+    select count(*) into v_pending
+      from council_participants
+     where session_id = p_session_id and kind = 'agent'
+       and status in ('invited', 'active')
+       and posts_this_round < p_posts_per_round
+       and last_seen_at > now() - make_interval(secs => p_stale_seconds);
+    if v_pending = 0 then
+      v_advanced := true;
+      update council_participants
+         set posts_this_round = 0,
+             status = case when status = 'passed' then 'active' else status end
+       where session_id = p_session_id and status <> 'left';
+      update council_sessions
+         set round = round + 1,
+             status = case when round + 1 > max_rounds and status = 'open'
+                           then 'concluding' else status end
+       where id = p_session_id
+      returning status into v_new_status;
+    end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'duplicate', false, 'seq', v_seq,
+                            'round', v_rnd, 'advanced', v_advanced,
+                            'cleared', v_cleared, 'status', v_new_status);
+end;
+$$;
+
+-- ===== P5: guest seats =====
+-- A credential that reaches one seat in one council and nothing else. The
+-- remote-agent brief used to hand a collaborator MCP_API_KEY, which grants the
+-- whole knowledge base, the vault and every council. Only the hash is stored,
+-- so the table is not a second copy of the secret.
+
+create table if not exists council_seat_keys (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  seat_name text not null,
+  token_hash text not null unique,
+  issued_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  -- First use, not last: the key stays valid for the council's life. "One-time"
+  -- means one seat in one council, not one request.
+  claimed_at timestamptz,
+  revoked_at timestamptz,
+  unique (session_id, seat_name)
+);
+create index if not exists idx_council_seat_keys_hash on council_seat_keys (token_hash);
+alter table council_seat_keys enable row level security;
+
+-- Runs on every authenticated call a guest makes, so it is one indexed point
+-- read plus a claim stamp. Returns null for anything not currently usable;
+-- the caller must not distinguish "wrong key" from "expired key" to a guest.
+create or replace function resolve_council_seat_key(p_token_hash text)
+returns jsonb language plpgsql as $$
+declare v_row council_seat_keys; v_status text; v_code text;
+begin
+  select * into v_row from council_seat_keys where token_hash = p_token_hash;
+  if v_row.id is null then return null; end if;
+  if v_row.revoked_at is not null then return null; end if;
+  if v_row.expires_at < now() then return null; end if;
+  select status, code into v_status, v_code from council_sessions where id = v_row.session_id;
+  if v_status is null or v_status = 'closed' then return null; end if;
+  update council_seat_keys set claimed_at = coalesce(claimed_at, now()) where id = v_row.id;
+  return jsonb_build_object('session_id', v_row.session_id, 'seat_name', v_row.seat_name,
+                            'code', v_code);
+end;
+$$;
+
+-- Re-issuing for the same seat replaces the old hash, so a key handed to the
+-- wrong machine can be revoked by simply minting another.
+create or replace function issue_council_seat_key(
+  p_session_id uuid, p_seat_name text, p_token_hash text, p_expires_at timestamptz
+) returns jsonb language plpgsql as $$
+declare v_kind text;
+begin
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_seat_name;
+  if v_kind is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_on_roster');
+  end if;
+  if v_kind <> 'agent' then
+    return jsonb_build_object('ok', false, 'reason', 'not_an_agent_seat');
+  end if;
+  insert into council_seat_keys (session_id, seat_name, token_hash, expires_at)
+  values (p_session_id, p_seat_name, p_token_hash, p_expires_at)
+  on conflict (session_id, seat_name) do update
+    set token_hash = excluded.token_hash,
+        expires_at = excluded.expires_at,
+        issued_at = now(),
+        claimed_at = null,
+        revoked_at = null;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- ===== P6: verified merges =====
+-- An agent saying "tests pass" is a claim, not evidence. The host owns the repo
+-- and can check the commit itself, so agent-reported and host-observed
+-- verification are stored separately and only the second one can close an item.
+
+alter table council_work_items
+  add column if not exists host_verified boolean,
+  add column if not exists host_verification text,
+  add column if not exists host_checked_at timestamptz,
+  -- Paths the item was scoped to. Empty means unconstrained, which is what
+  -- every item created before this wave is.
+  add column if not exists declared_paths jsonb not null default '[]';
+
+alter table council_campaigns
+  add column if not exists integrator_agent text,
+  add column if not exists integration_branch text,
+  add column if not exists integration_status text
+    check (integration_status in ('pending', 'running', 'verified', 'conflict', 'failed')),
+  add column if not exists integration_report text,
+  add column if not exists integration_checked_at timestamptz;
+
+-- A failed host check returns the item to its owner rather than leaving it in
+-- review, so the campaign cannot sit waiting on a human to reject something the
+-- machine already disproved.
+create or replace function record_host_verification(
+  p_item_id uuid, p_passed boolean, p_report text
+) returns boolean language plpgsql as $$
+begin
+  update council_work_items
+     set host_verified = p_passed,
+         host_verification = left(coalesce(p_report, ''), 8000),
+         host_checked_at = now(),
+         status = case when p_passed then status else 'queued' end,
+         progress = case when p_passed then progress
+                         else concat_ws(E'\n', progress, 'Host check failed: ' || left(coalesce(p_report, ''), 1000)) end
+   where id = p_item_id and status = 'awaiting_review';
+  return found;
+end;
+$$;
+
+-- Return type changes from boolean to jsonb, so the old signature has to go
+-- first: Postgres refuses to replace a function with a different return type.
+drop function if exists review_council_work_item(uuid, text, boolean, text);
+create or replace function review_council_work_item(
+  p_item_id uuid, p_reviewer text, p_accepted boolean, p_note text
+) returns jsonb language plpgsql as $$
+declare v_campaign_id uuid; v_closer text; v_host boolean;
+begin
+  select c.id, s.closer_name, w.host_verified
+    into v_campaign_id, v_closer, v_host
+    from council_work_items w
+    join council_campaigns c on c.id = w.campaign_id
+    join council_sessions s on s.id = c.session_id
+   where w.id = p_item_id for update;
+  if v_campaign_id is null then return jsonb_build_object('ok', false, 'reason', 'no_such_item'); end if;
+  if v_closer <> p_reviewer then return jsonb_build_object('ok', false, 'reason', 'not_the_closer'); end if;
+
+  -- The whole point of the wave: acceptance requires evidence the host gathered
+  -- itself, not the agent's account of its own work.
+  if p_accepted and coalesce(v_host, false) is not true then
+    return jsonb_build_object('ok', false, 'reason', 'not_host_verified');
+  end if;
+
+  if p_accepted then
+    update council_work_items
+       set status = 'verified',
+           verification = concat_ws(E'\n', verification, 'Review: ' || p_note),
+           reviewed_at = now()
+     where id = p_item_id and status = 'awaiting_review';
+  else
+    update council_work_items
+       set status = 'queued',
+           progress = concat_ws(E'\n', progress, 'Review feedback: ' || p_note),
+           heartbeat_at = null, completed_at = null,
+           lease_owner = null, lease_expires_at = null,
+           host_verified = null, host_verification = null, host_checked_at = null
+     where id = p_item_id and status = 'awaiting_review';
+  end if;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_awaiting_review'); end if;
+
+  update council_campaigns set status = case
+      when not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status <> 'verified') then 'complete'
+      when exists (select 1 from council_work_items where campaign_id = v_campaign_id and status = 'blocked')
+       and not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status in ('queued', 'in_progress', 'awaiting_review')) then 'blocked'
+      else 'running' end,
+    completed_at = case when not exists (select 1 from council_work_items where campaign_id = v_campaign_id and status <> 'verified') then now() else null end
+  where id = v_campaign_id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function set_campaign_integrator(p_session_id uuid, p_agent text)
+returns jsonb language plpgsql as $$
+declare v_campaign council_campaigns; v_kind text;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null then return jsonb_build_object('ok', false, 'reason', 'no_campaign'); end if;
+  if v_campaign.status <> 'complete' then
+    return jsonb_build_object('ok', false, 'reason', 'campaign_incomplete', 'status', v_campaign.status);
+  end if;
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_agent and kind = 'agent';
+  if v_kind is null then return jsonb_build_object('ok', false, 'reason', 'not_on_roster'); end if;
+  update council_campaigns
+     set integrator_agent = p_agent,
+         integration_status = 'pending',
+         integration_report = null,
+         integration_checked_at = null
+   where id = v_campaign.id;
+  return jsonb_build_object('ok', true, 'campaign_id', v_campaign.id);
+end;
+$$;
+
+create or replace function record_campaign_integration(
+  p_session_id uuid, p_status text, p_branch text, p_report text
+) returns jsonb language plpgsql as $$
+declare v_campaign council_campaigns;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null then return jsonb_build_object('ok', false, 'reason', 'no_campaign'); end if;
+  if p_status not in ('pending', 'running', 'verified', 'conflict', 'failed') then
+    return jsonb_build_object('ok', false, 'reason', 'bad_status');
+  end if;
+  update council_campaigns
+     set integration_status = p_status,
+         integration_branch = coalesce(p_branch, integration_branch),
+         integration_report = left(coalesce(p_report, ''), 16000),
+         integration_checked_at = now()
+   where id = v_campaign.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- ===== P7: mutation journal =====
+-- Resume currently tells the model in prose not to redo completed work. This
+-- makes it enforceable: a mutation is recorded BEFORE it runs, keyed to the
+-- logical task rather than the attempt, so a resumed run recognises what
+-- already happened instead of taking the model's word for it.
+
+-- The logical task a run belongs to. A resumption carries its predecessor's
+-- root, which is what makes the operation key stable across attempts.
+alter table agent_runs add column if not exists root_run_id uuid;
+
+create table if not exists agent_tool_calls (
+  id uuid primary key default gen_random_uuid(),
+  run_id uuid references agent_runs(id) on delete cascade,
+  root_run_id uuid,
+  operation_key text not null unique,
+  tool text not null,
+  effect text not null check (effect in ('read', 'write', 'external_send')),
+  args_hash text not null,
+  status text not null default 'proposed'
+    check (status in ('proposed', 'started', 'succeeded', 'failed', 'outcome_unknown')),
+  receipt jsonb,
+  created_at timestamptz not null default now(),
+  finished_at timestamptz
+);
+create index if not exists idx_agent_tool_calls_root on agent_tool_calls (root_run_id, tool);
+alter table agent_tool_calls enable row level security;
+
+-- Insert-or-report in one statement. The unique constraint on operation_key is
+-- the mutex: two racing attempts cannot both believe they own the call.
+create or replace function claim_tool_call(
+  p_operation_key text, p_run_id uuid, p_root_run_id uuid,
+  p_tool text, p_effect text, p_args_hash text
+) returns jsonb language plpgsql as $$
+declare v_row agent_tool_calls;
+begin
+  insert into agent_tool_calls (run_id, root_run_id, operation_key, tool, effect, args_hash, status)
+  values (p_run_id, p_root_run_id, p_operation_key, p_tool, p_effect, p_args_hash, 'started')
+  on conflict (operation_key) do nothing
+  returning * into v_row;
+  if v_row.id is not null then
+    return jsonb_build_object('claimed', true, 'id', v_row.id);
+  end if;
+  select * into v_row from agent_tool_calls where operation_key = p_operation_key;
+  return jsonb_build_object('claimed', false, 'id', v_row.id, 'status', v_row.status,
+                            'receipt', v_row.receipt, 'effect', v_row.effect,
+                            'age_seconds', floor(extract(epoch from (now() - v_row.created_at)))::integer);
+end;
+$$;
+
+-- Lets a caller retake a claim it can prove is dead. Only ever used for 'write'
+-- effects: an external send whose outcome is unknown must not be reissued on a
+-- guess about how long it has been.
+create or replace function retake_tool_call(p_id uuid, p_run_id uuid)
+returns boolean language plpgsql as $$
+begin
+  update agent_tool_calls
+     set status = 'started', run_id = p_run_id, created_at = now(), finished_at = null
+   where id = p_id and status in ('started', 'failed') and effect = 'write';
+  return found;
+end;
+$$;
+
+create or replace function finish_tool_call(p_id uuid, p_status text, p_receipt jsonb)
+returns boolean language plpgsql as $$
+begin
+  if p_status not in ('succeeded', 'failed', 'outcome_unknown') then return false; end if;
+  update agent_tool_calls
+     set status = p_status, receipt = p_receipt, finished_at = now()
+   where id = p_id;
+  return found;
 end;
 $$;

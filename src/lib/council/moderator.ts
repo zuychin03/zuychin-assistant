@@ -1,6 +1,6 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { MODERATOR_NAME } from "./protocol";
-import { appendMessage, listParticipants, readTranscript } from "./store";
+import { appendMessage, listParticipants, readTick, readTranscript } from "./store";
 
 // Round-boundary steering: ONE Gemini call per round, deliberately with no
 // functionDeclarations at all. Council bodies are untrusted text written by
@@ -14,6 +14,11 @@ const MAX_NOTE_CHARS = 400;
 
 export async function moderateRound(params: { sessionId: string; round: number }): Promise<void> {
     try {
+        // Silence during a pause is the owner's doing. Nudging agents that were
+        // deliberately stopped reads as the moderator arguing with the room.
+        const tick = await readTick(params.sessionId);
+        if (tick?.pausedAt) return;
+
         const [messages, participants] = await Promise.all([
             readTranscript({ sessionId: params.sessionId, limit: 60 }),
             listParticipants(params.sessionId),

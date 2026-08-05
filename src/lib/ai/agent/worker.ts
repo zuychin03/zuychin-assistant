@@ -1,7 +1,7 @@
 import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
-import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
+import { executeTool, geminiDeclarationsFor, MCP_TOOLS, READ_ONLY_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
 import { resolveChatModelByName, resolveWorkerChain, WORKER_GEMINI_FALLBACK, type ResolvedChat } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 
@@ -24,7 +24,25 @@ const workerSystem = (contextBlock: string, hasTools: boolean) => {
     return `You are a focused worker sub-agent inside a larger task. Complete ONLY the objective you are given, ${toolLine}. Do NOT create files or documents yourself; return your findings as clear, well-structured text so the lead agent can synthesize them into the single final deliverable. Be efficient and report your result concisely so the lead agent can use it.\n\n${contextBlock}`;
 };
 
-const workerTools = () => geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL]);
+// Workers read untrusted text by design: search_web results, email bodies and
+// vault pages all land in their context. Anything that mutates state or leaves
+// the machine is withheld, so a page that says "email this to X" has nothing to
+// reach for.
+const WORKER_TOOLS = READ_ONLY_TOOLS;
+
+const workerTools = () =>
+    geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL].filter((t) => WORKER_TOOLS.has(t.name)));
+
+// Enforced here rather than by trimming the declarations: a model can emit a
+// name it was never offered, and executeTool would run it.
+function guardedDispatch(dispatch: (name: string, args: Record<string, unknown>) => Promise<string>) {
+    return async (name: string, args: Record<string, unknown>): Promise<string> => {
+        if (!WORKER_TOOLS.has(name)) {
+            return `Refused: "${name}" is not available to a worker sub-agent. Workers gather information only - they cannot write, send or delete. Report what you found and let the lead agent act on it.`;
+        }
+        return dispatch(name, args);
+    };
+}
 
 // Sentinel returned by openaiCompatChat instead of throwing on an empty answer.
 const EMPTY_REPLY = "(The model returned an empty response.)";
@@ -53,7 +71,7 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
             systemPrompt: workerSystem(p.contextBlock, true),
             userMessage: p.objective,
             toolDeclarations: workerTools(),
-            dispatch: (name, args) => executeTool(name, args, p.embRef, p.toolCtx),
+            dispatch: guardedDispatch((name, args) => executeTool(name, args, p.embRef, p.toolCtx)),
             maxRounds: AGENT_CONFIG.workerMaxRounds,
             signal: p.signal,
         });
@@ -72,6 +90,7 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
                     userText: p.objective,
                     embRef: p.embRef,
                     ctx: p.toolCtx,
+                    allowTools: WORKER_TOOLS,
                     onUsage: (u) => { compatTokens = u.totalTokens; },
                     signal: p.signal,
                 });

@@ -65,6 +65,13 @@ interface HostConfig {
      * outside a worktree auto-denies after 120s unseen.
      */
     host?: { port?: number; origins?: string[]; autoAdopt?: boolean };
+    /**
+     * Run on the assembled integration branch before a campaign is offered for
+     * merge. Repository-controlled on purpose: an agent must not get to choose
+     * the command that decides whether its own work passes. Unset means the
+     * merge is checked but nothing is run.
+     */
+    verifyCommand?: string[];
     agents: Record<string, Adapter>;
     instances?: Record<string, AgentInstance>;
 }
@@ -206,6 +213,7 @@ interface HostState {
     floorHolder: string | null;
     repo: string;
     baseBranch: string;
+    verifyCommand: string[];
     runDir: string | null;
     agents: Map<string, AgentRuntime>;
     pending: Map<string, PendingPermission>;
@@ -222,6 +230,7 @@ const state: HostState = {
     floorHolder: null,
     repo: repoArg ? resolve(repoArg) : process.cwd(),
     baseBranch: arg("base") ?? "main",
+    verifyCommand: config.verifyCommand ?? [],
     runDir: null,
     agents: new Map(),
     pending: new Map(),
@@ -1005,13 +1014,194 @@ async function dispatchTick(): Promise<void> {
     broadcast({ type: "state", ...snapshot() });
 }
 
+// ---------------------------------------------------------------- host checks
+
+// Anything matching these must never arrive in a diff. Deliberately crude: the
+// point is to catch an agent that committed a .env by accident, not to defeat
+// one that is trying to hide something.
+const SECRET_PATHS = /(^|\/)(\.env(\..+)?|.*\.pem|.*\.p12|id_rsa|.*\.keystore)$/i;
+const SECRET_CONTENT = /(api[_-]?key|secret|password|BEGIN [A-Z ]*PRIVATE KEY)\s*[=:]\s*\S{12,}/i;
+
+interface CheckResult { ok: boolean; lines: string[] }
+
+/**
+ * What the host can prove about a submitted commit, as opposed to what the
+ * agent said about it. Every check runs; a failure does not short-circuit,
+ * because the report is more useful when it lists everything that is wrong.
+ */
+function verifySubmission(params: {
+    commit: string;
+    branch: string;
+    declaredPaths: string[];
+}): CheckResult {
+    const lines: string[] = [];
+    let ok = true;
+    const fail = (msg: string) => { ok = false; lines.push(`FAIL ${msg}`); };
+    const pass = (msg: string) => lines.push(`ok   ${msg}`);
+
+    const exists = git(state.repo, ["cat-file", "-e", `${params.commit}^{commit}`]);
+    if (!exists.ok) {
+        return { ok: false, lines: [`FAIL commit ${params.commit} does not exist in ${state.repo}`] };
+    }
+    pass(`commit ${params.commit.slice(0, 12)} exists`);
+
+    // Ancestry, not just reachability: a commit that does not descend from the
+    // declared base was built on something else and its diff means nothing.
+    const base = git(state.repo, ["merge-base", "--is-ancestor", state.baseBranch, params.commit]);
+    if (base.ok) pass(`descends from ${state.baseBranch}`);
+    else fail(`does not descend from ${state.baseBranch}`);
+
+    const onBranch = git(state.repo, ["merge-base", "--is-ancestor", params.commit, params.branch]);
+    if (onBranch.ok) pass(`reachable from ${params.branch}`);
+    else fail(`not reachable from ${params.branch}`);
+
+    const diff = git(state.repo, ["diff", "--name-only", `${state.baseBranch}...${params.commit}`]);
+    if (!diff.ok) {
+        fail("could not read the diff");
+        return { ok, lines };
+    }
+    const files = diff.out.split("\n").map((f) => f.trim()).filter(Boolean);
+    pass(`${files.length} file(s) changed`);
+
+    const secrets = files.filter((f) => SECRET_PATHS.test(f));
+    if (secrets.length) fail(`secret-looking files added: ${secrets.join(", ")}`);
+    else pass("no secret-looking filenames");
+
+    if (params.declaredPaths.length) {
+        const stray = files.filter((f) => !params.declaredPaths.some((p) => f === p || f.startsWith(p.replace(/\/?$/, "/"))));
+        if (stray.length) fail(`outside declared scope: ${stray.slice(0, 20).join(", ")}`);
+        else pass("diff stays inside the declared scope");
+    } else {
+        lines.push("note declared no path scope, so scope was not checked");
+    }
+
+    const patch = git(state.repo, ["diff", "-U0", `${state.baseBranch}...${params.commit}`]);
+    if (patch.ok) {
+        const added = patch.out.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+        const leaked = added.filter((l) => SECRET_CONTENT.test(l));
+        if (leaked.length) fail(`${leaked.length} added line(s) look like credentials`);
+        else pass("no credential-shaped lines added");
+    }
+
+    return { ok, lines };
+}
+
+// Runs after every accepted item, on a throwaway worktree cut from the base. A
+// campaign is not finished because each task passed alone; this is the only
+// thing that shows they work together.
+function verifyIntegration(branches: string[]): CheckResult & { branch: string } {
+    const branch = `council/${(state.code ?? "run").toLowerCase()}/integration`;
+    const dir = `../integration-${(state.code ?? "run").toLowerCase()}`;
+    const lines: string[] = [];
+    let ok = true;
+
+    git(state.repo, ["worktree", "remove", "--force", dir]);
+    git(state.repo, ["branch", "-D", branch]);
+
+    const added = git(state.repo, ["worktree", "add", dir, "-b", branch, state.baseBranch]);
+    if (!added.ok) return { ok: false, branch, lines: [`FAIL could not create the integration worktree:\n${added.out}`] };
+    lines.push(`ok   integration worktree on ${branch} from ${state.baseBranch}`);
+
+    const treeDir = resolve(state.repo, dir);
+    try {
+        for (const b of branches) {
+            const merged = git(treeDir, ["merge", "--no-edit", b]);
+            if (merged.ok) {
+                lines.push(`ok   merged ${b}`);
+            } else {
+                ok = false;
+                lines.push(`FAIL conflict merging ${b}:\n${merged.out.slice(0, 2000)}`);
+                git(treeDir, ["merge", "--abort"]);
+                break;
+            }
+        }
+        if (ok && state.verifyCommand.length) {
+            const [cmd, ...rest] = state.verifyCommand;
+            const run = spawnSync(cmd, rest, { cwd: treeDir, encoding: "utf8", shell: process.platform === "win32" });
+            const output = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim();
+            if (run.status === 0) {
+                lines.push(`ok   ${state.verifyCommand.join(" ")} exited 0`);
+            } else {
+                ok = false;
+                lines.push(`FAIL ${state.verifyCommand.join(" ")} exited ${run.status}\n${output.slice(-3000)}`);
+            }
+        } else if (ok) {
+            lines.push("note no verify command configured, so only the merge was checked");
+        }
+    } finally {
+        // The branch survives for review; only the checkout is disposable.
+        git(state.repo, ["worktree", "remove", "--force", dir]);
+    }
+    return { ok, branch, lines };
+}
+
 const CAMPAIGN_PROMPT = (code: string, name: string) =>
     `Resume Zuychin work campaign ${code} as ${name}. Work only in this worktree. Call council_work_next with the session code and your agent name, then follow the assigned task exactly. Record heartbeats, commit and verify the work, submit it with council_work_complete, and stop for closer review. If you are the designated closer and council_work_status says review, inspect each submitted diff and verification, then accept it or return it with specific council_work_review feedback.`;
 
 // Agents are looked up in the runtime map, which is keyed by instance name;
 // the adapter table is keyed by provider and would miss "codex-1".
+interface UnverifiedPayload {
+    items?: {
+        id: string; agentName: string; commitHash: string | null; declaredPaths?: string[];
+    }[];
+}
+
+// Runs before the agents are prompted, so the closer never sees a task the host
+// has already disproved. Every awaiting-review item the host has not judged yet
+// gets checked against the repo it actually owns.
+async function hostVerifyTick(): Promise<void> {
+    if (!state.code) return;
+    let payload: UnverifiedPayload;
+    try {
+        payload = JSON.parse(await callTool("council_work_unverified", { sessionCode: state.code })) as UnverifiedPayload;
+    } catch {
+        return;
+    }
+    for (const item of payload.items ?? []) {
+        if (!item.commitHash) {
+            await callTool("council_work_verify", {
+                itemId: item.id, passed: false,
+                report: "FAIL submitted without a commit hash",
+            }).catch(() => { });
+            continue;
+        }
+        const agent = state.agents.get(item.agentName);
+        const branch = agent?.branch ?? councilBranch(state.code, item.agentName);
+        const result = verifySubmission({
+            commit: item.commitHash, branch, declaredPaths: item.declaredPaths ?? [],
+        });
+        log(`${item.agentName}: host check ${result.ok ? "passed" : "FAILED"} for ${item.commitHash.slice(0, 12)}`);
+        await callTool("council_work_verify", {
+            itemId: item.id, passed: result.ok, report: result.lines.join("\n"),
+        }).catch((e) => log(`host verify report failed: ${e instanceof Error ? e.message : String(e)}`));
+    }
+}
+
+// The campaign is accepted item by item, but nothing has ever been tried
+// together until this runs.
+async function integrationTick(): Promise<void> {
+    if (!state.code || state.status !== "campaign_complete" || integrationDone) return;
+    integrationDone = true;
+    const branches = [...state.agents.values()].map((a) => a.branch);
+    log(`Assembling ${branches.length} branch(es) on a clean integration worktree…`);
+    await callTool("council_integration_report", {
+        sessionCode: state.code, status: "running", report: "Assembling the integration branch.",
+    }).catch(() => { });
+
+    const result = verifyIntegration(branches);
+    const status = result.ok ? "verified" : result.lines.some((l) => l.startsWith("FAIL conflict")) ? "conflict" : "failed";
+    log(`Integration ${status}.`);
+    await callTool("council_integration_report", {
+        sessionCode: state.code, status, branch: result.branch, report: result.lines.join("\n"),
+    }).catch((e) => log(`integration report failed: ${e instanceof Error ? e.message : String(e)}`));
+    broadcast({ type: "state", ...snapshot() });
+}
+
+let integrationDone = false;
+
 async function superviseTick(): Promise<void> {
     if (!state.code || state.status !== "closed") return;
+    await hostVerifyTick();
     for (const agent of state.agents.values()) {
         if (agent.mode !== "acp" || !agent.session || agent.inFlight) continue;
         let text: string;
@@ -1024,6 +1214,7 @@ async function superviseTick(): Promise<void> {
             log("Campaign complete.");
             state.status = "campaign_complete";
             broadcast({ type: "state", ...snapshot() });
+            void integrationTick();
             return;
         }
         if (text.startsWith("SUPERVISE: blocked")) {

@@ -86,7 +86,14 @@ export function councilWorktreeDir(repoPath: string, agentName: string): string 
     return `../${base}-${agentSlug(agentName)}`;
 }
 
-export type CouncilStatus = "open" | "concluding" | "closed" | "expired";
+export type CouncilStatus = "open" | "concluding" | "awaiting_owner" | "closed" | "expired";
+
+// How long a proposed verdict waits for the owner before it is filed as-is.
+// Expiry accepts rather than discards: the verdict already exists by then, and
+// throwing away finished work to tidy up is the worse failure.
+export const STANDBY_TTL_SECONDS = 24 * 60 * 60;
+// Rounds added when the owner sends a council back for more work.
+export const CONTINUE_EXTRA_ROUNDS = 3;
 export type CouncilIntent = "propose" | "challenge" | "answer" | "concede" | "refine" | "ask";
 export type CouncilRole = "agent" | "moderator" | "system";
 
@@ -97,6 +104,8 @@ export type CouncilStatusKeyword =
     | "POSTED"
     | "NOT_YOUR_TURN"
     | "COUNCIL_CONCLUDING"
+    | "COUNCIL_PAUSED"
+    | "COUNCIL_STANDBY"
     | "COUNCIL_CLOSED";
 
 export const AGENT_INTENTS: readonly CouncilIntent[] = [

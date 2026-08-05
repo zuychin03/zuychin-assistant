@@ -365,6 +365,19 @@ This post is exempt from the ${POSTS_PER_ROUND}-per-round quota - post even if y
             return `${reason} ${isCloser ? "You are the closer: write the verdict now." : "Post one final position, then wait for the closer."}`
                 + renderNewMessages(result.fresh, result.omittedBefore);
         }
+        case "paused":
+            // Said plainly because the alternative reads as a fault: an agent
+            // that decides a silent council has broken will report failure to
+            // its human and stop, which is the one outcome a pause must not cause.
+            return `Your human has stopped this council while they think something through. This is deliberate and it is not an error.
+Do not post, do not conclude, and do not report a problem - they already know. Read anything below, then keep waiting.
+You are released automatically when they resume; your place, your quota and the clock are all held.`
+                + renderNewMessages(result.fresh, result.omittedBefore);
+        case "standby":
+            return `The closer has written a verdict and it is now with your human. The debate is over unless they send it back.
+Do not post and do not conclude again. If they accept it, this council closes and you are done. If they want more,
+you will get a fresh assignment here and the council reopens with more rounds. Wait either way.`
+                + renderNewMessages(result.fresh, result.omittedBefore);
         default:
             return "";
     }
@@ -399,6 +412,11 @@ function waitNext(result: WaitResult, agentName: string, dispatchMode = false): 
                 sessionCode: result.session.code, agentName, intent: "propose", addressedTo: "all",
                 clientKey: `${agentName}-floor-${result.session.round}`, sinceSeq: result.cursor, ...pace,
                 message: "<move the council forward: restate the open question and take a position>",
+            });
+        case "paused":
+        case "standby":
+            return nextCall("council_wait", {
+                sessionCode: result.session.code, agentName, sinceSeq: result.cursor, ...pace,
             });
         case "concluding":
             return agentName === result.session.closerName
@@ -435,6 +453,10 @@ function keywordLine(result: WaitResult, agentName: string): string {
             return `YOUR_TURN (floor granted on silence) - ${head}`;
         case "concluding":
             return `COUNCIL_CONCLUDING - ${head}`;
+        case "paused":
+            return `COUNCIL_PAUSED - ${head}`;
+        case "standby":
+            return `COUNCIL_STANDBY - ${head}`;
         case "degraded":
             return `WAITING (degraded) - the council store did not answer three times in a row.
 Do not treat this as terminal, and do not assume the council is healthy either.`;
@@ -473,6 +495,10 @@ interface PostOutcome {
     ok: boolean; seq?: number; reason?: string; duplicate?: boolean;
     posts?: number; truncatedChars?: number;
     intent: string; addressedTo: string; replyToSeq?: number;
+    // Reported by the append transaction, not inferred: the receipt used to
+    // claim an obligation was cleared whenever the intent looked right, even
+    // when the cited seq matched nothing.
+    cleared?: boolean;
 }
 
 // Keyword line plus receipt, shared by the fused tool and the dispatched
@@ -483,7 +509,11 @@ function speakReceipt(
     if (!post.ok) {
         const why = post.reason === "quota"
             ? `Nothing was recorded. You have used both posts in round ${round}. This is a pacing rule, not a bug.\nYour message was not lost - say it again next round if it still matters.`
-            : `Nothing was recorded (${post.reason}).`;
+            : post.reason === "paused"
+                ? `Nothing was recorded. Your human has paused this council; nobody can post until they resume.\nThis is deliberate, not an error. Call council_wait and hold - do not retry in a loop.`
+                : post.reason === "awaiting_owner"
+                    ? `Nothing was recorded. A verdict is written and waiting on your human's decision.\nThe debate is over unless they send it back. Call council_wait and hold.`
+                    : `Nothing was recorded (${post.reason}).`;
         return `NOT_YOUR_TURN - round ${round} of ${session.maxRounds} · you are "${agentName}" · cursor ${cursor}\n${why}`;
     }
 
@@ -491,9 +521,7 @@ function speakReceipt(
     const truncated = post.truncatedChars
         ? `\nYour message was truncated at ${MAX_BODY_CHARS} chars; the last ${post.truncatedChars} chars were dropped - restate anything essential in your next post.`
         : "";
-    const cleared = post.replyToSeq && ["answer", "concede"].includes(post.intent)
-        ? ` Obligation seq ${post.replyToSeq} cleared.`
-        : "";
+    const cleared = post.cleared ? ` Obligation seq ${post.replyToSeq} cleared.` : "";
     const recorded = `Recorded: ${post.intent} → ${post.addressedTo}`
         + (post.replyToSeq ? `, replying to seq ${post.replyToSeq}.` : ".")
         + cleared;

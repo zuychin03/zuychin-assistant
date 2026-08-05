@@ -45,6 +45,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
                 vaultPath: session.vaultPath,
                 archiveStatus: session.archiveStatus,
                 floorHolder: session.floorHolder,
+                paused: session.pausedAt !== null,
+                pausedAt: session.pausedAt,
+                standbyExpiresAt: session.standbyExpiresAt,
+                continueCount: session.continueCount,
             },
             participants: participants.map((p) => ({
                 name: p.name,
@@ -60,7 +64,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
             campaign: campaign ? {
                 id: campaign.id, status: campaign.status, repoPath: campaign.repoPath, baseBranch: campaign.baseBranch,
                 completedAt: campaign.completedAt,
-                workItems: workItems.map((item) => ({ id: item.id, sequence: item.sequence, agentName: item.agentName, title: item.title, status: item.status, heartbeatAt: item.heartbeatAt, progress: item.progress, commitHash: item.commitHash, verification: item.verification, blockedReason: item.blockedReason })),
+                integratorAgent: campaign.integratorAgent,
+                integrationBranch: campaign.integrationBranch,
+                integrationStatus: campaign.integrationStatus,
+                integrationReport: campaign.integrationReport,
+                integrationCheckedAt: campaign.integrationCheckedAt,
+                workItems: workItems.map((item) => ({ id: item.id, sequence: item.sequence, agentName: item.agentName, title: item.title, status: item.status, heartbeatAt: item.heartbeatAt, progress: item.progress, commitHash: item.commitHash, verification: item.verification, blockedReason: item.blockedReason, hostVerified: item.hostVerified, hostVerification: item.hostVerification })),
             } : null,
         });
     } catch (error) {

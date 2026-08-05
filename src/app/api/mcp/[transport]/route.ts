@@ -22,15 +22,16 @@ import {
     leaveCouncil, listOpenCouncils, listParticipants, readTranscript,
 } from "@/lib/council/store";
 import {
-    renderCloseOutcome, renderConveneResult, renderDispatchSpeakResult, renderDispatchWaitNote,
+    renderConveneResult, renderDispatchSpeakResult, renderDispatchWaitNote,
     renderLeft, renderNotAParticipant, renderPassed, renderRosterRejection, renderRulebook,
     renderSpeakResult, renderTranscript, renderTurn, renderUnknownSession, renderWaitResult,
 } from "@/lib/council/render";
 import { dispatchCouncil, pollCouncil } from "@/lib/council/wait";
-import { closeCouncil } from "@/lib/council/close";
+import { proposeCouncilVerdict } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
 import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
-import { blockWorkItem, claimNextWorkItem, completeWorkItem, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, reviewWorkItem } from "@/lib/council/campaign";
+import { blockWorkItem, claimNextWorkItem, completeWorkItem, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordCampaignIntegration, recordHostVerification, reviewWorkItem } from "@/lib/council/campaign";
+import { resolveSeatKey } from "@/lib/council/seat-keys";
 
 export const maxDuration = 300;
 
@@ -46,10 +47,47 @@ function requireWrite(extra: ToolExtra) {
     };
 }
 
-// Council participation is a durable, Discord-mirrored write, so it rides the
-// existing knowledge:write gate rather than minting a scope that would need its
-// own key rotation. Read-only keys observe via council_transcript.
-const requireCouncil = requireWrite;
+// Coarse gate for council tools: a read-write master key, or a guest seat key.
+// Tools that act AS an agent must ALSO call requireSeat once they have resolved
+// what they are acting on - a seat key is valid for one council and one name,
+// and this check knows neither yet. Read-only keys observe via
+// council_transcript, which is deliberately ungated here.
+function requireCouncil(extra: ToolExtra) {
+    const scopes = extra.authInfo?.scopes ?? [];
+    if (scopes.includes("knowledge:write") || scopes.includes("council:seat")) return null;
+    return denied("This tool needs a read-write API key or a council seat key; the key you used is read-only.");
+}
+
+function denied(text: string) {
+    return { isError: true, content: [{ type: "text" as const, text }] };
+}
+
+function seatIdentity(extra: ToolExtra): { sessionId: string; seatName: string } | null {
+    const id = extra.authInfo?.clientId ?? "";
+    const marker = "council-seat:";
+    if (!id.startsWith(marker)) return null;
+    // Split on the FIRST colon only: a seat name may contain one, a uuid may not.
+    const rest = id.slice(marker.length);
+    const idx = rest.indexOf(":");
+    if (idx < 0) return null;
+    return { sessionId: rest.slice(0, idx), seatName: rest.slice(idx + 1) };
+}
+
+// A master key passes everything. A seat key passes only its own council and
+// its own name, so a guest can neither speak as a peer nor reach a council it
+// was not invited to.
+function requireSeat(extra: ToolExtra, opts: { sessionId?: string; agentName?: string }) {
+    if (extra.authInfo?.scopes?.includes("knowledge:write")) return null;
+    const seat = seatIdentity(extra);
+    if (!seat) return denied("This tool needs a read-write API key.");
+    if (opts.sessionId && opts.sessionId !== seat.sessionId) {
+        return denied("That seat key belongs to a different council.");
+    }
+    if (opts.agentName && opts.agentName !== seat.seatName) {
+        return denied(`That seat key is for the seat "${seat.seatName}", not "${opts.agentName}".`);
+    }
+    return null;
+}
 
 // after() runs once the response stream closes, so the moderator's note lands on
 // every participant's next tick and costs the poster nothing. It is one round
@@ -447,7 +485,9 @@ const handler = createMcpHandler(
                 },
             },
             async ({ topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace }, extra) => {
-                const denied = requireCouncil(extra);
+                // Master key only: a guest may take part in a council, never
+                // create one.
+                const denied = requireWrite(extra);
                 if (denied) return denied;
                 try {
                     const names = participants.map((p) => p.name);
@@ -504,6 +544,8 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName });
+                    if (wrongSeat) return wrongSeat;
                     const result = await joinCouncil({ sessionId: session.id, agentName, expertise, dispatchMode });
                     const roster = await listParticipants(session.id);
                     if (!result.ok) {
@@ -564,6 +606,8 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName });
+                    if (wrongSeat) return wrongSeat;
                     // Enforcement, not instruction: a host-dispatched agent that
                     // also polled would have its cursor acked twice, once by the
                     // host and once by itself, and would silently skip messages.
@@ -610,6 +654,8 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName });
+                    if (wrongSeat) return wrongSeat;
                     const roster = await listParticipants(session.id);
                     const me = roster.find((p) => p.name === agentName && p.kind === "agent");
                     if (!me) {
@@ -694,14 +740,21 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName });
+                    if (wrongSeat) return wrongSeat;
                     if (agentName !== session.closerName) {
                         return { content: [{ type: "text", text: `NOT_YOUR_TURN - only ${session.closerName} may conclude ${session.code}. Nothing was changed.\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
                     }
-                    const outcome = await closeCouncil({
+                    // The closer PROPOSES; it does not close. Nothing is filed
+                    // and no campaign exists until the owner accepts.
+                    const outcome = await proposeCouncilVerdict({
                         session, closer: agentName, verdict, openQuestions: openQuestions ?? [],
                         workItems: workItems?.map((item) => ({ agentName: item.agentName, title: item.title, instructions: item.instructions, acceptanceCriteria: item.acceptanceCriteria })),
                     });
-                    return { content: [{ type: "text", text: renderCloseOutcome(session, outcome) }] };
+                    if (!outcome.changed) {
+                        return { content: [{ type: "text", text: `COUNCIL_CLOSED - ${session.code} was already resolved (${outcome.status}).\n\nVERDICT (${outcome.closer}):\n${outcome.verdict || "(none recorded)"}\n\nNEXT → nothing. You are done with this council.` }] };
+                    }
+                    return { content: [{ type: "text", text: `COUNCIL_STANDBY - ${session.code} · your verdict is recorded and is now with the human.\nThe debate is closed to further posts. They will either accept it, which ends the council, or send it\nback with a fresh assignment, which reopens it with more rounds.\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"}) and hold.` }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Conclude failed: ${errMsg(error)}` }] };
                 }
@@ -717,7 +770,8 @@ const handler = createMcpHandler(
                 inputSchema: {},
             },
             async (_args, extra) => {
-                const denied = requireCouncil(extra);
+                // Lists every open council, so a seat key must not reach it.
+                const denied = requireWrite(extra);
                 if (denied) return denied;
                 try {
                     const sessions = await listOpenCouncils();
@@ -753,7 +807,9 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentNames, ackFor }, extra) => {
-                const denied = requireCouncil(extra);
+                // The host drives other agents' turns; a guest seat drives only
+                // itself.
+                const denied = requireWrite(extra);
                 if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
@@ -763,6 +819,21 @@ const handler = createMcpHandler(
                     const outcome = await dispatchCouncil({ session, agentNames, ackFor });
                     if (outcome.kind === "degraded") {
                         return { content: [{ type: "text", text: JSON.stringify({ error: "degraded", sessionCode: session.code }) }] };
+                    }
+                    // No agents key at all: the host must push nothing while the
+                    // owner has the room stopped, and an empty roster is the
+                    // shape it already treats as "no turns this tick".
+                    if (outcome.kind === "paused") {
+                        return {
+                            content: [{
+                                type: "text",
+                                text: JSON.stringify({
+                                    sessionCode: session.code, paused: true,
+                                    status: outcome.session.status, round: outcome.session.round,
+                                    agents: {},
+                                }),
+                            }],
+                        };
                     }
                     const { session: latest, floorHolder, view } = outcome;
                     // The slice is what the host BRANCHES on; prompt is the same
@@ -824,7 +895,7 @@ const handler = createMcpHandler(
             "council_work_next",
             { description: "[COUNCIL WORK CAMPAIGN] Claim or resume your assigned task after the council closes. Work only in your worktree, heartbeat at milestones, then commit, verify and submit it for review.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1) } },
             async ({ sessionCode, agentName }, extra) => {
-                const denied = requireCouncil(extra); if (denied) return denied;
+                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
@@ -842,7 +913,7 @@ const handler = createMcpHandler(
             "council_work_heartbeat",
             { description: "[COUNCIL WORK CAMPAIGN] Record progress on your assigned in-progress task at meaningful milestones.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), progress: z.string().min(1).max(1000).optional() } },
             async ({ itemId, agentName, progress }, extra) => {
-                const denied = requireCouncil(extra); if (denied) return denied;
+                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
                 try { const ok = await heartbeatWorkItem({ itemId, agentName, progress }); return { content: [{ type: "text", text: ok ? "WORK_HEARTBEAT_RECORDED" : "WORK_HEARTBEAT_REJECTED - this is not your active task." }] }; }
                 catch (error) { return { content: [{ type: "text", text: "Heartbeat failed: " + errMsg(error) }] }; }
             },
@@ -852,7 +923,7 @@ const handler = createMcpHandler(
             "council_work_complete",
             { description: "[COUNCIL WORK CAMPAIGN] Submit a committed, verified task for closer review. This never self-approves the work.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), commitHash: z.string().min(1).max(120), verification: z.string().min(1).max(4000) } },
             async ({ itemId, agentName, commitHash, verification }, extra) => {
-                const denied = requireCouncil(extra); if (denied) return denied;
+                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
                 try { const ok = await completeWorkItem({ itemId, agentName, commitHash, verification }); return { content: [{ type: "text", text: ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] }; }
                 catch (error) { return { content: [{ type: "text", text: "Completion failed: " + errMsg(error) }] }; }
             },
@@ -862,7 +933,7 @@ const handler = createMcpHandler(
             "council_work_block",
             { description: "[COUNCIL WORK CAMPAIGN] Mark your task blocked when it needs a human decision, missing access or an external dependency.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), reason: z.string().min(1).max(2000) } },
             async ({ itemId, agentName, reason }, extra) => {
-                const denied = requireCouncil(extra); if (denied) return denied;
+                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
                 try { const ok = await blockWorkItem({ itemId, agentName, reason }); return { content: [{ type: "text", text: ok ? "WORK_BLOCKED - stop the task and report the recorded blocker." : "WORK_BLOCK_REJECTED - this is not your active task." }] }; }
                 catch (error) { return { content: [{ type: "text", text: "Block failed: " + errMsg(error) }] }; }
             },
@@ -872,9 +943,99 @@ const handler = createMcpHandler(
             "council_work_review",
             { description: "[COUNCIL WORK CAMPAIGN] Designated closer only: accept a submitted task after reviewing its diff and verification, or return it to its owner with specific feedback. The campaign completes only after every task is accepted.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), accepted: z.boolean(), note: z.string().min(1).max(3000) } },
             async ({ itemId, agentName, accepted, note }, extra) => {
-                const denied = requireCouncil(extra); if (denied) return denied;
-                try { const ok = await reviewWorkItem({ itemId, reviewer: agentName, accepted, note }); return { content: [{ type: "text", text: ok ? (accepted ? "WORK_VERIFIED" : "WORK_RETURNED_TO_OWNER") : "WORK_REVIEW_REJECTED - only the designated closer may review an awaiting-review task." }] }; }
+                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
+                try {
+                    const res = await reviewWorkItem({ itemId, reviewer: agentName, accepted, note });
+                    if (res.ok) {
+                        return { content: [{ type: "text", text: accepted ? "WORK_VERIFIED" : "WORK_RETURNED_TO_OWNER" }] };
+                    }
+                    const why = res.reason === "not_host_verified"
+                        ? "WORK_REVIEW_REJECTED - the host has not verified this commit yet, so it cannot be accepted. Agent-reported verification is not enough. Wait for the host check, or return the task with feedback."
+                        : res.reason === "not_the_closer"
+                            ? "WORK_REVIEW_REJECTED - only the designated closer may review a task."
+                            : `WORK_REVIEW_REJECTED - ${res.reason ?? "unknown"}.`;
+                    return { content: [{ type: "text", text: why }] };
+                }
                 catch (error) { return { content: [{ type: "text", text: "Review failed: " + errMsg(error) }] }; }
+            },
+        );
+
+        // Host-only, and JSON rather than prose: council_work_status is written
+        // for an agent to read and the supervise loop branches on its wording,
+        // so the machine-readable view is a separate tool.
+        server.registerTool(
+            "council_work_unverified",
+            {
+                description: "[COUNCIL WORK CAMPAIGN] Host only: submitted tasks the host has not checked yet, as JSON. Used to drive independent verification of each commit.",
+                inputSchema: { sessionCode: z.string().min(1) },
+            },
+            async ({ sessionCode }, extra) => {
+                const denied = requireWrite(extra);
+                if (denied) return denied;
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    if (!session) return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session" }) }] };
+                    const campaign = await getCampaignForSession(session.id);
+                    if (!campaign) return { content: [{ type: "text", text: JSON.stringify({ items: [] }) }] };
+                    const items = (await listCampaignWorkItems(campaign.id))
+                        .filter((i) => i.status === "awaiting_review" && i.hostVerified === null)
+                        .map((i) => ({
+                            id: i.id, agentName: i.agentName, status: i.status,
+                            commitHash: i.commitHash, declaredPaths: i.declaredPaths,
+                        }));
+                    return { content: [{ type: "text", text: JSON.stringify({ items }) }] };
+                } catch (error) {
+                    return { content: [{ type: "text", text: JSON.stringify({ error: errMsg(error) }) }] };
+                }
+            },
+        );
+
+        // Host-only. The host owns the repo and can check a submitted commit
+        // itself, which is the only verification the review gate accepts.
+        server.registerTool(
+            "council_work_verify",
+            {
+                description: "[COUNCIL WORK CAMPAIGN] Host only: record what the HOST observed about a submitted commit, independently of what the agent claimed. A failed check returns the task to its owner. The closer cannot accept a task until this passes.",
+                inputSchema: {
+                    itemId: z.string().uuid(),
+                    passed: z.boolean(),
+                    report: z.string().min(1).max(8000).describe("Checks run and their outcomes: commit exists, ancestry, diff scope, secrets, exit codes."),
+                },
+            },
+            async ({ itemId, passed, report }, extra) => {
+                const denied = requireWrite(extra);
+                if (denied) return denied;
+                try {
+                    const ok = await recordHostVerification({ itemId, passed, report });
+                    return { content: [{ type: "text", text: ok ? (passed ? "HOST_VERIFIED" : "HOST_REJECTED - the task was returned to its owner.") : "HOST_VERIFY_IGNORED - that task is not awaiting review." }] };
+                } catch (error) {
+                    return { content: [{ type: "text", text: "Host verify failed: " + errMsg(error) }] };
+                }
+            },
+        );
+
+        server.registerTool(
+            "council_integration_report",
+            {
+                description: "[COUNCIL WORK CAMPAIGN] Host or nominated integrator: record the result of assembling every accepted task on a clean integration branch and running the full project checks. A campaign is not done because each task passed alone.",
+                inputSchema: {
+                    sessionCode: z.string().min(1),
+                    status: z.enum(["running", "verified", "conflict", "failed"]),
+                    branch: z.string().max(200).optional(),
+                    report: z.string().min(1).max(16000),
+                },
+            },
+            async ({ sessionCode, status, branch, report }, extra) => {
+                const denied = requireWrite(extra);
+                if (denied) return denied;
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    const res = await recordCampaignIntegration({ sessionId: session.id, status, branch, report });
+                    return { content: [{ type: "text", text: res.ok ? `INTEGRATION_${status.toUpperCase()}` : `INTEGRATION_REJECTED - ${res.reason ?? "unknown"}` }] };
+                } catch (error) {
+                    return { content: [{ type: "text", text: "Integration report failed: " + errMsg(error) }] };
+                }
             },
         );
 
@@ -917,6 +1078,8 @@ const handler = createMcpHandler(
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName });
+                    if (wrongSeat) return wrongSeat;
                     const me = await getParticipant(session.id, agentName);
                     if (!me) {
                         return { content: [{ type: "text", text: renderNotAParticipant(session.code, agentName) }] };
@@ -974,6 +1137,17 @@ const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInf
     }
     if (ro && bearerToken === ro) {
         return { token: bearerToken, clientId: "mcp-external-ro", scopes: ["knowledge:read"] };
+    }
+    // A guest seat: one council, one seat, expires with the session. The
+    // identity rides in clientId because the council tools have to check it
+    // against whatever they are being asked to act on.
+    const seat = await resolveSeatKey(bearerToken);
+    if (seat) {
+        return {
+            token: bearerToken,
+            clientId: `council-seat:${seat.sessionId}:${seat.seatName}`,
+            scopes: ["council:seat"],
+        };
     }
     return undefined;
 };

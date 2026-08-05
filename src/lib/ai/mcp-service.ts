@@ -1442,9 +1442,25 @@ function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
     return schema;
 }
 
-export function buildOpenAIToolDeclarations(): OpenAITool[] {
+// Tools with no external effect. Two callers depend on this: the agent loop
+// schedules these concurrently and serialises everything else, and worker
+// sub-agents are allowed nothing outside it. Unlisted names count as writes, so
+// a tool added later is serialised and withheld until somebody classifies it.
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+    "get_current_time", "search_web", "search_knowledge", "search_history",
+    "get_recent_conversations", "list_calendar_events", "list_unread_emails",
+    "list_recent_emails", "read_email", "vault_search", "vault_read", "council_status",
+]);
 
-    return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].map((tool) => ({
+// Returned instead of running a tool the caller is not allowed to use. Phrased
+// as an instruction because the model reads it and has to do something next.
+export function toolRefusal(name: string): string {
+    return `Refused: "${name}" is not available on this run. Report what you have and let the lead agent act on it.`;
+}
+
+export function buildOpenAIToolDeclarations(allow?: ReadonlySet<string>): OpenAITool[] {
+
+    return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].filter((t) => !allow || allow.has(t.name)).map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.name,

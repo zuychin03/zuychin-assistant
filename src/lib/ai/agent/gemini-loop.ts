@@ -1,6 +1,6 @@
 import { MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
 import { ThinkingLevel, type GoogleGenAI } from "@google/genai";
-import type { GeminiToolDeclarations } from "@/lib/ai/mcp-service";
+import { READ_ONLY_TOOLS, type GeminiToolDeclarations } from "@/lib/ai/mcp-service";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
 
@@ -10,6 +10,11 @@ export interface LoopUsage {
     totalTokens: number;
     llmCalls: number;
 }
+
+// "complete" means the model stopped calling tools of its own accord.
+// "budget_exhausted" means the round budget ran out with work still pending -
+// which is not the same thing and must not be recorded as success.
+export type LoopStopReason = "complete" | "budget_exhausted";
 
 export interface GeminiLoopOpts {
     model?: string;
@@ -23,6 +28,11 @@ export interface GeminiLoopOpts {
     thinking?: boolean;
     signal?: AbortSignal;
 }
+
+// Loop-level tools never touch anything outside this process, so they schedule
+// like reads even though they are not in the MCP catalogue.
+const LOOP_READ_TOOLS = new Set(["update_plan", "use_skill", "run_subagents"]);
+const parallelSafe = (name: string) => READ_ONLY_TOOLS.has(name) || LOOP_READ_TOOLS.has(name);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -117,7 +127,9 @@ async function compactContents(client: GoogleGenAI, contents: any[], model: stri
     ];
 }
 
-export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: string; usage: LoopUsage }> {
+export async function runGeminiLoop(
+    opts: GeminiLoopOpts,
+): Promise<{ text: string; usage: LoopUsage; stopReason: LoopStopReason }> {
     const model = opts.model ?? MODEL;
     const client = geminiClient(opts.apiKey);
     let contents: any[] = [
@@ -154,12 +166,23 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
         const calls = response.functionCalls;
         if (!calls || calls.length === 0) break;
 
-        const results = await Promise.all(
-            calls.map(async (fc) => {
-                const result = await opts.dispatch(fc.name!, (fc.args ?? {}) as Record<string, unknown>);
-                return { name: fc.name!, result, id: (fc as any).id };
+        // Reads overlap; anything that mutates runs one at a time, in the order
+        // the model emitted it. A single turn can hold two writes to the same
+        // resource, and Promise.all let them race.
+        const outcomes = new Map<(typeof calls)[number], string>();
+        await Promise.all(
+            calls.filter((fc) => parallelSafe(fc.name!)).map(async (fc) => {
+                outcomes.set(fc, await opts.dispatch(fc.name!, (fc.args ?? {}) as Record<string, unknown>));
             })
         );
+        for (const fc of calls.filter((fc) => !parallelSafe(fc.name!))) {
+            opts.signal?.throwIfAborted();
+            outcomes.set(fc, await opts.dispatch(fc.name!, (fc.args ?? {}) as Record<string, unknown>));
+        }
+        // Rebuilt in call order: a functionResponse must line up with its call.
+        const results = calls.map((fc) => ({
+            name: fc.name!, result: outcomes.get(fc) ?? "", id: (fc as any).id,
+        }));
 
         contents.push(response.candidates![0].content);
         contents.push({
@@ -184,6 +207,8 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
     // If the round budget runs out with calls still pending, response.text is
     // empty or mid-work narration. Answer the calls with a stop notice and
     // force one final tool-free turn instead.
+    const stopReason: LoopStopReason =
+        response.functionCalls && response.functionCalls.length > 0 ? "budget_exhausted" : "complete";
     if (response.functionCalls && response.functionCalls.length > 0) {
         contents.push(response.candidates![0].content);
         contents.push({
@@ -225,5 +250,6 @@ export async function runGeminiLoop(opts: GeminiLoopOpts): Promise<{ text: strin
     return {
         text: text || "I ran out of steps before finishing this task. Say 'continue' and I'll pick up where I left off.",
         usage,
+        stopReason,
     };
 }

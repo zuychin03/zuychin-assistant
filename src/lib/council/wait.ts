@@ -29,6 +29,8 @@ export type WaitResult =
     | { kind: "batch"; session: CouncilSession; fresh: CouncilMessage[]; openToYou: CouncilMessage[]; omittedBefore: number | null; cursor: number; hasFloor: boolean; moreRemain: boolean }
     | { kind: "floor"; session: CouncilSession; overdue: string[]; cursor: number }
     | { kind: "waiting"; session: CouncilSession; cursor: number; lastMessageAt: string; waitCalls: number }
+    | { kind: "paused"; session: CouncilSession; fresh: CouncilMessage[]; omittedBefore: number | null; cursor: number }
+    | { kind: "standby"; session: CouncilSession; fresh: CouncilMessage[]; omittedBefore: number | null; cursor: number }
     | { kind: "degraded"; session: CouncilSession; cursor: number };
 
 function isFresh(grantedAt: string | null, ttlSeconds: number): boolean {
@@ -109,6 +111,7 @@ export async function pollCouncil(params: {
     let lastTouch = started;
     let failures = 0;
     let latest = session;
+    let paused = false;
 
     for (;;) {
         const tick = await readTick(sessionId);
@@ -122,10 +125,39 @@ export async function pollCouncil(params: {
             }
         } else {
             failures = 0;
-            latest = { ...latest, round: tick.round, status: tick.status, lastSeq: tick.lastSeq, lastMessageAt: tick.lastMessageAt };
+            latest = { ...latest, round: tick.round, status: tick.status, lastSeq: tick.lastSeq, lastMessageAt: tick.lastMessageAt, pausedAt: tick.pausedAt };
+            paused = tick.pausedAt !== null;
 
             if (tick.status === "closed") {
                 return { kind: "closed", session: (await getSessionById(sessionId)) ?? latest };
+            }
+
+            // Two ways to be held: the owner stopped the room, or the closer
+            // proposed a verdict and the owner has not ruled. Both deliver what
+            // was posted - the relay and the standby notice travel this path -
+            // and neither grants a turn or elects a floor.
+            const held = paused ? "paused" as const
+                : tick.status === "awaiting_owner" ? "standby" as const
+                    : null;
+            if (held) {
+                if (tick.lastSeq > cursor) {
+                    const view = await buildView({ sessionId, agentName, sinceSeq: cursor });
+                    if (view) {
+                        const delivered = view.fresh.length ? view.fresh[view.fresh.length - 1].seq : cursor;
+                        await touchParticipant({ sessionId, agentName, pendingAck: delivered });
+                        return {
+                            kind: held, session: latest, fresh: view.fresh,
+                            omittedBefore: view.omittedBefore, cursor: delivered,
+                        };
+                    }
+                }
+                if (Date.now() >= deadline || params.signal?.aborted) break;
+                await sleep(pollIntervalMs(Date.now() - started));
+                if (Date.now() - lastTouch >= TOUCH_MS) {
+                    await touchParticipant({ sessionId, agentName });
+                    lastTouch = Date.now();
+                }
+                continue;
             }
 
             if (Date.parse(tick.expiresAt) <= Date.now()) {
@@ -176,11 +208,18 @@ export async function pollCouncil(params: {
         }
     }
 
+    if (paused || latest.status === "awaiting_owner") {
+        return {
+            kind: paused ? "paused" : "standby",
+            session: latest, fresh: [], omittedBefore: null, cursor,
+        };
+    }
     return { kind: "waiting", session: latest, cursor, lastMessageAt: latest.lastMessageAt, waitCalls };
 }
 
 export type DispatchResult =
     | { kind: "degraded" }
+    | { kind: "paused"; session: CouncilSession }
     | { kind: "ok"; session: CouncilSession; floorHolder: string | null; view: CouncilDispatchView };
 
 /**
@@ -196,6 +235,14 @@ export async function dispatchCouncil(params: {
     const sessionId = params.session.id;
     const tick = await readTick(sessionId);
     if (!tick) return { kind: "degraded" };
+
+    // No turns while the owner has the room stopped. Presence is still refreshed:
+    // these agents have not gone anywhere, and dropping them from the election
+    // would punish them for a pause they did not cause.
+    if (tick.pausedAt || tick.status === "awaiting_owner") {
+        await markParticipantsAlive(sessionId, params.agentNames);
+        return { kind: "paused", session: (await getSessionById(sessionId)) ?? params.session };
+    }
 
     if (Date.parse(tick.expiresAt) <= Date.now()) await expireSessionIfDue(sessionId);
 

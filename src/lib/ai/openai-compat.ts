@@ -1,5 +1,5 @@
 import {
-    buildOpenAIToolDeclarations, executeTool, type OpenAITool,
+    buildOpenAIToolDeclarations, executeTool, toolRefusal, type OpenAITool,
 } from "@/lib/ai/mcp-service";
 import { getProviderApiKey, cappedMaxTokens, type ChatModel, type ProviderConfig, type GenParams } from "@/lib/ai/providers";
 import {
@@ -114,11 +114,13 @@ export async function openaiCompatChat(params: {
     search?: boolean;
     genParams?: GenParams;
     ctx?: ToolContext;
+    /** Restricts both the declarations and the dispatch. Absent means everything. */
+    allowTools?: ReadonlySet<string>;
     onUsage?: (u: { promptTokens: number; outputTokens: number; totalTokens: number }) => void;
     signal?: AbortSignal;
     onToken?: (text: string, reset?: boolean) => void;
 }): Promise<string> {
-    const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx } = params;
+    const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx, allowTools } = params;
 
     const usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 };
     const trackUsage = (d: ChatCompletion) => {
@@ -190,7 +192,7 @@ export async function openaiCompatChat(params: {
         { role: "user", content: userMessageContent },
     ];
 
-    const tools = model.supportsTools ? buildOpenAIToolDeclarations() : undefined;
+    const tools = model.supportsTools ? buildOpenAIToolDeclarations(allowTools) : undefined;
 
     const forceSearch = !!params.search && !!tools
         ? { type: "function" as const, function: { name: "search_web" } }
@@ -223,7 +225,11 @@ export async function openaiCompatChat(params: {
                 try {
                     args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
                 } catch { }
-                const result = await executeTool(call.function.name, args, embRef, ctx);
+                // Checked on dispatch, not only on the declarations: a model can
+                // emit a name it was never offered.
+                const result = allowTools && !allowTools.has(call.function.name)
+                    ? toolRefusal(call.function.name)
+                    : await executeTool(call.function.name, args, embRef, ctx);
                 return { id: call.id, name: call.function.name, result };
             })
         );

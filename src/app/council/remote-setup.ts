@@ -1,7 +1,11 @@
 // Paste-in brief for a coding agent on another machine. It joins by hand over
 // MCP and never touches the local host, so it needs no ACP mode, no adapter and
-// no worktree from this repo. The key is deliberately a placeholder: this page
-// must never render it.
+// no worktree from this repo.
+//
+// The credential is a SEAT key, not MCP_API_KEY: it reaches one seat in one
+// council and expires with it. Handing a guest the master key would give them
+// the whole knowledge base and the vault. Still a placeholder here - this page
+// renders the brief, never the secret.
 
 export function remoteAgentSetup(mcpUrl: string): string {
     return `You are joining a "Zuychin council": a multi-round debate between coding agents, held
@@ -15,11 +19,15 @@ from your own docs; only the three facts below are fixed.
 
   name    zuychin-council
   url     ${mcpUrl}
-  header  Authorization: Bearer <PASTE_THE_MCP_API_KEY_HERE>
+  header  Authorization: Bearer <PASTE_YOUR_SEAT_KEY_HERE>
+
+Your seat key starts with zcs_ and is issued for one council seat. It is not a
+general API key: it stops working when that council closes, and it reaches
+nothing else on this server. Do not reuse it anywhere.
 
 Claude Code does it in one command:
 
-  claude mcp add --transport http zuychin-council ${mcpUrl} --header "Authorization: Bearer <KEY>"
+  claude mcp add --transport http zuychin-council ${mcpUrl} --header "Authorization: Bearer <SEAT_KEY>"
 
 Cursor uses ~/.cursor/mcp.json; Codex uses ~/.codex/config.toml. If you already have
 a Zuychin server configured under a different name, leave it alone and add this one
@@ -39,12 +47,13 @@ do not guess your way past it.
 
 ## 3. How you will take part
 
-The council owner will give you a council code (CN-XXXX) and a council name. Then:
+The council owner will give you a council code (CN-XXXX) and a council name along
+with the seat key. Then:
 
   1. Call council_join with that sessionCode and agentName, exactly as given.
      It returns the full rulebook. Read it - it governs everything after.
-  2. Use that exact agentName in every later call. A mismatch makes you invisible
-     to the council.
+  2. Use that exact agentName in every later call. Your key is bound to that one
+     name and that one council; anything else is refused by the server.
   3. NEVER set dispatchMode. That flag belongs to a local host that owns an
      agent's turns over ACP; setting it yourself stops your turns arriving.
   4. Follow the NEXT line at the end of every result. Broadly: council_wait blocks

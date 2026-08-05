@@ -2,6 +2,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase";
 
 export type CampaignStatus = "running" | "complete" | "blocked" | "cancelled";
 export type WorkItemStatus = "queued" | "in_progress" | "awaiting_review" | "verified" | "blocked" | "cancelled";
+export type IntegrationStatus = "pending" | "running" | "verified" | "conflict" | "failed";
 
 export interface CouncilWorkItemInput {
     agentName: string;
@@ -18,6 +19,11 @@ export interface CouncilCampaign {
     baseBranch: string;
     createdAt: string;
     completedAt: string | null;
+    integratorAgent: string | null;
+    integrationBranch: string | null;
+    integrationStatus: IntegrationStatus | null;
+    integrationReport: string | null;
+    integrationCheckedAt: string | null;
 }
 
 export interface CouncilWorkItem {
@@ -33,7 +39,13 @@ export interface CouncilWorkItem {
     attempts: number;
     progress: string | null;
     commitHash: string | null;
+    /** The agent's own account of its work. Never sufficient to accept an item. */
     verification: string | null;
+    /** What the host checked itself. null = not checked yet. */
+    hostVerified: boolean | null;
+    hostVerification: string | null;
+    hostCheckedAt: string | null;
+    declaredPaths: string[];
     blockedReason: string | null;
     startedAt: string | null;
     completedAt: string | null;
@@ -43,6 +55,9 @@ export interface CouncilWorkItem {
 interface CampaignRow {
     id: string; session_id: string; status: CampaignStatus; repo_path: string; base_branch: string;
     created_at: string; completed_at: string | null;
+    integrator_agent: string | null; integration_branch: string | null;
+    integration_status: IntegrationStatus | null; integration_report: string | null;
+    integration_checked_at: string | null;
 }
 
 interface WorkItemRow {
@@ -51,15 +66,21 @@ interface WorkItemRow {
     heartbeat_at: string | null; attempts: number; progress: string | null; commit_hash: string | null;
     verification: string | null; blocked_reason: string | null; started_at: string | null;
     completed_at: string | null; reviewed_at: string | null;
+    host_verified: boolean | null; host_verification: string | null; host_checked_at: string | null;
+    declared_paths: string[] | null;
 }
 
-const CAMPAIGN_COLUMNS = "id, session_id, status, repo_path, base_branch, created_at, completed_at";
-const ITEM_COLUMNS = "id, campaign_id, sequence, agent_name, title, instructions, acceptance_criteria, status, heartbeat_at, attempts, progress, commit_hash, verification, blocked_reason, started_at, completed_at, reviewed_at";
+const CAMPAIGN_COLUMNS = "id, session_id, status, repo_path, base_branch, created_at, completed_at, "
+    + "integrator_agent, integration_branch, integration_status, integration_report, integration_checked_at";
+const ITEM_COLUMNS = "id, campaign_id, sequence, agent_name, title, instructions, acceptance_criteria, status, heartbeat_at, attempts, progress, commit_hash, verification, blocked_reason, started_at, completed_at, reviewed_at, host_verified, host_verification, host_checked_at, declared_paths";
 
 function mapCampaign(row: CampaignRow): CouncilCampaign {
     return {
         id: row.id, sessionId: row.session_id, status: row.status, repoPath: row.repo_path,
         baseBranch: row.base_branch, createdAt: row.created_at, completedAt: row.completed_at,
+        integratorAgent: row.integrator_agent, integrationBranch: row.integration_branch,
+        integrationStatus: row.integration_status, integrationReport: row.integration_report,
+        integrationCheckedAt: row.integration_checked_at,
     };
 }
 
@@ -70,6 +91,8 @@ function mapItem(row: WorkItemRow): CouncilWorkItem {
         status: row.status, heartbeatAt: row.heartbeat_at, attempts: row.attempts, progress: row.progress,
         commitHash: row.commit_hash, verification: row.verification, blockedReason: row.blocked_reason,
         startedAt: row.started_at, completedAt: row.completed_at, reviewedAt: row.reviewed_at,
+        hostVerified: row.host_verified, hostVerification: row.host_verification,
+        hostCheckedAt: row.host_checked_at, declaredPaths: row.declared_paths ?? [],
     };
 }
 
@@ -99,13 +122,13 @@ export async function createCampaign(params: {
 export async function getCampaignById(id: string): Promise<CouncilCampaign | null> {
     const { data, error } = await supabase.from("council_campaigns").select(CAMPAIGN_COLUMNS).eq("id", id).maybeSingle();
     if (error) throw new Error(error.message);
-    return data ? mapCampaign(data as CampaignRow) : null;
+    return data ? mapCampaign(data as unknown as CampaignRow) : null;
 }
 
 export async function getCampaignForSession(sessionId: string): Promise<CouncilCampaign | null> {
     const { data, error } = await supabase.from("council_campaigns").select(CAMPAIGN_COLUMNS).eq("session_id", sessionId).maybeSingle();
     if (error) throw new Error(error.message);
-    return data ? mapCampaign(data as CampaignRow) : null;
+    return data ? mapCampaign(data as unknown as CampaignRow) : null;
 }
 
 export async function listCampaignWorkItems(campaignId: string): Promise<CouncilWorkItem[]> {
@@ -150,10 +173,45 @@ export async function blockWorkItem(params: { itemId: string; agentName: string;
     return data === true;
 }
 
-export async function reviewWorkItem(params: { itemId: string; reviewer: string; accepted: boolean; note: string }): Promise<boolean> {
+export async function reviewWorkItem(params: {
+    itemId: string; reviewer: string; accepted: boolean; note: string;
+}): Promise<{ ok: boolean; reason?: string }> {
     const { data, error } = await supabase.rpc("review_council_work_item", {
         p_item_id: params.itemId, p_reviewer: params.reviewer, p_accepted: params.accepted, p_note: params.note,
     });
     if (error) throw new Error(error.message);
+    return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
+}
+
+// What the HOST observed, kept apart from what the agent claimed. A failure
+// bounces the item back to its owner rather than parking it in review.
+export async function recordHostVerification(params: {
+    itemId: string; passed: boolean; report: string;
+}): Promise<boolean> {
+    const { data, error } = await supabase.rpc("record_host_verification", {
+        p_item_id: params.itemId, p_passed: params.passed, p_report: params.report,
+    });
+    if (error) throw new Error(error.message);
     return data === true;
+}
+
+export async function setCampaignIntegrator(params: {
+    sessionId: string; agentName: string;
+}): Promise<{ ok: boolean; reason?: string; status?: string }> {
+    const { data, error } = await supabase.rpc("set_campaign_integrator", {
+        p_session_id: params.sessionId, p_agent: params.agentName,
+    });
+    if (error) throw new Error(error.message);
+    return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; status?: string };
+}
+
+export async function recordCampaignIntegration(params: {
+    sessionId: string; status: IntegrationStatus; branch?: string; report: string;
+}): Promise<{ ok: boolean; reason?: string }> {
+    const { data, error } = await supabase.rpc("record_campaign_integration", {
+        p_session_id: params.sessionId, p_status: params.status,
+        p_branch: params.branch ?? null, p_report: params.report,
+    });
+    if (error) throw new Error(error.message);
+    return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
 }
