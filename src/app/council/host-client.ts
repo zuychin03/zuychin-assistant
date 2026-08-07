@@ -51,12 +51,21 @@ export interface HostInstance {
     allowedReasoningEfforts: string[];
 }
 
+/** A repo this host will work in, from host.repos in scripts/council-agents.json. */
+export interface HostWorkspace {
+    name: string;
+    path: string;
+    baseBranch: string;
+}
+
 export interface HostSnapshot {
     version: string;
     code: string | null;
     /** Both absent from a host older than the build that added them. */
     busy?: boolean;
     instances?: HostInstance[];
+    /** Absent from a host older than the build that added the repo allowlist. */
+    workspaces?: HostWorkspace[];
     topic: string | null;
     status: string;
     round: number;
@@ -145,6 +154,25 @@ export async function findHost(): Promise<{ port: number; token: string | null; 
         return { port, token: null, snapshot: null };
     }
     return null;
+}
+
+/**
+ * On demand rather than from the state frame: the host shells out to git for
+ * this, and /health is polled every couple of seconds.
+ */
+export async function fetchBranches(
+    port: number, token: string, workspace?: string,
+): Promise<{ baseBranch: string; branches: string[] } | null> {
+    try {
+        const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+        const res = await fetch(`http://127.0.0.1:${port}/branches${query}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return null;
+        return await res.json() as { baseBranch: string; branches: string[] };
+    } catch {
+        return null;
+    }
 }
 
 export async function pair(port: number, code: string): Promise<string | null> {
@@ -239,7 +267,7 @@ export class HostClient {
         return true;
     }
 
-    convene(params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> }): boolean {
+    convene(params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; workspace?: string; baseBranch?: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> }): boolean {
         return this.send({ type: "convene", ...params });
     }
 
@@ -272,7 +300,7 @@ const LAUNCH_TIMEOUT_MS = 120_000;
 export function launchCouncil(
     port: number,
     token: string,
-    params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> },
+    params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; workspace?: string; baseBranch?: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> },
 ): Promise<{ code: string } | { error: string }> {
     return new Promise((settle) => {
         let asked = false;

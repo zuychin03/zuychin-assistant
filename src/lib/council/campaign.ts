@@ -216,18 +216,6 @@ export async function reviewWorkItem(params: {
     return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
 }
 
-// What the HOST observed, kept apart from what the agent claimed. A failure
-// bounces the item back to its owner rather than parking it in review.
-export async function recordHostVerification(params: {
-    itemId: string; passed: boolean; report: string;
-}): Promise<boolean> {
-    const { data, error } = await supabase.rpc("record_host_verification", {
-        p_item_id: params.itemId, p_passed: params.passed, p_report: params.report,
-    });
-    if (error) throw new Error(error.message);
-    return data === true;
-}
-
 export async function setCampaignIntegrator(params: {
     sessionId: string; agentName: string;
 }): Promise<{ ok: boolean; reason?: string; status?: string }> {
@@ -236,17 +224,6 @@ export async function setCampaignIntegrator(params: {
     });
     if (error) throw new Error(error.message);
     return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; status?: string };
-}
-
-export async function recordCampaignIntegration(params: {
-    sessionId: string; status: IntegrationStatus; branch?: string; report: string;
-}): Promise<{ ok: boolean; reason?: string }> {
-    const { data, error } = await supabase.rpc("record_campaign_integration", {
-        p_session_id: params.sessionId, p_status: params.status,
-        p_branch: params.branch ?? null, p_report: params.report,
-    });
-    if (error) throw new Error(error.message);
-    return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
 }
 
 export interface VerificationReceipt {

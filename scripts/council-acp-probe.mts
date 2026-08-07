@@ -8,6 +8,11 @@
  * --prompt adds a real turn that asks the agent to list its council tools. It
  * costs vendor tokens and is the only check that proves the MCP server passed in
  * session/new actually reached the model.
+ *
+ * --models prints the model and reasoning IDs this adapter advertises, in the
+ * form council-agents.json wants. The host rejects an allowedModels entry the
+ * adapter never advertised, so these strings have to be copied, not guessed.
+ * It costs nothing: the options ride the session/new response.
  */
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +21,7 @@ import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as acp from "@agentclientprotocol/sdk";
 import { onPath, spawnResolved } from "./council-host-paths.mts";
+import { selectConfig } from "./council-models.mts";
 import { COUNCIL_MCP_SERVER_NAME } from "../src/lib/council/protocol.ts";
 
 interface ProbeAdapter {
@@ -30,6 +36,7 @@ const flags = process.argv.slice(0, split < 0 ? process.argv.length : split);
 // agent, which may legitimately take a --prompt of its own.
 const wantPrompt = flags.includes("--prompt") || flags.includes("--edit");
 const wantEdit = flags.includes("--edit");
+const wantModels = flags.includes("--models");
 const adapterName = flags[flags.indexOf("--agent") + 1];
 
 let command: string;
@@ -61,7 +68,7 @@ if (flags.includes("--agent")) {
 } else if (split >= 0 && process.argv[split + 1]) {
     [command, ...args] = process.argv.slice(split + 1);
 } else {
-    console.error("usage: ... acp-probe.mts [--prompt] (--agent <name> | -- <command> [args...])");
+    console.error("usage: ... acp-probe.mts [--prompt] [--models] (--agent <name> | -- <command> [args...])");
     process.exit(2);
 }
 
@@ -69,9 +76,42 @@ const cwd = mkdtempSync(join(tmpdir(), "acp-probe-"));
 const results: string[] = [];
 let stderrTail = "";
 
+let modelsBlock = "";
+
 function ok(label: string, detail = "") { results.push(`  PASS  ${label}${detail ? ` - ${detail}` : ""}`); }
 function bad(label: string, detail = "") { results.push(`  FAIL  ${label}${detail ? ` - ${detail}` : ""}`); }
 function note(label: string, detail = "") { results.push(`  ....  ${label}${detail ? ` - ${detail}` : ""}`); }
+
+interface AdvertisedOption { id: string; currentValue?: string; options?: { value: string; name?: string }[] }
+
+// Printed as a paste-ready instance entry rather than a bare list: the whole
+// point is that these strings reach council-agents.json unretyped.
+function renderInstanceBlock(model: AdvertisedOption | null, reasoning: AdvertisedOption | null): string {
+    const values = (option: AdvertisedOption | null) => (option?.options ?? []).map((o) => o.value);
+    const lines: string[] = [];
+    for (const [label, option] of [["models", model], ["reasoning efforts", reasoning]] as const) {
+        const advertised = values(option);
+        lines.push(`\nAdvertised ${label}: ${advertised.length ? "" : "(none)"}`);
+        for (const o of option?.options ?? []) {
+            const marker = o.value === option?.currentValue ? "  <- current" : "";
+            lines.push(`  ${o.value}${o.name && o.name !== o.value ? `   (${o.name})` : ""}${marker}`);
+        }
+    }
+    // --agent names the ADAPTER, so that is the provider; the instance name is
+    // the owner's to pick and stays a placeholder.
+    const json = JSON.stringify({
+        provider: adapterName ?? "<provider>",
+        expertise: "<expertise>",
+        allowedModels: values(model),
+        allowedReasoningEfforts: values(reasoning),
+        ...(model?.currentValue ? { defaultModel: model.currentValue } : {}),
+        ...(reasoning?.currentValue ? { defaultReasoningEffort: reasoning.currentValue } : {}),
+    }, null, 2);
+    lines.push(`\nFor scripts/council-agents.json, under "instances":\n  "<instance-name>": ${json.replace(/\n/g, "\n  ")}`);
+    lines.push("\ndefaultModel must be inside allowedModels. Anything you list that the");
+    lines.push("adapter did not advertise above is rejected at session start, not ignored.");
+    return lines.join("\n");
+}
 
 function deadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
     return Promise.race([
@@ -161,6 +201,26 @@ try {
     );
     ok("3. session/new accepted with an http MCP server", `session ${session.sessionId.slice(0, 12)}…`);
 
+    if (wantModels) {
+        // Read the options exactly where the host reads them, off the
+        // session/new response, so what prints is what the host will validate
+        // against rather than a second opinion from another call.
+        const options = (session as unknown as { newSessionResponse?: { configOptions?: unknown } })
+            .newSessionResponse?.configOptions;
+        const model = selectConfig(options, "model");
+        const reasoning = selectConfig(options, "thought_level");
+        if (!model && !reasoning) {
+            note("M. advertises no selectable model", "leave allowedModels empty; this adapter uses whatever the vendor CLI is set to");
+        }
+        if (model) {
+            ok("M. advertises model selection", `config id "${model.id}", currently ${model.currentValue ?? "unset"}`);
+        }
+        if (reasoning) {
+            ok("M. advertises reasoning selection", `config id "${reasoning.id}", currently ${reasoning.currentValue ?? "unset"}`);
+        }
+        modelsBlock = renderInstanceBlock(model, reasoning);
+    }
+
     if (wantPrompt) {
         // --edit is the only way to learn whether an agent populates
         // toolCall.locations, which decides whether the host's worktree gate can
@@ -212,6 +272,7 @@ try {
         if (sawTerminal) note("8. uses client terminals", "the host forces cwd to the worktree");
     } else {
         note("4-8. turn behaviour", "skipped; add --prompt to check MCP visibility, streaming and permissions");
+        if (!wantModels) note("M. advertised models", "skipped; add --models to list the model IDs allowedModels accepts");
     }
 } catch (error) {
     bad("handshake", error instanceof Error ? error.message : String(error));
@@ -226,6 +287,7 @@ try {
 
 console.log(`\nResult for: ${command} ${args.join(" ")}`);
 console.log(results.join("\n"));
+if (modelsBlock) console.log(modelsBlock);
 if (wantPrompt && text) console.log(`\nAgent reply:\n${text.trim().slice(0, 1200)}`);
 console.log("");
 

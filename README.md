@@ -587,7 +587,13 @@ Setup:
    Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself (`docs/` is
    gitignored, so that guide lives only in the working copy).
 3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
-   and `codex-2` both on `codex`, or three Claude instances on `claude-code`.
+   and `codex-2` both on `codex`, or three Claude instances on `claude-code`. Each may carry an
+   `allowedModels` / `allowedReasoningEfforts` allowlist, which is what `/council` offers per seat.
+   Populate it only with IDs the adapter actually advertises - the host refuses an unadvertised
+   model rather than falling back - and get them from
+   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --models --agent codex`, which
+   prints a paste-ready block. Not every adapter offers a choice: Zed's `claude-code` adapter
+   advertises none, so those seats run whatever the `claude` CLI is set to.
 4. Set a separate random `MCP_COUNCIL_HOST_KEY` in the app and local host environment. The host
    key has no knowledge/vault authority and is never passed to an adapter. Each adapter instead
    receives a short-lived credential for its one Council seat.
@@ -609,20 +615,25 @@ one-line shim in your Startup folder that runs that script hidden:
 node --no-warnings --import tsx --env-file=.env.local scripts/council-host.mts --repo .
 ```
 
-Convene with the CLI, which starts the host if it is not already running:
+Every argument is forwarded to the host, so a Startup shim can pin where it starts and what its
+seats default to without editing `council-agents.json`:
 
 ```bash
-npx tsx --env-file=.env.local scripts/council-launch.mts \
-  --topic "Should we adopt X?" --brief "Constraints and current evidence" \
-  --agents claude-a,claude-b,codex-1 --closer claude-a \
-  --type code --repo /path/to/repo --dry-run
+scripts/council-host-start.cmd --repo /path/to/other-repo --base develop
 ```
 
-`--dry-run` stops before anything exists in Postgres or on disk. Remove it to convene. Pick the
-discussion template with `--type`: `debate` for decisions and dissent, `code` for implementation
-and test planning, `research` for evidence and confidence, `audit` for ranked risk findings, or
-`debug` for reproduction and root-cause work. The host keeps running after the CLI exits; stop it
-from `/council` or by killing the printed PID.
+`--repo` only sets where the host *starts*. Which repos a council may be convened against is
+`host.repos` in `council-agents.json`, because that list is what `/council` may choose from: the
+page sends a repo **name**, never a path, and adopting a council recorded against an unlisted repo
+is refused for the same reason. `--model` and `--reasoning` set a default for seats whose
+`allowedModels` already contain the value and are ignored elsewhere, since one flag cannot name a
+valid model for every provider at once.
+
+Convene from `/council`, which picks the repo, the base branch, the council type and a model per
+seat. The type is the discussion template: `debate` for decisions and dissent, `code` for
+implementation and test planning, `research` for evidence and confidence, `audit` for ranked risk
+findings, or `debug` for reproduction and root-cause work. The host keeps running after a council
+closes; stop it from `/council`.
 
 **Isolation is enforced, not conventional.** Each agent gets its own git worktree and branch, and
 every `fs/read_text_file`, `fs/write_text_file` and permission request is checked against it with
@@ -986,10 +997,15 @@ discord-bot/
 scripts/
 ├── council-host.mts                    # Local ACP host: agent sessions, permission gate, dispatch loop, control channel
 ├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
-├── council-launch.mts                  # CLI onto the host: preflight, start or attach, convene
-├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host will run it
-├── council-host-start.cmd              # Start a host for this checkout (portable; used by the Startup shim)
+├── council-git.mts                     # Exact-commit verification, manifest assembly, protected-ref checks
+├── council-models.mts                  # Per-seat model/reasoning choice against advertised ACP options
+├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host runs it; --models lists its model IDs
+├── council-host-start.cmd              # Start a host (the launch method; portable, used by the Startup shim)
 ├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
+├── test-council-protocol.mts           # Council Postgres protocol tests
+├── test-council-v3.mts                 # V3 git, model and contract tests (local)
+├── test-council-v3-db.mts              # V3 lease, delivery, verification and manifest tests
+├── test-mutation-journal.mts           # Mutation-journal tests
 ├── evaluate-knowledge.ts               # Knowledge-store retrieval eval
 └── reembed-knowledge.ts                # Manual store re-embed
 supabase-setup.sql                      # One-shot database setup script

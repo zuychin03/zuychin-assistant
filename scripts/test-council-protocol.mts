@@ -9,6 +9,7 @@
 // participants, messages and campaigns with it.
 
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "node:crypto";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -41,6 +42,8 @@ async function makeSession(opts: {
     maxMessages?: number;
     workspace?: boolean;
     closer?: string;
+    protocolVersion?: number;
+    baseSha?: string;
 }): Promise<string> {
     const { data, error } = await db
         .from("council_sessions")
@@ -53,6 +56,8 @@ async function makeSession(opts: {
             expires_at: new Date(Date.now() + 3600_000).toISOString(),
             repo_path: opts.workspace ? "/tmp/repo" : null,
             base_branch: opts.workspace ? "main" : null,
+            protocol_version: opts.protocolVersion ?? 2,
+            base_sha: opts.baseSha ?? null,
         })
         .select("id")
         .single();
@@ -383,7 +388,9 @@ async function testSeatKeys(): Promise<void> {
     const expired = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token2) });
     check("an expired key resolves to nothing", expired.data === null, expired.data);
 
-    // A key must die with its council, not outlive it.
+    // A key has to survive the close: the campaign phase only begins once the
+    // council is closed, so dying at close would strand every guest agent
+    // before it could do any work. Expiry is what ends the key.
     const token3 = `zcs_${randomBytes(32).toString("hex")}`;
     await db.rpc("issue_council_seat_key", {
         p_session_id: id, p_seat_name: "beta", p_token_hash: hash(token3),
@@ -391,12 +398,45 @@ async function testSeatKeys(): Promise<void> {
     });
     await db.from("council_sessions").update({ status: "closed" }).eq("id", id);
     const afterClose = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token3) });
-    check("a key stops working once its council closes", afterClose.data === null, afterClose.data);
+    check("a key still works while the closed council's work runs",
+        (afterClose.data as { seat_name?: string } | null)?.seat_name === "beta", afterClose.data);
+
+    await db.from("council_sessions").update({ status: "expired" }).eq("id", id);
+    const afterExpiry = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token3) });
+    check("a key stops working once its council expires", afterExpiry.data === null, afterExpiry.data);
 }
+
+// Acceptance is only reachable on a V3 council: the gate compares the run's
+// base sha against the campaign's, and a campaign only has one when the
+// session froze a base commit.
+const BASE_SHA = "0".repeat(40);
+const FIRST_SHA = "1".repeat(40);
+const SECOND_SHA = "2".repeat(40);
 
 async function testHostVerification(): Promise<void> {
     console.log("\nhost-run verification");
-    const id = await makeSession({ agents: ["alpha"], workspace: true, closer: "alpha" });
+    const id = await makeSession({
+        agents: ["alpha"], workspace: true, closer: "alpha",
+        protocolVersion: 3, baseSha: BASE_SHA,
+    });
+    const lease = await db.rpc("claim_council_host_lease", {
+        p_session_id: id, p_host_id: randomUUID(), p_duration_seconds: 300,
+    });
+    const { hostId, leaseEpoch } = lease.data as { hostId: string; leaseEpoch: number };
+
+    // Only the lease holder may write evidence, so every check here rides it.
+    const verify = async (
+        _session: string, itemId: string, commitSha: string, passed: boolean, report: string,
+    ) => {
+        const { data } = await db.rpc("record_council_verification", {
+            p_item_id: itemId, p_host_id: hostId, p_lease_epoch: leaseEpoch,
+            p_commit_sha: commitSha, p_base_sha: BASE_SHA, p_branch_name: "council/x/alpha",
+            p_profile_id: "standard", p_command_receipts: [], p_output_digest: "d".repeat(64),
+            p_passed: passed, p_report: report,
+        });
+        return data;
+    };
+
     await db.rpc("conclude_council", { p_session_id: id, p_closer: "alpha", p_verdict: "v", p_open_questions: [] });
     await db.rpc("create_council_campaign", {
         p_session_id: id, p_created_by: "alpha",
@@ -406,20 +446,19 @@ async function testHostVerification(): Promise<void> {
     const item = claim.data as { id: string };
     await db.rpc("complete_council_work_item", {
         p_item_id: item.id, p_agent_name: "alpha",
-        p_commit_hash: "deadbeef", p_verification: "I ran the tests and they passed",
+        p_commit_hash: FIRST_SHA, p_verification: "I ran the tests and they passed",
     });
 
-    // The whole point: the agent's own account is not enough to accept.
+    // The whole point: the agent's own account is not enough to accept. V3
+    // wants evidence tied to this exact commit, not a boolean the host set.
     const premature = await db.rpc("review_council_work_item", {
         p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "looks fine",
     });
     check("accepting before the host checks is refused",
-        (premature.data as { reason?: string })?.reason === "not_host_verified", premature.data);
+        (premature.data as { reason?: string })?.reason === "not_exactly_verified", premature.data);
 
-    const failed = await db.rpc("record_host_verification", {
-        p_item_id: item.id, p_passed: false, p_report: "FAIL commit does not descend from main",
-    });
-    check("a failed host check is recorded", failed.data === true, failed.data);
+    const failed = await verify(id, item.id, FIRST_SHA, false, "FAIL commit does not descend from main");
+    check("a failed host check is recorded", (failed as { ok?: boolean })?.ok === true, failed);
     const { data: bounced } = await db.from("council_work_items").select("status, host_verified").eq("id", item.id).single();
     check("a failed host check returns the task to its owner", bounced?.status === "queued", bounced);
 
@@ -427,36 +466,41 @@ async function testHostVerification(): Promise<void> {
     await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
     await db.rpc("complete_council_work_item", {
         p_item_id: item.id, p_agent_name: "alpha",
-        p_commit_hash: "cafebabe", p_verification: "second try",
+        p_commit_hash: SECOND_SHA, p_verification: "second try",
     });
-    await db.rpc("record_host_verification", { p_item_id: item.id, p_passed: true, p_report: "ok all checks" });
+
+    // Evidence for a different commit must not unlock this one, or the gate is
+    // just the boolean it replaced.
+    await verify(id, item.id, FIRST_SHA, true, "passes, but for the old commit");
+    const mismatched = await db.rpc("review_council_work_item", {
+        p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "x",
+    });
+    check("evidence for another commit does not unlock acceptance",
+        (mismatched.data as { reason?: string })?.reason === "not_exactly_verified", mismatched.data);
+
+    await verify(id, item.id, SECOND_SHA, true, "ok all checks");
     const accepted = await db.rpc("review_council_work_item", {
         p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "good",
     });
     check("accepting after a passing host check succeeds", (accepted.data as { ok?: boolean })?.ok === true, accepted.data);
+    const { data: pinned } = await db.from("council_work_items")
+        .select("status, accepted_commit_sha").eq("id", item.id).single();
+    check("acceptance pins the exact commit",
+        pinned?.status === "verified" && pinned?.accepted_commit_sha === SECOND_SHA, pinned);
 
     const wrongReviewer = await db.rpc("review_council_work_item", {
         p_item_id: item.id, p_reviewer: "beta", p_accepted: true, p_note: "x",
     });
     check("only the closer may review", (wrongReviewer.data as { reason?: string })?.reason === "not_the_closer", wrongReviewer.data);
 
-    // Integration is a separate gate from per-item acceptance.
+    // Integration is a separate gate from per-item acceptance. Recording the
+    // result itself is host-fenced and lives in the V3 suite.
     const nominated = await db.rpc("set_campaign_integrator", { p_session_id: id, p_agent: "alpha" });
     check("an integrator can be nominated once the campaign completes",
         (nominated.data as { ok?: boolean })?.ok === true, nominated.data);
 
     const offRoster = await db.rpc("set_campaign_integrator", { p_session_id: id, p_agent: "nobody" });
     check("an integrator off the roster is refused", (offRoster.data as { ok?: boolean })?.ok === false, offRoster.data);
-
-    const reported = await db.rpc("record_campaign_integration", {
-        p_session_id: id, p_status: "verified", p_branch: "council/x/integration", p_report: "merged clean",
-    });
-    check("an integration result is recorded", (reported.data as { ok?: boolean })?.ok === true, reported.data);
-
-    const badStatus = await db.rpc("record_campaign_integration", {
-        p_session_id: id, p_status: "nonsense", p_branch: null, p_report: "x",
-    });
-    check("an unknown integration status is refused", (badStatus.data as { ok?: boolean })?.ok === false, badStatus.data);
 }
 
 async function cleanup(): Promise<void> {

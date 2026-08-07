@@ -8,7 +8,7 @@ import {
     Laptop, Users, XCircle,
 } from "lucide-react";
 import {
-    findHost, forgetHost, pair, trimActivity, HostClient,
+    fetchBranches, findHost, forgetHost, pair, trimActivity, HostClient,
     type HostActivity, type HostConnection, type HostSnapshot,
 } from "./host-client";
 import { remoteAgentSetup } from "./remote-setup";
@@ -118,12 +118,15 @@ export default function CouncilPage() {
     const [showRemote, setShowRemote] = useState(false);
     const [copied, setCopied] = useState(false);
     const [origin, setOrigin] = useState("");
-    const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code" });
+    const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code", workspace: "", baseBranch: "" });
+    const [hostToken, setHostToken] = useState<string | null>(null);
+    const [branches, setBranches] = useState<string[]>([]);
     const [agentSelections, setAgentSelections] = useState<Record<string, { modelId?: string; reasoningEffort?: string }>>({});
     const clientRef = useRef<HostClient | null>(null);
 
     const connect = useCallback((port: number, token: string) => {
         clientRef.current?.close();
+        setHostToken(token);
         const client = new HostClient(port, token, {
             onState: (snapshot) => {
                 setHost(snapshot);
@@ -137,6 +140,22 @@ export default function CouncilPage() {
         clientRef.current = client;
         client.open();
     }, []);
+
+    // Reloaded when the chosen repo changes, since the branch list is per repo.
+    // The host's own answer decides the default, so a stale selection cannot
+    // survive a workspace switch.
+    useEffect(() => {
+        if (!hostPort || !hostToken) { setBranches([]); return; }
+        let cancelled = false;
+        void fetchBranches(hostPort, hostToken, form.workspace || undefined).then((result) => {
+            if (cancelled || !result) return;
+            setBranches(result.branches);
+            setForm((current) => (result.branches.includes(current.baseBranch)
+                ? current
+                : { ...current, baseBranch: result.baseBranch }));
+        });
+        return () => { cancelled = true; };
+    }, [hostPort, hostToken, form.workspace]);
 
     // Once on mount, never on a timer: a denied Local Network Access permission
     // cannot be re-requested programmatically, so retrying achieves nothing.
@@ -175,7 +194,7 @@ export default function CouncilPage() {
         setHostError("");
         setConvening(true);
         const selections = Object.fromEntries(agents.map((name) => [name, agentSelections[name] ?? {}]));
-        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType, selections });
+        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType, workspace: form.workspace || undefined, baseBranch: form.baseBranch || undefined, selections });
         setTimeout(() => setConvening(false), 8000);
     }, [form, agentSelections]);
 
@@ -443,7 +462,7 @@ export default function CouncilPage() {
                                     <input
                                         value={form.agents}
                                         onChange={(e) => setForm({ ...form, agents: e.target.value })}
-                                        placeholder="claude-a, codex-1"
+                                        placeholder="claude-a, codex-1, cursor-1"
                                         style={styles.input}
                                     />
                                     <input
@@ -459,6 +478,27 @@ export default function CouncilPage() {
                                     >
                                         {["debate", "code", "research", "audit", "debug"].map((t) => <option key={t} value={t}>{t}</option>)}
                                     </select>
+                                    {(host.workspaces?.length ?? 0) > 1 && (
+                                        <select
+                                            aria-label="Repository"
+                                            value={form.workspace}
+                                            onChange={(e) => setForm({ ...form, workspace: e.target.value })}
+                                            style={styles.input}
+                                        >
+                                            <option value="">host default</option>
+                                            {host.workspaces?.map((w) => <option key={w.name} value={w.name}>{w.name}</option>)}
+                                        </select>
+                                    )}
+                                    {branches.length > 1 && (
+                                        <select
+                                            aria-label="Base branch"
+                                            value={form.baseBranch}
+                                            onChange={(e) => setForm({ ...form, baseBranch: e.target.value })}
+                                            style={styles.input}
+                                        >
+                                            {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                                        </select>
+                                    )}
                                     <button type="button" onClick={submitConvene} disabled={convening} style={{ ...styles.quickLink, ...(convening ? styles.hostChipOff : {}) }}>
                                         <Play size={15} /> {convening ? "Convening…" : "Convene"}
                                     </button>
@@ -501,7 +541,9 @@ export default function CouncilPage() {
                                 </div>
                                 <div style={styles.workDetail}>
                                     Names must exist in scripts/council-agents.json. Each gets its own worktree off{" "}
-                                    {host.repo}, and every file and terminal call it makes is checked against that worktree.
+                                    {host.workspaces?.find((w) => w.name === form.workspace)?.path ?? host.repo}
+                                    {form.baseBranch ? ` at ${form.baseBranch}` : ""}, and every file and terminal call it
+                                    makes is checked against that worktree.
                                 </div>
                             </div>
                         )}

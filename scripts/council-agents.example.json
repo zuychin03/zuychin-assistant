@@ -8,7 +8,10 @@
     "_doc_autoAdopt": "true lets an idle host claim an open council it can run IN FULL - every live participant configured here and none already driven by hand - without anyone clicking. That is what makes a council convened from a phone actually start. Leave it off unless you want vendor processes starting unattended: a permission request outside a worktree is denied automatically after 120s if nobody is watching.",
     "port": 8787,
     "origins": [],
-    "autoAdopt": false
+    "autoAdopt": false,
+
+    "_doc_repos": "The ALLOWLIST of repos a council may be convened against. /council offers these by name and sends the name, never a path, so the page cannot aim the host at an unlisted directory; adopting a council recorded against an unlisted repo is refused for the same reason. The repo the host was launched with is always available even when this is absent, so a single-repo setup can leave it out.",
+    "repos": {}
   },
 
   "instances": {

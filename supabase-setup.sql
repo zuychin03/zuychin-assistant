@@ -3524,3 +3524,12 @@ begin
   return jsonb_build_object('ok', true);
 end;
 $$;
+
+-- ===== Council V3 cleanup =====
+-- Both were superseded by the V3 exact-commit contract and have no callers.
+-- record_host_verification is the dangerous one: it still sets host_verified,
+-- so it reads like it authorises acceptance, but review_council_work_item now
+-- requires a matching council_verification_runs row and ignores that flag.
+
+drop function if exists record_host_verification(uuid, boolean, text);
+drop function if exists record_campaign_integration(uuid, text, text, text);

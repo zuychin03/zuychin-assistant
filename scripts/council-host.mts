@@ -19,7 +19,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -76,7 +76,15 @@ interface HostConfig {
      * vendor processes with nobody at the keyboard, and a permission prompt
      * outside a worktree auto-denies after 120s unseen.
      */
-    host?: { port?: number; origins?: string[]; autoAdopt?: boolean };
+    /**
+     * repos is an ALLOWLIST, not a convenience. Convene names a key from it and
+     * never a path, so the page cannot aim the host at a directory this file
+     * did not nominate; the same check gates a council record on adopt.
+     */
+    host?: {
+        port?: number; origins?: string[]; autoAdopt?: boolean;
+        repos?: Record<string, { path: string; baseBranch?: string }>;
+    };
     /**
      * Run on the assembled integration branch before a campaign is offered for
      * merge. Repository-controlled on purpose: an agent must not get to choose
@@ -251,6 +259,55 @@ interface HostState {
 }
 
 const repoArg = arg("repo");
+const startupRepo = repoArg ? resolve(repoArg) : process.cwd();
+const startupBase = arg("base") ?? "main";
+
+// --model / --reasoning set a default for seats that already allow the value,
+// so one login-time launcher can pin a model without editing the config. A seat
+// whose allowedModels does not list it is left alone rather than failed: one
+// flag cannot name a valid model for every provider at once.
+const startupModel = arg("model");
+const startupReasoning = arg("reasoning");
+
+interface Workspace { name: string; path: string; baseBranch: string }
+
+const workspaces: Workspace[] = (() => {
+    const configured = Object.entries(config.host?.repos ?? {}).map(([name, entry]) => ({
+        name,
+        path: resolve(entry.path),
+        baseBranch: entry.baseBranch ?? startupBase,
+    }));
+    // The launched repo is always available, or --repo would silently stop
+    // working the moment an allowlist appeared.
+    if (!configured.some((w) => w.path === startupRepo)) {
+        configured.unshift({ name: basename(startupRepo), path: startupRepo, baseBranch: startupBase });
+    }
+    return configured;
+})();
+
+function workspaceByName(name: string): Workspace | undefined {
+    return workspaces.find((w) => w.name === name);
+}
+
+function workspaceByPath(path: string): Workspace | undefined {
+    const wanted = resolve(path);
+    return workspaces.find((w) => w.path === wanted);
+}
+
+// Local heads only. A remote-tracking ref is not something agents can branch
+// from and commit to, so offering one would only produce a confusing failure
+// later in the campaign. council/* is excluded because the host generates those
+// itself, one per agent per council; basing a new council on one is never the
+// intent, and left in they crowd out the real branches.
+function listBranches(repo: string): string[] {
+    const listed = git(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+    if (!listed.ok) return [];
+    return listed.out.split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((name) => name && !name.startsWith("council/"))
+        .sort();
+}
+
 const state: HostState = {
     hostId: randomUUID(),
     sessionId: null,
@@ -263,8 +320,8 @@ const state: HostState = {
     round: 0,
     maxRounds: 0,
     floorHolder: null,
-    repo: repoArg ? resolve(repoArg) : process.cwd(),
-    baseBranch: arg("base") ?? "main",
+    repo: startupRepo,
+    baseBranch: startupBase,
     verifyCommand: config.verifyCommand ?? [],
     runDir: null,
     agents: new Map(),
@@ -291,6 +348,20 @@ function resolveAgent(name: string): { adapter: Adapter; provider: string; exper
  * exist instead of guessing. A seat whose provider has no adapter is omitted:
  * it could only fail at spawn.
  */
+// Precedence is CLI over file: --model is the more specific statement of the
+// two, and it is ignored where the seat does not allow it.
+function seatDefaultModel(name: string): string | null {
+    const instance = config.instances?.[name];
+    if (startupModel && (instance?.allowedModels ?? []).includes(startupModel)) return startupModel;
+    return instance?.defaultModel ?? null;
+}
+
+function seatDefaultReasoning(name: string): string | null {
+    const instance = config.instances?.[name];
+    if (startupReasoning && (instance?.allowedReasoningEfforts ?? []).includes(startupReasoning)) return startupReasoning;
+    return instance?.defaultReasoningEffort ?? null;
+}
+
 const seats = (() => {
     const named = Object.keys(config.instances ?? {});
     return (named.length > 0 ? named : Object.keys(config.agents)).flatMap((name) => {
@@ -303,9 +374,9 @@ const seats = (() => {
             mode: adapter.mode ?? "acp",
             expertise: seatExpertise(name, provider),
             warn: adapter.warn ?? null,
-            defaultModel: config.instances?.[name]?.defaultModel ?? null,
+            defaultModel: seatDefaultModel(name),
             allowedModels: config.instances?.[name]?.allowedModels ?? [],
-            defaultReasoningEffort: config.instances?.[name]?.defaultReasoningEffort ?? null,
+            defaultReasoningEffort: seatDefaultReasoning(name),
             allowedReasoningEfforts: config.instances?.[name]?.allowedReasoningEfforts ?? [],
         }];
     });
@@ -351,6 +422,8 @@ function snapshot() {
         maxRounds: state.maxRounds,
         floorHolder: state.floorHolder,
         repo: state.repo,
+        baseBranch: state.baseBranch,
+        workspaces,
         runDir: state.runDir,
         agents: [...state.agents.values()].map(agentView),
         permissions: [...state.pending.values()].map((p) => ({
@@ -461,6 +534,21 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         return;
     }
 
+    // Its own endpoint rather than a field on /health: /health is polled every
+    // couple of seconds and this shells out to git per repo.
+    if (url.pathname === "/branches") {
+        if (!sameToken(bearerOf(req))) { send(res, req, 401, {}); return; }
+        const name = url.searchParams.get("workspace");
+        const chosen = name ? workspaceByName(name) : workspaceByPath(state.repo);
+        if (!chosen) { send(res, req, 404, { error: "unknown workspace" }); return; }
+        send(res, req, 200, {
+            workspace: chosen.name,
+            baseBranch: chosen.baseBranch,
+            branches: listBranches(chosen.path),
+        });
+        return;
+    }
+
     if (url.pathname === "/pair") {
         if (!originAllowed(req)) { send(res, req, 403, {}); return; }
         if (pairFailures >= MAX_PAIR_FAILURES) { send(res, req, 429, {}); return; }
@@ -497,6 +585,8 @@ function handleSocketMessage(raw: string): void {
                 names: Array.isArray(message.agents) ? message.agents.map(String) : [],
                 closer: String(message.closer ?? ""),
                 councilType: String(message.councilType ?? "debate"),
+                workspace: message.workspace ? String(message.workspace) : undefined,
+                baseBranch: message.baseBranch ? String(message.baseBranch) : undefined,
                 selections: message.selections && typeof message.selections === "object"
                     ? message.selections as Record<string, CouncilAgentSelection> : {},
             }).catch((error) => broadcast({ type: "error", detail: String(error) }));
@@ -957,8 +1047,8 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
 function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}): AgentRuntime {
     const { adapter, provider, expertise } = resolveAgent(name);
     const instance = config.instances?.[name];
-    const requestedModel = selection.modelId ?? instance?.defaultModel ?? null;
-    const requestedReasoningEffort = selection.reasoningEffort ?? instance?.defaultReasoningEffort ?? null;
+    const requestedModel = selection.modelId ?? seatDefaultModel(name);
+    const requestedReasoningEffort = selection.reasoningEffort ?? seatDefaultReasoning(name);
     if (requestedModel && !(instance?.allowedModels ?? []).includes(requestedModel)) {
         throw new Error(`${name}: model "${requestedModel}" is not in allowedModels`);
     }
@@ -1119,6 +1209,7 @@ async function issueAgentSeats(): Promise<void> {
 
 async function convene(params: {
     topic: string; brief: string; names: string[]; closer: string; councilType: string;
+    workspace?: string; baseBranch?: string;
     selections?: Record<string, CouncilAgentSelection>;
 }): Promise<void> {
     if (state.code) throw new Error(`this host already owns ${state.code}`);
@@ -1127,6 +1218,24 @@ async function convene(params: {
     if (!names.includes(closer)) throw new Error(`closer "${closer}" is not one of ${names.join(", ")}`);
     if (new Set(names).size !== names.length) throw new Error("agent names must be unique");
     if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) throw new Error(`type must be one of ${COUNCIL_TYPES.join(", ")}`);
+
+    // A NAME resolved here, never a path off the wire.
+    if (params.workspace) {
+        const chosen = workspaceByName(params.workspace);
+        if (!chosen) throw new Error(`workspace "${params.workspace}" is not in host.repos; known: ${workspaces.map((w) => w.name).join(", ")}`);
+        state.repo = chosen.path;
+        state.baseBranch = chosen.baseBranch;
+    }
+    if (!git(state.repo, ["rev-parse", "--git-dir"]).ok) throw new Error(`${state.repo} is not a git repository`);
+
+    // Checked by MEMBERSHIP in the repo's own head list, not by pattern: that
+    // rejects a name shaped like a git option before it can reach an argv.
+    if (params.baseBranch && params.baseBranch !== state.baseBranch) {
+        if (!listBranches(state.repo).includes(params.baseBranch)) {
+            throw new Error(`"${params.baseBranch}" is not a local branch of ${state.repo}`);
+        }
+        state.baseBranch = params.baseBranch;
+    }
 
     const frozenBase = git(state.repo, ["rev-parse", "--verify", state.baseBranch]);
     if (!frozenBase.ok) throw new Error(`could not freeze base branch ${state.baseBranch}`);
@@ -1190,7 +1299,20 @@ async function attach(code: string): Promise<void> {
     }
 
     if (!state.baseSha) throw new Error(`${upper} has no frozen base commit; it cannot be safely attached as a V3 code council`);
-    state.protectedRefs = snapshotProtectedRefs(state.repo, [claim.session?.baseBranch ?? state.baseBranch, "main"]);
+
+    // The council record names the repo it was convened against, and adopting
+    // it in the wrong tree would verify commits that do not exist there. The
+    // record is untrusted input, so it has to clear the same allowlist convene
+    // does before the host will work in it.
+    if (claim.session?.repoPath) {
+        const recorded = workspaceByPath(claim.session.repoPath);
+        if (!recorded) {
+            throw new Error(`${upper} was convened against ${claim.session.repoPath}, which is not in host.repos on this machine`);
+        }
+        state.repo = recorded.path;
+    }
+    state.baseBranch = claim.session?.baseBranch ?? state.baseBranch;
+    state.protectedRefs = snapshotProtectedRefs(state.repo, [state.baseBranch, "main"]);
     prepareRun(upper, names);
     state.topic = payload.topic;
     state.status = payload.status;
@@ -1676,11 +1798,12 @@ if (attachCode) {
         names: (arg("agents") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
         closer: arg("closer") ?? "",
         councilType: arg("type") ?? "debate",
+        baseBranch: arg("base"),
     }).catch((error) => die(String(error instanceof Error ? error.message : error)));
 } else {
     log(config.host?.autoAdopt
         ? "idle - watching for a council to auto-adopt, or a convene from /council"
-        : "idle - waiting for a convene from /council or council-launch.mts");
+        : "idle - waiting for a convene from /council");
 }
 
 setInterval(() => void dispatchTick(), DISPATCH_POLL_MS);
