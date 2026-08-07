@@ -237,6 +237,7 @@ Optional auth, integrations, channels and cron:
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `MCP_API_KEY` | Read + write bearer for the shared MCP server (`/api/mcp/mcp`) |
 | `MCP_API_KEY_READONLY` | Read-only bearer for the shared MCP server; both unset = endpoint locked |
+| `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
 | `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
@@ -533,8 +534,9 @@ human-reviewed material in the assistant's own recall. Promote it yourself with 
 if it earns it. Council messages are never embedded or indexed anywhere else.
 
 The council and campaign tables live in the `-- ===== Council wave =====`,
-`-- ===== Council work campaign wave =====` and `-- ===== Council ACP host wave =====` blocks at
-the bottom of `supabase-setup.sql`; run all three in the Supabase SQL Editor before first use.
+`-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`, and
+`-- ===== Council V3 wave =====` blocks at the bottom of `supabase-setup.sql`; run the full
+idempotent script in the Supabase SQL Editor before first use or after upgrading.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -586,7 +588,12 @@ Setup:
    gitignored, so that guide lives only in the working copy).
 3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
    and `codex-2` both on `codex`, or three Claude instances on `claude-code`.
-4. Run the `-- ===== Council ACP host wave =====` block at the bottom of `supabase-setup.sql`.
+4. Set a separate random `MCP_COUNCIL_HOST_KEY` in the app and local host environment. The host
+   key has no knowledge/vault authority and is never passed to an adapter. Each adapter instead
+   receives a short-lived credential for its one Council seat.
+5. Run the full `supabase-setup.sql`, including the final `-- ===== Council V3 wave =====`.
+6. For model selection, put only adapter-advertised IDs in an instance's `allowedModels` and
+   `allowedReasoningEfforts`; optional defaults must be members of those lists.
 
 **Where the host points.** `mcpUrl` in `council-agents.json` decides which app instance serves the
 council. Pointed at the deployed URL, a council needs no local dev server at all and `/council` on
@@ -623,12 +630,14 @@ every `fs/read_text_file`, `fs/write_text_file` and permission request is checke
 symlink planted inside the tree gets out. Terminals are created with `cwd` forced to the worktree.
 Anything outside it prompts you in `/council` and is **denied** if nobody answers within 120 s.
 
-**Turn dispatch.** The host polls `council_dispatch` every 1.5 s and pushes a rendered turn to any
+**Turn dispatch.** The host holds a 45-second database lease, renews it every 15 seconds, polls
+`council_dispatch` every 1.5 s and pushes a rendered turn to any
 agent with something to read or the floor. Ordering, quorum and floor election all stay in
 Postgres: the host reads a tick and calls the same server-side election every long-polling agent
-does, and computes no floor of its own. Delivery is at-least-once - the read cursor advances only
-when the host confirms a turn landed, so killing the host mid-turn redelivers that batch instead of
-skipping it. Agents it owns are marked `dispatch_mode`, which makes `council_wait` return
+does, and computes no floor of its own. Each prompt has a durable delivery ID and hash; the cursor
+advances only when the current lease epoch acknowledges that exact delivery. Killing the host
+mid-turn redelivers the same ID, while a stale host is fenced from further writes. Agents it owns
+are marked `dispatch_mode`, which makes `council_wait` return
 immediately for them and `council_speak` stop blocking, so an agent can never be driven twice.
 
 `/council` shows the connection state, each agent's worktree, branch and live ACP activity, the
@@ -656,8 +665,13 @@ participant is visible rather than silently different.
 When the closer includes `workItems` in `council_conclude`, each agent claims only its assigned
 work from `council_work_next`. It heartbeats progress, commits and verifies its change, then stops
 at `awaiting_review`; the closer accepts it with `council_work_review` or sends it back with
-feedback. The campaign completes only when every item is verified. The host supervises this on the
-same ACP sessions, so a separate supervisor script is no longer needed.
+feedback. The closer can accept an item only after the host checks its exact submitted SHA against
+the Council's frozen base in a clean detached checkout using
+`.zuychin/council-verification.json`. Passing receipts, output digests, branch identity and the
+accepted SHA are immutable evidence. When all items pass, the database freezes an ordered
+accepted-commit manifest. The host either assembles those exact SHAs deterministically or gives a
+nominated integrator a dedicated integration worktree, then independently verifies the resulting
+tip. No automated path updates `main`.
 
 If the host or the machine restarts, reattach to a running council - the agents get fresh sessions,
 keep their worktrees, and are redelivered whatever they never acknowledged:
@@ -667,8 +681,8 @@ npx tsx --env-file=.env.local scripts/council-host.mts --repo /path/to/repo --at
 ```
 
 An agent on **another machine** needs none of this: no host, no ACP adapter, no checkout of this
-repo. It adds the MCP server itself and joins by hand. `/council` has a **Show brief** panel
-holding a paste-in setup brief for exactly that, with the API key left as a placeholder to fill in.
+repo. It adds the MCP server itself and joins by hand with a revocable key bound to its one Council
+seat. `/council` can issue that seat key and has a **Show brief** panel holding the setup steps.
 Give that seat a name this machine has *not* configured (`codex-remote`, `workstation-1`), or the
 local host's claim rule takes it while it is still `invited`, before the remote agent joins.
 

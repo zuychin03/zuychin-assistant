@@ -31,8 +31,11 @@ import {
 } from "../src/lib/council/protocol.ts";
 import { parseKickoffBlocks, renderDispatchKickoff } from "../src/lib/council/render.ts";
 import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
+import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, type CouncilAgentSelection, type ConnectorCapabilitySnapshot } from "../src/lib/council/v3.ts";
+import { integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest } from "./council-git.mts";
+import { validateSelection } from "./council-models.mts";
 
-const HOST_VERSION = "1.0.0";
+const HOST_VERSION = "3.0.0";
 const CAMPAIGN_POLL_MS = 30_000;
 const TERMINAL_OUTPUT_LIMIT = 1_000_000;
 const MAX_PAIR_FAILURES = 10;
@@ -54,8 +57,17 @@ interface Adapter {
     env?: Record<string, string | Record<string, unknown> | null>;
     mcpConfig?: "claude";
     warn?: string;
+    version?: string;
+    capabilities?: Partial<Pick<ConnectorCapabilitySnapshot, "filesystemMediated" | "terminalMediated" | "permissionCallbacks">>;
 }
-interface AgentInstance { provider: string; expertise?: string }
+interface AgentInstance {
+    provider: string;
+    expertise?: string;
+    defaultModel?: string;
+    allowedModels?: string[];
+    defaultReasoningEffort?: string;
+    allowedReasoningEfforts?: string[];
+}
 interface HostConfig {
     mcpUrl: string;
     /**
@@ -94,8 +106,8 @@ function log(message: string): void {
 
 // ---------------------------------------------------------------- MCP
 
-const mcpKey = process.env.MCP_API_KEY;
-if (!mcpKey) die("MCP_API_KEY is not set (run with --env-file=.env.local)");
+const mcpHostKey = process.env.MCP_COUNCIL_HOST_KEY;
+if (!mcpHostKey) die("MCP_COUNCIL_HOST_KEY is not set (run the Council V3 setup, then restart the app)");
 
 const configPath = arg("config") ?? join(HERE, "council-agents.json");
 if (!existsSync(configPath)) {
@@ -105,11 +117,11 @@ const config: HostConfig = JSON.parse(readFileSync(configPath, "utf8"));
 
 // The endpoint answers a bare tools/call with no initialize handshake, and
 // frames the reply as one SSE "data:" line.
-async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
+async function callTool(name: string, args: Record<string, unknown>, bearer = mcpHostKey): Promise<string> {
     const res = await fetch(config.mcpUrl, {
         method: "POST",
         headers: {
-            Authorization: `Bearer ${mcpKey}`,
+            Authorization: `Bearer ${bearer}`,
             "Content-Type": "application/json",
             Accept: "application/json, text/event-stream",
         },
@@ -139,6 +151,10 @@ interface DispatchSlice {
     status: string;
     dispatchMode: boolean;
     prompt: string | null;
+    deliveryId?: string;
+    promptHash?: string;
+    attempt?: number;
+    redelivered?: boolean;
 }
 interface DispatchPayload {
     error?: string;
@@ -186,6 +202,13 @@ interface AgentRuntime {
      * failed delivery redelivers while an identical clean one does not.
      */
     lastDelivered: string | null;
+    seatToken: string | null;
+    executionId: string | null;
+    requestedModel: string | null;
+    effectiveModel: string | null;
+    requestedReasoningEffort: string | null;
+    effectiveReasoningEffort: string | null;
+    capabilities: ConnectorCapabilitySnapshot;
     lastActivity: string;
     child?: ChildProcess;
     connection?: acp.ClientConnection;
@@ -205,6 +228,11 @@ interface PendingPermission {
 }
 
 interface HostState {
+    hostId: string;
+    sessionId: string | null;
+    leaseEpoch: number | null;
+    leaseExpiresAt: string | null;
+    leaseHealthy: boolean;
     code: string | null;
     topic: string | null;
     status: string;
@@ -218,10 +246,17 @@ interface HostState {
     agents: Map<string, AgentRuntime>;
     pending: Map<string, PendingPermission>;
     stopping: boolean;
+    baseSha: string | null;
+    protectedRefs: Record<string, string | null>;
 }
 
 const repoArg = arg("repo");
 const state: HostState = {
+    hostId: randomUUID(),
+    sessionId: null,
+    leaseEpoch: null,
+    leaseExpiresAt: null,
+    leaseHealthy: false,
     code: null,
     topic: null,
     status: "idle",
@@ -235,6 +270,8 @@ const state: HostState = {
     agents: new Map(),
     pending: new Map(),
     stopping: false,
+    baseSha: null,
+    protectedRefs: {},
 };
 
 function seatExpertise(name: string, provider: string): string {
@@ -266,6 +303,10 @@ const seats = (() => {
             mode: adapter.mode ?? "acp",
             expertise: seatExpertise(name, provider),
             warn: adapter.warn ?? null,
+            defaultModel: config.instances?.[name]?.defaultModel ?? null,
+            allowedModels: config.instances?.[name]?.allowedModels ?? [],
+            defaultReasoningEffort: config.instances?.[name]?.defaultReasoningEffort ?? null,
+            allowedReasoningEfforts: config.instances?.[name]?.allowedReasoningEfforts ?? [],
         }];
     });
 })();
@@ -282,12 +323,23 @@ function agentView(agent: AgentRuntime) {
         inFlight: agent.inFlight,
         lastActivity: agent.lastActivity,
         warn: agent.adapter.warn ?? null,
+        requestedModel: agent.requestedModel,
+        effectiveModel: agent.effectiveModel,
+        requestedReasoningEffort: agent.requestedReasoningEffort,
+        effectiveReasoningEffort: agent.effectiveReasoningEffort,
+        identityAssurance: agent.seatToken ? "verified_seat" : "unverified_declaration",
+        capabilities: agent.capabilities,
     };
 }
 
 function snapshot() {
     return {
         version: HOST_VERSION,
+        capabilities: V3_HOST_CAPABILITIES,
+        hostId: state.hostId,
+        leaseEpoch: state.leaseEpoch,
+        leaseExpiresAt: state.leaseExpiresAt,
+        leaseHealthy: state.leaseHealthy,
         code: state.code,
         // Same rule convene() and attach() refuse on, so the app can grey out a
         // Launch button instead of learning by error.
@@ -445,6 +497,8 @@ function handleSocketMessage(raw: string): void {
                 names: Array.isArray(message.agents) ? message.agents.map(String) : [],
                 closer: String(message.closer ?? ""),
                 councilType: String(message.councilType ?? "debate"),
+                selections: message.selections && typeof message.selections === "object"
+                    ? message.selections as Record<string, CouncilAgentSelection> : {},
             }).catch((error) => broadcast({ type: "error", detail: String(error) }));
             break;
         case "attach":
@@ -502,7 +556,11 @@ function startControlChannel(): Promise<{ server: Server; port: number }> {
                 if (error.code === "EADDRINUSE") tryNext();
                 else rejectPort(error);
             });
-            server.listen(port, "127.0.0.1", () => resolvePort({ server, port }));
+            server.listen(port, "127.0.0.1", () => {
+                // Debug: report the bound port after a retry.
+                const address = server.address();
+                resolvePort({ server, port: typeof address === "object" && address ? address.port : port });
+            });
         };
         tryNext();
     });
@@ -623,6 +681,11 @@ function relayUpdate(agent: AgentRuntime, update: acp.SessionUpdate): void {
 
 function adapterEnv(agent: AgentRuntime): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...process.env };
+    // Security boundary: adapters receive only seat credentials.
+    delete env.MCP_COUNCIL_HOST_KEY;
+    delete env.MCP_API_KEY_READONLY;
+    if (agent.seatToken) env.MCP_API_KEY = agent.seatToken;
+    else delete env.MCP_API_KEY;
     for (const [key, value] of Object.entries(agent.adapter.env ?? {})) {
         // Removal matters as much as setting: an agent that refuses to run when
         // it detects its own vendor's session variable cannot be started from a
@@ -633,14 +696,14 @@ function adapterEnv(agent: AgentRuntime): NodeJS.ProcessEnv {
     return env;
 }
 
-function mcpServersFor(): acp.McpServer[] {
+function mcpServersFor(agent: AgentRuntime): acp.McpServer[] {
     // Passed over the stdio pipe, so the bearer token never lands on disk the
     // way the shell adapters' --mcp-config file has to.
     return [{
         type: "http",
         name: COUNCIL_MCP_SERVER_NAME,
         url: config.mcpUrl,
-        headers: [{ name: "Authorization", value: `Bearer ${mcpKey}` }],
+        headers: [{ name: "Authorization", value: `Bearer ${agent.seatToken}` }],
     }];
 }
 
@@ -731,15 +794,47 @@ async function startAcpAgent(agent: AgentRuntime): Promise<void> {
 
     agent.connection = connection;
 
-    await connection.agent.request(acp.methods.agent.initialize, {
+    const initialized = await connection.agent.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
         clientInfo: { name: "zuychin-council-host", version: HOST_VERSION },
     });
 
     agent.session = await connection.agent
-        .buildSession({ cwd: agent.treeDir, mcpServers: mcpServersFor() })
+        .buildSession({ cwd: agent.treeDir, mcpServers: mcpServersFor(agent) })
         .start();
+
+    const options = (agent.session as unknown as { newSessionResponse?: { configOptions?: unknown } })
+        .newSessionResponse?.configOptions;
+    const instance = config.instances?.[agent.name];
+    const selected = validateSelection({
+        selection: {
+            modelId: agent.requestedModel ?? undefined,
+            reasoningEffort: agent.requestedReasoningEffort ?? undefined,
+        },
+        allowedModels: instance?.allowedModels ?? [],
+        allowedReasoningEfforts: instance?.allowedReasoningEfforts ?? [],
+        configOptions: options,
+    });
+    if (agent.requestedModel && selected.modelOption) {
+        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+            sessionId: agent.session.sessionId, configId: selected.modelOption.id, value: agent.requestedModel,
+        });
+    }
+    if (agent.requestedReasoningEffort && selected.reasoningOption) {
+        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+            sessionId: agent.session.sessionId, configId: selected.reasoningOption.id, value: agent.requestedReasoningEffort,
+        });
+    }
+    agent.effectiveModel = agent.requestedModel ?? selected.modelOption?.currentValue ?? null;
+    agent.effectiveReasoningEffort = agent.requestedReasoningEffort ?? selected.reasoningOption?.currentValue ?? null;
+    agent.capabilities = {
+        ...agent.capabilities,
+        source: "probed",
+        modelSelection: selected.modelOption !== null,
+        cancellation: Boolean((initialized as { agentCapabilities?: { promptCapabilities?: unknown } }).agentCapabilities),
+        observedAt: new Date().toISOString(),
+    };
 
     // prompt() resolves with the turn's stop reason, so this loop only relays;
     // turn completion is handled where the prompt was sent.
@@ -768,12 +863,16 @@ function startShellAgent(agent: AgentRuntime, prompt: string): void {
             mcpServers: {
                 "zuychin-knowledge": {
                     type: "http", url: config.mcpUrl,
-                    headers: { Authorization: `Bearer ${mcpKey}` },
+                    headers: { Authorization: `Bearer ${agent.seatToken}` },
                 },
             },
         }, null, 2));
     }
-    const args = agent.adapter.args.map((a) => a.replace("{prompt}", prompt).replace("{mcpConfigFile}", agent.mcpFile));
+    const args = agent.adapter.args.map((a) => a
+        .replace("{prompt}", prompt)
+        .replace("{mcpConfigFile}", agent.mcpFile)
+        .replace("{model}", agent.requestedModel ?? "")
+        .replace("{reasoningEffort}", agent.requestedReasoningEffort ?? ""));
     const stream = createWriteStream(agent.logPath, { flags: "a" });
     const child = spawnResolved(agent.adapter.command, args, {
         cwd: agent.treeDir, stdio: ["ignore", "pipe", "pipe"], env: adapterEnv(agent),
@@ -790,19 +889,41 @@ function startShellAgent(agent: AgentRuntime, prompt: string): void {
         agent.detail = error.message;
     });
     agent.child = child;
+    agent.effectiveModel = agent.requestedModel;
+    agent.effectiveReasoningEffort = agent.requestedReasoningEffort;
     agent.state = "idle";
     agent.detail = "shell mode: long-polls its own turns";
 }
 
 // Stable identity, never an array handed to promptAgent: a turn outliving the
 // tick that started it would ack into an array already sent, redelivering forever.
-const delivered = new Set<string>();
+const delivered = new Map<string, string>();
+
+function persistDeliveryJournal(): void {
+    if (!state.runDir) return;
+    writeFileSync(join(state.runDir, "delivery-state.json"), JSON.stringify({
+        version: 1, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        pendingAcknowledgements: Object.fromEntries(delivered),
+    }, null, 2));
+}
 
 // Delivery is at-least-once. The ack is deferred to the tick AFTER the turn
 // completes, so a host that dies mid-turn redelivers the same batch rather than
 // leaving a hole in what the agent read.
-async function promptAgent(agent: AgentRuntime, prompt: string, ack: boolean): Promise<void> {
+async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: string): Promise<void> {
     if (!agent.session || agent.inFlight) return;
+    if (deliveryId) {
+        try {
+            const result = JSON.parse(await callTool("council_delivery_state", {
+                deliveryId, hostId: state.hostId, leaseEpoch: state.leaseEpoch, state: "in_flight",
+            })) as { ok?: boolean };
+            if (!result.ok) throw new Error(`delivery ${deliveryId} could not enter in_flight`);
+        } catch (error) {
+            agent.detail = error instanceof Error ? error.message : String(error);
+            broadcast({ type: "error", agent: agent.name, detail: agent.detail });
+            return;
+        }
+    }
     agent.inFlight = true;
     agent.state = "busy";
     broadcast({ type: "turn", agent: agent.name, chars: prompt.length });
@@ -811,9 +932,18 @@ async function promptAgent(agent: AgentRuntime, prompt: string, ack: boolean): P
         const response = await agent.session.prompt(prompt);
         agent.detail = `turn ended: ${response.stopReason}`;
         agent.lastDelivered = prompt;
-        if (ack) delivered.add(agent.name);
+        if (deliveryId) {
+            delivered.set(agent.name, deliveryId);
+            persistDeliveryJournal();
+        }
     } catch (error) {
         agent.detail = `turn failed: ${error instanceof Error ? error.message : String(error)}`;
+        if (deliveryId) {
+            await callTool("council_delivery_state", {
+                deliveryId, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+                state: "failed", error: agent.detail,
+            }).catch(() => {});
+        }
         broadcast({ type: "error", agent: agent.name, detail: agent.detail });
     } finally {
         agent.inFlight = false;
@@ -824,8 +954,17 @@ async function promptAgent(agent: AgentRuntime, prompt: string, ack: boolean): P
 
 // ---------------------------------------------------------------- lifecycle
 
-function makeRuntime(name: string, code: string): AgentRuntime {
+function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}): AgentRuntime {
     const { adapter, provider, expertise } = resolveAgent(name);
+    const instance = config.instances?.[name];
+    const requestedModel = selection.modelId ?? instance?.defaultModel ?? null;
+    const requestedReasoningEffort = selection.reasoningEffort ?? instance?.defaultReasoningEffort ?? null;
+    if (requestedModel && !(instance?.allowedModels ?? []).includes(requestedModel)) {
+        throw new Error(`${name}: model "${requestedModel}" is not in allowedModels`);
+    }
+    if (requestedReasoningEffort && !(instance?.allowedReasoningEfforts ?? []).includes(requestedReasoningEffort)) {
+        throw new Error(`${name}: reasoning effort "${requestedReasoningEffort}" is not allowed`);
+    }
     const relDir = councilWorktreeDir(state.repo, name);
     return {
         name, provider, expertise, adapter,
@@ -839,6 +978,19 @@ function makeRuntime(name: string, code: string): AgentRuntime {
         detail: "",
         inFlight: false,
         lastDelivered: null,
+        seatToken: null,
+        executionId: null,
+        requestedModel,
+        effectiveModel: null,
+        requestedReasoningEffort,
+        effectiveReasoningEffort: null,
+        capabilities: configuredCapabilities({
+            kind: (adapter.mode ?? "acp") === "acp" ? "acp" : "managed_cli",
+            modelSelection: (instance?.allowedModels?.length ?? 0) > 0,
+            filesystemMediated: adapter.capabilities?.filesystemMediated ?? (adapter.mode ?? "acp") === "acp",
+            terminalMediated: adapter.capabilities?.terminalMediated ?? (adapter.mode ?? "acp") === "acp",
+            permissionCallbacks: adapter.capabilities?.permissionCallbacks ?? (adapter.mode ?? "acp") === "acp",
+        }),
         lastActivity: new Date().toISOString(),
     };
 }
@@ -847,7 +999,7 @@ function addWorktree(agent: AgentRuntime): void {
     if (existsSync(agent.treeDir)) {
         throw new Error(`${agent.treeDir} already exists; remove it or close the previous council first`);
     }
-    const added = git(state.repo, ["worktree", "add", agent.relDir, "-b", agent.branch, state.baseBranch]);
+    const added = git(state.repo, ["worktree", "add", agent.relDir, "-b", agent.branch, state.baseSha ?? state.baseBranch]);
     if (!added.ok) throw new Error(`git worktree add failed for ${agent.name}:\n${added.out}`);
     log(`${agent.name}: worktree ${agent.relDir} on ${agent.branch}`);
 }
@@ -858,23 +1010,42 @@ memory of it. Call council_join first - it returns the rules and the recent tran
 continue the protocol from there. Your worktree and branch are unchanged and your earlier commits
 are still in it.`;
 
+async function recordAgentExecution(agent: AgentRuntime): Promise<void> {
+    if (!state.code || state.leaseEpoch === null) throw new Error("cannot record execution without a host lease");
+    const result = JSON.parse(await callTool("council_execution_start", {
+        sessionCode: state.code, agentName: agent.name, hostId: state.hostId,
+        leaseEpoch: state.leaseEpoch, hostGeneration: COUNCIL_HOST_GENERATION,
+        capabilities: agent.capabilities, identityAssurance: "verified_seat",
+        provider: agent.provider, adapterVersion: agent.adapter.version,
+        requestedModel: agent.requestedModel ?? undefined, effectiveModel: agent.effectiveModel ?? undefined,
+        requestedReasoningEffort: agent.requestedReasoningEffort ?? undefined,
+        effectiveReasoningEffort: agent.effectiveReasoningEffort ?? undefined,
+        modelSource: agent.mode === "acp" ? "adapter_config" : "configured_cli",
+        branch: agent.branch, worktree: agent.treeDir, baseSha: state.baseSha ?? undefined,
+    })) as { ok?: boolean; reason?: string; executionId?: string };
+    if (!result.ok || !result.executionId) throw new Error(`execution evidence rejected: ${result.reason ?? "unknown"}`);
+    agent.executionId = result.executionId;
+}
+
 async function startAgents(kickoff: Map<string, string>): Promise<void> {
     for (const agent of state.agents.values()) {
         const prompt = kickoff.get(agent.name) ?? RESUME_PREAMBLE(state.code!);
         try {
             if (agent.mode === "shell") {
                 startShellAgent(agent, prompt);
+                await recordAgentExecution(agent);
                 continue;
             }
             await startAcpAgent(agent);
+            await recordAgentExecution(agent);
             // Claimed by the host, not the agent: it must be true before the
             // agent's first call and cannot depend on an LLM passing a flag.
             // Only after a session exists, so a failed agent misses quorum.
             await callTool("council_join", {
                 sessionCode: state.code, agentName: agent.name,
                 expertise: agent.expertise, dispatchMode: true,
-            });
-            void promptAgent(agent, `${prompt}\n${renderDispatchKickoff(state.code!, agent.name)}`, false);
+            }, agent.seatToken!);
+            void promptAgent(agent, `${prompt}\n${renderDispatchKickoff(state.code!, agent.name)}`);
         } catch (error) {
             agent.state = "failed";
             agent.detail = error instanceof Error ? error.message : String(error);
@@ -885,19 +1056,70 @@ async function startAgents(kickoff: Map<string, string>): Promise<void> {
     broadcast({ type: "state", ...snapshot() });
 }
 
-function prepareRun(code: string, names: string[]): void {
+function prepareRun(code: string, names: string[], selections: Record<string, CouncilAgentSelection> = {}): void {
     state.code = code;
     state.runDir = join(state.repo, "..", `.council-run-${code.toLowerCase()}`);
     mkdirSync(state.runDir, { recursive: true });
-    for (const name of names) state.agents.set(name, makeRuntime(name, code));
+    for (const name of names) state.agents.set(name, makeRuntime(name, code, selections[name]));
     writeFileSync(join(state.runDir, "campaign-run.json"), JSON.stringify({
         code, configPath, port: hostPort,
-        agents: [...state.agents.values()].map((a) => ({ name: a.name, dir: a.treeDir, mcpFile: a.mcpFile, mode: a.mode })),
+        hostId: state.hostId, leaseEpoch: state.leaseEpoch, baseSha: state.baseSha,
+        agents: [...state.agents.values()].map((a) => ({
+            name: a.name, dir: a.treeDir, branch: a.branch, mcpFile: a.mcpFile, mode: a.mode,
+            requestedModel: a.requestedModel, requestedReasoningEffort: a.requestedReasoningEffort,
+        })),
     }, null, 2));
+}
+
+interface HostClaimPayload {
+    ok: boolean; reason?: string; hostId?: string; leaseEpoch?: number; leaseExpiresAt?: string;
+    session?: { id: string; protocolVersion: number; baseSha: string | null; repoPath: string | null; baseBranch: string | null; topic: string; status: string };
+}
+
+async function claimLease(code: string): Promise<HostClaimPayload> {
+    const claim = JSON.parse(await callTool("council_host_claim", {
+        sessionCode: code, hostId: state.hostId,
+    })) as HostClaimPayload;
+    if (!claim.ok || !claim.leaseEpoch || !claim.session) throw new Error(`host lease rejected: ${claim.reason ?? "unknown"}`);
+    if (claim.session.protocolVersion !== 3) throw new Error(`Council ${code} is protocol V${claim.session.protocolVersion}; this host requires V3`);
+    state.sessionId = claim.session.id;
+    state.leaseEpoch = claim.leaseEpoch;
+    state.leaseExpiresAt = claim.leaseExpiresAt ?? null;
+    state.leaseHealthy = true;
+    state.baseSha = claim.session.baseSha;
+    return claim;
+}
+
+async function renewLease(): Promise<void> {
+    if (!state.code || state.leaseEpoch === null || state.stopping) return;
+    try {
+        const result = JSON.parse(await callTool("council_host_renew", {
+            sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        })) as { ok?: boolean; reason?: string; leaseExpiresAt?: string };
+        if (!result.ok) throw new Error(result.reason ?? "renewal rejected");
+        state.leaseExpiresAt = result.leaseExpiresAt ?? null;
+        state.leaseHealthy = true;
+    } catch (error) {
+        state.leaseHealthy = false;
+        for (const agent of state.agents.values()) agent.detail = "paused: host lease lost";
+        broadcast({ type: "error", detail: `host lease lost; dispatch stopped: ${error instanceof Error ? error.message : String(error)}` });
+    }
+}
+
+async function issueAgentSeats(): Promise<void> {
+    if (!state.code || state.leaseEpoch === null) throw new Error("host lease is not active");
+    for (const agent of state.agents.values()) {
+        const result = JSON.parse(await callTool("council_host_issue_seat", {
+            sessionCode: state.code, agentName: agent.name, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        })) as { ok?: boolean; token?: string; reason?: string };
+        if (!result.ok || !result.token) throw new Error(`${agent.name}: seat credential rejected (${result.reason ?? "unknown"})`);
+        agent.seatToken = result.token;
+    }
 }
 
 async function convene(params: {
     topic: string; brief: string; names: string[]; closer: string; councilType: string;
+    selections?: Record<string, CouncilAgentSelection>;
 }): Promise<void> {
     if (state.code) throw new Error(`this host already owns ${state.code}`);
     const { topic, brief, names, closer, councilType } = params;
@@ -906,10 +1128,15 @@ async function convene(params: {
     if (new Set(names).size !== names.length) throw new Error("agent names must be unique");
     if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) throw new Error(`type must be one of ${COUNCIL_TYPES.join(", ")}`);
 
+    const frozenBase = git(state.repo, ["rev-parse", "--verify", state.baseBranch]);
+    if (!frozenBase.ok) throw new Error(`could not freeze base branch ${state.baseBranch}`);
+    state.baseSha = frozenBase.out.split(/\s/)[0];
+    state.protectedRefs = snapshotProtectedRefs(state.repo, [state.baseBranch, "main"]);
+
     const text = await callTool("council_convene", {
         topic, brief, closerName: closer, councilType,
         participants: names.map((name) => ({ name, expertise: resolveAgent(name).expertise })),
-        workspace: { repoPath: state.repo, baseBranch: state.baseBranch },
+        workspace: { repoPath: state.repo, baseBranch: state.baseBranch, baseSha: state.baseSha },
     });
     const { code, blocks } = parseKickoffBlocks(text);
     if (!code) throw new Error(`could not read the council code from the convene reply:\n${text.slice(0, 300)}`);
@@ -917,11 +1144,13 @@ async function convene(params: {
         throw new Error(`convene returned ${blocks.length} kickoff blocks for ${names.length} agents; refusing to launch a partial council`);
     }
 
-    prepareRun(code, names);
+    await claimLease(code);
+    prepareRun(code, names, params.selections ?? {});
     state.topic = topic;
     state.status = "open";
     log(`Council ${code} opened: ${topic}`);
 
+    await issueAgentSeats();
     for (const agent of state.agents.values()) addWorktree(agent);
     await startAgents(new Map(blocks.map((b) => [b.agentName, b.prompt])));
 }
@@ -932,9 +1161,12 @@ async function convene(params: {
 async function attach(code: string): Promise<void> {
     if (state.code) throw new Error(`this host already owns ${state.code}`);
     const upper = code.trim().toUpperCase();
+    const claim = await claimLease(upper);
     // The roster is the thing being read here; a name that is not on it gets no
     // slice and changes nothing, which is what makes this safe as a probe.
-    const payload = JSON.parse(await callTool("council_dispatch", { sessionCode: upper, agentNames: ["host-probe"] })) as DispatchPayload;
+    const payload = JSON.parse(await callTool("council_dispatch", {
+        sessionCode: upper, agentNames: ["host-probe"], hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+    })) as DispatchPayload;
     if (payload.error === "unknown_session") throw new Error(`no council found with code ${upper}`);
 
     const configured = (payload.participants ?? [])
@@ -957,11 +1189,14 @@ async function attach(code: string): Promise<void> {
         log(`leaving ${handAttached.map((p) => p.name).join(", ")} to poll for themselves`);
     }
 
+    if (!state.baseSha) throw new Error(`${upper} has no frozen base commit; it cannot be safely attached as a V3 code council`);
+    state.protectedRefs = snapshotProtectedRefs(state.repo, [claim.session?.baseBranch ?? state.baseBranch, "main"]);
     prepareRun(upper, names);
     state.topic = payload.topic;
     state.status = payload.status;
     log(`Attached to ${upper}: ${names.join(", ")}`);
 
+    await issueAgentSeats();
     for (const agent of state.agents.values()) {
         if (!existsSync(agent.treeDir)) addWorktree(agent);
     }
@@ -974,31 +1209,33 @@ let dispatching = false;
 
 async function dispatchTick(): Promise<void> {
     const owned = [...state.agents.values()].filter((a) => a.mode === "acp" && a.session);
-    if (!state.code || owned.length === 0 || dispatching) return;
+    if (!state.code || owned.length === 0 || dispatching || !state.leaseHealthy || state.leaseEpoch === null) return;
     dispatching = true;
 
-    const ackFor = [...delivered];
-    for (const name of ackFor) delivered.delete(name);
+    const acknowledgementEntries = [...delivered.entries()];
+    const ackDeliveryIds = acknowledgementEntries.map(([, id]) => id);
     let payload: DispatchPayload;
     try {
         payload = JSON.parse(await callTool("council_dispatch", {
             sessionCode: state.code,
             agentNames: owned.map((a) => a.name),
-            ...(ackFor.length ? { ackFor } : {}),
+            hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+            ...(ackDeliveryIds.length ? { ackDeliveryIds } : {}),
         })) as DispatchPayload;
     } catch (error) {
-        // Put the acks back rather than dropping them; an unacknowledged batch
-        // costs a redelivery, a lost ack costs an endless one.
-        for (const name of ackFor) delivered.add(name);
         broadcast({ type: "error", detail: `dispatch: ${error instanceof Error ? error.message : String(error)}` });
         return;
     } finally {
         dispatching = false;
     }
     if (payload.error) {
-        for (const name of ackFor) delivered.add(name);
+        if (payload.error === "stale_host" || payload.error === "stale_epoch") state.leaseHealthy = false;
         return;
     }
+    for (const [name, id] of acknowledgementEntries) {
+        if (delivered.get(name) === id) delivered.delete(name);
+    }
+    persistDeliveryJournal();
 
     state.status = payload.status;
     state.round = payload.round;
@@ -1008,8 +1245,8 @@ async function dispatchTick(): Promise<void> {
     for (const agent of owned) {
         const slice = payload.agents?.[agent.name];
         if (!slice || agent.inFlight || !slice.prompt) continue;
-        if (slice.status === "left" || slice.prompt === agent.lastDelivered) continue;
-        void promptAgent(agent, slice.prompt, true);
+        if (slice.status === "left" || !slice.deliveryId) continue;
+        void promptAgent(agent, slice.prompt, slice.deliveryId);
     }
     broadcast({ type: "state", ...snapshot() });
 }
@@ -1029,6 +1266,8 @@ interface CheckResult { ok: boolean; lines: string[] }
  * agent said about it. Every check runs; a failure does not short-circuit,
  * because the report is more useful when it lists everything that is wrong.
  */
+// V2 compatibility.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function verifySubmission(params: {
     commit: string;
     branch: string;
@@ -1141,8 +1380,11 @@ const CAMPAIGN_PROMPT = (code: string, name: string) =>
 // Agents are looked up in the runtime map, which is keyed by instance name;
 // the adapter table is keyed by provider and would miss "codex-1".
 interface UnverifiedPayload {
+    baseSha?: string | null;
+    verificationProfile?: string;
     items?: {
         id: string; agentName: string; commitHash: string | null; declaredPaths?: string[];
+        branchName?: string | null; verificationProfile?: string;
     }[];
 }
 
@@ -1150,36 +1392,62 @@ interface UnverifiedPayload {
 // has already disproved. Every awaiting-review item the host has not judged yet
 // gets checked against the repo it actually owns.
 async function hostVerifyTick(): Promise<void> {
-    if (!state.code) return;
+    if (!state.code || !state.leaseHealthy || state.leaseEpoch === null) return;
     let payload: UnverifiedPayload;
     try {
         payload = JSON.parse(await callTool("council_work_unverified", { sessionCode: state.code })) as UnverifiedPayload;
     } catch {
         return;
     }
+    if (!protectedRefsUnchanged(state.repo, state.protectedRefs)) {
+        state.leaseHealthy = false;
+        broadcast({ type: "error", detail: "A protected branch moved during Council execution. Verification and dispatch are paused." });
+        return;
+    }
     for (const item of payload.items ?? []) {
-        if (!item.commitHash) {
+        const baseSha = payload.baseSha ?? state.baseSha;
+        if (!item.commitHash || !baseSha) {
             await callTool("council_work_verify", {
-                itemId: item.id, passed: false,
-                report: "FAIL submitted without a commit hash",
+                itemId: item.id, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+                commitSha: item.commitHash ?? "0000000000000000000000000000000000000000",
+                baseSha: baseSha ?? "0000000000000000000000000000000000000000",
+                branchName: item.branchName ?? councilBranch(state.code, item.agentName),
+                profileId: item.verificationProfile ?? payload.verificationProfile ?? "standard",
+                receipts: [], outputDigest: "missing", passed: false,
+                report: "FAIL submitted without an exact commit hash or frozen base",
             }).catch(() => { });
             continue;
         }
         const agent = state.agents.get(item.agentName);
-        const branch = agent?.branch ?? councilBranch(state.code, item.agentName);
-        const result = verifySubmission({
-            commit: item.commitHash, branch, declaredPaths: item.declaredPaths ?? [],
-        });
+        const branch = item.branchName ?? agent?.branch ?? councilBranch(state.code, item.agentName);
+        const profileId = item.verificationProfile ?? payload.verificationProfile ?? "standard";
+        let result;
+        try {
+            result = verifyExactCommit({
+                repo: state.repo, commitSha: item.commitHash, baseSha, branch,
+                declaredPaths: item.declaredPaths ?? [], profile: loadVerificationProfile(state.repo, profileId),
+            });
+        } catch (error) {
+            result = {
+                ok: false, commitSha: item.commitHash, baseSha, files: [], receipts: [],
+                lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`], outputDigest: "profile-error",
+            };
+        }
         log(`${item.agentName}: host check ${result.ok ? "passed" : "FAILED"} for ${item.commitHash.slice(0, 12)}`);
         await callTool("council_work_verify", {
-            itemId: item.id, passed: result.ok, report: result.lines.join("\n"),
+            itemId: item.id, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+            commitSha: result.commitSha, baseSha: result.baseSha, branchName: branch,
+            profileId, receipts: result.receipts, outputDigest: result.outputDigest,
+            passed: result.ok, report: result.lines.join("\n"),
         }).catch((e) => log(`host verify report failed: ${e instanceof Error ? e.message : String(e)}`));
     }
 }
 
 // The campaign is accepted item by item, but nothing has ever been tried
 // together until this runs.
-async function integrationTick(): Promise<void> {
+// V2 journal compatibility.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function legacyIntegrationTick(): Promise<void> {
     if (!state.code || state.status !== "campaign_complete" || integrationDone) return;
     integrationDone = true;
     const branches = [...state.agents.values()].map((a) => a.branch);
@@ -1198,6 +1466,88 @@ async function integrationTick(): Promise<void> {
 }
 
 let integrationDone = false;
+
+interface FrozenManifestPayload { ok?: boolean; reason?: string; manifest?: IntegrationManifest; integratorAgent?: string | null }
+
+function nextIntegrationBranch(): string {
+    const stem = `council/${(state.code ?? "run").toLowerCase()}/integration`;
+    let candidate = stem;
+    for (let version = 2; git(state.repo, ["show-ref", "--verify", `refs/heads/${candidate}`]).ok; version++) candidate = `${stem}-v${version}`;
+    return candidate;
+}
+
+async function delegatedIntegration(manifest: IntegrationManifest, integratorName: string) {
+    const original = state.agents.get(integratorName);
+    if (!original) throw new Error(`nominated integrator ${integratorName} is not hosted here`);
+    const branch = nextIntegrationBranch();
+    const relDir = `../integration-${(state.code ?? "run").toLowerCase()}-${randomBytes(4).toString("hex")}`;
+    const treeDir = resolve(state.repo, relDir);
+    const added = git(state.repo, ["worktree", "add", relDir, "-b", branch, manifest.baseSha]);
+    if (!added.ok) throw new Error(`could not create delegated integration worktree: ${added.out}`);
+    original.connection?.close();
+    const agent = makeRuntime(integratorName, state.code!);
+    agent.branch = branch; agent.relDir = relDir; agent.treeDir = treeDir;
+    agent.logPath = join(state.runDir!, `${integratorName}-integration.log`);
+    agent.mcpFile = join(state.runDir!, `${integratorName}-integration.mcp.json`);
+    agent.seatToken = original.seatToken;
+    state.agents.set(integratorName, agent);
+    try {
+        await startAcpAgent(agent);
+        await recordAgentExecution(agent);
+        const commits = [...manifest.items].sort((a, b) => a.sequence - b.sequence).map((item) => item.commitSha);
+        const prompt = `You are the nominated integrator for Council ${state.code}. This is a dedicated integration worktree on ${branch}, frozen at ${manifest.baseSha}.
+Merge ONLY these accepted commits in this exact order:\n${commits.map((sha) => `- ${sha}`).join("\n")}
+Attempt each merge with git merge --no-edit <sha>. Resolve conflicts only inside this worktree. Do not merge, reset, switch, or update main or ${state.baseBranch}. Run the repository checks, commit any conflict resolution, then stop and summarize the resulting HEAD. The host will independently verify the exact manifest and branch tip.`;
+        await promptAgent(agent, prompt);
+        const tip = git(treeDir, ["rev-parse", "HEAD"]);
+        if (!tip.ok) throw new Error("integrator produced no branch tip");
+        const tipSha = tip.out.split(/\s/)[0];
+        for (const sha of commits) {
+            if (!git(treeDir, ["merge-base", "--is-ancestor", sha, tipSha]).ok) throw new Error(`integration tip omits accepted commit ${sha}`);
+        }
+        const verified = verifyExactCommit({
+            repo: state.repo, commitSha: tipSha, baseSha: manifest.baseSha, branch,
+            declaredPaths: [], profile: loadVerificationProfile(state.repo, "standard"),
+        });
+        return { ...verified, branch, tipSha };
+    } finally {
+        agent.connection?.close();
+        git(state.repo, ["worktree", "remove", "--force", treeDir]);
+    }
+}
+
+async function integrationTick(): Promise<void> {
+    if (!state.code || state.status !== "campaign_complete" || integrationDone || !state.leaseHealthy || state.leaseEpoch === null) return;
+    integrationDone = true;
+    const frozen = JSON.parse(await callTool("council_integration_manifest", {
+        sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+    })) as FrozenManifestPayload;
+    if (!frozen.ok || !frozen.manifest) {
+        integrationDone = false;
+        throw new Error(`integration manifest rejected: ${frozen.reason ?? "unknown"}`);
+    }
+    log(`Assembling ${frozen.manifest.items.length} accepted commit(s) on a clean integration worktree.`);
+    await callTool("council_integration_report", {
+        sessionCode: state.code, status: "running", reporter: "host", hostId: state.hostId,
+        leaseEpoch: state.leaseEpoch, report: "Assembling the immutable accepted-commit manifest.",
+    }).catch(() => { });
+    let result;
+    try {
+        result = frozen.integratorAgent
+            ? await delegatedIntegration(frozen.manifest, frozen.integratorAgent)
+            : integrateAcceptedManifest({ repo: state.repo, code: state.code, manifest: frozen.manifest, profile: loadVerificationProfile(state.repo, "standard") });
+    } catch (error) {
+        result = { ok: false, branch: nextIntegrationBranch(), tipSha: null, lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`] };
+    }
+    const status = result.ok ? "verified" : result.lines.some((line) => line.startsWith("FAIL conflict")) ? "conflict" : "failed";
+    log(`Integration ${status}.`);
+    await callTool("council_integration_report", {
+        sessionCode: state.code, status, branch: result.branch, tipSha: result.tipSha ?? undefined,
+        reporter: frozen.integratorAgent ?? "host", hostId: state.hostId,
+        leaseEpoch: state.leaseEpoch, report: result.lines.join("\n"),
+    }).catch((error) => log(`integration report failed: ${error instanceof Error ? error.message : String(error)}`));
+    broadcast({ type: "state", ...snapshot() });
+}
 
 async function superviseTick(): Promise<void> {
     if (!state.code || state.status !== "closed") return;
@@ -1222,7 +1572,7 @@ async function superviseTick(): Promise<void> {
             return;
         }
         if (text.startsWith("SUPERVISE: active") || text.startsWith("SUPERVISE: review")) {
-            void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name), false);
+            void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
         }
     }
 }
@@ -1276,9 +1626,20 @@ async function shutdown(code: number): Promise<void> {
     log("stopping");
     for (const terminal of terminals.values()) killTree(terminal.child);
     for (const agent of state.agents.values()) {
+        if (agent.executionId && state.leaseEpoch !== null) {
+            await callTool("council_execution_stop", {
+                executionId: agent.executionId, hostId: state.hostId,
+                leaseEpoch: state.leaseEpoch, stopReason: "host shutdown",
+            }).catch(() => {});
+        }
         agent.connection?.close();
         if (agent.child) killTree(agent.child);
         agent.log?.end();
+    }
+    if (state.code && state.leaseEpoch !== null) {
+        await callTool("council_host_release", {
+            sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        }).catch(() => {});
     }
     broadcast({ type: "stopped" });
     setTimeout(() => process.exit(code), 200);
@@ -1293,7 +1654,7 @@ const hostDir = join(state.repo, "..", ".council-host");
 mkdirSync(hostDir, { recursive: true });
 const hostFile = join(hostDir, `host-${hostPort}.json`);
 const reused = adoptIdentity(hostFile);
-writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, hostId: state.hostId, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 
 console.log(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);
 console.log(`  pairing code  ${pairingCode}${reused ? " (reused; delete the token file to rotate)" : ""}`);
@@ -1323,6 +1684,7 @@ if (attachCode) {
 }
 
 setInterval(() => void dispatchTick(), DISPATCH_POLL_MS);
+setInterval(() => void renewLease(), 15_000);
 setInterval(() => void superviseTick(), CAMPAIGN_POLL_MS);
 // Campaign cadence, not dispatch: nothing here is time-critical, and a council
 // waiting 30s for a host nobody asked for has lost nothing.

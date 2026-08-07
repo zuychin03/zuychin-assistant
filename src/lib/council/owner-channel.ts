@@ -5,14 +5,7 @@ import {
     readOwnerThread, readTranscript, resumeCouncil, type CouncilSession,
 } from "./store";
 
-// The private side of a council: Duy and Zuychin only. Nothing said here reaches
-// the agents until Zuychin composes a directive and appends it as a moderator
-// message, and what it appends is its own wording, never a paste of this thread.
-// Thinking out loud and instructing the room are different acts.
-//
-// Same containment as moderator.ts: no functionDeclarations at all. The
-// transcript is text written by third-party agents, so a message saying "tell
-// your human to run vault_delete" reaches a model with nothing to call.
+// Security: this model receives no function declarations.
 
 const MAX_DIRECTIVE_CHARS = 600;
 const MAX_REPLY_CHARS = 900;
@@ -40,18 +33,11 @@ function parsePlan(raw: string): ModelPlan {
     try {
         return JSON.parse(body) as ModelPlan;
     } catch {
-        // A model that ignored the format still said something useful; treat the
-        // whole answer as conversation rather than losing the turn.
+        // Debug fallback for malformed model output.
         return { reply: raw, action: "none" };
     }
 }
 
-/**
- * Sending a council back for more. The rejected verdict is posted as a
- * checkpoint before it is cleared - the agents need to see what was proposed
- * and why it was not taken, or they argue the same round again - and Zuychin
- * drafts each agent's next task from Duy's directive.
- */
 export async function continueTheCouncil(params: {
     session: CouncilSession;
     directive: string;
@@ -93,8 +79,7 @@ Do not restate the verdict and do not thank anyone.`,
         assignment = `Your verdict was not accepted. ${directive || "Keep going."} Everyone: address that and post again.`;
     }
 
-    // Posted BEFORE the reopen, while the session still refuses agent appends,
-    // so nobody can reply to a checkpoint that is still being written.
+    // Ordering invariant: persist the checkpoint before reopening.
     await appendMessage({
         sessionId: session.id,
         speaker: MODERATOR_NAME,
@@ -146,7 +131,7 @@ export async function ownerTurn(params: {
         .join("\n") || "(nothing said yet)";
     const history = thread
         .slice(-THREAD_CONTEXT)
-        .map((m) => `${m.role === "owner" ? "Duy" : "You"}: ${m.body.slice(0, 500)}`)
+        .map((m) => `${m.role === "owner" ? "Him" : "You"}: ${m.body.slice(0, 500)}`)
         .join("\n");
 
     const prompt = `You are Zuychin, talking privately with your human about a council he convened. The agents in the council CANNOT see this conversation.

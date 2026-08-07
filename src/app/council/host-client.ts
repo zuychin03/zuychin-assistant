@@ -20,6 +20,12 @@ export interface HostAgent {
     inFlight: boolean;
     lastActivity: string;
     warn: string | null;
+    requestedModel: string | null;
+    effectiveModel: string | null;
+    requestedReasoningEffort: string | null;
+    effectiveReasoningEffort: string | null;
+    identityAssurance: string;
+    capabilities: Record<string, unknown>;
 }
 
 export interface HostPermission {
@@ -39,6 +45,10 @@ export interface HostInstance {
     mode: "acp" | "shell";
     expertise: string;
     warn: string | null;
+    defaultModel: string | null;
+    allowedModels: string[];
+    defaultReasoningEffort: string | null;
+    allowedReasoningEfforts: string[];
 }
 
 export interface HostSnapshot {
@@ -56,6 +66,11 @@ export interface HostSnapshot {
     runDir: string | null;
     agents: HostAgent[];
     permissions: HostPermission[];
+    capabilities?: Record<string, unknown>;
+    hostId?: string;
+    leaseEpoch?: number | null;
+    leaseExpiresAt?: string | null;
+    leaseHealthy?: boolean;
 }
 
 export interface HostActivity {
@@ -224,7 +239,7 @@ export class HostClient {
         return true;
     }
 
-    convene(params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string }): boolean {
+    convene(params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> }): boolean {
         return this.send({ type: "convene", ...params });
     }
 
@@ -257,7 +272,7 @@ const LAUNCH_TIMEOUT_MS = 120_000;
 export function launchCouncil(
     port: number,
     token: string,
-    params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string },
+    params: { topic: string; brief: string; agents: string[]; closer: string; councilType: string; selections?: Record<string, { modelId?: string; reasoningEffort?: string }> },
 ): Promise<{ code: string } | { error: string }> {
     return new Promise((settle) => {
         let asked = false;

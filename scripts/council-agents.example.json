@@ -12,11 +12,12 @@
   },
 
   "instances": {
-    "codex-1": { "provider": "codex", "expertise": "implementation and integration" },
-    "codex-2": { "provider": "codex", "expertise": "tests and edge cases" },
-    "claude-a": { "provider": "claude-code", "expertise": "architecture" },
-    "claude-b": { "provider": "claude-code", "expertise": "security review" },
-    "claude-c": { "provider": "claude-code", "expertise": "documentation and verification" }
+    "_doc_models": "Populate allowedModels only with exact IDs advertised by that adapter's ACP configOptions. defaultModel must be in allowedModels. The host rejects an explicit model that is unlisted or not advertised instead of silently falling back. Reasoning effort follows the same rule.",
+    "codex-1": { "provider": "codex", "expertise": "implementation and integration", "allowedModels": [], "allowedReasoningEfforts": [] },
+    "codex-2": { "provider": "codex", "expertise": "tests and edge cases", "allowedModels": [], "allowedReasoningEfforts": [] },
+    "claude-a": { "provider": "claude-code", "expertise": "architecture", "allowedModels": [], "allowedReasoningEfforts": [] },
+    "claude-b": { "provider": "claude-code", "expertise": "security review", "allowedModels": [], "allowedReasoningEfforts": [] },
+    "claude-c": { "provider": "claude-code", "expertise": "documentation and verification", "allowedModels": [], "allowedReasoningEfforts": [] }
   },
 
   "agents": {
@@ -29,6 +30,8 @@
     "claude-code": {
       "_doc": "VERIFIED 2026-07-31: `claude` itself has NO --acp flag; the ACP entry point is Zed's adapter, which wraps the Claude Code SDK. `npx -y @zed-industries/claude-code-acp` downloads it on first use; `npm i -g @zed-industries/claude-code-acp` then lets you use \"command\": \"claude-code-acp\" with no args.",
       "mode": "acp",
+      "version": "pin-the-tested-adapter-version",
+      "capabilities": { "filesystemMediated": true, "terminalMediated": true, "permissionCallbacks": true },
       "command": "npx",
       "args": ["-y", "@zed-industries/claude-code-acp"]
     },
@@ -36,6 +39,8 @@
     "codex": {
       "_doc": "VERIFIED 2026-08-01 in a live council. Not `codex acp`: the desktop build's codex.exe is Access denied from a shell, so this runs @agentclientprotocol/codex-acp (a devDependency here) by absolute path under node. Install it with `npm i -D @agentclientprotocol/codex-acp` and point at your own checkout. ACP mode is what makes codex usable at all: `codex exec` auto-cancels MCP tool calls non-interactively (openai/codex#24135), and the only workaround was --dangerously-bypass-approvals-and-sandbox. In ACP mode approvals come back through the host, so that flag is not needed - the live council ran without it. CODEX_CONFIG below only disables unrelated plugins, which caused memory pressure; the council MCP server arrives over session/new and needs no codex-side config.",
       "mode": "acp",
+      "version": "pin-the-tested-adapter-version",
+      "capabilities": { "filesystemMediated": false, "terminalMediated": true, "permissionCallbacks": true },
       "command": "node",
       "args": ["<absolute path to your repo>/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
       "env": {

@@ -3,10 +3,6 @@
 import { useState } from "react";
 import { Check, CornerUpLeft, Gavel } from "lucide-react";
 
-// Shown only while a council is 'awaiting_owner'. Accept is the step that
-// produces everything durable - the campaign, the vault page, the announcement
-// - so a council Duy never rules on files nothing until its standby runs out.
-
 export function DecisionPanel({ code, verdict, openQuestions, standbyExpiresAt, continueCount, onDecided }: {
     code: string;
     verdict: string | null;

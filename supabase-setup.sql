@@ -2862,3 +2862,665 @@ begin
   return found;
 end;
 $$;
+
+-- ===== Council V3 wave =====
+
+alter table council_sessions
+  add column if not exists protocol_version integer not null default 2,
+  add column if not exists base_sha text;
+
+alter table council_sessions drop constraint if exists council_sessions_protocol_version_check;
+alter table council_sessions add constraint council_sessions_protocol_version_check
+  check (protocol_version in (2, 3));
+
+-- Host lease
+
+create table if not exists council_host_leases (
+  session_id uuid primary key references council_sessions(id) on delete cascade,
+  host_id uuid not null,
+  lease_epoch bigint not null check (lease_epoch > 0),
+  lease_expires_at timestamptz not null,
+  last_heartbeat_at timestamptz not null,
+  claimed_at timestamptz not null,
+  released_at timestamptz
+);
+alter table council_host_leases enable row level security;
+
+create or replace function claim_council_host_lease(
+  p_session_id uuid, p_host_id uuid, p_duration_seconds integer default 45
+) returns jsonb language plpgsql as $$
+declare v_session council_sessions; v_lease council_host_leases; v_duration integer;
+begin
+  v_duration := greatest(15, least(coalesce(p_duration_seconds, 45), 300));
+  select * into v_session from council_sessions where id = p_session_id for update;
+  if v_session.id is null then return jsonb_build_object('ok', false, 'reason', 'no_session'); end if;
+  if v_session.protocol_version <> 3 then return jsonb_build_object('ok', false, 'reason', 'not_v3'); end if;
+  if v_session.status = 'expired' then return jsonb_build_object('ok', false, 'reason', 'expired'); end if;
+
+  select * into v_lease from council_host_leases where session_id = p_session_id for update;
+  if v_lease.session_id is null then
+    insert into council_host_leases (
+      session_id, host_id, lease_epoch, lease_expires_at, last_heartbeat_at, claimed_at
+    ) values (
+      p_session_id, p_host_id, 1, now() + make_interval(secs => v_duration), now(), now()
+    ) returning * into v_lease;
+  elsif v_lease.host_id = p_host_id and v_lease.released_at is null
+        and v_lease.lease_expires_at > now() then
+    update council_host_leases
+       set lease_expires_at = now() + make_interval(secs => v_duration),
+           last_heartbeat_at = now()
+     where session_id = p_session_id returning * into v_lease;
+  elsif v_lease.released_at is not null or v_lease.lease_expires_at <= now() then
+    update council_host_leases
+       set host_id = p_host_id,
+           lease_epoch = lease_epoch + 1,
+           lease_expires_at = now() + make_interval(secs => v_duration),
+           last_heartbeat_at = now(),
+           claimed_at = now(),
+           released_at = null
+     where session_id = p_session_id returning * into v_lease;
+  else
+    return jsonb_build_object(
+      'ok', false, 'reason', 'lease_held', 'leaseExpiresAt', v_lease.lease_expires_at
+    );
+  end if;
+  return jsonb_build_object(
+    'ok', true, 'hostId', v_lease.host_id, 'leaseEpoch', v_lease.lease_epoch,
+    'leaseExpiresAt', v_lease.lease_expires_at
+  );
+end;
+$$;
+
+create or replace function renew_council_host_lease(
+  p_session_id uuid, p_host_id uuid, p_lease_epoch bigint,
+  p_duration_seconds integer default 45
+) returns jsonb language plpgsql as $$
+declare v_lease council_host_leases; v_duration integer;
+begin
+  v_duration := greatest(15, least(coalesce(p_duration_seconds, 45), 300));
+  select * into v_lease from council_host_leases where session_id = p_session_id for update;
+  if v_lease.session_id is null then return jsonb_build_object('ok', false, 'reason', 'no_lease'); end if;
+  if v_lease.host_id <> p_host_id or v_lease.lease_epoch <> p_lease_epoch then
+    return jsonb_build_object('ok', false, 'reason', 'stale_epoch');
+  end if;
+  if v_lease.released_at is not null or v_lease.lease_expires_at <= now() then
+    return jsonb_build_object('ok', false, 'reason', 'lease_expired');
+  end if;
+  update council_host_leases
+     set lease_expires_at = now() + make_interval(secs => v_duration),
+         last_heartbeat_at = now()
+   where session_id = p_session_id returning * into v_lease;
+  return jsonb_build_object(
+    'ok', true, 'hostId', v_lease.host_id, 'leaseEpoch', v_lease.lease_epoch,
+    'leaseExpiresAt', v_lease.lease_expires_at
+  );
+end;
+$$;
+
+create or replace function release_council_host_lease(
+  p_session_id uuid, p_host_id uuid, p_lease_epoch bigint
+) returns boolean language plpgsql as $$
+begin
+  update council_host_leases
+     set released_at = now(), lease_expires_at = least(lease_expires_at, now())
+   where session_id = p_session_id and host_id = p_host_id
+     and lease_epoch = p_lease_epoch and released_at is null;
+  return found;
+end;
+$$;
+
+-- Seat identity
+
+alter table council_seat_keys
+  add column if not exists issued_by text not null default 'owner',
+  add column if not exists host_id uuid,
+  add column if not exists lease_epoch bigint;
+
+create or replace function resolve_council_seat_key(p_token_hash text)
+returns jsonb language plpgsql as $$
+declare v_row council_seat_keys; v_status text; v_code text;
+begin
+  select * into v_row from council_seat_keys where token_hash = p_token_hash;
+  if v_row.id is null or v_row.revoked_at is not null or v_row.expires_at < now() then return null; end if;
+  select status, code into v_status, v_code from council_sessions where id = v_row.session_id;
+  if v_status is null or v_status = 'expired' then return null; end if;
+  if v_row.issued_by = 'host' and not exists (
+    select 1 from council_host_leases where session_id = v_row.session_id
+      and host_id = v_row.host_id and lease_epoch = v_row.lease_epoch
+      and released_at is null and lease_expires_at > now()
+  ) then return null; end if;
+  update council_seat_keys set claimed_at = coalesce(claimed_at, now()) where id = v_row.id;
+  return jsonb_build_object('session_id', v_row.session_id, 'seat_name', v_row.seat_name,
+                            'code', v_code, 'issuer', v_row.issued_by);
+end;
+$$;
+
+create or replace function issue_council_seat_key(
+  p_session_id uuid, p_seat_name text, p_token_hash text, p_expires_at timestamptz
+) returns jsonb language plpgsql as $$
+declare v_kind text;
+begin
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_seat_name;
+  if v_kind is null then return jsonb_build_object('ok', false, 'reason', 'not_on_roster'); end if;
+  if v_kind <> 'agent' then return jsonb_build_object('ok', false, 'reason', 'not_an_agent_seat'); end if;
+  insert into council_seat_keys (
+    session_id, seat_name, token_hash, expires_at, issued_by, host_id, lease_epoch
+  ) values (
+    p_session_id, p_seat_name, p_token_hash, p_expires_at, 'owner', null, null
+  ) on conflict (session_id, seat_name) do update
+    set token_hash = excluded.token_hash, expires_at = excluded.expires_at,
+        issued_at = now(), claimed_at = null, revoked_at = null,
+        issued_by = 'owner', host_id = null, lease_epoch = null;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function issue_council_host_seat_key(
+  p_session_id uuid, p_seat_name text, p_token_hash text,
+  p_expires_at timestamptz, p_host_id uuid, p_lease_epoch bigint
+) returns jsonb language plpgsql as $$
+declare v_kind text; v_lease council_host_leases;
+begin
+  select * into v_lease from council_host_leases where session_id = p_session_id for update;
+  if v_lease.session_id is null or v_lease.host_id <> p_host_id
+     or v_lease.lease_epoch <> p_lease_epoch or v_lease.released_at is not null
+     or v_lease.lease_expires_at <= now() then
+    return jsonb_build_object('ok', false, 'reason', 'stale_host');
+  end if;
+  select kind into v_kind from council_participants
+   where session_id = p_session_id and name = p_seat_name;
+  if v_kind is null then return jsonb_build_object('ok', false, 'reason', 'not_on_roster'); end if;
+  if v_kind <> 'agent' then return jsonb_build_object('ok', false, 'reason', 'not_an_agent_seat'); end if;
+
+  insert into council_seat_keys (
+    session_id, seat_name, token_hash, expires_at, issued_by, host_id, lease_epoch
+  ) values (
+    p_session_id, p_seat_name, p_token_hash, p_expires_at, 'host', p_host_id, p_lease_epoch
+  )
+  on conflict (session_id, seat_name) do update
+    set token_hash = excluded.token_hash,
+        expires_at = excluded.expires_at,
+        issued_at = now(), claimed_at = null, revoked_at = null,
+        issued_by = 'host', host_id = excluded.host_id, lease_epoch = excluded.lease_epoch;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- Durable delivery
+
+create table if not exists council_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  participant_id uuid not null references council_participants(id) on delete cascade,
+  host_id uuid not null,
+  lease_epoch bigint not null,
+  from_seq integer not null check (from_seq >= 0),
+  through_seq integer not null check (through_seq >= from_seq),
+  prompt_hash text not null,
+  prompt_body text not null,
+  status text not null check (status in ('prepared', 'in_flight', 'acknowledged', 'failed')),
+  attempt integer not null default 1 check (attempt > 0),
+  prepared_at timestamptz not null default now(),
+  sent_at timestamptz,
+  acknowledged_at timestamptz,
+  failed_at timestamptz,
+  error text
+);
+alter table council_deliveries drop constraint if exists council_deliveries_session_id_participant_id_through_seq_prompt_hash_key;
+create unique index if not exists idx_council_deliveries_active_identity
+  on council_deliveries (session_id, participant_id, through_seq, prompt_hash)
+  where status in ('prepared', 'in_flight', 'failed');
+create index if not exists idx_council_deliveries_pending
+  on council_deliveries (session_id, participant_id, prepared_at)
+  where status in ('prepared', 'in_flight', 'failed');
+alter table council_deliveries enable row level security;
+
+create or replace function prepare_council_delivery(
+  p_session_id uuid, p_agent_name text, p_host_id uuid, p_lease_epoch bigint,
+  p_from_seq integer, p_through_seq integer, p_prompt_hash text, p_prompt_body text
+) returns jsonb language plpgsql as $$
+declare v_lease council_host_leases; v_participant council_participants;
+        v_delivery council_deliveries; v_redelivered boolean := false;
+begin
+  select * into v_lease from council_host_leases where session_id = p_session_id for update;
+  if v_lease.session_id is null or v_lease.host_id <> p_host_id
+     or v_lease.lease_epoch <> p_lease_epoch or v_lease.released_at is not null
+     or v_lease.lease_expires_at <= now() then
+    return jsonb_build_object('ok', false, 'reason', 'stale_host');
+  end if;
+  select * into v_participant from council_participants
+   where session_id = p_session_id and name = p_agent_name for update;
+  if v_participant.id is null then return jsonb_build_object('ok', false, 'reason', 'not_participant'); end if;
+  if v_participant.dispatch_mode is not true then
+    return jsonb_build_object('ok', false, 'reason', 'not_host_managed');
+  end if;
+
+  select * into v_delivery from council_deliveries
+   where session_id = p_session_id and participant_id = v_participant.id
+     and status in ('prepared', 'in_flight', 'failed')
+   order by prepared_at limit 1 for update;
+
+  if v_delivery.id is not null then
+    v_redelivered := v_delivery.host_id <> p_host_id
+      or v_delivery.lease_epoch <> p_lease_epoch
+      or v_delivery.status in ('in_flight', 'failed');
+    if v_delivery.host_id <> p_host_id or v_delivery.lease_epoch <> p_lease_epoch
+       or v_delivery.status = 'failed' then
+      update council_deliveries
+         set host_id = p_host_id, lease_epoch = p_lease_epoch,
+             status = 'prepared', attempt = attempt + 1,
+             prepared_at = now(), sent_at = null, failed_at = null, error = null
+       where id = v_delivery.id returning * into v_delivery;
+    end if;
+  else
+    if p_through_seq < p_from_seq then
+      return jsonb_build_object('ok', false, 'reason', 'bad_range');
+    end if;
+    insert into council_deliveries (
+      session_id, participant_id, host_id, lease_epoch, from_seq, through_seq,
+      prompt_hash, prompt_body, status
+    ) values (
+      p_session_id, v_participant.id, p_host_id, p_lease_epoch,
+      greatest(v_participant.cursor_seq, p_from_seq), p_through_seq,
+      p_prompt_hash, p_prompt_body, 'prepared'
+    ) returning * into v_delivery;
+  end if;
+
+  return jsonb_build_object('ok', true, 'delivery', jsonb_build_object(
+    'id', v_delivery.id, 'participant_id', v_delivery.participant_id,
+    'from_seq', v_delivery.from_seq, 'through_seq', v_delivery.through_seq,
+    'prompt_hash', v_delivery.prompt_hash, 'prompt_body', v_delivery.prompt_body,
+    'status', v_delivery.status, 'attempt', v_delivery.attempt,
+    'redelivered', v_redelivered
+  ));
+end;
+$$;
+
+create or replace function mark_council_delivery_in_flight(
+  p_delivery_id uuid, p_host_id uuid, p_lease_epoch bigint
+) returns boolean language plpgsql as $$
+begin
+  update council_deliveries d set status = 'in_flight', sent_at = coalesce(sent_at, now())
+   where d.id = p_delivery_id and d.host_id = p_host_id and d.lease_epoch = p_lease_epoch
+     and d.status in ('prepared', 'in_flight')
+     and exists (
+       select 1 from council_host_leases l where l.session_id = d.session_id
+        and l.host_id = p_host_id and l.lease_epoch = p_lease_epoch
+        and l.released_at is null and l.lease_expires_at > now()
+     );
+  return found;
+end;
+$$;
+
+create or replace function fail_council_delivery(
+  p_delivery_id uuid, p_host_id uuid, p_lease_epoch bigint, p_error text
+) returns boolean language plpgsql as $$
+begin
+  update council_deliveries d
+     set status = 'failed', failed_at = now(), error = left(coalesce(p_error, ''), 2000)
+   where d.id = p_delivery_id and d.host_id = p_host_id and d.lease_epoch = p_lease_epoch
+     and d.status in ('prepared', 'in_flight')
+     and exists (
+       select 1 from council_host_leases l where l.session_id = d.session_id
+        and l.host_id = p_host_id and l.lease_epoch = p_lease_epoch
+        and l.released_at is null and l.lease_expires_at > now()
+     );
+  return found;
+end;
+$$;
+
+create or replace function ack_council_delivery(
+  p_delivery_id uuid, p_host_id uuid, p_lease_epoch bigint
+) returns jsonb language plpgsql as $$
+declare v_delivery council_deliveries;
+begin
+  select * into v_delivery from council_deliveries where id = p_delivery_id for update;
+  if v_delivery.id is null then return jsonb_build_object('ok', false, 'reason', 'no_delivery'); end if;
+  if v_delivery.host_id <> p_host_id or v_delivery.lease_epoch <> p_lease_epoch then
+    return jsonb_build_object('ok', false, 'reason', 'stale_epoch');
+  end if;
+  if v_delivery.status = 'acknowledged' then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'throughSeq', v_delivery.through_seq);
+  end if;
+  if not exists (
+    select 1 from council_host_leases l where l.session_id = v_delivery.session_id
+      and l.host_id = p_host_id and l.lease_epoch = p_lease_epoch
+      and l.released_at is null and l.lease_expires_at > now()
+  ) then return jsonb_build_object('ok', false, 'reason', 'stale_host'); end if;
+  if v_delivery.status <> 'in_flight' then
+    return jsonb_build_object('ok', false, 'reason', 'not_in_flight');
+  end if;
+
+  update council_participants
+     set cursor_seq = greatest(cursor_seq, v_delivery.through_seq),
+         pending_ack_seq = greatest(pending_ack_seq, v_delivery.through_seq),
+         last_seen_at = now()
+   where id = v_delivery.participant_id;
+  update council_deliveries
+     set status = 'acknowledged', acknowledged_at = now(), error = null
+   where id = v_delivery.id;
+  return jsonb_build_object('ok', true, 'throughSeq', v_delivery.through_seq);
+end;
+$$;
+
+-- Execution evidence
+
+create table if not exists council_agent_executions (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references council_sessions(id) on delete cascade,
+  participant_id uuid not null references council_participants(id) on delete cascade,
+  host_id uuid not null,
+  lease_epoch bigint not null,
+  host_generation text not null,
+  connector_kind text not null check (connector_kind in (
+    'acp', 'mcp', 'managed_api', 'managed_cli', 'text_only', 'manual'
+  )),
+  connector_capabilities jsonb not null default '{}',
+  capability_source text not null check (capability_source in ('probed', 'configured', 'declared')),
+  identity_assurance text not null check (identity_assurance in (
+    'verified_seat', 'host_bound', 'owner_relay', 'unverified_declaration'
+  )),
+  provider text,
+  adapter_version text,
+  requested_model text,
+  effective_model text,
+  requested_reasoning_effort text,
+  effective_reasoning_effort text,
+  model_source text,
+  branch_name text,
+  worktree_path text,
+  base_sha text,
+  started_at timestamptz not null default now(),
+  ended_at timestamptz,
+  stop_reason text,
+  predecessor_execution_id uuid references council_agent_executions(id)
+);
+create index if not exists idx_council_agent_executions_participant
+  on council_agent_executions (participant_id, started_at desc);
+alter table council_agent_executions enable row level security;
+
+create or replace function start_council_agent_execution(
+  p_session_id uuid, p_agent_name text, p_host_id uuid, p_lease_epoch bigint,
+  p_host_generation text, p_connector_kind text, p_connector_capabilities jsonb,
+  p_capability_source text, p_identity_assurance text, p_provider text,
+  p_adapter_version text, p_requested_model text, p_effective_model text,
+  p_requested_reasoning_effort text, p_effective_reasoning_effort text,
+  p_model_source text, p_branch_name text, p_worktree_path text, p_base_sha text
+) returns jsonb language plpgsql as $$
+declare v_participant uuid; v_previous uuid; v_id uuid;
+begin
+  if not exists (
+    select 1 from council_host_leases where session_id = p_session_id
+      and host_id = p_host_id and lease_epoch = p_lease_epoch
+      and released_at is null and lease_expires_at > now()
+  ) then return jsonb_build_object('ok', false, 'reason', 'stale_host'); end if;
+  select id into v_participant from council_participants
+   where session_id = p_session_id and name = p_agent_name and kind = 'agent';
+  if v_participant is null then return jsonb_build_object('ok', false, 'reason', 'not_on_roster'); end if;
+  select id into v_previous from council_agent_executions
+   where participant_id = v_participant order by started_at desc limit 1;
+  update council_agent_executions
+     set ended_at = coalesce(ended_at, now()), stop_reason = coalesce(stop_reason, 'replaced')
+   where participant_id = v_participant and ended_at is null;
+  insert into council_agent_executions (
+    session_id, participant_id, host_id, lease_epoch, host_generation,
+    connector_kind, connector_capabilities, capability_source, identity_assurance,
+    provider, adapter_version, requested_model, effective_model,
+    requested_reasoning_effort, effective_reasoning_effort, model_source,
+    branch_name, worktree_path, base_sha, predecessor_execution_id
+  ) values (
+    p_session_id, v_participant, p_host_id, p_lease_epoch, p_host_generation,
+    p_connector_kind, coalesce(p_connector_capabilities, '{}'), p_capability_source,
+    p_identity_assurance, p_provider, p_adapter_version, p_requested_model,
+    p_effective_model, p_requested_reasoning_effort, p_effective_reasoning_effort,
+    p_model_source, p_branch_name, p_worktree_path, p_base_sha, v_previous
+  ) returning id into v_id;
+  return jsonb_build_object('ok', true, 'executionId', v_id);
+end;
+$$;
+
+create or replace function stop_council_agent_execution(
+  p_execution_id uuid, p_host_id uuid, p_lease_epoch bigint, p_stop_reason text
+) returns boolean language plpgsql as $$
+begin
+  update council_agent_executions e
+     set ended_at = coalesce(ended_at, now()), stop_reason = coalesce(stop_reason, left(p_stop_reason, 500))
+   where e.id = p_execution_id and e.host_id = p_host_id and e.lease_epoch = p_lease_epoch
+     and exists (select 1 from council_host_leases l where l.session_id = e.session_id
+       and l.host_id = p_host_id and l.lease_epoch = p_lease_epoch
+       and l.released_at is null and l.lease_expires_at > now());
+  return found;
+end;
+$$;
+
+-- Exact commit and integration
+
+alter table council_campaigns
+  add column if not exists base_sha text,
+  add column if not exists verification_profile text not null default 'standard',
+  add column if not exists integration_manifest jsonb,
+  add column if not exists manifest_frozen_at timestamptz,
+  add column if not exists integration_tip_sha text;
+
+alter table council_work_items
+  add column if not exists branch_name text,
+  add column if not exists accepted_commit_sha text,
+  add column if not exists verification_profile text not null default 'standard',
+  add column if not exists verification_run_id uuid,
+  add column if not exists dependencies jsonb not null default '[]';
+
+create or replace function create_council_campaign(
+  p_session_id uuid, p_created_by text, p_work_items jsonb
+) returns jsonb language plpgsql as $$
+declare v_session council_sessions; v_campaign council_campaigns; v_reason text;
+begin
+  select * into v_session from council_sessions where id = p_session_id for update;
+  if v_session.id is null then raise exception 'council session not found'; end if;
+  if v_session.status <> 'closed' then raise exception 'council must be closed before work begins'; end if;
+  select * into v_campaign from council_campaigns where session_id = p_session_id;
+  if v_campaign.id is not null then return jsonb_build_object('campaign_id', v_campaign.id, 'created', false); end if;
+  v_reason := validate_council_work_items(p_session_id, p_created_by, p_work_items);
+  if v_reason is not null then raise exception '%', v_reason; end if;
+  if v_session.protocol_version = 3 and v_session.base_sha is null then
+    raise exception 'Council V3 code campaigns require a frozen base commit';
+  end if;
+  insert into council_campaigns (
+    session_id, repo_path, base_branch, base_sha, verification_profile
+  ) values (
+    p_session_id, v_session.repo_path, v_session.base_branch, v_session.base_sha, 'standard'
+  ) returning * into v_campaign;
+  insert into council_work_items (
+    campaign_id, sequence, agent_name, title, instructions, acceptance_criteria,
+    declared_paths, verification_profile, dependencies
+  )
+  select v_campaign.id, row_number() over (), item->>'agent_name', item->>'title',
+         item->>'instructions', coalesce(item->'acceptance_criteria', '[]'::jsonb),
+         coalesce(item->'declared_paths', '[]'::jsonb),
+         coalesce(nullif(item->>'verification_profile', ''), 'standard'),
+         coalesce(item->'dependencies', '[]'::jsonb)
+    from jsonb_array_elements(p_work_items) item;
+  return jsonb_build_object('campaign_id', v_campaign.id, 'created', true);
+end;
+$$;
+
+create table if not exists council_verification_runs (
+  id uuid primary key default gen_random_uuid(),
+  work_item_id uuid not null references council_work_items(id) on delete cascade,
+  host_id uuid not null,
+  lease_epoch bigint not null,
+  commit_sha text not null,
+  base_sha text not null,
+  branch_name text not null,
+  profile_id text not null,
+  command_receipts jsonb not null default '[]',
+  output_digest text not null,
+  passed boolean not null,
+  report text not null,
+  checked_at timestamptz not null default now()
+);
+create index if not exists idx_council_verification_runs_item
+  on council_verification_runs (work_item_id, checked_at desc);
+alter table council_verification_runs enable row level security;
+
+create or replace function record_council_verification(
+  p_item_id uuid, p_host_id uuid, p_lease_epoch bigint, p_commit_sha text,
+  p_base_sha text, p_branch_name text, p_profile_id text,
+  p_command_receipts jsonb, p_output_digest text, p_passed boolean, p_report text
+) returns jsonb language plpgsql as $$
+declare v_item council_work_items; v_campaign council_campaigns; v_session_id uuid; v_run uuid;
+begin
+  select * into v_item from council_work_items where id = p_item_id for update;
+  if v_item.id is null then return jsonb_build_object('ok', false, 'reason', 'no_item'); end if;
+  select * into v_campaign from council_campaigns where id = v_item.campaign_id;
+  v_session_id := v_campaign.session_id;
+  if not exists (
+    select 1 from council_host_leases where session_id = v_session_id
+      and host_id = p_host_id and lease_epoch = p_lease_epoch
+      and released_at is null and lease_expires_at > now()
+  ) then return jsonb_build_object('ok', false, 'reason', 'stale_host'); end if;
+  if v_item.status <> 'awaiting_review' then
+    return jsonb_build_object('ok', false, 'reason', 'not_awaiting_review');
+  end if;
+  if v_item.commit_hash is distinct from p_commit_sha then
+    return jsonb_build_object('ok', false, 'reason', 'commit_mismatch');
+  end if;
+  if v_campaign.base_sha is distinct from p_base_sha then
+    return jsonb_build_object('ok', false, 'reason', 'base_mismatch');
+  end if;
+  insert into council_verification_runs (
+    work_item_id, host_id, lease_epoch, commit_sha, base_sha, branch_name,
+    profile_id, command_receipts, output_digest, passed, report
+  ) values (
+    p_item_id, p_host_id, p_lease_epoch, p_commit_sha, p_base_sha, p_branch_name,
+    p_profile_id, coalesce(p_command_receipts, '[]'), p_output_digest, p_passed,
+    left(coalesce(p_report, ''), 16000)
+  ) returning id into v_run;
+  update council_work_items
+     set host_verified = p_passed,
+         host_verification = left(coalesce(p_report, ''), 16000),
+         host_checked_at = now(), verification_run_id = v_run,
+         branch_name = p_branch_name, verification_profile = p_profile_id,
+         status = case when p_passed then status else 'queued' end,
+         progress = case when p_passed then progress else concat_ws(E'\n', progress,
+           'Host check failed: ' || left(coalesce(p_report, ''), 1000)) end
+   where id = p_item_id;
+  return jsonb_build_object('ok', true, 'verificationRunId', v_run, 'passed', p_passed);
+end;
+$$;
+
+create or replace function freeze_council_integration_manifest(
+  p_session_id uuid, p_host_id uuid, p_lease_epoch bigint
+) returns jsonb language plpgsql as $$
+declare v_campaign council_campaigns; v_manifest jsonb;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null then return jsonb_build_object('ok', false, 'reason', 'no_campaign'); end if;
+  if not exists (
+    select 1 from council_host_leases where session_id = p_session_id
+      and host_id = p_host_id and lease_epoch = p_lease_epoch
+      and released_at is null and lease_expires_at > now()
+  ) then return jsonb_build_object('ok', false, 'reason', 'stale_host'); end if;
+  if v_campaign.integration_manifest is not null then
+    return jsonb_build_object('ok', true, 'manifest', v_campaign.integration_manifest, 'frozen', true);
+  end if;
+  if v_campaign.status <> 'complete' or exists (
+    select 1 from council_work_items where campaign_id = v_campaign.id
+      and (status <> 'verified' or accepted_commit_sha is null)
+  ) then return jsonb_build_object('ok', false, 'reason', 'campaign_incomplete'); end if;
+  select jsonb_build_object(
+    'version', 1, 'campaignId', v_campaign.id, 'baseSha', v_campaign.base_sha,
+    'items', coalesce(jsonb_agg(jsonb_build_object(
+      'itemId', id, 'sequence', sequence, 'agentName', agent_name,
+      'branch', branch_name, 'commitSha', accepted_commit_sha,
+      'verificationRunId', verification_run_id, 'dependencies', dependencies
+    ) order by sequence), '[]'::jsonb)
+  ) into v_manifest from council_work_items where campaign_id = v_campaign.id;
+  update council_campaigns
+     set integration_manifest = v_manifest, manifest_frozen_at = now(),
+         integration_status = coalesce(integration_status, 'pending')
+   where id = v_campaign.id;
+  return jsonb_build_object('ok', true, 'manifest', v_manifest, 'frozen', false);
+end;
+$$;
+
+drop function if exists review_council_work_item(uuid, text, boolean, text);
+create or replace function review_council_work_item(
+  p_item_id uuid, p_reviewer text, p_accepted boolean, p_note text
+) returns jsonb language plpgsql as $$
+declare v_item council_work_items; v_campaign council_campaigns;
+        v_closer text; v_run council_verification_runs;
+begin
+  select * into v_item from council_work_items where id = p_item_id for update;
+  if v_item.id is null then return jsonb_build_object('ok', false, 'reason', 'no_such_item'); end if;
+  select * into v_campaign from council_campaigns where id = v_item.campaign_id;
+  select closer_name into v_closer from council_sessions where id = v_campaign.session_id;
+  if v_closer <> p_reviewer then return jsonb_build_object('ok', false, 'reason', 'not_the_closer'); end if;
+  if v_item.status <> 'awaiting_review' then
+    return jsonb_build_object('ok', false, 'reason', 'not_awaiting_review');
+  end if;
+  if p_accepted then
+    select * into v_run from council_verification_runs where id = v_item.verification_run_id;
+    if v_run.id is null or v_run.passed is not true
+       or v_run.commit_sha is distinct from v_item.commit_hash
+       or v_run.base_sha is distinct from v_campaign.base_sha
+       or v_run.profile_id is distinct from v_item.verification_profile then
+      return jsonb_build_object('ok', false, 'reason', 'not_exactly_verified');
+    end if;
+    update council_work_items
+       set status = 'verified', accepted_commit_sha = commit_hash,
+           verification = concat_ws(E'\n', verification, 'Review: ' || p_note), reviewed_at = now()
+     where id = p_item_id;
+  else
+    update council_work_items
+       set status = 'queued', progress = concat_ws(E'\n', progress, 'Review feedback: ' || p_note),
+           heartbeat_at = null, completed_at = null, lease_owner = null, lease_expires_at = null,
+           host_verified = null, host_verification = null, host_checked_at = null,
+           verification_run_id = null, accepted_commit_sha = null
+     where id = p_item_id;
+  end if;
+  update council_campaigns set status = case
+      when not exists (select 1 from council_work_items where campaign_id = v_campaign.id and status <> 'verified') then 'complete'
+      when exists (select 1 from council_work_items where campaign_id = v_campaign.id and status = 'blocked')
+       and not exists (select 1 from council_work_items where campaign_id = v_campaign.id and status in ('queued', 'in_progress', 'awaiting_review')) then 'blocked'
+      else 'running' end,
+    completed_at = case when not exists (
+      select 1 from council_work_items where campaign_id = v_campaign.id and status <> 'verified'
+    ) then now() else null end
+  where id = v_campaign.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function record_council_integration_v3(
+  p_session_id uuid, p_reporter text, p_host_id uuid, p_lease_epoch bigint,
+  p_status text, p_branch text, p_tip_sha text, p_report text
+) returns jsonb language plpgsql as $$
+declare v_campaign council_campaigns; v_host_ok boolean;
+begin
+  select * into v_campaign from council_campaigns where session_id = p_session_id for update;
+  if v_campaign.id is null then return jsonb_build_object('ok', false, 'reason', 'no_campaign'); end if;
+  if p_status not in ('pending', 'running', 'verified', 'conflict', 'failed') then
+    return jsonb_build_object('ok', false, 'reason', 'bad_status');
+  end if;
+  select exists (
+    select 1 from council_host_leases where session_id = p_session_id
+      and host_id = p_host_id and lease_epoch = p_lease_epoch
+      and released_at is null and lease_expires_at > now()
+  ) into v_host_ok;
+  if not v_host_ok then
+    return jsonb_build_object('ok', false, 'reason', 'not_authorized');
+  end if;
+  if v_campaign.integration_manifest is null then
+    return jsonb_build_object('ok', false, 'reason', 'manifest_not_frozen');
+  end if;
+  update council_campaigns
+     set integration_status = p_status,
+         integration_branch = coalesce(p_branch, integration_branch),
+         integration_tip_sha = coalesce(p_tip_sha, integration_tip_sha),
+         integration_report = left(coalesce(p_report, ''), 16000),
+         integration_checked_at = now()
+   where id = v_campaign.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;

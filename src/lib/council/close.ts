@@ -8,12 +8,7 @@ import {
 } from "./store";
 import { createCampaign, type CouncilWorkItemInput } from "./campaign";
 
-// Closing is two steps, not one. The closer PROPOSES a verdict and the council
-// goes to 'awaiting_owner'; nothing durable is produced until Duy accepts. The
-// DB CAS still commits before any filing, so a client-side timeout can never
-// lose an agreed verdict. Nothing is deferred to after() -- its callbacks run
-// only once mcp-handler's stream adapter closes, on an instance Vercel may
-// freeze, and a failure there is a console.error nobody reads.
+// Persistence invariant: propose first, then finalize after owner acceptance.
 
 const BODY_DIGEST_CHARS = 1200;
 const VERDICT_SLICE = 1200;
@@ -58,10 +53,6 @@ function transcriptMarkdown(session: CouncilSession, messages: CouncilMessage[],
     return lines.join("\n");
 }
 
-/**
- * The closer's step. Records the verdict and puts the council in standby; the
- * agents stop, nothing is filed, and Duy decides what happens next.
- */
 export async function proposeCouncilVerdict(params: {
     session: CouncilSession;
     closer: string;
@@ -71,9 +62,7 @@ export async function proposeCouncilVerdict(params: {
 }): Promise<ProposeOutcome> {
     const { session, closer, verdict, openQuestions, workItems } = params;
 
-    // Before the CAS, never after. create_council_campaign raises on an invalid
-    // work plan; validating it only at accept time would strand a verdict in
-    // standby that can never be accepted.
+    // Validate before the verdict CAS to avoid an unfinalizable state.
     if (workItems?.length) {
         const reason = await validateWorkItems({ sessionId: session.id, createdBy: closer, workItems });
         if (reason) {
@@ -110,11 +99,6 @@ export async function proposeCouncilVerdict(params: {
     return { changed: true, verdict, closer, status: "awaiting_owner" };
 }
 
-/**
- * Duy's accept. This is the step that actually ends a council: the campaign,
- * the vault page and the announcement all happen here, so a council he never
- * looks at produces nothing.
- */
 export async function finalizeCouncil(session: CouncilSession): Promise<CloseOutcome> {
     const cas = await acceptVerdict(session.id);
     if (!cas.changed) {
@@ -134,9 +118,7 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
 
     let campaignId: string | null = null;
     if (cas.workItems.length) {
-        // Validated at propose time, so a raise here means the roster changed
-        // underneath the plan. The verdict is already committed; report it
-        // rather than pretending the council failed to close.
+        // Debug: roster drift can invalidate a previously checked plan.
         try {
             const campaign = await createCampaign({
                 sessionId: session.id, createdBy: closer, workItems: cas.workItems,
@@ -175,8 +157,7 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
     }
 
     const names = participants.filter((p) => p.kind === "agent").map((p) => p.name);
-    // notify() can reject via its Telegram and push legs and the DB write has
-    // already committed, so every mirror is catch-wrapped.
+    // Notification failures must not roll back a committed verdict.
     await notify(
         "council_conclusion",
         `**Council concluded - ${closed.topic}**\n`
@@ -197,10 +178,6 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
     return { changed: true, verdict, closer, vaultPath, archiveError, campaignId };
 }
 
-/**
- * Propose and accept in one step. This is Duy's own override - telling Zuychin
- * to close a council IS the decision, so it does not wait for a second one.
- */
 export async function closeCouncil(params: {
     session: CouncilSession;
     closer: string;

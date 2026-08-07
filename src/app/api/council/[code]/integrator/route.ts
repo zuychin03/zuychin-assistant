@@ -2,11 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionByCode } from "@/lib/council/store";
 import { setCampaignIntegrator } from "@/lib/council/campaign";
 
-// Nominates one agent to assemble every accepted task on a clean integration
-// branch. Session-gated by proxy.ts. Delegating the assembly is Duy's approval
-// of that agent doing the work, NOT of the result shipping: the integrator's
-// allowed refs exclude the base branch, and the merge decision stays his.
-
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
         const { code } = await params;

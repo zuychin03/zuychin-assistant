@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "knowledge:eval": "node --no-warnings --experimental-strip-types scripts/evaluate-knowledge.ts"
+    "knowledge:eval": "node --no-warnings --experimental-strip-types scripts/evaluate-knowledge.ts",
+    "council:v3:test": "tsx scripts/test-council-v3.mts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.3.0",

@@ -3,11 +3,6 @@ import { finalizeCouncil } from "@/lib/council/close";
 import { continueTheCouncil } from "@/lib/council/owner-channel";
 import { getSessionByCode } from "@/lib/council/store";
 
-// Duy's ruling on a proposed verdict. Session-gated by proxy.ts. Accept is the
-// step that produces everything durable; Continue reopens the debate with a
-// fresh assignment, because reopening without one reproduces the stall that
-// ended the round.
-
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
         const { code } = await params;

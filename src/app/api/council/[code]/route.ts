@@ -49,6 +49,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
                 pausedAt: session.pausedAt,
                 standbyExpiresAt: session.standbyExpiresAt,
                 continueCount: session.continueCount,
+                protocolVersion: session.protocolVersion,
+                baseSha: session.baseSha,
             },
             participants: participants.map((p) => ({
                 name: p.name,
@@ -69,7 +71,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
                 integrationStatus: campaign.integrationStatus,
                 integrationReport: campaign.integrationReport,
                 integrationCheckedAt: campaign.integrationCheckedAt,
-                workItems: workItems.map((item) => ({ id: item.id, sequence: item.sequence, agentName: item.agentName, title: item.title, status: item.status, heartbeatAt: item.heartbeatAt, progress: item.progress, commitHash: item.commitHash, verification: item.verification, blockedReason: item.blockedReason, hostVerified: item.hostVerified, hostVerification: item.hostVerification })),
+                baseSha: campaign.baseSha, verificationProfile: campaign.verificationProfile,
+                integrationManifest: campaign.integrationManifest, manifestFrozenAt: campaign.manifestFrozenAt,
+                integrationTipSha: campaign.integrationTipSha,
+                workItems: workItems.map((item) => ({
+                    id: item.id, sequence: item.sequence, agentName: item.agentName, title: item.title,
+                    status: item.status, heartbeatAt: item.heartbeatAt, progress: item.progress,
+                    commitHash: item.commitHash, acceptedCommitSha: item.acceptedCommitSha,
+                    branchName: item.branchName, verificationProfile: item.verificationProfile,
+                    verificationRunId: item.verificationRunId, dependencies: item.dependencies,
+                    verification: item.verification, blockedReason: item.blockedReason,
+                    hostVerified: item.hostVerified, hostVerification: item.hostVerification,
+                })),
             } : null,
         });
     } catch (error) {

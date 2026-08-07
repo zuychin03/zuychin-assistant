@@ -53,6 +53,7 @@ interface Detail {
         vaultPath: string | null; archiveStatus: string; floorHolder: string | null;
         paused: boolean; pausedAt: string | null;
         standbyExpiresAt: string | null; continueCount: number;
+        protocolVersion: number; baseSha: string | null;
     };
     participants: Participant[];
     messages: Message[];
@@ -61,7 +62,9 @@ interface Detail {
         id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
         integratorAgent: string | null; integrationBranch: string | null; integrationStatus: string | null;
         integrationReport: string | null; integrationCheckedAt: string | null;
-        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
+        baseSha: string | null; verificationProfile: string; integrationManifest: unknown;
+        manifestFrozenAt: string | null; integrationTipSha: string | null;
+        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; acceptedCommitSha: string | null; branchName: string | null; verificationProfile: string; verificationRunId: string | null; dependencies: string[]; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
     } | null;
 }
 
@@ -116,6 +119,7 @@ export default function CouncilPage() {
     const [copied, setCopied] = useState(false);
     const [origin, setOrigin] = useState("");
     const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code" });
+    const [agentSelections, setAgentSelections] = useState<Record<string, { modelId?: string; reasoningEffort?: string }>>({});
     const clientRef = useRef<HostClient | null>(null);
 
     const connect = useCallback((port: number, token: string) => {
@@ -170,9 +174,10 @@ export default function CouncilPage() {
         if (!agents.includes(closer)) { setHostError(`Closer "${closer}" is not one of ${agents.join(", ")}.`); return; }
         setHostError("");
         setConvening(true);
-        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType });
+        const selections = Object.fromEntries(agents.map((name) => [name, agentSelections[name] ?? {}]));
+        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType, selections });
         setTimeout(() => setConvening(false), 8000);
-    }, [form]);
+    }, [form, agentSelections]);
 
     useEffect(() => setOrigin(window.location.origin), []);
 
@@ -357,6 +362,12 @@ export default function CouncilPage() {
 
                 {hostState === "connected" && host && (
                     <>
+                        <div style={styles.conveneRow}>
+                            <span style={{ ...styles.smallPill, ...(host.leaseHealthy === false ? styles.pillWarn : styles.pillGood) }}>
+                                {host.leaseHealthy === false ? "host lease lost" : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
+                            </span>
+                            {host.capabilities?.protocolVersion === 3 && <span style={{ ...styles.smallPill, ...styles.pillGood }}>Council V3</span>}
+                        </div>
                         {host.permissions.length > 0 && (
                             <div style={styles.permissionQueue}>
                                 <div style={styles.obligationsTitle}>Waiting on you</div>
@@ -390,6 +401,10 @@ export default function CouncilPage() {
                                         <span style={{ ...styles.smallPill, ...styles.pillMuted }}>{a.state}</span>
                                         {host.floorHolder === a.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>has floor</span>}
                                         <span style={styles.rosterMeta}>{a.detail}</span>
+                                        <span style={styles.workDetail}>
+                                            {a.identityAssurance}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
+                                            {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
+                                        </span>
                                         <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>
                                         {a.warn && <span style={{ ...styles.workDetail, color: "#ffd166" }}>! {a.warn}</span>}
                                     </div>
@@ -447,6 +462,42 @@ export default function CouncilPage() {
                                     <button type="button" onClick={submitConvene} disabled={convening} style={{ ...styles.quickLink, ...(convening ? styles.hostChipOff : {}) }}>
                                         <Play size={15} /> {convening ? "Convening…" : "Convene"}
                                     </button>
+                                </div>
+                                <div style={styles.modelGrid}>
+                                    {form.agents.split(",").map((name) => name.trim()).filter(Boolean).map((name) => {
+                                        const instance = host.instances?.find((item) => item.name === name);
+                                        if (!instance) return null;
+                                        const selection = agentSelections[name] ?? {};
+                                        return (
+                                            <div key={name} style={styles.modelRow}>
+                                                <span style={styles.modelAgent}>{name}</span>
+                                                <select
+                                                    aria-label={`Model for ${name}`}
+                                                    value={selection.modelId ?? instance.defaultModel ?? ""}
+                                                    onChange={(event) => setAgentSelections((current) => ({
+                                                        ...current, [name]: { ...current[name], modelId: event.target.value || undefined },
+                                                    }))}
+                                                    style={styles.input}
+                                                >
+                                                    {!instance.defaultModel && <option value="">Provider default</option>}
+                                                    {instance.allowedModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                                                </select>
+                                                {instance.allowedReasoningEfforts.length > 0 && (
+                                                    <select
+                                                        aria-label={`Reasoning effort for ${name}`}
+                                                        value={selection.reasoningEffort ?? instance.defaultReasoningEffort ?? ""}
+                                                        onChange={(event) => setAgentSelections((current) => ({
+                                                            ...current, [name]: { ...current[name], reasoningEffort: event.target.value || undefined },
+                                                        }))}
+                                                        style={styles.input}
+                                                    >
+                                                        {!instance.defaultReasoningEffort && <option value="">Default reasoning</option>}
+                                                        {instance.allowedReasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+                                                    </select>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                                 <div style={styles.workDetail}>
                                     Names must exist in scripts/council-agents.json. Each gets its own worktree off{" "}
@@ -933,6 +984,9 @@ const styles: Record<string, React.CSSProperties> = {
     },
     conveneForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 14 },
     conveneRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+    modelGrid: { display: "flex", flexDirection: "column", gap: 6 },
+    modelRow: { display: "grid", gridTemplateColumns: "minmax(90px, .7fr) minmax(150px, 1.4fr) minmax(130px, 1fr)", gap: 8, alignItems: "center" },
+    modelAgent: { fontSize: 12, fontWeight: 700, color: "var(--color-text-muted)" },
     permissionQueue: {
         display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, padding: 12,
         borderRadius: 10, border: "1px solid color-mix(in srgb, #ff8f6b 40%, transparent)",

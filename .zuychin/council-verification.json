@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "profiles": {
+    "standard": {
+      "maxOutputChars": 24000,
+      "rejectBinary": true,
+      "rejectSymlinks": true,
+      "rejectSubmodules": true,
+      "commands": [
+        { "command": ["npm", "run", "lint"], "timeoutMs": 180000 },
+        { "command": ["npm", "run", "build"], "timeoutMs": 300000 }
+      ]
+    },
+    "fast": {
+      "maxOutputChars": 12000,
+      "rejectBinary": true,
+      "rejectSymlinks": true,
+      "rejectSubmodules": true,
+      "commands": [
+        { "command": ["npm", "run", "lint"], "timeoutMs": 180000 }
+      ]
+    }
+  }
+}

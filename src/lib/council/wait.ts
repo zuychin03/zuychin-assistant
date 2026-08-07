@@ -231,6 +231,7 @@ export async function dispatchCouncil(params: {
     session: CouncilSession;
     agentNames: string[];
     ackFor?: string[];
+    durable?: boolean;
 }): Promise<DispatchResult> {
     const sessionId = params.session.id;
     const tick = await readTick(sessionId);
@@ -258,7 +259,7 @@ export async function dispatchCouncil(params: {
 
     // The host confirming the PREVIOUS batch reached its agent. This is the only
     // thing that advances a dispatched agent's cursor.
-    for (const name of params.ackFor ?? []) {
+    for (const name of params.durable ? [] : (params.ackFor ?? [])) {
         await touchParticipant({ sessionId, agentName: name, countWait: false });
     }
     // Presence for agents that never call a council tool between turns; the host
@@ -268,12 +269,14 @@ export async function dispatchCouncil(params: {
     const session = (await getSessionById(sessionId)) ?? params.session;
     const view = await buildDispatchViews({ session, agentNames: params.agentNames, floorHolder });
 
-    for (const [name, slice] of Object.entries(view.agents)) {
-        if (slice.fresh.length === 0) continue;
-        const me = view.participants.find((p) => p.name === name);
-        await stagePendingAck({
-            sessionId, agentName: name, delivered: slice.delivered, current: me?.pendingAckSeq ?? 0,
-        });
+    if (!params.durable) {
+        for (const [name, slice] of Object.entries(view.agents)) {
+            if (slice.fresh.length === 0) continue;
+            const me = view.participants.find((p) => p.name === name);
+            await stagePendingAck({
+                sessionId, agentName: name, delivered: slice.delivered, current: me?.pendingAckSeq ?? 0,
+            });
+        }
     }
 
     return { kind: "ok", session, floorHolder, view };

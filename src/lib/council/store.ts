@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { CouncilType } from "./templates";
+import { COUNCIL_PROTOCOL_VERSION } from "./v3";
 import {
     MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
@@ -19,6 +20,7 @@ export interface CouncilSession {
     archiveStatus: "pending" | "filed" | "failed" | "skipped";
     vaultPath: string | null; expiresAt: string; closedAt: string | null; createdAt: string;
     repoPath: string | null; baseBranch: string | null;
+    protocolVersion: number; baseSha: string | null;
     pausedAt: string | null; pausedTotalSeconds: number;
     verdictProposedAt: string | null; standbyExpiresAt: string | null; continueCount: number;
 }
@@ -70,6 +72,7 @@ interface SessionRow {
     archive_status: "pending" | "filed" | "failed" | "skipped";
     vault_path: string | null; expires_at: string; closed_at: string | null; created_at: string;
     repo_path: string | null; base_branch: string | null;
+    protocol_version: number; base_sha: string | null;
     paused_at: string | null; paused_total_seconds: number;
     verdict_proposed_at: string | null; standby_expires_at: string | null; continue_count: number;
 }
@@ -92,7 +95,7 @@ interface ParticipantRow {
 const SESSION_COLUMNS =
     "id, code, topic, brief, closer_name, council_type, status, round, max_rounds, max_messages, last_seq, " +
     "last_message_at, quorum_at, floor_holder, floor_granted_at, floor_epoch, silent_grants, " +
-    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at, repo_path, base_branch, " +
+    "verdict, open_questions, archive_status, vault_path, expires_at, closed_at, created_at, repo_path, base_branch, protocol_version, base_sha, " +
     "paused_at, paused_total_seconds, verdict_proposed_at, standby_expires_at, continue_count";
 
 const MESSAGE_COLUMNS =
@@ -130,6 +133,8 @@ function mapSession(row: SessionRow): CouncilSession {
         createdAt: row.created_at,
         repoPath: row.repo_path,
         baseBranch: row.base_branch,
+        protocolVersion: row.protocol_version ?? 2,
+        baseSha: row.base_sha,
         pausedAt: row.paused_at,
         pausedTotalSeconds: row.paused_total_seconds ?? 0,
         verdictProposedAt: row.verdict_proposed_at,
@@ -203,7 +208,7 @@ export async function createCouncilSession(params: {
     maxMessages?: number;
     ttlMinutes?: number;
     userProfileId?: string;
-    workspace?: { repoPath: string; baseBranch: string };
+    workspace?: { repoPath: string; baseBranch: string; baseSha?: string };
     councilType?: CouncilType;
 }): Promise<CouncilSession> {
     const ttl = params.ttlMinutes ?? SESSION_TTL_MINUTES;
@@ -226,6 +231,8 @@ export async function createCouncilSession(params: {
                 expires_at: expiresAt,
                 repo_path: params.workspace?.repoPath ?? null,
                 base_branch: params.workspace?.baseBranch ?? null,
+                base_sha: params.workspace?.baseSha ?? null,
+                protocol_version: COUNCIL_PROTOCOL_VERSION,
             })
             .select(SESSION_COLUMNS)
             .single();
@@ -396,7 +403,7 @@ export async function appendMessage(params: {
 export async function validateWorkItems(params: {
     sessionId: string;
     createdBy: string;
-    workItems: { agentName: string; title: string; instructions: string; acceptanceCriteria: string[] }[];
+    workItems: { agentName: string; title: string; instructions: string; acceptanceCriteria: string[]; declaredPaths?: string[]; verificationProfile?: string; dependencies?: string[] }[];
 }): Promise<string | null> {
     const { data, error } = await supabase.rpc("validate_council_work_items", {
         p_session_id: params.sessionId,
@@ -406,6 +413,9 @@ export async function validateWorkItems(params: {
             title: item.title,
             instructions: item.instructions,
             acceptance_criteria: item.acceptanceCriteria,
+            declared_paths: item.declaredPaths ?? [],
+            verification_profile: item.verificationProfile ?? "standard",
+            dependencies: item.dependencies ?? [],
         })),
     });
     if (error) throw new Error(error.message);
@@ -755,10 +765,12 @@ export async function concludeCouncil(params: {
 
 export interface CouncilWorkItemPlan {
     agentName: string; title: string; instructions: string; acceptanceCriteria: string[];
+    declaredPaths?: string[]; verificationProfile?: string; dependencies?: string[];
 }
 
 interface WorkItemPlanRow {
     agent_name?: unknown; title?: unknown; instructions?: unknown; acceptance_criteria?: unknown;
+    declared_paths?: unknown; verification_profile?: unknown; dependencies?: unknown;
 }
 
 // The closer records a verdict; it is not final until the owner accepts. The
@@ -781,6 +793,8 @@ export async function proposeVerdict(params: {
                 ? params.workItems.map((i) => ({
                     agent_name: i.agentName, title: i.title,
                     instructions: i.instructions, acceptance_criteria: i.acceptanceCriteria,
+                    declared_paths: i.declaredPaths ?? [], verification_profile: i.verificationProfile ?? "standard",
+                    dependencies: i.dependencies ?? [],
                 }))
                 : null,
             p_standby_seconds: params.standbySeconds ?? STANDBY_TTL_SECONDS,
@@ -814,6 +828,9 @@ export async function acceptVerdict(sessionId: string): Promise<{
                 title: String(i.title ?? ""),
                 instructions: String(i.instructions ?? ""),
                 acceptanceCriteria: Array.isArray(i.acceptance_criteria) ? i.acceptance_criteria.map(String) : [],
+                declaredPaths: Array.isArray(i.declared_paths) ? i.declared_paths.map(String) : [],
+                verificationProfile: String(i.verification_profile ?? "standard"),
+                dependencies: Array.isArray(i.dependencies) ? i.dependencies.map(String) : [],
             })),
         };
     } catch (err) {

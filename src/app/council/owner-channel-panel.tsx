@@ -3,11 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquare, Pause, Play, Send, Megaphone } from "lucide-react";
 
-// The private half of a council: Duy and Zuychin, off the transcript. Kept in
-// its own file because none of it belongs to the agent-facing view - the whole
-// point is that the two conversations stay separate on screen as well as in the
-// data.
-
 interface OwnerMessage {
     id: string;
     role: "owner" | "zuychin";

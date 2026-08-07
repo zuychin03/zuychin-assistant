@@ -1,17 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 
-// Session-scoped credentials for agents that are not Duy's. A seat key reaches
-// exactly one seat in one council and expires with it, which is what lets a
-// one-off collaborator take part without holding MCP_API_KEY - a key that
-// grants the whole knowledge base, the vault and every other council.
-//
-// Only the hash is stored. The plaintext is returned once, at mint time, and
-// is not recoverable afterwards: re-issue instead.
-
 const PREFIX = "zcs_";
-// Comfortably outlives SESSION_TTL_MINUTES plus any continue, so a guest is
-// never locked out mid-council; the session status check is the real bound.
 const TTL_HOURS = 24;
 
 export interface SeatIdentity {
@@ -48,8 +38,29 @@ export async function issueSeatKey(params: {
     return { ok: true, token, expiresAt };
 }
 
-// Returns null for every unusable case - unknown, revoked, expired, closed
-// council - because a guest must not be able to tell them apart.
+export async function issueHostSeatKey(params: {
+    sessionId: string;
+    seatName: string;
+    hostId: string;
+    leaseEpoch: number;
+    ttlHours?: number;
+}): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false; reason: string }> {
+    const token = `${PREFIX}${randomBytes(32).toString("hex")}`;
+    const expiresAt = new Date(Date.now() + (params.ttlHours ?? TTL_HOURS) * 3600_000).toISOString();
+    const { data, error } = await supabase.rpc("issue_council_host_seat_key", {
+        p_session_id: params.sessionId,
+        p_seat_name: params.seatName,
+        p_token_hash: hashSeatToken(token),
+        p_expires_at: expiresAt,
+        p_host_id: params.hostId,
+        p_lease_epoch: params.leaseEpoch,
+    });
+    if (error) throw new Error(error.message);
+    const row = (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
+    if (!row.ok) return { ok: false, reason: row.reason ?? "unknown" };
+    return { ok: true, token, expiresAt };
+}
+
 export async function resolveSeatKey(token: string): Promise<SeatIdentity | null> {
     if (!looksLikeSeatKey(token)) return null;
     const { data, error } = await supabase.rpc("resolve_council_seat_key", {
