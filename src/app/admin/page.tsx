@@ -6,6 +6,7 @@ import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
 import SecurityPanel from "./security-panel";
+import AgentsPanel from "./agents-panel";
 import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import NotificationsPanel from "./notifications-panel";
 import { Masonry } from "./masonry";
@@ -309,6 +310,10 @@ export default function DashboardPage() {
 
                 <section style={styles.panel} id="security">
                     <SecurityPanel />
+                </section>
+
+                <section style={styles.panel} id="agents">
+                    <AgentsPanel />
                 </section>
 
                 <section style={styles.panel}>

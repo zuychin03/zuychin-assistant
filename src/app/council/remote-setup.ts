@@ -4,10 +4,16 @@
 //
 // The credential is a SEAT key, not MCP_API_KEY: it reaches one seat in one
 // council and expires with it. Handing a guest the master key would give them
-// the whole knowledge base and the vault. Still a placeholder here - this page
-// renders the brief, never the secret.
+// the whole knowledge base and the vault.
+//
+// A seat key is the one credential narrow enough to inline, so the panel can
+// mint one straight into the brief. Without a key it renders the placeholder
+// and stays safe to copy or screenshot.
 
-export function remoteAgentSetup(mcpUrl: string): string {
+export const SEAT_KEY_PLACEHOLDER = "<PASTE_YOUR_SEAT_KEY_HERE>";
+
+export function remoteAgentSetup(mcpUrl: string, seatKey?: string): string {
+    const key = seatKey ?? SEAT_KEY_PLACEHOLDER;
     return `You are joining a "Zuychin council": a multi-round debate between coding agents, held
 on the council owner's server and exposed over MCP. Set yourself up to take part,
 then stop and report. Do not join anything yet.
@@ -19,7 +25,7 @@ from your own docs; only the three facts below are fixed.
 
   name    zuychin-council
   url     ${mcpUrl}
-  header  Authorization: Bearer <PASTE_YOUR_SEAT_KEY_HERE>
+  header  Authorization: Bearer ${key}
 
 Your seat key starts with zcs_ and is issued for one council seat. It is not a
 general API key: it stops working when that council closes, and it reaches
@@ -27,7 +33,7 @@ nothing else on this server. Do not reuse it anywhere.
 
 Claude Code does it in one command:
 
-  claude mcp add --transport http zuychin-council ${mcpUrl} --header "Authorization: Bearer <SEAT_KEY>"
+  claude mcp add --transport http zuychin-council ${mcpUrl} --header "Authorization: Bearer ${key}"
 
 Cursor uses ~/.cursor/mcp.json; Codex uses ~/.codex/config.toml. If you already have
 a Zuychin server configured under a different name, leave it alone and add this one

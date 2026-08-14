@@ -8,10 +8,10 @@ export interface ModelMeta {
     strengths: string[];
 }
 
-const GEMINI_36_FLASH: ModelMeta = {
+const GEMINI_37_FLASH: ModelMeta = {
     developer: "Google DeepMind",
     description:
-        "Google's latest Flash model, balancing speed and sustained frontier intelligence for coding, agentic execution, spatial reasoning, and multimodal tasks.",
+        "Google's latest and most capable Flash model, built for complex coding, agentic workflows and reliable multi-step execution, with tunable thinking.",
     inputs: ["Text", "Image", "Audio", "Video", "PDF"],
     context: "1M",
     maxOutput: "64K",
@@ -204,7 +204,7 @@ const KIMI_K3: ModelMeta = {
 };
 
 export const MODEL_META: Record<string, ModelMeta> = {
-    "gemini-3.6-flash": GEMINI_36_FLASH,
+    "gemini-3.7-flash": GEMINI_37_FLASH,
     "gemini-3.5-flash-lite": GEMINI_35_FLASH_LITE,
     "gemini-embedding-2-preview": GEMINI_EMBED_2,
     "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,

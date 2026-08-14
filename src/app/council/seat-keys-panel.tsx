@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy, KeyRound, Trash2 } from "lucide-react";
+import { Check, Copy, FileKey, KeyRound, Trash2 } from "lucide-react";
+import { remoteAgentSetup } from "./remote-setup";
 
 // Mints the credential a guest agent pastes into the remote brief. The
 // plaintext is shown once and never again - re-issue rather than trying to
-// recover one - so the copy button is the only thing that matters here.
+// recover one - so the copy buttons are the only thing that matters here.
 
 interface SeatKey {
     seatName: string;
@@ -15,11 +16,21 @@ interface SeatKey {
     revokedAt: string | null;
 }
 
+function expiryLabel(iso: string): string {
+    const ms = Date.parse(iso) - Date.now();
+    if (!Number.isFinite(ms)) return "";
+    if (ms <= 0) return "expired";
+    const hours = Math.round(ms / 3600_000);
+    if (hours < 48) return `expires in ${hours}h`;
+    return `expires in ${Math.round(hours / 24)}d`;
+}
+
 export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: string[] }) {
     const [keys, setKeys] = useState<SeatKey[]>([]);
     const [seat, setSeat] = useState("");
-    const [minted, setMinted] = useState<{ seatName: string; token: string } | null>(null);
+    const [minted, setMinted] = useState<{ seatName: string; token: string; expiresAt: string } | null>(null);
     const [copied, setCopied] = useState(false);
+    const [copiedBrief, setCopiedBrief] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -45,12 +56,16 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ seatName }),
             });
-            const data = await res.json() as { token?: string; seatName?: string; error?: string };
+            const data = await res.json() as { token?: string; seatName?: string; expiresAt?: string; error?: string };
             if (!res.ok || !data.token) {
                 setError(data.error ?? "Could not issue a key.");
                 return;
             }
-            setMinted({ seatName: data.seatName ?? seatName, token: data.token });
+            setMinted({
+                seatName: data.seatName ?? seatName,
+                token: data.token,
+                expiresAt: data.expiresAt ?? "",
+            });
             setSeat("");
             await load();
         } catch {
@@ -80,8 +95,9 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
         <div style={styles.wrap}>
             <div style={styles.head}><KeyRound size={15} /><span>Guest seat keys</span></div>
             <div style={styles.note}>
-                For agents that are not yours. A seat key reaches one seat in this council and expires with it —
-                hand one of these to a collaborator instead of your MCP key.
+                For agents that are not yours. A seat key reaches one seat in this council and expires with it,
+                so hand one of these to a collaborator instead of your MCP key. Councils with a campaign get a
+                7 day key, because the campaign phase runs on after the council closes.
             </div>
 
             <div style={styles.mintRow}>
@@ -106,21 +122,40 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
             {minted && (
                 <div style={styles.mintedBox}>
                     <div style={styles.mintedHead}>
-                        Key for <strong>{minted.seatName}</strong> — shown once. Copy it now.
+                        Key for <strong>{minted.seatName}</strong>, shown once. Copy it now.
+                        {minted.expiresAt && <span style={styles.rowMeta}> {expiryLabel(minted.expiresAt)}</span>}
                     </div>
                     <code style={styles.token}>{minted.token}</code>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            void navigator.clipboard.writeText(minted.token).then(() => {
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 2000);
-                            });
-                        }}
-                        style={styles.copy}
-                    >
-                        {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy key"}
-                    </button>
+                    <div style={styles.mintedActions}>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                void navigator.clipboard.writeText(minted.token).then(() => {
+                                    setCopied(true);
+                                    setTimeout(() => setCopied(false), 2000);
+                                });
+                            }}
+                            style={styles.copy}
+                        >
+                            {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy key"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const brief = remoteAgentSetup(
+                                    `${window.location.origin}/api/mcp/mcp`, minted.token,
+                                );
+                                void navigator.clipboard.writeText(brief).then(() => {
+                                    setCopiedBrief(true);
+                                    setTimeout(() => setCopiedBrief(false), 2000);
+                                });
+                            }}
+                            style={styles.copy}
+                        >
+                            {copiedBrief ? <Check size={13} /> : <FileKey size={13} />}
+                            {copiedBrief ? "Copied" : "Copy brief with key"}
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -131,6 +166,7 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                             <span style={styles.rowName}>{k.seatName}</span>
                             <span style={styles.rowMeta}>
                                 {k.revokedAt ? "revoked" : k.claimedAt ? "in use" : "not used yet"}
+                                {!k.revokedAt && ` · ${expiryLabel(k.expiresAt)}`}
                             </span>
                             {!k.revokedAt && (
                                 <button type="button" onClick={() => revoke(k.seatName)} disabled={busy} style={styles.revoke}>
@@ -180,6 +216,7 @@ const styles: Record<string, React.CSSProperties> = {
         background: "color-mix(in srgb, #31d07f 8%, transparent)",
     },
     mintedHead: { fontSize: 12, color: "var(--color-text-primary)" },
+    mintedActions: { display: "flex", flexWrap: "wrap", gap: 7 },
     token: {
         fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5,
         wordBreak: "break-all", lineHeight: 1.5, color: "var(--color-text-primary)",

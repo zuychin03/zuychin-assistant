@@ -32,6 +32,11 @@ import { moderateRound } from "@/lib/council/moderator";
 import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
 import { blockWorkItem, claimNextWorkItem, completeWorkItem, freezeIntegrationManifest, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordExactVerification, recordV3Integration, reviewWorkItem } from "@/lib/council/campaign";
 import { issueHostSeatKey, resolveSeatKey } from "@/lib/council/seat-keys";
+import { resolveAgentKey } from "@/lib/agents/clients";
+import {
+    OWNER_SCOPES, READONLY_SCOPES, canOwnCouncil, canParticipateInCouncil, canWriteNotes,
+    canWriteVault, isCouncilHost, isCouncilOwner,
+} from "@/lib/agents/scopes";
 import { councilHostService } from "@/lib/council/service";
 import { promptDigest } from "@/lib/council/v3";
 
@@ -39,35 +44,32 @@ export const maxDuration = 300;
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-// Rejects a write call authenticated by a read-only key. Returns null when the
-// caller holds knowledge:write, otherwise the MCP error result to return.
-function requireWrite(extra: ToolExtra) {
-    if (extra.authInfo?.scopes?.includes("knowledge:write")) return null;
-    return {
-        isError: true,
-        content: [{ type: "text" as const, text: "This tool needs a read-write API key; the key you used is read-only." }],
-    };
+function requireNotesWrite(extra: ToolExtra) {
+    if (canWriteNotes(extra.authInfo?.scopes)) return null;
+    return denied("This tool needs a read-write API key; the key you used is read-only.");
 }
 
-// Coarse gate for council tools: a read-write master key, or a guest seat key.
-// Tools that act AS an agent must ALSO call requireSeat once they have resolved
-// what they are acting on - a seat key is valid for one council and one name,
-// and this check knows neither yet. Read-only keys observe via
-// council_transcript, which is deliberately ungated here.
+function requireVaultWrite(extra: ToolExtra) {
+    if (canWriteVault(extra.authInfo?.scopes)) return null;
+    return denied("This tool needs a key with vault write access; the key you used does not have it.");
+}
+
+// Coarse gate for council tools. Tools that act AS an agent must ALSO call
+// requireSeat once they have resolved what they are acting on - a seat key is
+// valid for one council and one name, and this check knows neither yet.
+// Read-only keys observe via council_transcript, which is deliberately ungated.
 function requireCouncil(extra: ToolExtra) {
-    const scopes = extra.authInfo?.scopes ?? [];
-    if (scopes.includes("knowledge:write") || scopes.includes("council:seat")) return null;
-    return denied("This tool needs a read-write API key or a council seat key; the key you used is read-only.");
+    if (canParticipateInCouncil(extra.authInfo?.scopes)) return null;
+    return denied("This tool needs an owner API key or a council seat key; the key you used has neither.");
 }
 
 function requireHost(extra: ToolExtra) {
-    if (extra.authInfo?.scopes?.includes("council:host")) return null;
+    if (isCouncilHost(extra.authInfo?.scopes)) return null;
     return denied("This tool requires the dedicated Council host credential.");
 }
 
 function requireOwnerOrHost(extra: ToolExtra) {
-    const scopes = extra.authInfo?.scopes ?? [];
-    if (scopes.includes("knowledge:write") || scopes.includes("council:host")) return null;
+    if (canOwnCouncil(extra.authInfo?.scopes)) return null;
     return denied("This tool requires an owner or Council host credential.");
 }
 
@@ -90,8 +92,9 @@ function seatIdentity(extra: ToolExtra): { sessionId: string; seatName: string }
 // its own name, so a guest can neither speak as a peer nor reach a council it
 // was not invited to.
 function requireSeat(extra: ToolExtra, opts: { sessionId?: string; agentName?: string; protocolVersion?: number }) {
-    // V2 identity compatibility.
-    if (extra.authInfo?.scopes?.includes("knowledge:write")) {
+    // V2 identity compatibility, and only for the owner's own key: a minted
+    // agent key never holds council:owner, so it can never assert a seat.
+    if (isCouncilOwner(extra.authInfo?.scopes)) {
         if (opts.protocolVersion === 3) return denied("Council V3 requires the participant's seat credential.");
         if (opts.protocolVersion === undefined && process.env.COUNCIL_V2_ASSERTED_IDENTITY !== "true") {
             return denied("Agent work requires a Council seat credential.");
@@ -190,7 +193,7 @@ const handler = createMcpHandler(
                 },
             },
             async ({ content, category }, extra) => {
-                const denied = requireWrite(extra);
+                const denied = requireNotesWrite(extra);
                 if (denied) return denied;
                 try {
                     await refreshEmbeddingOverride();
@@ -255,7 +258,7 @@ const handler = createMcpHandler(
                 },
             },
             async ({ id, content, category }, extra) => {
-                const denied = requireWrite(extra);
+                const denied = requireNotesWrite(extra);
                 if (denied) return denied;
                 if (!content && !category) {
                     return { isError: true, content: [{ type: "text" as const, text: "Provide content and/or category to change." }] };
@@ -293,7 +296,7 @@ const handler = createMcpHandler(
                 inputSchema: { id: z.string().min(1).describe("Note id from list_notes/search_knowledge.") },
             },
             async ({ id }, extra) => {
-                const denied = requireWrite(extra);
+                const denied = requireNotesWrite(extra);
                 if (denied) return denied;
                 try {
                     const ok = await deleteKnowledgeNote(id);
@@ -383,7 +386,7 @@ const handler = createMcpHandler(
                 },
             },
             async ({ title, content, category, source }, extra) => {
-                const denied = requireWrite(extra);
+                const denied = requireVaultWrite(extra);
                 if (denied) return denied;
                 try {
                     if (!getVaultConfig()) {
@@ -431,7 +434,7 @@ const handler = createMcpHandler(
                 },
             },
             async ({ path, markdown, summary }, extra) => {
-                const denied = requireWrite(extra);
+                const denied = requireVaultWrite(extra);
                 if (denied) return denied;
                 try {
                     if (!getVaultConfig()) {
@@ -1344,10 +1347,11 @@ function errMsg(error: unknown): string {
     return error instanceof Error ? error.message : "unexpected error";
 }
 
-// Two bearer tokens: MCP_API_KEY grants read + write, MCP_API_KEY_READONLY
-// grants read only. An unmatched or missing token stays locked (undefined ->
-// 401), so the knowledge base is never exposed unauthenticated. Write tools
-// enforce the knowledge:write scope via requireWrite.
+// Four resolution paths. The two shared environment keys are the legacy pair
+// and are retired once every caller holds a per-client key; MCP_API_KEY keeps
+// every scope it ever implied, including council:owner, so nothing in flight
+// changes behaviour. An unmatched or missing token stays locked (undefined ->
+// 401), so the knowledge base is never exposed unauthenticated.
 const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
     if (!bearerToken) return undefined;
     const rw = process.env.MCP_API_KEY;
@@ -1357,10 +1361,10 @@ const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInf
         return { token: bearerToken, clientId: "council-host", scopes: ["council:host"] };
     }
     if (rw && bearerToken === rw) {
-        return { token: bearerToken, clientId: "mcp-external-rw", scopes: ["knowledge:read", "knowledge:write"] };
+        return { token: bearerToken, clientId: "mcp-external-rw", scopes: [...OWNER_SCOPES] };
     }
     if (ro && bearerToken === ro) {
-        return { token: bearerToken, clientId: "mcp-external-ro", scopes: ["knowledge:read"] };
+        return { token: bearerToken, clientId: "mcp-external-ro", scopes: [...READONLY_SCOPES] };
     }
     // A guest seat: one council, one seat, expires with the session. The
     // identity rides in clientId because the council tools have to check it
@@ -1371,6 +1375,17 @@ const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInf
             token: bearerToken,
             clientId: `council-seat:${seat.sessionId}:${seat.seatName}`,
             scopes: ["council:seat"],
+        };
+    }
+    // A per-agent knowledge key. clientId names the machine rather than the
+    // shared mcp-external-rw principal, so the audit trail is attributable and
+    // one client can be revoked without touching another.
+    const agent = await resolveAgentKey(bearerToken);
+    if (agent) {
+        return {
+            token: bearerToken,
+            clientId: `agent:${agent.clientId}:${agent.displayName}`,
+            scopes: agent.scopes,
         };
     }
     return undefined;

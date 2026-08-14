@@ -70,11 +70,15 @@ try {
     assert.equal(promptDigest("stable"), promptDigest("stable"));
     assert.notEqual(promptDigest("stable"), promptDigest("changed"));
 
-    const migration = readFileSync(join(process.cwd(), "supabase", "migrations", "20260806_council_v3.sql"), "utf8");
+    // supabase-setup.sql is the authoritative schema and is tracked; the
+    // supabase/migrations/ copy is gitignored, so reading it fails on a fresh
+    // clone.
+    const schema = readFileSync(join(process.cwd(), "supabase-setup.sql"), "utf8");
     for (const required of [
         "claim_council_host_lease", "prepare_council_delivery", "ack_council_delivery",
         "start_council_agent_execution", "record_council_verification", "freeze_council_integration_manifest",
-    ]) assert.ok(migration.includes(required), `migration misses ${required}`);
+        "resolve_agent_client_key", "exchange_agent_claim", "begin_agent_claim_attempt",
+    ]) assert.ok(schema.includes(required), `supabase-setup.sql misses ${required}`);
 
     console.log("Council V3 contract, model, exact-commit, manifest and protected-ref tests passed.");
 } finally {

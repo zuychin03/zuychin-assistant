@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Brain, Check, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { PROMOTE_EVIDENCE_COUNT } from "@/lib/types";
+import { Dropdown } from "@/components/dropdown";
 
 interface MemoryFact {
     id: string;
@@ -111,9 +112,13 @@ export default function MemoriesPanel() {
                     onKeyDown={(e) => { if (e.key === "Enter") add(); }}
                     placeholder="Add a fact to remember…"
                 />
-                <select style={panelStyles.categorySelect} value={newCategory} onChange={(e) => setNewCategory(e.target.value)}>
-                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
+                <Dropdown
+                    ariaLabel="Category"
+                    style={panelStyles.categorySelect}
+                    value={newCategory}
+                    onChange={setNewCategory}
+                    options={CATEGORIES as readonly string[]}
+                />
                 <button style={panelStyles.iconBtn} onClick={add} disabled={adding} title="Save fact">
                     <Plus size={14} />
                 </button>

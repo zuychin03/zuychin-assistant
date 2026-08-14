@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { MarkdownReader } from "./markdown-reader";
 import styles from "./knowledge.module.css";
+import { Dropdown } from "@/components/dropdown";
 
 type Tab = "library" | "recall" | "timeline" | "maintenance";
 interface DocumentSummary {
@@ -287,9 +288,13 @@ export default function KnowledgePage() {
         {tab === "library" && <section className={styles.library}>
             <aside className={styles.sidebar}>
                 <div className={styles.filters}><label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter pages" /></label>
-                    <select value={status} onChange={(event) => setStatus(event.target.value)}>
-                        {["active", "suggested", "archived", "superseded", "deleted", "all"].map((value) => <option key={value} value={value}>{value}</option>)}
-                    </select>
+                    <Dropdown
+                        ariaLabel="Status filter"
+                        value={status}
+                        onChange={setStatus}
+                        options={["active", "suggested", "archived", "superseded", "deleted", "all"]}
+                        style={{ flex: "0 0 auto", padding: "0 8px", height: 28, fontSize: 12, textTransform: "capitalize" }}
+                    />
                 </div>
                 <small className={styles.count}>{visibleDocuments.length} documents</small>
                 <div className={styles.documentList}>
@@ -398,9 +403,15 @@ export default function KnowledgePage() {
 
             {mergeSuggestion && <div className={styles.mergeReview}>
                 <header><div><span className={styles.eyebrow}>Human-approved consolidation</span><h3>Review merged Markdown</h3></div><button onClick={() => setMergeSuggestion(undefined)}><XCircle size={14} /> Close</button></header>
-                <label>Canonical page<select value={mergeTarget} onChange={(event) => prepareMerge(mergeSuggestion, event.target.value)}>
-                    {mergeSuggestion.document_ids.map((id) => <option key={id} value={id}>{documents.find((item) => item.id === id)?.path ?? id}</option>)}
-                </select></label>
+                <label>Canonical page<Dropdown
+                    ariaLabel="Canonical page"
+                    value={mergeTarget}
+                    onChange={(id) => prepareMerge(mergeSuggestion, id)}
+                    options={mergeSuggestion.document_ids.map((id) => ({
+                        value: id, label: documents.find((item) => item.id === id)?.path ?? id,
+                    }))}
+                    style={{ height: 36, padding: "0 9px" }}
+                /></label>
                 <textarea value={mergeMarkdown} onChange={(event) => setMergeMarkdown(event.target.value)} />
                 <p>Only the canonical page receives this content. Source pages remain in Git and are marked superseded.</p>
                 <button className={styles.primary} onClick={applyMerge} disabled={!!busy}><Merge size={15} /> Apply reviewed merge</button>

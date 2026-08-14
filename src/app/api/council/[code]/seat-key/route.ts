@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionByCode } from "@/lib/council/store";
 import { issueSeatKey, listSeatKeys, revokeSeatKey } from "@/lib/council/seat-keys";
+import { getCampaignForSession } from "@/lib/council/campaign";
+
+const CAMPAIGN_SEAT_TTL_HOURS = 24 * 7;
 
 // Mints the credential a guest agent uses instead of MCP_API_KEY. Session-gated
 // by proxy.ts. The plaintext is returned exactly once and is not recoverable:
@@ -31,7 +34,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             return NextResponse.json({ error: "That council is closed." }, { status: 409 });
         }
 
-        const issued = await issueSeatKey({ sessionId: session.id, seatName });
+        // The campaign phase runs AFTER the council closes and has no TTL of its
+        // own, so the 24h default can strand a guest mid-campaign.
+        const campaign = await getCampaignForSession(session.id).catch(() => null);
+        const ttlHours = campaign ? CAMPAIGN_SEAT_TTL_HOURS : undefined;
+
+        const issued = await issueSeatKey({ sessionId: session.id, seatName, ttlHours });
         if (!issued.ok) {
             const message = issued.reason === "not_on_roster"
                 ? `"${seatName}" is not on this council's roster. Convene with that name first.`

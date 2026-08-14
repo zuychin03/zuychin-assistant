@@ -3533,3 +3533,232 @@ $$;
 
 drop function if exists record_host_verification(uuid, boolean, text);
 drop function if exists record_campaign_integration(uuid, text, text, text);
+
+-- ===== Council V3.5 wave: agent clients and issued credentials =====
+-- One row per agent installation, which is the unit the owner revokes. Keys
+-- hang off it, so revoking a client revokes everything it holds.
+
+create table if not exists agent_clients (
+  id uuid primary key default gen_random_uuid(),
+  display_name text not null,
+  kind text not null default 'remote_agent'
+    check (kind in ('local_host', 'remote_agent', 'owner_tool')),
+  provider_hint text,
+  note text,
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz,
+  revoked_at timestamptz
+);
+
+create unique index if not exists agent_clients_live_name
+  on agent_clients (lower(display_name)) where revoked_at is null;
+
+-- Only the hash is ever stored. Plaintext is returned once at mint time and is
+-- not recoverable; re-issuing replaces the row, which is also how a mis-sent
+-- credential is retired.
+create table if not exists agent_client_keys (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references agent_clients(id) on delete cascade,
+  token_hash text not null unique,
+  key_prefix text not null,
+  scopes text[] not null,
+  purpose text not null check (purpose in ('knowledge', 'council_seat')),
+  access_level text check (access_level in ('read', 'notes', 'full')),
+  session_id uuid references council_sessions(id) on delete cascade,
+  seat_name text,
+  issued_at timestamptz not null default now(),
+  expires_at timestamptz,
+  claimed_at timestamptz,
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+
+create unique index if not exists agent_client_keys_one_live_knowledge
+  on agent_client_keys (client_id)
+  where purpose = 'knowledge' and revoked_at is null;
+
+create unique index if not exists agent_client_keys_one_live_seat
+  on agent_client_keys (client_id, session_id, seat_name)
+  where purpose = 'council_seat' and revoked_at is null;
+
+create index if not exists agent_client_keys_client on agent_client_keys (client_id);
+
+-- A seat key issued for a known agent is attributable across councils. Keys
+-- issued for a one-off guest leave this null and behave exactly as before.
+alter table council_seat_keys add column if not exists client_id uuid
+  references agent_clients(id) on delete set null;
+
+-- The knowledge brief carries a claim, never the durable key: a knowledge key
+-- is permanent, and a brief is a document whose purpose is to be pasted around.
+create table if not exists agent_client_claims (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references agent_clients(id) on delete cascade,
+  claim_hash text not null unique,
+  scopes text[] not null,
+  access_level text not null check (access_level in ('read', 'notes', 'full')),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  claimed_at timestamptz,
+  issued_key_id uuid references agent_client_keys(id) on delete set null,
+  revoked_at timestamptz
+);
+
+create index if not exists agent_client_claims_client on agent_client_claims (client_id);
+
+-- /api/agent/claim is the only unauthenticated write surface, and the app is
+-- serverless, so an in-process counter would reset per cold start and give an
+-- attacker a fresh allowance each time. The counter has to live here.
+create table if not exists agent_claim_attempts (
+  id bigserial primary key,
+  ip_hash text not null,
+  succeeded boolean not null default false,
+  at timestamptz not null default now()
+);
+
+create index if not exists agent_claim_attempts_ip on agent_claim_attempts (ip_hash, at desc);
+create index if not exists agent_claim_attempts_at on agent_claim_attempts (at desc);
+
+create or replace function resolve_agent_client_key(p_token_hash text)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_key agent_client_keys%rowtype;
+  v_client agent_clients%rowtype;
+begin
+  select * into v_key from agent_client_keys where token_hash = p_token_hash;
+  if not found or v_key.revoked_at is not null then return null; end if;
+  if v_key.expires_at is not null and v_key.expires_at <= now() then return null; end if;
+
+  select * into v_client from agent_clients where id = v_key.client_id;
+  if not found or v_client.revoked_at is not null then return null; end if;
+
+  -- Throttled so an agent in a tool loop does not write on every call.
+  if v_key.last_used_at is null or v_key.last_used_at < now() - interval '60 seconds' then
+    update agent_client_keys set last_used_at = now() where id = v_key.id;
+    update agent_clients set last_seen_at = now() where id = v_client.id;
+  end if;
+
+  return jsonb_build_object(
+    'client_id', v_client.id,
+    'display_name', v_client.display_name,
+    'key_id', v_key.id,
+    'purpose', v_key.purpose,
+    'scopes', to_jsonb(v_key.scopes),
+    'session_id', v_key.session_id,
+    'seat_name', v_key.seat_name
+  );
+end;
+$$;
+
+-- Idempotent within the claim's TTL. The caller derives the key deterministically
+-- from the claim plaintext, so a retry recomputes the same token and lands on the
+-- same hash; that is what lets this be idempotent without ever storing plaintext.
+create or replace function exchange_agent_claim(
+  p_claim_hash text,
+  p_token_hash text,
+  p_key_prefix text
+) returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_claim agent_client_claims%rowtype;
+  v_client agent_clients%rowtype;
+  v_key agent_client_keys%rowtype;
+begin
+  select * into v_claim from agent_client_claims
+   where claim_hash = p_claim_hash for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'unusable'); end if;
+  if v_claim.revoked_at is not null or v_claim.expires_at <= now() then
+    return jsonb_build_object('ok', false, 'reason', 'unusable');
+  end if;
+
+  select * into v_client from agent_clients where id = v_claim.client_id;
+  if not found or v_client.revoked_at is not null then
+    return jsonb_build_object('ok', false, 'reason', 'unusable');
+  end if;
+
+  select * into v_key from agent_client_keys where token_hash = p_token_hash;
+  if found then
+    -- A revoked key must not be re-minted by replaying the claim.
+    if v_key.revoked_at is not null then
+      return jsonb_build_object('ok', false, 'reason', 'unusable');
+    end if;
+  else
+    update agent_client_keys set revoked_at = now()
+     where client_id = v_claim.client_id and purpose = 'knowledge' and revoked_at is null;
+
+    insert into agent_client_keys (
+      client_id, token_hash, key_prefix, scopes, purpose, access_level, claimed_at
+    ) values (
+      v_claim.client_id, p_token_hash, p_key_prefix, v_claim.scopes, 'knowledge',
+      v_claim.access_level, now()
+    ) returning * into v_key;
+  end if;
+
+  update agent_client_claims
+     set claimed_at = coalesce(claimed_at, now()), issued_key_id = v_key.id
+   where id = v_claim.id;
+  update agent_clients set last_seen_at = now() where id = v_client.id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'client_id', v_client.id,
+    'display_name', v_client.display_name,
+    'scopes', to_jsonb(v_claim.scopes),
+    'access_level', v_claim.access_level
+  );
+end;
+$$;
+
+create or replace function revoke_agent_client(p_client_id uuid)
+returns jsonb
+language plpgsql
+security definer
+as $$
+begin
+  update agent_client_keys set revoked_at = now()
+   where client_id = p_client_id and revoked_at is null;
+  update agent_client_claims set revoked_at = now()
+   where client_id = p_client_id and revoked_at is null;
+  update agent_clients set revoked_at = now()
+   where id = p_client_id and revoked_at is null;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- Two calls so the limit is checked BEFORE the exchange runs, not after: the
+-- attempt is booked first and its outcome stamped once known, which also keeps
+-- the global failure backstop from counting successes.
+create or replace function begin_agent_claim_attempt(p_ip_hash text)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_ip integer;
+  v_global integer;
+  v_id bigint;
+begin
+  select count(*) into v_ip from agent_claim_attempts
+   where ip_hash = p_ip_hash and at > now() - interval '15 minutes';
+  select count(*) into v_global from agent_claim_attempts
+   where succeeded = false and at > now() - interval '1 hour';
+
+  insert into agent_claim_attempts (ip_hash, succeeded)
+  values (p_ip_hash, false) returning id into v_id;
+  delete from agent_claim_attempts where at < now() - interval '2 hours';
+
+  return jsonb_build_object('attempt_id', v_id, 'ip_attempts', v_ip, 'global_failures', v_global);
+end;
+$$;
+
+create or replace function finish_agent_claim_attempt(p_attempt_id bigint, p_succeeded boolean)
+returns void
+language sql
+security definer
+as $$
+  update agent_claim_attempts set succeeded = p_succeeded where id = p_attempt_id;
+$$;

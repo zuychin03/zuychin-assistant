@@ -16,6 +16,7 @@ import { OwnerChannelPanel } from "./owner-channel-panel";
 import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
 import { IntegrationPanel } from "./integration-panel";
+import { Dropdown } from "@/components/dropdown";
 
 // Live view over a council, plus control of the local ACP host when one is
 // reachable. The Zuychin half stays read-only by construction: watching a
@@ -382,8 +383,13 @@ export default function CouncilPage() {
                 {hostState === "connected" && host && (
                     <>
                         <div style={styles.conveneRow}>
-                            <span style={{ ...styles.smallPill, ...(host.leaseHealthy === false ? styles.pillWarn : styles.pillGood) }}>
-                                {host.leaseHealthy === false ? "host lease lost" : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
+                            {/* An idle host never held a lease, so an unhealthy
+                                one has lost nothing; only a host that owns a
+                                council can lose it. */}
+                            <span style={{ ...styles.smallPill, ...(host.code && host.leaseHealthy === false ? styles.pillWarn : styles.pillGood) }}>
+                                {host.code && host.leaseHealthy === false
+                                    ? "host lease lost"
+                                    : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
                             </span>
                             {host.capabilities?.protocolVersion === 3 && <span style={{ ...styles.smallPill, ...styles.pillGood }}>Council V3</span>}
                         </div>
@@ -471,33 +477,33 @@ export default function CouncilPage() {
                                         placeholder="closer (defaults to the first)"
                                         style={styles.input}
                                     />
-                                    <select
+                                    <Dropdown
+                                        ariaLabel="Council type"
                                         value={form.councilType}
-                                        onChange={(e) => setForm({ ...form, councilType: e.target.value })}
+                                        onChange={(councilType) => setForm({ ...form, councilType })}
+                                        options={["debate", "code", "research", "audit", "debug"]}
                                         style={styles.input}
-                                    >
-                                        {["debate", "code", "research", "audit", "debug"].map((t) => <option key={t} value={t}>{t}</option>)}
-                                    </select>
+                                    />
                                     {(host.workspaces?.length ?? 0) > 1 && (
-                                        <select
-                                            aria-label="Repository"
+                                        <Dropdown
+                                            ariaLabel="Repository"
                                             value={form.workspace}
-                                            onChange={(e) => setForm({ ...form, workspace: e.target.value })}
+                                            onChange={(workspace) => setForm({ ...form, workspace })}
+                                            options={[
+                                                { value: "", label: "host default" },
+                                                ...(host.workspaces ?? []).map((w) => ({ value: w.name })),
+                                            ]}
                                             style={styles.input}
-                                        >
-                                            <option value="">host default</option>
-                                            {host.workspaces?.map((w) => <option key={w.name} value={w.name}>{w.name}</option>)}
-                                        </select>
+                                        />
                                     )}
                                     {branches.length > 1 && (
-                                        <select
-                                            aria-label="Base branch"
+                                        <Dropdown
+                                            ariaLabel="Base branch"
                                             value={form.baseBranch}
-                                            onChange={(e) => setForm({ ...form, baseBranch: e.target.value })}
+                                            onChange={(baseBranch) => setForm({ ...form, baseBranch })}
+                                            options={branches}
                                             style={styles.input}
-                                        >
-                                            {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                                        </select>
+                                        />
                                     )}
                                     <button type="button" onClick={submitConvene} disabled={convening} style={{ ...styles.quickLink, ...(convening ? styles.hostChipOff : {}) }}>
                                         <Play size={15} /> {convening ? "Convening…" : "Convene"}
@@ -511,29 +517,31 @@ export default function CouncilPage() {
                                         return (
                                             <div key={name} style={styles.modelRow}>
                                                 <span style={styles.modelAgent}>{name}</span>
-                                                <select
-                                                    aria-label={`Model for ${name}`}
+                                                <Dropdown
+                                                    ariaLabel={`Model for ${name}`}
                                                     value={selection.modelId ?? instance.defaultModel ?? ""}
-                                                    onChange={(event) => setAgentSelections((current) => ({
-                                                        ...current, [name]: { ...current[name], modelId: event.target.value || undefined },
+                                                    onChange={(modelId) => setAgentSelections((current) => ({
+                                                        ...current, [name]: { ...current[name], modelId: modelId || undefined },
                                                     }))}
+                                                    options={[
+                                                        ...(instance.defaultModel ? [] : [{ value: "", label: "Provider default" }]),
+                                                        ...instance.allowedModels.map((model) => ({ value: model })),
+                                                    ]}
                                                     style={styles.input}
-                                                >
-                                                    {!instance.defaultModel && <option value="">Provider default</option>}
-                                                    {instance.allowedModels.map((model) => <option key={model} value={model}>{model}</option>)}
-                                                </select>
+                                                />
                                                 {instance.allowedReasoningEfforts.length > 0 && (
-                                                    <select
-                                                        aria-label={`Reasoning effort for ${name}`}
+                                                    <Dropdown
+                                                        ariaLabel={`Reasoning effort for ${name}`}
                                                         value={selection.reasoningEffort ?? instance.defaultReasoningEffort ?? ""}
-                                                        onChange={(event) => setAgentSelections((current) => ({
-                                                            ...current, [name]: { ...current[name], reasoningEffort: event.target.value || undefined },
+                                                        onChange={(reasoningEffort) => setAgentSelections((current) => ({
+                                                            ...current, [name]: { ...current[name], reasoningEffort: reasoningEffort || undefined },
                                                         }))}
+                                                        options={[
+                                                            ...(instance.defaultReasoningEffort ? [] : [{ value: "", label: "Default reasoning" }]),
+                                                            ...instance.allowedReasoningEfforts.map((effort) => ({ value: effort })),
+                                                        ]}
                                                         style={styles.input}
-                                                    >
-                                                        {!instance.defaultReasoningEffort && <option value="">Default reasoning</option>}
-                                                        {instance.allowedReasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-                                                    </select>
+                                                    />
                                                 )}
                                             </div>
                                         );

@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "knowledge:eval": "node --no-warnings --experimental-strip-types scripts/evaluate-knowledge.ts",
+    "council:schema:check": "tsx --env-file=.env.local scripts/check-council-schema.mts",
+    "agents:test": "tsx --env-file=.env.local scripts/test-agent-credentials.mts",
     "council:v3:test": "tsx scripts/test-council-v3.mts",
     "council:v3:test:db": "tsx --env-file=.env.local scripts/test-council-v3-db.mts",
     "council:protocol:test": "tsx --env-file=.env.local scripts/test-council-protocol.mts",

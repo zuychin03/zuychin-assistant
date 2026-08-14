@@ -66,7 +66,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
         chatModels: [
-            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", name: "gemini-3.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash", name: "gemini-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [
@@ -83,7 +83,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_FREE_API_KEY",
         chatModels: [
-            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (free)", name: "gemini-3.6-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash (free)", name: "gemini-3.7-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [],
@@ -219,11 +219,14 @@ export const DEFAULT_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-l
 
 const LEGACY_GEMINI_MODEL_IDS: Record<string, string> = {
     "gemini-3-flash-preview": "gemini-3.5-flash-lite",
-    "gemini-3.5-flash": "gemini-3.6-flash",
+    "gemini-3.5-flash": "gemini-3.7-flash",
+    "gemini-3.6-flash": "gemini-3.7-flash",
 };
 
+// Both Gemini providers, not just the paid one: they share model ids by
+// design, so a preference saved against the free key needs the same migration.
 function canonicalChatModelId(providerId: string, modelId?: string): string | undefined {
-    if (providerId !== "gemini" || !modelId) return modelId;
+    if ((providerId !== "gemini" && providerId !== "gemini-free") || !modelId) return modelId;
     return LEGACY_GEMINI_MODEL_IDS[modelId] ?? modelId;
 }
 // Owns the knowledge store's single embedding partition. Swapping it (here or
@@ -269,7 +272,7 @@ function resolveAvailable(providerId: string, modelId: string): ResolvedChat | n
 export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
     { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4-flash" },
     { providerId: "nvidia-nim", modelId: "google/gemma-4-31b-it" },
-    { providerId: "gemini", modelId: "gemini-3.6-flash" },
+    { providerId: "gemini", modelId: "gemini-3.7-flash" },
 ];
 
 // Sub-agent pool: preferred models first, then any free "Fast"-tagged model
@@ -287,7 +290,7 @@ export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "googl
 // sized to the subtask's declared complexity.
 export const WORKER_GEMINI_FALLBACK = {
     simple: "gemini-3.5-flash-lite",
-    complex: "gemini-3.6-flash",
+    complex: "gemini-3.7-flash",
 } as const;
 
 export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {

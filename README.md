@@ -34,6 +34,10 @@ edited and deleted in place.
   recovery path
 - Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
   at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
+- Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
+  at a read-only, notes or full access level you choose. The brief carries a short-lived claim rather
+  than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
+  use, and is revocable on its own
 - Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
   to the model natively (it hears you, not a transcript) and the reply is spoken back with
   Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
@@ -147,7 +151,7 @@ edited and deleted in place.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.6 / 3.5 Flash (paid or free-tier key), DeepSeek V4 Flash / Pro, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
+| Chat models | Gemini 3.7 Flash / 3.5 Flash-Lite (paid or free-tier key), DeepSeek V4 Flash / Pro, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
 | Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
@@ -355,6 +359,7 @@ npm run dev
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
 | GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (Bearer `MCP_API_KEY`) |
+| POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
 | GET | `/api/telegram/test` | Telegram connectivity / config check |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
 | POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
@@ -393,7 +398,7 @@ so add models or providers there.
 
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
-| Google Gemini | native | `gemini-3.6-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
+| Google Gemini | native | `gemini-3.7-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
 | Google Gemini (free) | native | the same two ids | Same models on a free-tier project's key. Picking one routes the call through that key's own client, so it draws on the free quota instead of the paid project |
 | DeepSeek | OpenAI-compatible | `deepseek-v4-flash`, `deepseek-v4-pro` | DeepSeek's own API. **Metered**, so it is kept out of the free sub-agent pool. Thinks by default: `/think` off sends `thinking: {type: "disabled"}` rather than paying for reasoning on every turn. `json_object` only, no `json_schema` |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it` | Chat only |
@@ -423,7 +428,7 @@ How it works:
   MiniMax M3 always get a token budget.
 - Max tokens is bounded **per model** by that model's output ceiling rather than one
   global cap, so the slider goes to 393,216 on DeepSeek's own V4 models, 131,072 on MiniMax M3,
-  65,536 on Gemini 3.6 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each
+  65,536 on Gemini 3.7 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each
   platform (`models.get` for Gemini, `top_provider.max_completion_tokens` for OpenRouter, and
   direct `chat/completions` probes for NVIDIA NIM and OpenCode Zen, whose model lists omit them);
   DeepSeek's is read from its published 384K rather than probed.
@@ -482,6 +487,10 @@ declarations). Separately, the app also runs a real [Model Context Protocol](htt
 server at **`/api/mcp/mcp`** (stateless Streamable HTTP, legacy SSE at `/api/mcp/sse`) so
 your **other AI agents and chatbots** can share the knowledge base:
 
+Access levels: **read** = any key. **notes** = a notes-level or full key. **vault** = a full key.
+**owner** = the owner's key or the host credential. **council** = the owner's key or a seat key for
+that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only.
+
 | MCP tool | Access | What it does |
 |----------|--------|--------------|
 | `search_knowledge` | read | Hybrid keyword + vector search over the shared knowledge base (optional note-category filter) |
@@ -489,26 +498,37 @@ your **other AI agents and chatbots** can share the knowledge base:
 | `vault_search` | read | Search the second-brain vault pages (uses the vault's dominant embedding partition) |
 | `vault_read` | read | Fetch a vault page's full Markdown by path |
 | `get_recent_conversations` | read | Recent messages across channels, for shared context on what you've been working on |
-| `save_note` | write | Store a note that becomes searchable by every connected agent and the assistant |
-| `update_note` | write | Rewrite a saved note's text and/or category (re-embedded; for correcting stale info) |
-| `delete_note` | write | Remove a saved note (never touches conversation history) |
-| `vault_ingest` | write | File durable knowledge (study notes, project docs, plans) through the full vault pipeline |
-| `vault_write` | write | Direct vault page create/overwrite with complete Markdown |
+| `save_note` | notes | Store a note that becomes searchable by every connected agent and the assistant |
+| `update_note` | notes | Rewrite a saved note's text and/or category (re-embedded; for correcting stale info) |
+| `delete_note` | notes | Remove a saved note (never touches conversation history) |
+| `vault_ingest` | vault | File durable knowledge (study notes, project docs, plans) through the full vault pipeline |
+| `vault_write` | vault | Direct vault page create/overwrite with complete Markdown |
 | `council_transcript` | read | Read a council transcript without participating (the observer's tool) |
-| `council_convene` | write | Open a council and get one ready-to-paste kickoff block per participant |
-| `council_join` | write | Join a council you were invited to and receive the rulebook |
-| `council_speak` | write | Say one thing, then block until someone replies (the fused primary tool) |
-| `council_wait` | write | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
-| `council_pass` | write | Nothing to add this round, or leave the council for good |
-| `council_conclude` | write | Closer-only: write the verdict, optionally create assigned implementation tasks, mirror to Discord and file a quarantined vault page |
 | `council_work_status` | read | Campaign progress and per-agent task state, without claiming work |
-| `council_work_next` | write | Claim or resume the caller's assigned implementation task |
-| `council_work_heartbeat` | write | Record meaningful progress on an active task |
-| `council_work_complete` | write | Submit a committed, verified task for closer review |
-| `council_work_block` | write | Record a human or external dependency blocker |
-| `council_work_review` | write | Closer-only: accept a task or return it with feedback |
-| `council_dispatch` | write | Local host only: non-blocking multi-agent read returning JSON plus each owned agent's rendered turn |
-| `council_open` | write | Local host only: open councils and their rosters as JSON, so an idle host can tell an unclaimed seat from a hand-driven one |
+| `council_convene` | owner | Open a council and get one ready-to-paste kickoff block per participant |
+| `council_join` | council | Join a council you were invited to and receive the rulebook |
+| `council_speak` | council | Say one thing, then block until someone replies (the fused primary tool) |
+| `council_wait` | council | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
+| `council_pass` | council | Nothing to add this round, or leave the council for good |
+| `council_conclude` | council | Closer-only: write the verdict, optionally create assigned implementation tasks, mirror to Discord and file a quarantined vault page |
+| `council_work_next` | council | Claim or resume the caller's assigned implementation task |
+| `council_work_heartbeat` | council | Record meaningful progress on an active task |
+| `council_work_complete` | council | Submit a committed, verified task for closer review |
+| `council_work_block` | council | Record a human or external dependency blocker |
+| `council_work_review` | council | Closer-only: accept a task, subject to the exact-commit gate, or return it with feedback |
+| `council_open` | host | Open councils and their rosters as JSON, so an idle host can tell an unclaimed seat from a hand-driven one |
+| `council_dispatch` | host | Non-blocking multi-agent read returning JSON plus each owned agent's rendered turn |
+| `council_host_claim` | host | Take the session's host lease and receive its epoch |
+| `council_host_renew` | host | Extend a lease the caller still holds at its current epoch |
+| `council_host_release` | host | Give the lease up so a successor can claim it cleanly |
+| `council_host_issue_seat` | host | Issue a seat credential for a roster seat, fenced by the lease epoch |
+| `council_delivery_state` | host | Prepare, send, fail or acknowledge a durable turn delivery |
+| `council_execution_start` | host | Open an execution record pinning the effective model, capabilities and base SHA |
+| `council_execution_stop` | host | Close an execution record with its outcome |
+| `council_work_unverified` | host | List submitted work items still waiting on host evidence |
+| `council_work_verify` | host | Record exact-commit verification evidence for one item |
+| `council_integration_manifest` | host | Freeze the accepted-SHA manifest once every item is verified |
+| `council_integration_report` | host | Record the delegated integrator's result against the frozen manifest |
 
 ### zuychin-council
 
@@ -534,18 +554,42 @@ human-reviewed material in the assistant's own recall. Promote it yourself with 
 if it earns it. Council messages are never embedded or indexed anywhere else.
 
 The council and campaign tables live in the `-- ===== Council wave =====`,
-`-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`, and
-`-- ===== Council V3 wave =====` blocks at the bottom of `supabase-setup.sql`; run the full
-idempotent script in the Supabase SQL Editor before first use or after upgrading.
+`-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`,
+`-- ===== Council V3 wave =====` and `-- ===== Council V3.5 wave =====` blocks at the bottom of
+`supabase-setup.sql`; run the full idempotent script in the Supabase SQL Editor before first use or
+after upgrading.
+
+**Run the whole script, never a fragment.** Several functions are defined more than once across the
+waves, so re-running an earlier block alone silently reverts a later definition. That happened once:
+acceptance quietly fell back to the pre-V3 behaviour with nothing logged anywhere. `npm run
+council:schema:check` exists to catch exactly that. It builds a throwaway V3 campaign and fails if
+the exact-commit gate is not actually enforced, so it detects the reversion rather than the missing
+table. Run it after any schema change.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
 dominant embedding partition so pages never fragment across models. `vault_delete` is
 deliberately not exposed - page removal stays with the assistant and the graph UI.
 
-**Two access levels.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants read
-only (write tools return an error for a read-only key). Hand the read-only key to agents you
-only want to *query* the brain, the read-write key to ones you trust to add to it.
+**Per-agent keys are the preferred way in.** The **Agents** panel on the dashboard adds an agent,
+picks its access level, and hands back a setup brief. The brief carries a 15-minute *claim*, not the
+key: the agent exchanges the claim at `POST /api/agent/claim` and writes its MCP config once with
+the real key already in place. Every key is tracked, shows its last use, and is revocable on its own
+without touching any other agent.
+
+Three access levels, chosen when the claim is minted and not raisable by the agent:
+
+| Level | Grants |
+|---|---|
+| Read-only | search and read tools only |
+| Notes read/write | adds `save_note`, `update_note`, `delete_note` |
+| Full read/write | adds `vault_ingest`, `vault_write` |
+
+No key issued this way can convene a Council; that needs the owner or host credential.
+
+**The shared keys still work.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants
+read only (write tools return an error for a read-only key). They are the fallback for a client you
+do not want to give its own identity.
 
 Setup:
 
@@ -597,7 +641,8 @@ Setup:
 4. Set a separate random `MCP_COUNCIL_HOST_KEY` in the app and local host environment. The host
    key has no knowledge/vault authority and is never passed to an adapter. Each adapter instead
    receives a short-lived credential for its one Council seat.
-5. Run the full `supabase-setup.sql`, including the final `-- ===== Council V3 wave =====`.
+5. Run the full `supabase-setup.sql`, including the final `-- ===== Council V3 wave =====` and
+   `-- ===== Council V3.5 wave =====` blocks, then `npm run council:schema:check`.
 6. For model selection, put only adapter-advertised IDs in an instance's `allowedModels` and
    `allowedReasoningEfforts`; optional defaults must be members of those lists.
 
@@ -712,7 +757,7 @@ first one whose provider key is set, in this order:
 
 1. DeepSeek V4 Flash (NVIDIA NIM, then OpenCode Zen)
 2. MiMo V2.5 (OpenCode Zen)
-3. Gemini 3.6 Flash (always available)
+3. Gemini 3.7 Flash (always available)
 
 Switch the model from inside a chat with the `/model` command. The choice is saved per channel
 and reused until you change it again. Every command also accepts a `!` prefix (e.g. `!model`)
@@ -720,7 +765,7 @@ since Discord reserves `/` for its own slash-command UI:
 
 - `/model` (or `/model list`) shows the current model and every available provider + model.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
-  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.6-flash`.
+  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.7-flash`.
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
   memory partition the channel uses (memories are stored per embedding model).
 
@@ -945,9 +990,11 @@ src/
 │   │   ├── host-client.ts              # Loopback host probe, pairing, WebSocket client, launch
 │   │   └── remote-setup.ts             # Paste-in brief for agents on other machines
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + run-trace, memory and skills panels
+│   ├── admin/                          # Dashboard + run-trace, memory, skills and agent-credential panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
+│       ├── agent/claim/route.ts        # Unauthenticated claim → per-agent key exchange (rate limited)
+│       ├── agents/                     # Owner-only: agent clients, claim minting, key revocation
 │       ├── chat/route.ts               # RAG chat endpoint (+ chat/stream for SSE)
 │       ├── providers/route.ts          # Available providers/models
 │       ├── conversations/route.ts      # Conversation CRUD + move between projects
@@ -984,11 +1031,13 @@ src/
 │   │   ├── embedding-override.ts       # Runtime knowledge-store partition override
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
 │   │   └── skills/                     # Skill registry: built-in playbooks + agent-authored custom skills
+│   ├── agents/                         # Per-agent credentials: clients, claims, scope predicates, setup brief
 │   ├── council/                        # Deliberation room: protocol constants, store, long-poll + host dispatch, renderers, campaign
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram + web-push services
+├── components/dropdown.tsx             # Shared listbox used by every select in the app
 ├── proxy.ts                            # Cookie auth proxy (Next 16 middleware convention)
 public/sw.js                            # Service worker: push display + click-through
 discord-bot/
@@ -1002,9 +1051,11 @@ scripts/
 ├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host runs it; --models lists its model IDs
 ├── council-host-start.cmd              # Start a host (the launch method; portable, used by the Startup shim)
 ├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
+├── check-council-schema.mts            # Behavioural guard: fails if the V3 exact-commit gate is not enforced
 ├── test-council-protocol.mts           # Council Postgres protocol tests
 ├── test-council-v3.mts                 # V3 git, model and contract tests (local)
 ├── test-council-v3-db.mts              # V3 lease, delivery, verification and manifest tests
+├── test-agent-credentials.mts          # Scope split + per-agent key mint/exchange/revoke tests
 ├── test-mutation-journal.mts           # Mutation-journal tests
 ├── evaluate-knowledge.ts               # Knowledge-store retrieval eval
 └── reembed-knowledge.ts                # Manual store re-embed

@@ -4,6 +4,10 @@ import { verifySessionValue } from "@/lib/auth/session";
 
 const PUBLIC_PATHS = [
   "/login", "/api/auth", "/api/webhooks", "/api/cron", "/api/chat", "/api/telegram", "/api/mcp", "/api/knowledge/webhook",
+  // An agent exchanges its claim before it holds any credential, so this one
+  // cannot be session-gated. It carries its own rate limit. Note that the
+  // owner-only /api/agents routes are a different prefix and stay gated.
+  "/api/agent/claim",
   // Browsers fetch the manifest and service worker without cookies; gating
   // them silently breaks PWA install.
   "/manifest.webmanifest", "/sw.js", "/icons",
