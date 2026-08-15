@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
-import { listOpenCouncils, listParticipants } from "@/lib/council/store";
+import { listAwaitingOwnerCouncils, listOpenCouncils, listParticipants, type CouncilSession } from "@/lib/council/store";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 
 // Read-only: the page must never be able to advance a debate, so nothing here
 // touches presence, the floor or the cursor.
 export async function GET() {
     try {
-        const open = await listOpenCouncils();
+        const [open, awaitingDecision] = await Promise.all([
+            listOpenCouncils(),
+            listAwaitingOwnerCouncils(),
+        ]);
 
         const { data: recent } = await supabase
             .from("council_sessions")
@@ -15,29 +18,31 @@ export async function GET() {
             .order("created_at", { ascending: false })
             .limit(10);
 
-        const withWaiting = await Promise.all(
-            open.map(async (s) => {
-                const parts = await listParticipants(s.id);
-                const agents = parts.filter((p) => p.kind === "agent");
-                return {
-                    code: s.code,
-                    topic: s.topic,
-                    councilType: s.councilType,
-                    status: s.status,
-                    round: s.round,
-                    maxRounds: s.maxRounds,
-                    messages: s.lastSeq,
-                    lastMessageAt: s.lastMessageAt,
-                    closerName: s.closerName,
-                    expiresAt: s.expiresAt,
-                    waitingOn: agents.filter((p) => p.status !== "left" && p.postsThisRound === 0).map((p) => p.name),
-                    participants: agents.map((p) => p.name),
-                };
-            }),
-        );
+        // awaiting_owner is owner-actionable, so it sorts ahead of running
+        // councils. "waitingOn" is meaningless there: the wait is on the human.
+        const toOpenItem = async (s: CouncilSession) => {
+            const parts = await listParticipants(s.id);
+            const agents = parts.filter((p) => p.kind === "agent");
+            return {
+                code: s.code,
+                topic: s.topic,
+                councilType: s.councilType,
+                status: s.status,
+                round: s.round,
+                maxRounds: s.maxRounds,
+                messages: s.lastSeq,
+                lastMessageAt: s.lastMessageAt,
+                closerName: s.closerName,
+                expiresAt: s.expiresAt,
+                waitingOn: s.status === "awaiting_owner"
+                    ? []
+                    : agents.filter((p) => p.status !== "left" && p.postsThisRound === 0).map((p) => p.name),
+                participants: agents.map((p) => p.name),
+            };
+        };
 
         return NextResponse.json({
-            open: withWaiting,
+            open: await Promise.all([...awaitingDecision, ...open].map(toOpenItem)),
             recent: (recent ?? []).map((r) => ({
                 code: r.code,
                 topic: r.topic,
