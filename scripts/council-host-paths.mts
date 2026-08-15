@@ -95,11 +95,25 @@ export function killTree(child: ChildProcess): void {
     child.kill();
 }
 
+// MSYS/Git-Bash drive paths: ACP adapters on Windows emit /c/Users/...,
+// which resolve() mangles to <cwd drive>:\c\.... Bare "/c" is left alone
+// (fail-closed); off Windows /c/... is a legitimate POSIX path.
+export function normalizeMsysDrive(
+    candidate: string,
+    platform: NodeJS.Platform = process.platform,
+): string {
+    if (platform !== "win32") return candidate;
+    const msys = /^\/([A-Za-z])\/(.*)$/.exec(candidate);
+    if (!msys) return candidate;
+    return `${msys[1].toUpperCase()}:/${msys[2]}`;
+}
+
 // The target of a write need not exist yet, so resolve the deepest existing
 // ancestor and re-append the tail. Without this a write to a not-yet-created
 // file inside the tree would fail the check on ENOENT.
 export async function realpathParent(candidate: string): Promise<string> {
-    let current = resolve(candidate);
+    const normalized = normalizeMsysDrive(candidate);
+    let current = resolve(normalized);
     const tail: string[] = [];
     for (;;) {
         try {
@@ -107,7 +121,7 @@ export async function realpathParent(candidate: string): Promise<string> {
             return tail.length ? join(real, ...[...tail].reverse()) : real;
         } catch {
             const parent = dirname(current);
-            if (parent === current) return resolve(candidate);
+            if (parent === current) return resolve(normalized);
             tail.push(basename(current));
             current = parent;
         }
@@ -122,7 +136,10 @@ export async function realpathParent(candidate: string): Promise<string> {
  */
 export async function insideWorktree(candidate: string, treeDir: string): Promise<boolean> {
     try {
-        const [real, root] = await Promise.all([realpathParent(candidate), realpath(treeDir)]);
+        const [real, root] = await Promise.all([
+            realpathParent(candidate),
+            realpath(normalizeMsysDrive(treeDir)),
+        ]);
         const rel = relative(root, real);
         return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
     } catch {
