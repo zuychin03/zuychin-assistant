@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSyncResolved } from "./council-host-paths.mts";
 
 export interface VerificationCommand {
     command: string[];
@@ -69,7 +70,7 @@ function runProfile(cwd: string, profile: VerificationProfile): VerificationRece
     return profile.commands.map((entry) => {
         const started = Date.now();
         const [command, ...args] = entry.command;
-        const result = spawnSync(command, args, {
+        const result = spawnSyncResolved(command, args, {
             cwd, encoding: "utf8", shell: false, timeout: Math.max(1_000, Math.min(entry.timeoutMs ?? 120_000, 900_000)),
             env: { ...process.env, CI: "1" }, maxBuffer: 2_000_000,
         });

@@ -3,7 +3,11 @@
  * council-acp-probe.mts. Shared so the containment check is testable on its own,
  * and so the probe spawns a candidate exactly as the host will.
  */
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import {
+    spawn, spawnSync,
+    type ChildProcess, type SpawnOptions,
+    type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns,
+} from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -30,6 +34,13 @@ function quoteForCmd(arg: string): string {
     return `"${arg.replace(/"/g, '""')}"`;
 }
 
+// /s strips the outermost quote pair, so the whole line needs a second one or a
+// resolved path holding spaces is split ("'C:\Program' is not recognized").
+function cmdExecArgs(resolved: string, args: readonly string[]): string[] {
+    const cmdline = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ");
+    return ["/d", "/s", "/c", `"${cmdline}"`];
+}
+
 /**
  * Spawn the way the host always must: resolveCommand first, then on Windows
  * drive .cmd/.bat through cmd.exe. Node 18.20+/20.12+ returns EINVAL for a
@@ -43,13 +54,32 @@ export function spawnResolved(
 ): ChildProcess {
     const resolved = resolveCommand(command);
     if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
-        const cmdline = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ");
-        return spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", cmdline], {
+        return spawn(process.env.ComSpec ?? "cmd.exe", cmdExecArgs(resolved, args), {
             ...options,
             windowsVerbatimArguments: true,
         });
     }
     return spawn(resolved, args as string[], options);
+}
+
+/**
+ * spawnSync counterpart of spawnResolved, for the verification runner. Without
+ * it `npm` fails ENOENT on Windows: the shim is npm.cmd and shell:false will
+ * not resolve it, which surfaces as exitCode null rather than a check failure.
+ */
+export function spawnSyncResolved(
+    command: string,
+    args: readonly string[],
+    options: SpawnSyncOptionsWithStringEncoding,
+): SpawnSyncReturns<string> {
+    const resolved = resolveCommand(command);
+    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+        return spawnSync(process.env.ComSpec ?? "cmd.exe", cmdExecArgs(resolved, args), {
+            ...options,
+            windowsVerbatimArguments: true,
+        });
+    }
+    return spawnSync(resolved, args as string[], options);
 }
 
 /**

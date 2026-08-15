@@ -1172,8 +1172,11 @@ const handler = createMcpHandler(
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session" }) }] };
                     const campaign = await getCampaignForSession(session.id);
                     if (!campaign) return { content: [{ type: "text", text: JSON.stringify({ items: [] }) }] };
+                    // A failed check leaves host_verified false and requeues the item, and
+                    // resubmission does not clear it. Matching only null would strand every
+                    // resubmitted item: never acceptable, never re-checked.
                     const items = (await listCampaignWorkItems(campaign.id))
-                        .filter((i) => i.status === "awaiting_review" && i.hostVerified === null)
+                        .filter((i) => i.status === "awaiting_review" && i.hostVerified !== true)
                         .map((i) => ({
                             id: i.id, agentName: i.agentName, status: i.status,
                             commitHash: i.commitHash, declaredPaths: i.declaredPaths,
