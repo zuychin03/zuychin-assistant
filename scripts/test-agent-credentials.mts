@@ -58,11 +58,23 @@ function scopeChecks(): void {
     check("a notes key cannot write the vault", !canWriteVault(ACCESS_SCOPES.notes));
     check("a full key writes the vault", canWriteVault(ACCESS_SCOPES.full));
 
-    // The definition-of-done clause: no minted agent key convenes a council.
+    // Convening is opt-in and belongs to exactly one level. The clause this
+    // replaces was "no minted agent key convenes"; the point it was protecting -
+    // that an ordinary read/notes/full key cannot - still holds.
     for (const [level, scopes] of Object.entries(ACCESS_SCOPES)) {
+        if (level === "council") {
+            check("a council key convenes", canOwnCouncil(scopes), scopes);
+            continue;
+        }
         check(`a ${level} key cannot convene`, !canOwnCouncil(scopes), scopes);
         check(`a ${level} key cannot assert a seat`, !isCouncilOwner(scopes), scopes);
     }
+    check("council is the only level that convenes",
+        Object.entries(ACCESS_SCOPES).filter(([, s]) => canOwnCouncil(s)).map(([l]) => l).join() === "council");
+    // Owner scope still cannot take a seat: convening and participating are
+    // different authorities, and route.ts refuses the assertion either way.
+    check("a council key still cannot participate as a seat",
+        !ACCESS_SCOPES.council.includes("council:seat"), ACCESS_SCOPES.council);
 
     check("a seat key participates", canParticipateInCouncil(SEAT_SCOPES));
     check("a seat key cannot convene", !canOwnCouncil(SEAT_SCOPES));
@@ -113,6 +125,19 @@ async function lifecycleChecks(): Promise<void> {
 
     check("a garbage claim is refused", (await exchangeClaim("zkc_deadbeef")) === null);
     check("a malformed claim is refused", (await exchangeClaim("not-a-claim")) === null);
+
+    // Every level has to survive a real round trip, not just the predicates.
+    // access_level is constrained in the database, so adding a level in
+    // TypeScript alone left minting broken while this suite stayed green.
+    for (const level of Object.keys(ACCESS_SCOPES) as (keyof typeof ACCESS_SCOPES)[]) {
+        const levelClient = await newClient(`level-${level}`);
+        const levelClaim = await mintKnowledgeClaim({ clientId: levelClient, accessLevel: level });
+        const levelKey = await exchangeClaim(levelClaim.claim);
+        check(`a ${level} claim mints and exchanges`,
+            levelKey?.accessLevel === level
+            && JSON.stringify(levelKey?.scopes) === JSON.stringify(ACCESS_SCOPES[level]),
+            levelKey?.scopes);
+    }
 
     console.log("\nresolution and isolation");
     const identity = await resolveAgentKey(exchanged!.key);

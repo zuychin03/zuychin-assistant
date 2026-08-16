@@ -35,7 +35,7 @@ edited and deleted in place.
 - Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
   at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
 - Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
-  at a read-only, notes or full access level you choose. The brief carries a short-lived claim rather
+  at a read-only, notes, full, or full-plus-convene access level you choose. The brief carries a short-lived claim rather
   than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
   use, and is revocable on its own
 - Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
@@ -578,15 +578,18 @@ key: the agent exchanges the claim at `POST /api/agent/claim` and writes its MCP
 the real key already in place. Every key is tracked, shows its last use, and is revocable on its own
 without touching any other agent.
 
-Three access levels, chosen when the claim is minted and not raisable by the agent:
+Four access levels, chosen when the claim is minted and not raisable by the agent:
 
 | Level | Grants |
 |---|---|
 | Read-only | search and read tools only |
 | Notes read/write | adds `save_note`, `update_note`, `delete_note` |
 | Full read/write | adds `vault_ingest`, `vault_write` |
+| Full + convene councils | adds `council:owner`: convene, list and conclude |
 
-No key issued this way can convene a Council; that needs the owner or host credential.
+Only the last convenes, and it is opt-in per client: a read, notes or full key still cannot. Even
+that level cannot *participate* in a Council - asserting a seat needs a seat credential, which the
+host issues per council.
 
 **The shared keys still work.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants
 read only (write tools return an error for a read-only key). They are the fallback for a client you

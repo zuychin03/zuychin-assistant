@@ -5,23 +5,31 @@ export const KEY_PREFIX = "zck_";
 export const CLAIM_PREFIX = "zkc_";
 export const CLAIM_TTL_MINUTES = 15;
 
-export type AccessLevel = "read" | "notes" | "full";
+export type AccessLevel = "read" | "notes" | "full" | "council";
 export type ClientKind = "local_host" | "remote_agent" | "owner_tool";
 
+// council is opt-in per client and deliberately not part of full. The rule it
+// bends is "council:owner is never minted into an agent key", which existed so
+// that every read/write key could not convene; choosing it for one named,
+// revocable client does not reinstate that. It is still strictly tighter than
+// the shared MCP_API_KEY it replaces, which grants the same authority to anyone
+// holding one unattributable secret.
 export const ACCESS_SCOPES: Record<AccessLevel, string[]> = {
     read: ["knowledge:read"],
     notes: ["knowledge:read", "notes:write"],
     full: ["knowledge:read", "notes:write", "vault:write"],
+    council: ["knowledge:read", "notes:write", "vault:write", "council:owner"],
 };
 
 export const ACCESS_LABELS: Record<AccessLevel, string> = {
     read: "Read-only",
     notes: "Notes read/write",
     full: "Full read/write",
+    council: "Full read/write + convene councils",
 };
 
 export function isAccessLevel(value: unknown): value is AccessLevel {
-    return value === "read" || value === "notes" || value === "full";
+    return value === "read" || value === "notes" || value === "full" || value === "council";
 }
 
 export interface AgentClientKey {

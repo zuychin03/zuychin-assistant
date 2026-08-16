@@ -3591,7 +3591,7 @@ create table if not exists agent_client_keys (
   key_prefix text not null,
   scopes text[] not null,
   purpose text not null check (purpose in ('knowledge', 'council_seat')),
-  access_level text check (access_level in ('read', 'notes', 'full')),
+  access_level text check (access_level in ('read', 'notes', 'full', 'council')),
   session_id uuid references council_sessions(id) on delete cascade,
   seat_name text,
   issued_at timestamptz not null default now(),
@@ -3623,7 +3623,7 @@ create table if not exists agent_client_claims (
   client_id uuid not null references agent_clients(id) on delete cascade,
   claim_hash text not null unique,
   scopes text[] not null,
-  access_level text not null check (access_level in ('read', 'notes', 'full')),
+  access_level text not null check (access_level in ('read', 'notes', 'full', 'council')),
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
   claimed_at timestamptz,
@@ -3632,6 +3632,17 @@ create table if not exists agent_client_claims (
 );
 
 create index if not exists agent_client_claims_client on agent_client_claims (client_id);
+
+-- 'council' is opt-in convene authority for one named client, added after the
+-- tables above already existed. The inline checks cover a fresh install; these
+-- replace the constraint on one that is already deployed.
+alter table agent_client_keys drop constraint if exists agent_client_keys_access_level_check;
+alter table agent_client_keys add constraint agent_client_keys_access_level_check
+  check (access_level in ('read', 'notes', 'full', 'council'));
+
+alter table agent_client_claims drop constraint if exists agent_client_claims_access_level_check;
+alter table agent_client_claims add constraint agent_client_claims_access_level_check
+  check (access_level in ('read', 'notes', 'full', 'council'));
 
 -- /api/agent/claim is the only unauthenticated write surface, and the app is
 -- serverless, so an in-process counter would reset per cold start and give an

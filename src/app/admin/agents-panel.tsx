@@ -8,7 +8,7 @@ import { Dropdown } from "@/components/dropdown";
 // a durable key: adding an agent produces a short-lived claim inside a brief,
 // and the key itself only exists after the agent exchanges it.
 
-type AccessLevel = "read" | "notes" | "full";
+type AccessLevel = "read" | "notes" | "full" | "council";
 type ClientKind = "local_host" | "remote_agent" | "owner_tool";
 
 interface AgentKey {
@@ -43,10 +43,12 @@ const ACCESS_OPTIONS = [
     { value: "read", label: "Read-only" },
     { value: "notes", label: "Notes read/write" },
     { value: "full", label: "Full read/write" },
+    { value: "council", label: "Full + convene councils" },
 ];
 
 const ACCESS_LABELS: Record<AccessLevel, string> = {
     read: "read-only", notes: "notes read/write", full: "full read/write",
+    council: "full read/write + convene",
 };
 
 function ago(iso: string | null): string {
