@@ -68,6 +68,8 @@ export interface HostSnapshot {
     workspaces?: HostWorkspace[];
     topic: string | null;
     status: string;
+    /** What the host is doing right now. Absent from a host older than this. */
+    busyWith?: { label: string; since: string } | null;
     round: number;
     maxRounds: number;
     floorHolder: string | null;
@@ -224,6 +226,16 @@ export class HostClient {
                         kind: String(message.kind ?? message.type),
                         detail: String(message.detail ?? (message.type === "turn" ? `turn pushed (${message.chars} chars)` : "")),
                         at: new Date().toISOString(),
+                    });
+                    break;
+                // The host's own narration. Same feed as agent chatter, because
+                // reading them interleaved is what makes a campaign legible.
+                case "log":
+                    this.handlers.onActivity({
+                        agent: "host",
+                        kind: "log",
+                        detail: String(message.detail ?? ""),
+                        at: String(message.at ?? new Date().toISOString()),
                     });
                     break;
                 case "auto_adopt":

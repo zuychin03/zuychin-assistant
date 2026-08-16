@@ -81,6 +81,15 @@ function until(iso: string): string {
     return m <= 0 ? "expired" : `${m}m left`;
 }
 
+// Seconds matter here in a way they do not in ago(): this measures a build the
+// reader is waiting on, and 4m is indistinguishable from stuck.
+function elapsed(iso: string): string {
+    const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+    return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
 const INTENT_TONE: Record<string, string> = {
     challenge: "#ff8f6b",
     ask: "#ffd166",
@@ -251,6 +260,16 @@ export default function CouncilPage() {
     }, []);
 
     useEffect(() => { fetchList(); }, [fetchList]);
+
+    // The host only pushes a frame when the step changes, and a step can run for
+    // minutes; without this the elapsed time freezes and reads as a hung build.
+    const [, setBusyTick] = useState(0);
+    const busySince = host?.busyWith?.since ?? null;
+    useEffect(() => {
+        if (!busySince) return;
+        const id = setInterval(() => setBusyTick((n) => n + 1), 1000);
+        return () => clearInterval(id);
+    }, [busySince]);
 
     useEffect(() => {
         if (!selected) return;
@@ -434,6 +453,14 @@ export default function CouncilPage() {
                                         {a.warn && <span style={{ ...styles.workDetail, color: "#ffd166" }}>! {a.warn}</span>}
                                     </div>
                                 ))}
+                            </div>
+                        )}
+
+                        {host.busyWith && (
+                            <div style={styles.busyRow}>
+                                <span style={styles.busySpinner} />
+                                <span style={styles.busyLabel}>{host.busyWith.label}</span>
+                                <span style={styles.busySince}>{elapsed(host.busyWith.since)}</span>
                             </div>
                         )}
 
@@ -1051,6 +1078,20 @@ const styles: Record<string, React.CSSProperties> = {
     permissionRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
     permissionTitle: { fontSize: 12.5, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" },
     permissionButtons: { display: "flex", gap: 6, marginLeft: "auto" },
+    busyRow: {
+        display: "flex", gap: 8, alignItems: "baseline", fontSize: 12,
+        padding: "7px 10px", borderRadius: 8,
+        background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--color-accent) 28%, transparent)",
+        marginTop: 10,
+    },
+    busySpinner: {
+        width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+        background: "var(--color-accent)", alignSelf: "center",
+        animation: "pulseSoft 1.4s ease-in-out infinite",
+    },
+    busyLabel: { flex: 1, minWidth: 0, overflowWrap: "anywhere" },
+    busySince: { color: "var(--color-text-muted)", flexShrink: 0, fontVariantNumeric: "tabular-nums" },
     activityFeed: {
         marginTop: 14, maxHeight: 190, overflowY: "auto", display: "flex",
         flexDirection: "column", gap: 4,

@@ -108,8 +108,14 @@ function die(message: string): never {
     process.exit(1);
 }
 
+// Also broadcast, because stdout is only readable on the machine running the
+// host. Everything the host narrates about a campaign - verifying, checked,
+// assembling, integrated, released - was invisible to /council without this.
+// Safe from here: no log() call runs before `sockets` is initialised.
 function log(message: string): void {
-    console.log(`[${new Date().toISOString().slice(11, 19)}] ${message}`);
+    const at = new Date().toISOString();
+    console.log(`[${at.slice(11, 19)}] ${message}`);
+    broadcast({ type: "log", detail: message, at });
 }
 
 // ---------------------------------------------------------------- MCP
@@ -282,6 +288,10 @@ interface HostState {
     // the whole campaign. dispatchTick overwrites status every 1.5s, so a phase
     // kept there survives one poll at most.
     campaignComplete: boolean;
+    // What the host is doing right now. A verification is minutes of silence
+    // otherwise: the work item reads "host pending" and nothing says whether a
+    // build is running or hung.
+    busyWith: { label: string; since: string } | null;
     round: number;
     maxRounds: number;
     floorHolder: string | null;
@@ -356,6 +366,7 @@ const state: HostState = {
     topic: null,
     status: "idle",
     campaignComplete: false,
+    busyWith: null,
     round: 0,
     maxRounds: 0,
     floorHolder: null,
@@ -457,6 +468,7 @@ function snapshot() {
         instances: seats,
         topic: state.topic,
         status: state.campaignComplete ? "campaign_complete" : state.status,
+        busyWith: state.busyWith,
         round: state.round,
         maxRounds: state.maxRounds,
         floorHolder: state.floorHolder,
@@ -513,6 +525,14 @@ function broadcast(message: Record<string, unknown>): void {
     for (const socket of sockets) {
         if (socket.readyState === socket.OPEN) socket.send(text);
     }
+}
+
+// `since` is kept from the previous label so the page can show one elapsed time
+// for the whole operation rather than restarting it at every build step.
+function setBusy(label: string | null): void {
+    if (label === (state.busyWith?.label ?? null)) return;
+    state.busyWith = label === null ? null : { label, since: state.busyWith?.since ?? new Date().toISOString() };
+    broadcast({ type: "state", ...snapshot() });
 }
 
 function sameToken(candidate: string | undefined): boolean {
@@ -1094,7 +1114,7 @@ function makeRuntime(name: string, code: string, selection: CouncilAgentSelectio
     if (requestedReasoningEffort && !(instance?.allowedReasoningEfforts ?? []).includes(requestedReasoningEffort)) {
         throw new Error(`${name}: reasoning effort "${requestedReasoningEffort}" is not allowed`);
     }
-    const relDir = councilWorktreeDir(state.repo, name);
+    const relDir = councilWorktreeDir(state.repo, code, name);
     return {
         name, provider, expertise, adapter,
         mode: adapter.mode ?? "acp",
@@ -1125,11 +1145,17 @@ function makeRuntime(name: string, code: string, selection: CouncilAgentSelectio
 }
 
 function addWorktree(agent: AgentRuntime): void {
+    // Logged as well as thrown: the throw reaches the UI over the WebSocket, so
+    // a log-only observer saw a healthy host and a Council that just stopped.
     if (existsSync(agent.treeDir)) {
+        log(`${agent.name}: FAILED - worktree ${agent.relDir} already exists`);
         throw new Error(`${agent.treeDir} already exists; remove it or close the previous council first`);
     }
     const added = git(state.repo, ["worktree", "add", agent.relDir, "-b", agent.branch, state.baseSha ?? state.baseBranch]);
-    if (!added.ok) throw new Error(`git worktree add failed for ${agent.name}:\n${added.out}`);
+    if (!added.ok) {
+        log(`${agent.name}: FAILED - git worktree add ${agent.relDir}: ${added.out.split(/\r?\n/)[0] ?? ""}`);
+        throw new Error(`git worktree add failed for ${agent.name}:\n${added.out}`);
+    }
     log(`${agent.name}: worktree ${agent.relDir} on ${agent.branch}`);
 }
 
@@ -1398,6 +1424,10 @@ async function dispatchTick(): Promise<void> {
     }
     persistDeliveryJournal();
 
+    // Closure was invisible here: the status moved from open to concluding to
+    // awaiting_owner to closed with nothing written down, so the log showed a
+    // Council that simply stopped talking.
+    if (payload.status !== state.status) log(`${state.code}: ${state.status} -> ${payload.status}`);
     state.status = payload.status;
     state.round = payload.round;
     state.maxRounds = payload.maxRounds;
@@ -1583,11 +1613,14 @@ async function hostVerifyTick(): Promise<void> {
         const branch = item.branchName ?? agent?.branch ?? councilBranch(state.code, item.agentName);
         const profileId = item.verificationProfile ?? payload.verificationProfile ?? "standard";
         let result;
-        log(`${item.agentName}: verifying ${item.commitHash.slice(0, 12)} against the ${profileId} profile`);
+        const shortSha = item.commitHash.slice(0, 12);
+        log(`${item.agentName}: verifying ${shortSha} against the ${profileId} profile`);
+        setBusy(`verifying ${shortSha}`);
         try {
             result = await verifyExactCommit({
                 repo: state.repo, commitSha: item.commitHash, baseSha, branch,
                 declaredPaths: item.declaredPaths ?? [], profile: loadVerificationProfile(state.repo, profileId),
+                onProgress: (p) => setBusy(`verifying ${shortSha} - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
             });
         } catch (error) {
             result = {
@@ -1603,6 +1636,7 @@ async function hostVerifyTick(): Promise<void> {
             passed: result.ok, report: result.lines.join("\n"),
         }).catch((e) => log(`host verify report failed: ${e instanceof Error ? e.message : String(e)}`));
     }
+    setBusy(null);
 }
 
 // The campaign is accepted item by item, but nothing has ever been tried
@@ -1670,6 +1704,7 @@ Attempt each merge with git merge --no-edit <sha>. Resolve conflicts only inside
         const verified = await verifyExactCommit({
             repo: state.repo, commitSha: tipSha, baseSha: manifest.baseSha, branch,
             declaredPaths: [], profile: loadVerificationProfile(state.repo, "standard"),
+            onProgress: (p) => setBusy(`verifying ${integratorName}'s integration tip - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
         });
         return { ...verified, branch, tipSha };
     } finally {
@@ -1694,10 +1729,15 @@ async function integrationTick(): Promise<void> {
         leaseEpoch: state.leaseEpoch, report: "Assembling the immutable accepted-commit manifest.",
     }).catch(() => { });
     let result;
+    setBusy(frozen.integratorAgent ? `${frozen.integratorAgent} is merging the accepted manifest` : "assembling the accepted manifest");
     try {
         result = frozen.integratorAgent
             ? await delegatedIntegration(frozen.manifest, frozen.integratorAgent)
-            : await integrateAcceptedManifest({ repo: state.repo, code: state.code, manifest: frozen.manifest, profile: loadVerificationProfile(state.repo, "standard") });
+            : await integrateAcceptedManifest({
+                repo: state.repo, code: state.code, manifest: frozen.manifest,
+                profile: loadVerificationProfile(state.repo, "standard"),
+                onProgress: (p) => setBusy(`integrating - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
+            });
     } catch (error) {
         result = { ok: false, branch: nextIntegrationBranch(), tipSha: null, lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`] };
     }
@@ -1713,12 +1753,67 @@ async function integrationTick(): Promise<void> {
         integrationDone = false;
         log(`integration report failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+    setBusy(null);
     broadcast({ type: "state", ...snapshot() });
 }
 
 // Non-reentrant: hostVerifyTick now yields for the minutes a build takes, so
 // the 30s timer would otherwise stack passes and re-verify the same item.
 let supervising = false;
+
+// A campaign is created when the owner accepts a verdict, in the same step that
+// closes the session. Requiring two consecutive sightings avoids releasing a
+// Council in the window where the close is visible and the campaign is not.
+let noCampaignSightings = 0;
+
+/**
+ * Hands a finished Council back. A debate Council closes, files its verdict and
+ * has no campaign, so nothing drives it again; without this the host sat on a
+ * dead Council holding its lease until someone killed the process, and no other
+ * host could adopt it.
+ */
+async function releaseCouncil(reason: string): Promise<void> {
+    const code = state.code;
+    if (!code) return;
+    log(`${code} released: ${reason}`);
+    for (const agent of state.agents.values()) {
+        if (agent.executionId && state.leaseEpoch !== null) {
+            await callTool("council_execution_stop", {
+                executionId: agent.executionId, hostId: state.hostId,
+                leaseEpoch: state.leaseEpoch, stopReason: reason,
+            }).catch(() => { });
+        }
+        agent.connection?.close();
+        if (agent.child) killTree(agent.child);
+        agent.log?.end();
+    }
+    if (state.leaseEpoch !== null) {
+        await callTool("council_host_release", {
+            sessionCode: code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        }).catch((error) => log(`lease release failed: ${error instanceof Error ? error.message : String(error)}`));
+    }
+    state.agents.clear();
+    delivered.clear();
+    state.code = null;
+    state.sessionId = null;
+    state.leaseEpoch = null;
+    state.leaseExpiresAt = null;
+    state.leaseHealthy = false;
+    state.topic = null;
+    state.status = "idle";
+    state.campaignComplete = false;
+    state.busyWith = null;
+    state.round = 0;
+    state.maxRounds = 0;
+    state.floorHolder = null;
+    state.runDir = null;
+    state.baseSha = null;
+    state.protectedRefs = {};
+    integrationDone = false;
+    noCampaignSightings = 0;
+    broadcast({ type: "state", ...snapshot() });
+    log("idle - waiting for a convene from /council");
+}
 
 async function superviseTick(): Promise<void> {
     if (!state.code || state.status !== "closed" || supervising) return;
@@ -1750,6 +1845,11 @@ async function superviseTick(): Promise<void> {
                 broadcast({ type: "error", detail: "campaign blocked; resolve the recorded blocker" });
                 return;
             }
+            if (text.startsWith("SUPERVISE: no_campaign")) {
+                if (++noCampaignSightings >= 2) await releaseCouncil("closed with no work campaign");
+                return;
+            }
+            noCampaignSightings = 0;
             if (text.startsWith("SUPERVISE: active") || text.startsWith("SUPERVISE: review")) {
                 void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
             }
@@ -1834,11 +1934,20 @@ if (!git(state.repo, ["rev-parse", "--verify", state.baseBranch]).ok) die(`base 
 const { port: hostPort } = await startControlChannel();
 const hostDir = join(state.repo, "..", ".council-host");
 mkdirSync(hostDir, { recursive: true });
-const hostFile = join(hostDir, `host-${hostPort}.json`);
-const reused = adoptIdentity(hostFile);
+// Keyed to the repo, not the port. .council-host is shared by sibling repos so
+// the name still has to distinguish them, but a port fallback used to mint a
+// new token and pairing code and silently strand every paired browser.
+const repoSlug = state.repo.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "repo";
+const hostFile = join(hostDir, `host-${repoSlug}.json`);
+const legacyFile = join(hostDir, `host-${config.host?.port ?? HOST_PORT_FIRST}.json`);
+const reused = adoptIdentity(hostFile) || adoptIdentity(legacyFile);
 writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, hostId: state.hostId, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 
+const wantedPort = config.host?.port ?? HOST_PORT_FIRST;
 console.log(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);
+if (hostPort !== wantedPort) {
+    console.log(`  NOTE          ${wantedPort} was busy, so this host is on ${hostPort}. The pairing code below is unchanged; a page already paired to ${wantedPort} is talking to a different process.`);
+}
 console.log(`  pairing code  ${pairingCode}${reused ? " (reused; delete the token file to rotate)" : ""}`);
 console.log(`  token file    ${hostFile}`);
 console.log(`  origins       ${[...allowedOrigins].join(", ")}`);

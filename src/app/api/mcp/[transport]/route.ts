@@ -1278,7 +1278,10 @@ const handler = createMcpHandler(
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     const campaign = await getCampaignForSession(session.id);
-                    if (!campaign) return { content: [{ type: "text", text: "SUPERVISE: idle\nNo work campaign exists." }] };
+                    // Distinct from idle, which an agent with nothing to do right now
+                    // also returns. The host releases a Council on this and must never
+                    // release one whose campaign is merely quiet.
+                    if (!campaign) return { content: [{ type: "text", text: "SUPERVISE: no_campaign\nNo work campaign exists." }] };
                     const items = await listCampaignWorkItems(campaign.id);
                     const owned = agentName ? items.filter((item) => item.agentName === agentName) : [];
                     const hasReview = agentName === session.closerName && items.some((item) => item.status === "awaiting_review");

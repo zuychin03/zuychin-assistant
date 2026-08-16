@@ -163,7 +163,7 @@ function renderWorkspaceBlock(
     session: CouncilSession, agentName: string, workspace: CouncilWorkspace,
 ): string {
     const branch = councilBranch(session.code, agentName);
-    const dir = councilWorktreeDir(workspace.repoPath, agentName);
+    const dir = councilWorktreeDir(workspace.repoPath, session.code, agentName);
     return `
 WORKSPACE - you get your own worktree, not the shared checkout
 This council changes code. The council decides who SPEAKS; it does not lock files, so two agents
@@ -245,7 +245,7 @@ ${agents.map((p) => `  git merge --no-ff ${councilBranch(session.code, p.name)}`
 
 Then clean up the worktrees:
 
-${agents.map((p) => `  git worktree remove ${councilWorktreeDir(workspace.repoPath, p.name)}`).join("\n")}
+${agents.map((p) => `  git worktree remove ${councilWorktreeDir(workspace.repoPath, session.code, p.name)}`).join("\n")}
 
 Conflicts between two agents' branches are the expected outcome when they touched the same file;
 resolve them yourself rather than asking an agent to merge over a peer.\n`

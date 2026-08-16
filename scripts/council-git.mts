@@ -142,10 +142,21 @@ function runCommand(cwd: string, entry: VerificationCommand, limit: number): Pro
     });
 }
 
-async function runProfile(cwd: string, profile: VerificationProfile): Promise<VerificationReceipt[]> {
+export interface VerificationProgress {
+    step: number;
+    steps: number;
+    command: string[];
+}
+
+async function runProfile(
+    cwd: string, profile: VerificationProfile, onProgress?: (progress: VerificationProgress) => void,
+): Promise<VerificationReceipt[]> {
     const limit = Math.max(2_000, Math.min(profile.maxOutputChars ?? 24_000, 200_000));
     const receipts: VerificationReceipt[] = [];
-    for (const entry of profile.commands) receipts.push(await runCommand(cwd, entry, limit));
+    for (const [index, entry] of profile.commands.entries()) {
+        onProgress?.({ step: index + 1, steps: profile.commands.length, command: entry.command });
+        receipts.push(await runCommand(cwd, entry, limit));
+    }
     return receipts;
 }
 
@@ -180,6 +191,7 @@ export function protectedRefsUnchanged(repo: string, snapshot: Record<string, st
 export async function verifyExactCommit(params: {
     repo: string; commitSha: string; baseSha: string; branch: string;
     declaredPaths: string[]; profile: VerificationProfile;
+    onProgress?: (progress: VerificationProgress) => void;
 }): Promise<ExactVerificationResult> {
     const repo = resolve(params.repo);
     const lines: string[] = [];
@@ -232,7 +244,7 @@ export async function verifyExactCommit(params: {
     let checkout: { parent: string; dir: string } | null = null;
     try {
         checkout = await temporaryCheckout(repo, commitSha);
-        receipts = await runProfile(checkout.dir, params.profile);
+        receipts = await runProfile(checkout.dir, params.profile, params.onProgress);
         for (const receipt of receipts) {
             if (receipt.exitCode === 0 && !receipt.timedOut) pass(`${receipt.command.join(" ")} exited 0`);
             else fail(`${receipt.command.join(" ")} ${receipt.timedOut ? "timed out" : `exited ${receipt.exitCode}`}`);
@@ -248,6 +260,7 @@ export async function verifyExactCommit(params: {
 
 export async function integrateAcceptedManifest(params: {
     repo: string; code: string; manifest: IntegrationManifest; profile: VerificationProfile;
+    onProgress?: (progress: VerificationProgress) => void;
 }): Promise<ExactVerificationResult & { branch: string; tipSha: string | null }> {
     const repo = resolve(params.repo);
     const stem = `council/${params.code.toLowerCase()}/integration`;
@@ -265,7 +278,7 @@ export async function integrateAcceptedManifest(params: {
             if (!merged.ok) { ok = false; lines.push(`FAIL conflict merging exact SHA ${item.commitSha}: ${merged.out.slice(-3000)}`); git(checkout.dir, ["merge", "--abort"]); }
             else lines.push(`ok   merged ${item.itemId} at ${item.commitSha.slice(0, 12)}`);
         }
-        const receipts = ok ? await runProfile(checkout.dir, params.profile) : [];
+        const receipts = ok ? await runProfile(checkout.dir, params.profile, params.onProgress) : [];
         for (const receipt of receipts) {
             if (receipt.exitCode !== 0 || receipt.timedOut) { ok = false; lines.push(`FAIL ${receipt.command.join(" ")} failed`); }
             else lines.push(`ok   ${receipt.command.join(" ")} exited 0`);

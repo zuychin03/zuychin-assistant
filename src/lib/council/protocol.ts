@@ -80,10 +80,13 @@ export function councilBranch(code: string, agentName: string): string {
 }
 
 // Relative so git resolves it against the repo root, which keeps the rendered
-// command identical on Windows and POSIX.
-export function councilWorktreeDir(repoPath: string, agentName: string): string {
+// command identical on Windows and POSIX. The code is in the path because
+// without it a second Council reusing an agent collides with that agent's
+// leftover checkout, and the convene fails leaving a junk session holding a
+// lease.
+export function councilWorktreeDir(repoPath: string, code: string, agentName: string): string {
     const base = repoPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "repo";
-    return `../${base}-${agentSlug(agentName)}`;
+    return `../${base}-${code.toLowerCase()}-${agentSlug(agentName)}`;
 }
 
 export type CouncilStatus = "open" | "concluding" | "awaiting_owner" | "closed" | "expired";
