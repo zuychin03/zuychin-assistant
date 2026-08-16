@@ -1151,12 +1151,18 @@ function addWorktree(agent: AgentRuntime): void {
         log(`${agent.name}: FAILED - worktree ${agent.relDir} already exists`);
         throw new Error(`${agent.treeDir} already exists; remove it or close the previous council first`);
     }
-    const added = git(state.repo, ["worktree", "add", agent.relDir, "-b", agent.branch, state.baseSha ?? state.baseBranch]);
+    // A resumed Council already has the agent's branch, and the commits on it
+    // are the work. Check it out rather than trying to create it again, which
+    // is what -b does and what a resume would die on.
+    const existing = git(state.repo, ["show-ref", "--verify", `refs/heads/${agent.branch}`]).ok;
+    const added = git(state.repo, existing
+        ? ["worktree", "add", agent.relDir, agent.branch]
+        : ["worktree", "add", agent.relDir, "-b", agent.branch, state.baseSha ?? state.baseBranch]);
     if (!added.ok) {
         log(`${agent.name}: FAILED - git worktree add ${agent.relDir}: ${added.out.split(/\r?\n/)[0] ?? ""}`);
         throw new Error(`git worktree add failed for ${agent.name}:\n${added.out}`);
     }
-    log(`${agent.name}: worktree ${agent.relDir} on ${agent.branch}`);
+    log(`${agent.name}: worktree ${agent.relDir} on ${agent.branch}${existing ? " (existing branch)" : ""}`);
 }
 
 const RESUME_PREAMBLE = (code: string) =>
