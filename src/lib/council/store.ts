@@ -884,6 +884,22 @@ export async function markArchive(params: {
     if (error) console.warn("[Council] markArchive failed:", error.message);
 }
 
+// Kept out of listOpenCouncils: a parked council must not count against the
+// convene cap or appear in MCP open listings. No standby predicate - a council
+// becomes visible here the moment its verdict is proposed, not after 24h.
+export async function listAwaitingOwnerCouncils(): Promise<CouncilSession[]> {
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .eq("status", "awaiting_owner")
+        .order("verdict_proposed_at", { ascending: false });
+    if (error) {
+        console.error("[Council] listAwaitingOwnerCouncils failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
 export async function listOpenCouncils(): Promise<CouncilSession[]> {
     const { data, error } = await supabase
         .from("council_sessions")

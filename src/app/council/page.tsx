@@ -651,13 +651,19 @@ export default function CouncilPage() {
                                     >
                                         <div style={styles.railTop}>
                                             <span style={styles.railCode}>{c.code}</span>
+                                            {c.status === "awaiting_owner" && (
+                                                <span style={{ ...styles.smallPill, ...styles.pillWarn }}>decision needed</span>
+                                            )}
                                             <span style={{ ...styles.smallPill, ...styles.pillGood }}>
                                                 r{c.round}/{c.maxRounds}
                                             </span>
                                         </div>
                                         <div style={styles.railTopic}>{c.topic}</div>
                                         <div style={styles.railMeta}>
-                                            {c.messages} msgs · quiet {ago(c.lastMessageAt)} · {until(c.expiresAt)}
+                                            {c.messages} msgs · quiet {ago(c.lastMessageAt)}
+                                            {/* expires_at stops governing once a verdict is proposed;
+                                                standby_expires_at does, and it is not in this payload. */}
+                                            {c.status !== "awaiting_owner" && <> · {until(c.expiresAt)}</>}
                                         </div>
                                         {c.waitingOn.length > 0 && (
                                             <div style={styles.railWaiting}>waiting on {c.waitingOn.join(", ")}</div>
