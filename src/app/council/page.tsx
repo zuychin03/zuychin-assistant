@@ -17,6 +17,7 @@ import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
 import { IntegrationPanel } from "./integration-panel";
 import { Dropdown } from "@/components/dropdown";
+import { isLoopbackUrl, publicBaseUrl } from "@/lib/public-url";
 
 // Live view over a council, plus control of the local ACP host when one is
 // reachable. The Zuychin half stays read-only by construction: watching a
@@ -298,8 +299,12 @@ export default function CouncilPage() {
     const isRunning = s?.status === "open" || s?.status === "concluding";
     // One host owns one council, so Adopt is offered only while it owns none.
     const canAdopt = hostState === "connected" && !!host && !host.code;
-    const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(origin);
-    const remoteBrief = remoteAgentSetup(`${origin || "https://your-deployment"}/api/mcp/mcp`);
+    // The brief goes to a machine that is not this one, so it carries the
+    // configured public address when there is one, not whatever is in the
+    // address bar.
+    const briefBase = publicBaseUrl(origin);
+    const isLoopback = isLoopbackUrl(briefBase);
+    const remoteBrief = remoteAgentSetup(`${briefBase || "https://your-deployment"}/api/mcp/mcp`);
     // Rendered copy masks the host so a screenshot of this panel carries no
     // deployment address; the clipboard still gets the real one.
     const remoteBriefShown = remoteAgentSetup("https://<your-host>/api/mcp/mcp");
@@ -611,9 +616,10 @@ export default function CouncilPage() {
                             {isLoopback && (
                                 <>
                                     <br />
-                                    <strong>You are viewing this on localhost, so the copied brief points at
-                                    this machine.</strong> Open this page on your deployed site before copying,
-                                    or swap the host in by hand.
+                                    <strong>The copied brief points at this machine, which a remote agent
+                                    cannot reach.</strong> Set <code style={styles.code}>NEXT_PUBLIC_BASE_URL</code> to
+                                    your deployed address and every brief carries it whatever page you copy
+                                    from; until then, copy from the deployed site or swap the host in by hand.
                                 </>
                             )}
                             <br />

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAccessLevel, mintKnowledgeClaim } from "@/lib/agents/clients";
 import { knowledgeAgentSetup } from "@/lib/agents/brief";
+import { publicBaseUrl } from "@/lib/public-url";
 
 // Owner-only, session-gated by proxy.ts. Returns the claim plaintext once,
 // inside the brief. The claim is not the credential: it is exchanged for one at
@@ -15,7 +16,9 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Pick an access level." }, { status: 400 });
         }
 
-        const origin = req.nextUrl.origin;
+        // Not req.nextUrl.origin: minting from localhost must still hand the
+        // agent the deployment it will actually be able to reach.
+        const origin = publicBaseUrl(req.nextUrl.origin);
         const minted = await mintKnowledgeClaim({ clientId, accessLevel: body.accessLevel });
         return NextResponse.json({
             claim: minted.claim,

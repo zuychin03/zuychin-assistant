@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Copy, FileKey, KeyRound, Trash2 } from "lucide-react";
 import { remoteAgentSetup } from "./remote-setup";
+import { publicBaseUrl } from "@/lib/public-url";
 
 // Mints the credential a guest agent pastes into the remote brief. The
 // plaintext is shown once and never again - re-issue rather than trying to
@@ -143,7 +144,7 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                             type="button"
                             onClick={() => {
                                 const brief = remoteAgentSetup(
-                                    `${window.location.origin}/api/mcp/mcp`, minted.token,
+                                    `${publicBaseUrl(window.location.origin)}/api/mcp/mcp`, minted.token,
                                 );
                                 void navigator.clipboard.writeText(brief).then(() => {
                                     setCopiedBrief(true);
