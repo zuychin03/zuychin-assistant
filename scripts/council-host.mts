@@ -150,6 +150,25 @@ async function callTool(name: string, args: Record<string, unknown>, bearer = mc
     return text;
 }
 
+/**
+ * Only for calls whose result is expensive to recompute. callTool throws a
+ * TypeError only when fetch itself failed, which means no response was seen;
+ * an HTTP status or a tool-level rejection arrives as a plain Error and is not
+ * retried. A duplicate verification run row costs nothing next to a repeated
+ * four-minute build.
+ */
+async function callToolRetrying(name: string, args: Record<string, unknown>, attempts = 4): Promise<string> {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return await callTool(name, args);
+        } catch (error) {
+            if (!(error instanceof TypeError) || attempt >= attempts) throw error;
+            log(`${name}: ${error.message}; retrying (${attempt}/${attempts - 1})`);
+            await new Promise((resume) => setTimeout(resume, 750 * attempt));
+        }
+    }
+}
+
 interface DispatchSlice {
     fresh: unknown[];
     cursor: number;
@@ -185,6 +204,21 @@ interface DispatchPayload {
 function git(repo: string, args: string[]): { ok: boolean; out: string } {
     const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+// Removing a worktree an agent has installed into is seconds of blocked thread,
+// which is long enough for the server to drop the pooled socket and the very
+// next report to die on it. Only the worktree calls need this.
+function gitAsync(repo: string, args: string[]): Promise<{ ok: boolean; out: string }> {
+    return new Promise((settle) => {
+        const child = spawnResolved("git", ["-C", repo, ...args], { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        const absorb = (chunk: string) => { out += chunk; };
+        child.stdout?.setEncoding("utf8").on("data", absorb);
+        child.stderr?.setEncoding("utf8").on("data", absorb);
+        child.on("error", (error) => settle({ ok: false, out: `${out}${error.message}`.trim() }));
+        child.on("close", (code) => settle({ ok: code === 0, out: out.trim() }));
+    });
 }
 
 // ---------------------------------------------------------------- runtime
@@ -244,6 +278,10 @@ interface HostState {
     code: string | null;
     topic: string | null;
     status: string;
+    // Distinct from status, which mirrors the *session* and stays "closed" for
+    // the whole campaign. dispatchTick overwrites status every 1.5s, so a phase
+    // kept there survives one poll at most.
+    campaignComplete: boolean;
     round: number;
     maxRounds: number;
     floorHolder: string | null;
@@ -317,6 +355,7 @@ const state: HostState = {
     code: null,
     topic: null,
     status: "idle",
+    campaignComplete: false,
     round: 0,
     maxRounds: 0,
     floorHolder: null,
@@ -417,7 +456,7 @@ function snapshot() {
         busy: state.code !== null,
         instances: seats,
         topic: state.topic,
-        status: state.status,
+        status: state.campaignComplete ? "campaign_complete" : state.status,
         round: state.round,
         maxRounds: state.maxRounds,
         floorHolder: state.floorHolder,
@@ -1544,8 +1583,9 @@ async function hostVerifyTick(): Promise<void> {
         const branch = item.branchName ?? agent?.branch ?? councilBranch(state.code, item.agentName);
         const profileId = item.verificationProfile ?? payload.verificationProfile ?? "standard";
         let result;
+        log(`${item.agentName}: verifying ${item.commitHash.slice(0, 12)} against the ${profileId} profile`);
         try {
-            result = verifyExactCommit({
+            result = await verifyExactCommit({
                 repo: state.repo, commitSha: item.commitHash, baseSha, branch,
                 declaredPaths: item.declaredPaths ?? [], profile: loadVerificationProfile(state.repo, profileId),
             });
@@ -1556,7 +1596,7 @@ async function hostVerifyTick(): Promise<void> {
             };
         }
         log(`${item.agentName}: host check ${result.ok ? "passed" : "FAILED"} for ${item.commitHash.slice(0, 12)}`);
-        await callTool("council_work_verify", {
+        await callToolRetrying("council_work_verify", {
             itemId: item.id, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
             commitSha: result.commitSha, baseSha: result.baseSha, branchName: branch,
             profileId, receipts: result.receipts, outputDigest: result.outputDigest,
@@ -1570,7 +1610,7 @@ async function hostVerifyTick(): Promise<void> {
 // V2 journal compatibility.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function legacyIntegrationTick(): Promise<void> {
-    if (!state.code || state.status !== "campaign_complete" || integrationDone) return;
+    if (!state.code || !state.campaignComplete || integrationDone) return;
     integrationDone = true;
     const branches = [...state.agents.values()].map((a) => a.branch);
     log(`Assembling ${branches.length} branch(es) on a clean integration worktree…`);
@@ -1627,19 +1667,19 @@ Attempt each merge with git merge --no-edit <sha>. Resolve conflicts only inside
         for (const sha of commits) {
             if (!git(treeDir, ["merge-base", "--is-ancestor", sha, tipSha]).ok) throw new Error(`integration tip omits accepted commit ${sha}`);
         }
-        const verified = verifyExactCommit({
+        const verified = await verifyExactCommit({
             repo: state.repo, commitSha: tipSha, baseSha: manifest.baseSha, branch,
             declaredPaths: [], profile: loadVerificationProfile(state.repo, "standard"),
         });
         return { ...verified, branch, tipSha };
     } finally {
         agent.connection?.close();
-        git(state.repo, ["worktree", "remove", "--force", treeDir]);
+        await gitAsync(state.repo, ["worktree", "remove", "--force", treeDir]);
     }
 }
 
 async function integrationTick(): Promise<void> {
-    if (!state.code || state.status !== "campaign_complete" || integrationDone || !state.leaseHealthy || state.leaseEpoch === null) return;
+    if (!state.code || !state.campaignComplete || integrationDone || !state.leaseHealthy || state.leaseEpoch === null) return;
     integrationDone = true;
     const frozen = JSON.parse(await callTool("council_integration_manifest", {
         sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
@@ -1657,45 +1697,65 @@ async function integrationTick(): Promise<void> {
     try {
         result = frozen.integratorAgent
             ? await delegatedIntegration(frozen.manifest, frozen.integratorAgent)
-            : integrateAcceptedManifest({ repo: state.repo, code: state.code, manifest: frozen.manifest, profile: loadVerificationProfile(state.repo, "standard") });
+            : await integrateAcceptedManifest({ repo: state.repo, code: state.code, manifest: frozen.manifest, profile: loadVerificationProfile(state.repo, "standard") });
     } catch (error) {
         result = { ok: false, branch: nextIntegrationBranch(), tipSha: null, lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`] };
     }
     const status = result.ok ? "verified" : result.lines.some((line) => line.startsWith("FAIL conflict")) ? "conflict" : "failed";
     log(`Integration ${status}.`);
-    await callTool("council_integration_report", {
+    // Losing this costs the integrator's whole turn as well as the host's
+    // verification, and integrationDone means nothing will run it again.
+    await callToolRetrying("council_integration_report", {
         sessionCode: state.code, status, branch: result.branch, tipSha: result.tipSha ?? undefined,
         reporter: frozen.integratorAgent ?? "host", hostId: state.hostId,
         leaseEpoch: state.leaseEpoch, report: result.lines.join("\n"),
-    }).catch((error) => log(`integration report failed: ${error instanceof Error ? error.message : String(error)}`));
+    }).catch((error) => {
+        integrationDone = false;
+        log(`integration report failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
     broadcast({ type: "state", ...snapshot() });
 }
 
+// Non-reentrant: hostVerifyTick now yields for the minutes a build takes, so
+// the 30s timer would otherwise stack passes and re-verify the same item.
+let supervising = false;
+
 async function superviseTick(): Promise<void> {
-    if (!state.code || state.status !== "closed") return;
-    await hostVerifyTick();
-    for (const agent of state.agents.values()) {
-        if (agent.mode !== "acp" || !agent.session || agent.inFlight) continue;
-        let text: string;
-        try {
-            text = await callTool("council_work_status", { sessionCode: state.code, agentName: agent.name });
-        } catch {
-            continue;
+    if (!state.code || state.status !== "closed" || supervising) return;
+    if (state.campaignComplete) {
+        // integrationDone reopens when a report is lost, so this is how a
+        // stranded integration gets re-driven rather than sitting there.
+        if (!integrationDone) void integrationTick();
+        return;
+    }
+    supervising = true;
+    try {
+        await hostVerifyTick();
+        for (const agent of state.agents.values()) {
+            if (agent.mode !== "acp" || !agent.session || agent.inFlight) continue;
+            let text: string;
+            try {
+                text = await callTool("council_work_status", { sessionCode: state.code, agentName: agent.name });
+            } catch {
+                continue;
+            }
+            if (text.startsWith("SUPERVISE: complete")) {
+                log("Campaign complete.");
+                state.campaignComplete = true;
+                broadcast({ type: "state", ...snapshot() });
+                void integrationTick();
+                return;
+            }
+            if (text.startsWith("SUPERVISE: blocked")) {
+                broadcast({ type: "error", detail: "campaign blocked; resolve the recorded blocker" });
+                return;
+            }
+            if (text.startsWith("SUPERVISE: active") || text.startsWith("SUPERVISE: review")) {
+                void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
+            }
         }
-        if (text.startsWith("SUPERVISE: complete")) {
-            log("Campaign complete.");
-            state.status = "campaign_complete";
-            broadcast({ type: "state", ...snapshot() });
-            void integrationTick();
-            return;
-        }
-        if (text.startsWith("SUPERVISE: blocked")) {
-            broadcast({ type: "error", detail: "campaign blocked; resolve the recorded blocker" });
-            return;
-        }
-        if (text.startsWith("SUPERVISE: active") || text.startsWith("SUPERVISE: review")) {
-            void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
-        }
+    } finally {
+        supervising = false;
     }
 }
 

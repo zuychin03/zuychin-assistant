@@ -1993,11 +1993,12 @@ begin
   select * into v_campaign from council_campaigns where session_id = p_session_id for update;
   if v_campaign.id is null or v_campaign.status <> 'running' then return null; end if;
 
+  -- A lapsed lease is not a failed attempt. attempts counts claims, and an agent
+  -- waiting out a four-minute host check can lose its lease with nothing wrong
+  -- with the work; charging that to max_attempts blocked CN-73YD's item at
+  -- attempts = 4 against a ceiling of 3. The ceiling now lives on rejections.
   update council_work_items
-     set status = case when attempts >= max_attempts then 'blocked' else 'queued' end,
-         blocked_reason = case when attempts >= max_attempts
-                               then 'abandoned after ' || attempts || ' attempt(s); lease expired'
-                               else blocked_reason end,
+     set status = 'queued',
          lease_owner = null, lease_expires_at = null, heartbeat_at = null
    where campaign_id = v_campaign.id
      and status = 'in_progress'
@@ -2025,12 +2026,12 @@ begin
     update council_work_items
        set status = 'in_progress', attempts = attempts + 1,
            started_at = coalesce(started_at, now()), heartbeat_at = now(),
-           lease_owner = p_agent_name, lease_expires_at = now() + interval '15 minutes'
+           lease_owner = p_agent_name, lease_expires_at = now() + interval '45 minutes'
      where id = v_item.id returning * into v_item;
   else
     update council_work_items
        set heartbeat_at = now(), lease_owner = p_agent_name,
-           lease_expires_at = now() + interval '15 minutes'
+           lease_expires_at = now() + interval '45 minutes'
      where id = v_item.id returning * into v_item;
   end if;
   return to_jsonb(v_item);
@@ -2042,7 +2043,7 @@ returns boolean language plpgsql as $$
 begin
   update council_work_items
      set heartbeat_at = now(), progress = coalesce(p_progress, progress),
-         lease_expires_at = now() + interval '15 minutes'
+         lease_expires_at = now() + interval '45 minutes'
    where id = p_item_id and agent_name = p_agent_name and status = 'in_progress';
   return found;
 end;
@@ -3363,6 +3364,13 @@ create index if not exists idx_council_verification_runs_item
   on council_verification_runs (work_item_id, checked_at desc);
 alter table council_verification_runs enable row level security;
 
+-- The abandonment ceiling counts rework, not claims. attempts increments every
+-- time an item is picked up, including after a lapsed lease, so it charged the
+-- item for the host being slow; rejections only moves when a host check fails
+-- or the closer sends work back.
+alter table council_work_items
+  add column if not exists rejections integer not null default 0;
+
 create or replace function record_council_verification(
   p_item_id uuid, p_host_id uuid, p_lease_epoch bigint, p_commit_sha text,
   p_base_sha text, p_branch_name text, p_profile_id text,
@@ -3401,10 +3409,25 @@ begin
          host_verification = left(coalesce(p_report, ''), 16000),
          host_checked_at = now(), verification_run_id = v_run,
          branch_name = p_branch_name, verification_profile = p_profile_id,
-         status = case when p_passed then status else 'queued' end,
+         rejections = case when p_passed then rejections else rejections + 1 end,
+         status = case
+           when p_passed then status
+           when rejections + 1 >= max_attempts then 'blocked'
+           else 'queued' end,
+         blocked_reason = case
+           when not p_passed and rejections + 1 >= max_attempts
+             then 'host check failed ' || (rejections + 1) || ' time(s); needs a human'
+           else blocked_reason end,
          progress = case when p_passed then progress else concat_ws(E'\n', progress,
            'Host check failed: ' || left(coalesce(p_report, ''), 1000)) end
    where id = p_item_id;
+  -- Matches what block_council_work_item does on the cooperative path: an item
+  -- blocked here can be the last live one.
+  update council_campaigns set status = 'blocked'
+   where id = v_campaign.id
+     and not exists (select 1 from council_work_items
+                      where campaign_id = v_campaign.id
+                        and status in ('queued', 'in_progress', 'awaiting_review'));
   return jsonb_build_object('ok', true, 'verificationRunId', v_run, 'passed', p_passed);
 end;
 $$;
@@ -3473,7 +3496,12 @@ begin
      where id = p_item_id;
   else
     update council_work_items
-       set status = 'queued', progress = concat_ws(E'\n', progress, 'Review feedback: ' || p_note),
+       set rejections = rejections + 1,
+           status = case when rejections + 1 >= max_attempts then 'blocked' else 'queued' end,
+           blocked_reason = case when rejections + 1 >= max_attempts
+             then 'sent back ' || (rejections + 1) || ' time(s); needs a human'
+             else blocked_reason end,
+           progress = concat_ws(E'\n', progress, 'Review feedback: ' || p_note),
            heartbeat_at = null, completed_at = null, lease_owner = null, lease_expires_at = null,
            host_verified = null, host_verification = null, host_checked_at = null,
            verification_run_id = null, accepted_commit_sha = null

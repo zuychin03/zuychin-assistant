@@ -7,6 +7,7 @@
       "rejectSymlinks": true,
       "rejectSubmodules": true,
       "commands": [
+        { "command": ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"], "timeoutMs": 600000 },
         { "command": ["npm", "run", "lint"], "timeoutMs": 180000 },
         { "command": ["npm", "run", "build"], "timeoutMs": 300000 }
       ]
@@ -17,6 +18,7 @@
       "rejectSymlinks": true,
       "rejectSubmodules": true,
       "commands": [
+        { "command": ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"], "timeoutMs": 600000 },
         { "command": ["npm", "run", "lint"], "timeoutMs": 180000 }
       ]
     }

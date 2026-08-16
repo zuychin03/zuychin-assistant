@@ -3,11 +3,7 @@
  * council-acp-probe.mts. Shared so the containment check is testable on its own,
  * and so the probe spawns a candidate exactly as the host will.
  */
-import {
-    spawn, spawnSync,
-    type ChildProcess, type SpawnOptions,
-    type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns,
-} from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -60,26 +56,6 @@ export function spawnResolved(
         });
     }
     return spawn(resolved, args as string[], options);
-}
-
-/**
- * spawnSync counterpart of spawnResolved, for the verification runner. Without
- * it `npm` fails ENOENT on Windows: the shim is npm.cmd and shell:false will
- * not resolve it, which surfaces as exitCode null rather than a check failure.
- */
-export function spawnSyncResolved(
-    command: string,
-    args: readonly string[],
-    options: SpawnSyncOptionsWithStringEncoding,
-): SpawnSyncReturns<string> {
-    const resolved = resolveCommand(command);
-    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
-        return spawnSync(process.env.ComSpec ?? "cmd.exe", cmdExecArgs(resolved, args), {
-            ...options,
-            windowsVerbatimArguments: true,
-        });
-    }
-    return spawnSync(resolved, args as string[], options);
 }
 
 /**

@@ -1099,7 +1099,12 @@ const handler = createMcpHandler(
                     if (!campaign) return { content: [{ type: "text", text: "NO_WORK_CAMPAIGN - no implementation tasks were recorded for this council. Stop here and wait for human direction." }] };
                     const item = await claimNextWorkItem(session.id, agentName);
                     if (!item) return { content: [{ type: "text", text: "WORK_IDLE - campaign " + campaign.status + ". You have no runnable task. Do not take another agent's work." }] };
-                    return { content: [{ type: "text", text: "WORK_ASSIGNED - " + item.id + "\nTask " + item.sequence + ": " + item.title + "\n\n" + item.instructions + "\n\nAcceptance criteria:\n" + item.acceptanceCriteria.map((criterion) => "- " + criterion).join("\n") + "\n\nNEXT -> council_work_heartbeat({itemId: \"" + item.id + "\", agentName: \"" + agentName + "\", progress: \"started\"})" }] };
+                    // A requeued item is indistinguishable from a fresh one without this,
+                    // so the agent resubmits the same rejected commit indefinitely.
+                    const rejected = item.hostVerified === false && item.hostVerification
+                        ? "\n\nHOST CHECK FAILED on your previous submission " + (item.commitHash ?? "(none)") + ". Fix every FAIL line, then commit and submit the new exact SHA:\n" + item.hostVerification
+                        : "";
+                    return { content: [{ type: "text", text: "WORK_ASSIGNED - " + item.id + "\nTask " + item.sequence + ": " + item.title + "\n\n" + item.instructions + "\n\nAcceptance criteria:\n" + item.acceptanceCriteria.map((criterion) => "- " + criterion).join("\n") + rejected + "\n\nCommit rules: work on your own branch only, and write the message yourself with no Co-authored-by or other attribution trailer. Host verification rejects any commit carrying one.\n\nNEXT -> council_work_heartbeat({itemId: \"" + item.id + "\", agentName: \"" + agentName + "\", progress: \"started\"})" }] };
                 } catch (error) { return { content: [{ type: "text", text: "Work claim failed: " + errMsg(error) }] }; }
             },
         );
@@ -1279,7 +1284,15 @@ const handler = createMcpHandler(
                     const hasReview = agentName === session.closerName && items.some((item) => item.status === "awaiting_review");
                     const supervise = hasReview ? "review" : owned.some((item) => item.status === "queued" || item.status === "in_progress") ? "active" : "idle";
                     const state = campaign.status === "complete" ? "complete" : campaign.status === "blocked" ? "blocked" : supervise;
-                    return { content: [{ type: "text", text: "SUPERVISE: " + state + "\nCampaign " + campaign.status + ": " + items.filter((item) => item.status === "verified").length + "/" + items.length + " verified\n" + items.map((item) => "#" + item.sequence + " " + item.agentName + " " + item.status + " " + item.title).join("\n") }] };
+                    // The id is what council_work_review takes, and the closer owns no
+                    // work item of its own, so this listing is the only place it can
+                    // ever learn it. Without it the campaign cannot be closed at all.
+                    const lines = items.map((item) => "#" + item.sequence + " " + item.id
+                        + " " + item.agentName + " " + item.status
+                        + " host=" + (item.hostVerified === null ? "unchecked" : item.hostVerified ? "passed" : "FAILED")
+                        + (item.commitHash ? " " + item.commitHash.slice(0, 12) : "")
+                        + " " + item.title);
+                    return { content: [{ type: "text", text: "SUPERVISE: " + state + "\nCampaign " + campaign.status + ": " + items.filter((item) => item.status === "verified").length + "/" + items.length + " verified\n" + lines.join("\n") }] };
                 } catch (error) { return { content: [{ type: "text", text: "Campaign status failed: " + errMsg(error) }] }; }
             },
         );

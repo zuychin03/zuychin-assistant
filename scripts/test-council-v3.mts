@@ -36,20 +36,20 @@ try {
         commands: [{ command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 10_000 }],
     };
 
-    const exact = verifyExactCommit({
+    const exact = await verifyExactCommit({
         repo, commitSha, baseSha, branch: "council/cn-test/agent-a", declaredPaths: ["src"], profile,
     });
     assert.equal(exact.ok, true, exact.lines.join("\n"));
     assert.equal(exact.receipts.length, 1);
     assert.match(exact.outputDigest, /^[0-9a-f]{64}$/);
 
-    const scoped = verifyExactCommit({
+    const scoped = await verifyExactCommit({
         repo, commitSha, baseSha, branch: "council/cn-test/agent-a", declaredPaths: ["docs"], profile,
     });
     assert.equal(scoped.ok, false);
     assert.ok(scoped.lines.some((line) => line.includes("outside declared scope")));
 
-    const integrated = integrateAcceptedManifest({
+    const integrated = await integrateAcceptedManifest({
         repo, code: "CN-TEST", profile,
         manifest: {
             version: 1, campaignId: "test", baseSha,
@@ -60,6 +60,35 @@ try {
     assert.ok(integrated.tipSha);
     assert.equal(git(repo, "merge-base", "--is-ancestor", commitSha, integrated.tipSha!), "");
     assert.equal(protectedRefsUnchanged(repo, protectedRefs), true, "integration changed main");
+
+    // Defect 11: a synchronous runner starves the host's lease-renewal timer,
+    // so the lease expires mid-build and the finished result is discarded.
+    let ticks = 0;
+    const heartbeat = setInterval(() => { ticks += 1; }, 100);
+    const slow = await verifyExactCommit({
+        repo, commitSha, baseSha, branch: "council/cn-test/agent-a", declaredPaths: ["src"],
+        profile: { ...profile, commands: [{ command: [process.execPath, "-e", "setTimeout(() => process.exit(0), 1500)"], timeoutMs: 30_000 }] },
+    });
+    clearInterval(heartbeat);
+    assert.equal(slow.ok, true, slow.lines.join("\n"));
+    assert.ok(ticks >= 5, `verification blocked the event loop: only ${ticks} timer ticks in ~1.5s`);
+
+    const timedOut = await verifyExactCommit({
+        repo, commitSha, baseSha, branch: "council/cn-test/agent-a", declaredPaths: ["src"],
+        profile: { ...profile, commands: [{ command: [process.execPath, "-e", "setTimeout(() => process.exit(0), 60000)"], timeoutMs: 1_000 }] },
+    });
+    assert.equal(timedOut.ok, false);
+    assert.equal(timedOut.receipts[0]?.timedOut, true);
+
+    const attributed = git(repo, "rev-parse", "HEAD");
+    git(repo, "commit", "--amend", "-m", "feature\n\nCo-authored-by: Someone <a@b.invalid>");
+    const tainted = await verifyExactCommit({
+        repo, commitSha: git(repo, "rev-parse", "HEAD"), baseSha,
+        branch: "council/cn-test/agent-a", declaredPaths: ["src"], profile,
+    });
+    assert.equal(tainted.ok, false);
+    assert.ok(tainted.lines.some((line) => line.includes("attribution trailer")));
+    git(repo, "reset", "--hard", attributed);
 
     const configOptions = [{ id: "model", category: "model", type: "select", currentValue: "alpha", options: [{ value: "alpha" }, { value: "beta" }] }];
     assert.equal(selectConfig(configOptions, "model")?.id, "model");
