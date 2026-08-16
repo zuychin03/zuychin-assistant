@@ -31,6 +31,8 @@ const STALE_SECONDS = 180;
 interface OpenCouncil {
     code: string; topic: string; councilType: string; status: string; round: number; maxRounds: number;
     messages: number; lastMessageAt: string; closerName: string; expiresAt: string;
+    /** Closed, but its work campaign is still running, so a host can adopt it. */
+    campaignRunning?: boolean;
     waitingOn: string[]; participants: string[];
 }
 interface RecentCouncil {
@@ -681,16 +683,22 @@ export default function CouncilPage() {
                                             {c.status === "awaiting_owner" && (
                                                 <span style={{ ...styles.smallPill, ...styles.pillWarn }}>decision needed</span>
                                             )}
-                                            <span style={{ ...styles.smallPill, ...styles.pillGood }}>
-                                                r{c.round}/{c.maxRounds}
-                                            </span>
+                                            {c.campaignRunning && (
+                                                <span style={{ ...styles.smallPill, ...styles.pillGood }}>campaign running</span>
+                                            )}
+                                            {!c.campaignRunning && (
+                                                <span style={{ ...styles.smallPill, ...styles.pillGood }}>
+                                                    r{c.round}/{c.maxRounds}
+                                                </span>
+                                            )}
                                         </div>
                                         <div style={styles.railTopic}>{c.topic}</div>
                                         <div style={styles.railMeta}>
                                             {c.messages} msgs · quiet {ago(c.lastMessageAt)}
                                             {/* expires_at stops governing once a verdict is proposed;
-                                                standby_expires_at does, and it is not in this payload. */}
-                                            {c.status !== "awaiting_owner" && <> · {until(c.expiresAt)}</>}
+                                                standby_expires_at does, and it is not in this payload.
+                                                For a campaign the debate clock is long irrelevant. */}
+                                            {c.status !== "awaiting_owner" && !c.campaignRunning && <> · {until(c.expiresAt)}</>}
                                         </div>
                                         {c.waitingOn.length > 0 && (
                                             <div style={styles.railWaiting}>waiting on {c.waitingOn.join(", ")}</div>
@@ -702,9 +710,11 @@ export default function CouncilPage() {
                                             onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
                                             disabled={adopting !== null}
                                             style={{ ...styles.railAdopt, ...(adopting ? styles.hostChipOff : {}) }}
-                                            title="Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."
+                                            title={c.campaignRunning
+                                                ? "Hand this council's running campaign back to the local host: it restarts the agents in their worktrees and resumes verification, review and integration."
+                                                : "Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."}
                                         >
-                                            <Plug size={13} /> {adopting === c.code ? "Adopting…" : "Adopt"}
+                                            <Plug size={13} /> {adopting === c.code ? "Adopting…" : c.campaignRunning ? "Resume" : "Adopt"}
                                         </button>
                                     )}
                                 </div>

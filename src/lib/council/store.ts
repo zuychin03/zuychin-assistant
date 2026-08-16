@@ -900,6 +900,37 @@ export async function listAwaitingOwnerCouncils(): Promise<CouncilSession[]> {
     return (data as unknown as SessionRow[]).map(mapSession);
 }
 
+/**
+ * Councils that are closed but still have work running, which is the phase a
+ * host restart lands in. Kept out of listOpenCouncils for the same reason as
+ * awaiting_owner: the debate is over, so it must not hold a convene slot. The
+ * page needs them because the campaign is the only part of a Council a host can
+ * be handed back after it dies, and Adopt renders from the open list.
+ */
+export async function listCampaignCouncils(): Promise<CouncilSession[]> {
+    const { data: campaigns, error: campaignError } = await supabase
+        .from("council_campaigns")
+        .select("session_id")
+        .eq("status", "running");
+    if (campaignError) {
+        console.error("[Council] listCampaignCouncils campaigns failed:", campaignError.message);
+        return [];
+    }
+    const ids = (campaigns ?? []).map((row) => (row as { session_id: string }).session_id);
+    if (ids.length === 0) return [];
+    const { data, error } = await supabase
+        .from("council_sessions")
+        .select(SESSION_COLUMNS)
+        .in("id", ids)
+        .eq("status", "closed")
+        .order("closed_at", { ascending: false });
+    if (error) {
+        console.error("[Council] listCampaignCouncils failed:", error.message);
+        return [];
+    }
+    return (data as unknown as SessionRow[]).map(mapSession);
+}
+
 export async function listOpenCouncils(): Promise<CouncilSession[]> {
     const { data, error } = await supabase
         .from("council_sessions")
