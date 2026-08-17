@@ -25,6 +25,11 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import * as acp from "@agentclientprotocol/sdk";
 import { insideWorktree, killTree, onPath, spawnResolved } from "./council-host-paths.mts";
+import { acquireHostLock, releaseHostLock } from "./council-host-lock.mts";
+import {
+    formatSupervisionLine, parseControl, parseLaunch,
+    type HostExitReason, type HostHealthV1, type HostLaunchV1, type HostLifecycle, type HostLogLevel,
+} from "../src/lib/council/supervisor.ts";
 import {
     CODE_ALPHABET, COUNCIL_MCP_SERVER_NAME, DISPATCH_POLL_MS, HOST_PORT_FIRST, HOST_PORT_LAST,
     MODERATOR_NAME, PERMISSION_PROMPT_TIMEOUT_MS, councilBranch, councilWorktreeDir,
@@ -35,10 +40,56 @@ import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, 
 import { integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest } from "./council-git.mts";
 import { validateSelection } from "./council-models.mts";
 
-const HOST_VERSION = "3.0.0";
+const HOST_VERSION = "3.1.0";
 const CAMPAIGN_POLL_MS = 30_000;
 const TERMINAL_OUTPUT_LIMIT = 1_000_000;
 const MAX_PAIR_FAILURES = 10;
+const HEALTH_BEAT_MS = 5_000;
+
+// ---------------------------------------------------------------- supervision
+
+/**
+ * V4.1. A supervising shell starts this process with ZUYCHIN_SUPERVISED=1 and
+ * reads NDJSON supervision lines from stdout; human output moves to stderr so
+ * the two never interleave on one pipe. Launched from a terminal, nothing about
+ * the host changes.
+ *
+ * The launch config arrives in the environment rather than over stdin because
+ * every repo and branch decision below is made during module evaluation: a
+ * startup handshake would have to block it to be read in time.
+ */
+const supervised = process.env.ZUYCHIN_SUPERVISED === "1";
+const startedAtMs = Date.now();
+
+const facts: {
+    hostId: string; port: number | null; councilCode: string | null;
+    lifecycle: HostLifecycle; workInFlight: boolean; exited: boolean;
+} = { hostId: "", port: null, councilCode: null, lifecycle: "starting", workInFlight: false, exited: false };
+
+function hostSay(line: string): void {
+    (supervised ? process.stderr : process.stdout).write(`${line}\n`);
+}
+
+function emitLog(level: HostLogLevel, message: string): void {
+    if (!supervised) return;
+    process.stdout.write(formatSupervisionLine({
+        v: 1, type: "log", at: new Date().toISOString(), level, message,
+    }));
+}
+
+// Once only: a shell that has read an exit report treats the process as gone,
+// and a second report after a failed clean shutdown would contradict the first.
+function emitExit(code: number, reason: HostExitReason, detail: string | null): void {
+    if (!supervised || facts.exited) return;
+    facts.exited = true;
+    // Not "was it shutting down" - it always is by now. This says whether work
+    // was still in flight when it went, which is the only version of the bit a
+    // supervisor can act on.
+    process.stdout.write(formatSupervisionLine({
+        v: 1, type: "exit", at: new Date().toISOString(), code, reason, detail,
+        councilCode: facts.councilCode, draining: facts.workInFlight,
+    }));
+}
 
 // ---------------------------------------------------------------- config
 
@@ -103,8 +154,12 @@ function arg(name: string): string | undefined {
     return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-function die(message: string): never {
+// facts.hostId is empty until the lock is ours, and releaseHostLock only ever
+// removes its own, so dying before or instead of acquiring it is a no-op.
+function die(message: string, reason: HostExitReason = "config"): never {
     console.error(`\n✗ ${message}\n`);
+    emitExit(1, reason, message);
+    releaseHostLock(facts.hostId);
     process.exit(1);
 }
 
@@ -114,7 +169,8 @@ function die(message: string): never {
 // Safe from here: no log() call runs before `sockets` is initialised.
 function log(message: string): void {
     const at = new Date().toISOString();
-    console.log(`[${at.slice(11, 19)}] ${message}`);
+    hostSay(`[${at.slice(11, 19)}] ${message}`);
+    emitLog("info", message);
     broadcast({ type: "log", detail: message, at });
 }
 
@@ -306,9 +362,31 @@ interface HostState {
     protectedRefs: Record<string, string | null>;
 }
 
+/**
+ * A supervisor names a WORKSPACE and the host resolves the path from
+ * host.repos. That is the trust boundary of the launch message: a shell driven
+ * by a webview chooses among the repos this config nominated and can never name
+ * a directory it did not. Same rule convene already follows.
+ */
+const launch: HostLaunchV1 = (() => {
+    const raw = process.env.ZUYCHIN_HOST_LAUNCH;
+    if (!raw) return { v: 1, type: "launch" };
+    const parsed = parseLaunch(raw);
+    if (!parsed.ok) die(`launch config rejected: ${parsed.reason}`);
+    return parsed.value;
+})();
+
+const launchTarget = (() => {
+    if (!launch.workspace) return undefined;
+    const entry = config.host?.repos?.[launch.workspace];
+    if (!entry) die(`launch names workspace "${launch.workspace}", which is not in host.repos`);
+    return { path: resolve(entry.path), baseBranch: entry.baseBranch };
+})();
+
 const repoArg = arg("repo");
-const startupRepo = repoArg ? resolve(repoArg) : process.cwd();
-const startupBase = arg("base") ?? "main";
+const startupRepo = launchTarget?.path ?? (repoArg ? resolve(repoArg) : process.cwd());
+const startupBase = launch.baseBranch ?? launchTarget?.baseBranch ?? arg("base") ?? "main";
+const autoAdopt = launch.autoAdopt ?? config.host?.autoAdopt ?? false;
 
 // --model / --reasoning set a default for seats that already allow the value,
 // so one login-time launcher can pin a model without editing the config. A seat
@@ -482,6 +560,45 @@ function snapshot() {
             path: p.path, reason: p.reason, createdAt: p.createdAt,
         })),
     };
+}
+
+/**
+ * The supervision view of the same state. Deliberately narrow: liveness,
+ * lifecycle and one restart bit, and not a single field a supervisor would have
+ * to interpret as council content.
+ *
+ * `draining` covers a running council as well as a shutdown, because both mean
+ * the same thing to the caller - restarting now loses work in flight.
+ */
+function healthMessage(): HostHealthV1 {
+    const inFlight = state.code !== null && !state.campaignComplete;
+    facts.councilCode = state.code;
+    facts.workInFlight = inFlight;
+    facts.lifecycle = state.stopping ? "stopping"
+        : state.code !== null && !state.leaseHealthy ? "degraded"
+            : inFlight ? "draining"
+                : "ready";
+    return {
+        v: 1,
+        type: "health",
+        at: new Date().toISOString(),
+        hostVersion: HOST_VERSION,
+        hostGeneration: COUNCIL_HOST_GENERATION,
+        hostId: state.hostId,
+        pid: process.pid,
+        port: facts.port,
+        lifecycle: facts.lifecycle,
+        draining: state.stopping || inFlight,
+        leaseHealthy: state.leaseHealthy,
+        councilCode: state.code,
+        agents: state.agents.size,
+        uptimeMs: Date.now() - startedAtMs,
+    };
+}
+
+function emitHealth(): void {
+    if (!supervised) return;
+    process.stdout.write(formatSupervisionLine(healthMessage()));
 }
 
 // ---------------------------------------------------------------- control channel
@@ -1884,7 +2001,7 @@ let autoAdopting = false;
  * driving and no human present to notice.
  */
 async function autoAdoptTick(): Promise<void> {
-    if (!config.host?.autoAdopt || state.code || state.stopping || autoAdopting) return;
+    if (!autoAdopt || state.code || state.stopping || autoAdopting) return;
     autoAdopting = true;
     try {
         const payload = JSON.parse(await callTool("council_open", {})) as OpenCouncilsPayload;
@@ -1908,10 +2025,12 @@ async function autoAdoptTick(): Promise<void> {
 
 // ---------------------------------------------------------------- main
 
-async function shutdown(code: number): Promise<void> {
+async function shutdown(code: number, reason: HostExitReason = "requested", detail: string | null = null): Promise<void> {
     if (state.stopping) return;
+    facts.workInFlight = state.code !== null && !state.campaignComplete;
     state.stopping = true;
     log("stopping");
+    emitHealth();
     for (const terminal of terminals.values()) killTree(terminal.child);
     for (const agent of state.agents.values()) {
         if (agent.executionId && state.leaseEpoch !== null) {
@@ -1930,6 +2049,8 @@ async function shutdown(code: number): Promise<void> {
         }).catch(() => {});
     }
     broadcast({ type: "stopped" });
+    releaseHostLock(state.hostId);
+    emitExit(code, reason, detail);
     setTimeout(() => process.exit(code), 200);
 }
 
@@ -1938,6 +2059,22 @@ if (!git(state.repo, ["rev-parse", "--git-dir"]).ok) die(`${state.repo} is not a
 if (!git(state.repo, ["rev-parse", "--verify", state.baseBranch]).ok) die(`base branch "${state.baseBranch}" does not exist in ${state.repo}`);
 
 const { port: hostPort } = await startControlChannel();
+facts.hostId = state.hostId;
+facts.port = hostPort;
+
+// After binding, before the token file: the loser must not overwrite the
+// winner's token and strand every paired browser on its way out. --no-lock is
+// the documented recovery path for a lock nobody can explain.
+if (process.argv.includes("--no-lock")) {
+    hostSay("  singleton     off (--no-lock)");
+} else {
+    const lock = acquireHostLock({ pid: process.pid, hostId: state.hostId, port: hostPort, repo: state.repo });
+    if (!lock.ok) {
+        die(`another council host is already running on this machine (pid ${lock.holder.pid}, port ${lock.holder.port ?? "?"}, repo ${lock.holder.repo || "?"}).\nStop it first, or pass --no-lock if you are certain it is gone and ${lock.path} is stale.`, "singleton");
+    }
+    if (lock.tookOverStale) hostSay(`  singleton     reclaimed a stale lock at ${lock.path}`);
+}
+
 const hostDir = join(state.repo, "..", ".council-host");
 mkdirSync(hostDir, { recursive: true });
 // Keyed to the repo, not the port. .council-host is shared by sibling repos so
@@ -1950,20 +2087,52 @@ const reused = adoptIdentity(hostFile) || adoptIdentity(legacyFile);
 writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, hostId: state.hostId, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 
 const wantedPort = config.host?.port ?? HOST_PORT_FIRST;
-console.log(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);
+hostSay(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);
 if (hostPort !== wantedPort) {
-    console.log(`  NOTE          ${wantedPort} was busy, so this host is on ${hostPort}. The pairing code below is unchanged; a page already paired to ${wantedPort} is talking to a different process.`);
+    hostSay(`  NOTE          ${wantedPort} was busy, so this host is on ${hostPort}. The pairing code below is unchanged; a page already paired to ${wantedPort} is talking to a different process.`);
 }
-console.log(`  pairing code  ${pairingCode}${reused ? " (reused; delete the token file to rotate)" : ""}`);
-console.log(`  token file    ${hostFile}`);
-console.log(`  origins       ${[...allowedOrigins].join(", ")}`);
-console.log(`  repo          ${state.repo} (base ${state.baseBranch})`);
-console.log(`  auto-adopt    ${config.host?.autoAdopt ? "ON - will claim an open council it can run in full" : "off"}\n`);
+hostSay(`  pairing code  ${pairingCode}${reused ? " (reused; delete the token file to rotate)" : ""}`);
+hostSay(`  token file    ${hostFile}`);
+hostSay(`  origins       ${[...allowedOrigins].join(", ")}`);
+hostSay(`  repo          ${state.repo} (base ${state.baseBranch})`);
+hostSay(`  auto-adopt    ${autoAdopt ? "ON - will claim an open council it can run in full" : "off"}\n`);
 
-process.on("SIGINT", () => void shutdown(0));
-process.on("SIGTERM", () => void shutdown(0));
+process.on("SIGINT", () => void shutdown(0, "signal", "SIGINT"));
+process.on("SIGTERM", () => void shutdown(0, "signal", "SIGTERM"));
+// A crash has to reach the supervisor as an exit report, or the shell can only
+// report "the process vanished" for the one case where it knows why.
+process.on("uncaughtException", (error) => {
+    console.error(error);
+    emitExit(1, "fatal", error instanceof Error ? error.message : String(error));
+    releaseHostLock(state.hostId);
+    process.exit(1);
+});
 
-const attachCode = arg("attach");
+emitHealth();
+setInterval(() => emitHealth(), HEALTH_BEAT_MS).unref();
+
+// Windows delivers no SIGTERM, so without this a shell can only kill the host,
+// which strands its database lease and orphans every agent it spawned.
+if (supervised) {
+    let buffered = "";
+    process.stdin.setEncoding("utf8").on("data", (chunk: string) => {
+        buffered += chunk;
+        let cut = buffered.indexOf("\n");
+        for (; cut >= 0; cut = buffered.indexOf("\n")) {
+            const line = buffered.slice(0, cut);
+            buffered = buffered.slice(cut + 1);
+            const control = parseControl(line);
+            if (control === null) continue;
+            if (!control.ok) { emitLog("warn", `control refused: ${control.reason}`); continue; }
+            void shutdown(0, "requested", control.value.reason ?? null);
+        }
+    });
+    // A supervisor that goes away without asking is still a stop request: the
+    // host it was launched to serve has nobody left to serve.
+    process.stdin.on("end", () => void shutdown(0, "requested", "supervisor closed the control pipe"));
+}
+
+const attachCode = launch.attach ?? arg("attach");
 if (attachCode) {
     await attach(attachCode).catch((error) => die(String(error instanceof Error ? error.message : error)));
 } else if (arg("topic")) {
@@ -1976,7 +2145,7 @@ if (attachCode) {
         baseBranch: arg("base"),
     }).catch((error) => die(String(error instanceof Error ? error.message : error)));
 } else {
-    log(config.host?.autoAdopt
+    log(autoAdopt
         ? "idle - watching for a council to auto-adopt, or a convene from /council"
         : "idle - waiting for a convene from /council");
 }
@@ -1986,4 +2155,4 @@ setInterval(() => void renewLease(), 15_000);
 setInterval(() => void superviseTick(), CAMPAIGN_POLL_MS);
 // Campaign cadence, not dispatch: nothing here is time-critical, and a council
 // waiting 30s for a host nobody asked for has lost nothing.
-if (config.host?.autoAdopt) setInterval(() => void autoAdoptTick(), CAMPAIGN_POLL_MS);
+if (autoAdopt) setInterval(() => void autoAdoptTick(), CAMPAIGN_POLL_MS);

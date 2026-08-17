@@ -1,0 +1,142 @@
+{
+  "_doc": "Language-neutral corpus for the Council V4.1 supervision contract (src/lib/council/supervisor.ts). Every implementation of the contract must agree on these, including the denial codes: the prose may be reworded, the code may not. V4.2's Rust host is held to this file.",
+  "schemaVersion": 1,
+
+  "launchValid": [
+    {
+      "name": "an empty launch is legal and changes nothing",
+      "line": "{\"v\":1,\"type\":\"launch\"}",
+      "expect": { "v": 1, "type": "launch" }
+    },
+    {
+      "name": "a workspace name and a base branch",
+      "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"zuychin-assistant\",\"baseBranch\":\"main\"}",
+      "expect": { "v": 1, "type": "launch", "workspace": "zuychin-assistant", "baseBranch": "main" }
+    },
+    {
+      "name": "null is absent, not a value",
+      "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":null,\"baseBranch\":null,\"autoAdopt\":null,\"attach\":null}",
+      "expect": { "v": 1, "type": "launch" }
+    },
+    {
+      "name": "autoAdopt is carried through",
+      "line": "{\"v\":1,\"type\":\"launch\",\"autoAdopt\":true}",
+      "expect": { "v": 1, "type": "launch", "autoAdopt": true }
+    },
+    {
+      "name": "a council code is normalised to upper case",
+      "line": "{\"v\":1,\"type\":\"launch\",\"attach\":\"cn-73yd\"}",
+      "expect": { "v": 1, "type": "launch", "attach": "CN-73YD" }
+    },
+    {
+      "name": "a namespaced branch is a valid base",
+      "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"release/2026-08\"}",
+      "expect": { "v": 1, "type": "launch", "baseBranch": "release/2026-08" }
+    }
+  ],
+
+  "launchInvalid": [
+    { "name": "not JSON", "line": "launch please", "code": "not_json" },
+    { "name": "an array", "line": "[]", "code": "not_object" },
+    { "name": "a bare string", "line": "\"launch\"", "code": "not_object" },
+    { "name": "JSON null", "line": "null", "code": "not_object" },
+    { "name": "a health message on the launch channel", "line": "{\"v\":1,\"type\":\"health\"}", "code": "wrong_type" },
+    { "name": "a future schema version", "line": "{\"v\":2,\"type\":\"launch\"}", "code": "unsupported_version" },
+    { "name": "a stringified version", "line": "{\"v\":\"1\",\"type\":\"launch\"}", "code": "unsupported_version" },
+    { "name": "a missing version", "line": "{\"type\":\"launch\"}", "code": "unsupported_version" },
+
+    { "name": "a raw repo path smuggled alongside the workspace", "line": "{\"v\":1,\"type\":\"launch\",\"repo\":\"C:\\\\evil\"}", "code": "unknown_field" },
+    { "name": "an executable override", "line": "{\"v\":1,\"type\":\"launch\",\"command\":\"cmd.exe\"}", "code": "unknown_field" },
+    { "name": "an environment override", "line": "{\"v\":1,\"type\":\"launch\",\"env\":{\"MCP_COUNCIL_HOST_KEY\":\"x\"}}", "code": "unknown_field" },
+    { "name": "an argv override", "line": "{\"v\":1,\"type\":\"launch\",\"args\":[\"--no-lock\"]}", "code": "unknown_field" },
+
+    { "name": "a workspace that is a relative path", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"../other-repo\"}", "code": "bad_workspace" },
+    { "name": "a workspace that is an absolute path", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"C:\\\\repos\\\\other\"}", "code": "bad_workspace" },
+    { "name": "a workspace with a separator", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"a/b\"}", "code": "bad_workspace" },
+    { "name": "an empty workspace", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"\"}", "code": "bad_workspace" },
+    { "name": "a workspace that reads as a flag", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":\"-repo\"}", "code": "bad_workspace" },
+    { "name": "a non-string workspace", "line": "{\"v\":1,\"type\":\"launch\",\"workspace\":7}", "code": "bad_workspace" },
+
+    { "name": "a base branch that reads as a git flag", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"--upload-pack=calc\"}", "code": "bad_base_branch" },
+    { "name": "a base branch with a parent traversal", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"a..b\"}", "code": "bad_base_branch" },
+    { "name": "a base branch with a trailing slash", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"main/\"}", "code": "bad_base_branch" },
+    { "name": "a base branch with a doubled slash", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"a//b\"}", "code": "bad_base_branch" },
+    { "name": "a base branch named like a ref lock", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\"main.lock\"}", "code": "bad_base_branch" },
+    { "name": "a base branch with a leading space", "line": "{\"v\":1,\"type\":\"launch\",\"baseBranch\":\" main\"}", "code": "bad_base_branch" },
+
+    { "name": "a stringified boolean", "line": "{\"v\":1,\"type\":\"launch\",\"autoAdopt\":\"true\"}", "code": "bad_auto_adopt" },
+
+    { "name": "a council code using an excluded letter", "line": "{\"v\":1,\"type\":\"launch\",\"attach\":\"CN-0O1I\"}", "code": "bad_attach" },
+    { "name": "a council code with the wrong prefix", "line": "{\"v\":1,\"type\":\"launch\",\"attach\":\"ZZ-ABCD\"}", "code": "bad_attach" }
+  ],
+
+  "controlValid": [
+    {
+      "name": "a bare stop",
+      "line": "{\"v\":1,\"type\":\"stop\"}",
+      "expect": { "v": 1, "type": "stop", "reason": null }
+    },
+    {
+      "name": "a stop with a reason",
+      "line": "{\"v\":1,\"type\":\"stop\",\"reason\":\"window closed\"}",
+      "expect": { "v": 1, "type": "stop", "reason": "window closed" }
+    }
+  ],
+
+  "controlInvalid": [
+    { "name": "not JSON", "line": "stop", "code": "not_json" },
+    { "name": "an array", "line": "[]", "code": "not_object" },
+    { "name": "a future control version", "line": "{\"v\":2,\"type\":\"stop\"}", "code": "unsupported_version" },
+    { "name": "a control verb this version does not have", "line": "{\"v\":1,\"type\":\"convene\"}", "code": "wrong_type" },
+    { "name": "a council message on the control channel", "line": "{\"v\":1,\"type\":\"stop\",\"sessionCode\":\"CN-73YD\"}", "code": "unknown_field" },
+    { "name": "an argv override", "line": "{\"v\":1,\"type\":\"stop\",\"signal\":\"SIGKILL\"}", "code": "unknown_field" }
+  ],
+
+  "controlIgnored": [
+    { "name": "a blank line", "line": "" },
+    { "name": "whitespace", "line": "   " }
+  ],
+
+  "supervisionValid": [
+    {
+      "name": "a health beat",
+      "line": "zch {\"v\":1,\"type\":\"health\",\"at\":\"2026-08-18T10:00:00.000Z\",\"hostVersion\":\"3.1.0\",\"hostGeneration\":\"typescript-node\",\"hostId\":\"5f6c2f7a-0b3e-4d21-9a1c-2b7c9e0a1d33\",\"pid\":4242,\"port\":8787,\"lifecycle\":\"ready\",\"draining\":false,\"leaseHealthy\":false,\"councilCode\":null,\"agents\":0,\"uptimeMs\":1200}",
+      "type": "health"
+    },
+    {
+      "name": "a draining health beat is not safe to restart",
+      "line": "zch {\"v\":1,\"type\":\"health\",\"at\":\"2026-08-18T10:05:00.000Z\",\"hostVersion\":\"3.1.0\",\"hostGeneration\":\"typescript-node\",\"hostId\":\"5f6c2f7a-0b3e-4d21-9a1c-2b7c9e0a1d33\",\"pid\":4242,\"port\":8787,\"lifecycle\":\"draining\",\"draining\":true,\"leaseHealthy\":true,\"councilCode\":\"CN-73YD\",\"agents\":2,\"uptimeMs\":301200}",
+      "type": "health"
+    },
+    {
+      "name": "a log line",
+      "line": "zch {\"v\":1,\"type\":\"log\",\"at\":\"2026-08-18T10:00:01.000Z\",\"level\":\"info\",\"message\":\"idle - waiting for a convene from /council\"}",
+      "type": "log"
+    },
+    {
+      "name": "an exit report",
+      "line": "zch {\"v\":1,\"type\":\"exit\",\"at\":\"2026-08-18T10:09:00.000Z\",\"code\":0,\"reason\":\"requested\",\"detail\":null,\"councilCode\":null,\"draining\":false}",
+      "type": "exit"
+    },
+    {
+      "name": "a singleton refusal",
+      "line": "zch {\"v\":1,\"type\":\"exit\",\"at\":\"2026-08-18T10:00:00.000Z\",\"code\":1,\"reason\":\"singleton\",\"detail\":\"another council host is already running on this machine\",\"councilCode\":null,\"draining\":false}",
+      "type": "exit"
+    }
+  ],
+
+  "supervisionInvalid": [
+    { "name": "a future supervision version", "line": "zch {\"v\":2,\"type\":\"health\"}", "code": "unsupported_version" },
+    { "name": "an unknown supervision type", "line": "zch {\"v\":1,\"type\":\"verdict\"}", "code": "wrong_type" },
+    { "name": "a launch echoed back down the wrong pipe", "line": "zch {\"v\":1,\"type\":\"launch\"}", "code": "wrong_type" },
+    { "name": "a truncated line", "line": "zch {\"v\":1,\"type\":\"heal", "code": "not_json" },
+    { "name": "a JSON array behind the prefix", "line": "zch []", "code": "not_object" }
+  ],
+
+  "supervisionIgnored": [
+    { "name": "an unprefixed line is not supervision", "line": "Council host 3.1.0 on http://127.0.0.1:8787 (loopback only)" },
+    { "name": "an empty line", "line": "" },
+    { "name": "a bare JSON object with no prefix", "line": "{\"v\":1,\"type\":\"health\"}" },
+    { "name": "the prefix as a word in prose", "line": "zchreport: nothing to do" }
+  ]
+}
