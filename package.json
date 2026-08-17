@@ -14,6 +14,7 @@
     "council:v3:test:db": "tsx --env-file=.env.local scripts/test-council-v3-db.mts",
     "council:protocol:test": "tsx --env-file=.env.local scripts/test-council-protocol.mts",
     "council:supervisor:test": "tsx scripts/test-council-supervisor.mts",
+    "council:paths:test": "tsx scripts/test-council-host-paths.mts",
     "journal:test": "tsx --env-file=.env.local scripts/test-mutation-journal.mts"
   },
   "dependencies": {

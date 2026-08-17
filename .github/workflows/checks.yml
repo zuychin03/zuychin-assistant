@@ -1,0 +1,150 @@
+# Lint, types and the council suites.
+#
+# Two halves. The offline half needs nothing configured and runs on every push
+# and pull request, including from a fork. The database half needs a THROWAWAY
+# Supabase project with supabase-setup.sql applied, and skips cleanly when the
+# secrets for one are absent - so this file is green from the day it lands and
+# gains the second half whenever the project exists.
+#
+# Repository secrets the database half wants:
+#
+#   TEST_SUPABASE_URL                 a project that holds nothing real
+#   TEST_SUPABASE_ANON_KEY            unused by the suites, but @supabase/supabase-js
+#                                     builds its browser client at import time
+#   TEST_SUPABASE_SERVICE_ROLE_KEY    the suites write and delete their own rows
+#   TEST_AUTH_SESSION_SECRET          agent keys are HMAC'd with it; any long random string
+#
+# Never point these at the production project. Every database suite creates and
+# deletes rows, and check-council-schema mutates a council session to prove the
+# exact-commit gate still bites.
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: lint, types and offline suites
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is not redundant here: the host resolves .cmd shims, quotes for
+        # cmd.exe, kills process trees and normalises MSYS drive paths, and the
+        # singleton lock reads liveness from a pid. All of that is per-platform.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: lint
+        if: runner.os == 'Linux'
+        run: npm run lint
+
+      - name: types
+        if: runner.os == 'Linux'
+        run: npx tsc --noEmit
+
+      - name: council protocol, model and git contracts
+        run: npm run council:v3:test
+
+      - name: supervision contract and host singleton
+        run: npm run council:supervisor:test
+
+      - name: worktree containment
+        run: npm run council:paths:test
+
+  # The secrets context is not readable from a job-level `if`, so the decision
+  # has to come out of a step as an output.
+  database-configured:
+    name: test project configured?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.probe.outputs.ready }}
+    steps:
+      - id: probe
+        env:
+          URL: ${{ secrets.TEST_SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -n "$URL" ] && [ -n "$SERVICE_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No test project configured; the database suites will be skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  database:
+    name: suites against the test project
+    needs: database-configured
+    if: needs.database-configured.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # One test project, so runs queue rather than race each other's rows. Never
+    # cancel in flight: the suites clean up in a finally block that a cancelled
+    # run does not reach.
+    concurrency:
+      group: council-test-database
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # The suites are the same commands used locally, and those load
+      # .env.local through node --env-file. Writing one keeps CI and a laptop
+      # running literally the same script.
+      - name: write .env.local
+        env:
+          URL: ${{ secrets.TEST_SUPABASE_URL }}
+          ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          SERVICE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          SESSION_SECRET: ${{ secrets.TEST_AUTH_SESSION_SECRET }}
+        run: |
+          umask 077
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=$URL"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_KEY"
+            echo "AUTH_SESSION_SECRET=$SESSION_SECRET"
+          } > .env.local
+
+      # First, because it is the one that catches a half-applied
+      # supabase-setup.sql - which reverts acceptance to the V2 body silently.
+      - name: exact-commit gate
+        run: npm run council:schema:check
+
+      - name: agent credentials
+        run: npm run agents:test
+
+      - name: council V3 against the database
+        run: npm run council:v3:test:db
+
+      - name: council protocol
+        run: npm run council:protocol:test
+
+      - name: mutation journal
+        run: npm run journal:test
+
+      - name: shred the env file
+        if: always()
+        run: rm -f .env.local
