@@ -67,6 +67,11 @@ jobs:
       - name: worktree containment
         run: npm run council:paths:test
 
+      # Starts and kills real host processes. Phase B needs Supabase and a
+      # running app, so it skips here and reports the reason.
+      - name: host process faults
+        run: npm run council:fault:test
+
   # The secrets context is not readable from a job-level `if`, so the decision
   # has to come out of a step as an output.
   database-configured:
