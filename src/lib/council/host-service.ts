@@ -1,4 +1,9 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import {
+    claimLeaseSchema, deliveryFenceSchema, failDeliverySchema, prepareDeliverySchema,
+    renewLeaseSchema, requireCouncilHost, sessionFenceSchema, startExecutionSchema,
+    stopExecutionSchema, type CouncilCaller,
+} from "./host-contracts";
 import type {
     ConnectorCapabilitySnapshot, IdentityAssurance,
 } from "./v3";
@@ -25,7 +30,9 @@ export interface CouncilDelivery {
 
 export async function claimHostLease(params: {
     sessionId: string; hostId: string; durationSeconds?: number;
-}): Promise<HostLease> {
+}, caller: CouncilCaller | undefined): Promise<HostLease> {
+    requireCouncilHost(caller);
+    params = claimLeaseSchema.parse(params);
     const { data, error } = await supabase.rpc("claim_council_host_lease", {
         p_session_id: params.sessionId,
         p_host_id: params.hostId,
@@ -37,7 +44,9 @@ export async function claimHostLease(params: {
 
 export async function renewHostLease(params: {
     sessionId: string; hostId: string; leaseEpoch: number; durationSeconds?: number;
-}): Promise<HostLease> {
+}, caller: CouncilCaller | undefined): Promise<HostLease> {
+    requireCouncilHost(caller);
+    params = renewLeaseSchema.parse(params);
     const { data, error } = await supabase.rpc("renew_council_host_lease", {
         p_session_id: params.sessionId,
         p_host_id: params.hostId,
@@ -50,7 +59,9 @@ export async function renewHostLease(params: {
 
 export async function releaseHostLease(params: {
     sessionId: string; hostId: string; leaseEpoch: number;
-}): Promise<boolean> {
+}, caller: CouncilCaller | undefined): Promise<boolean> {
+    requireCouncilHost(caller);
+    params = sessionFenceSchema.parse(params);
     const { data, error } = await supabase.rpc("release_council_host_lease", {
         p_session_id: params.sessionId,
         p_host_id: params.hostId,
@@ -69,7 +80,9 @@ export async function prepareDelivery(params: {
     throughSeq: number;
     promptHash: string;
     promptBody: string;
-}): Promise<{ ok: boolean; reason?: string; delivery?: CouncilDelivery }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; delivery?: CouncilDelivery }> {
+    requireCouncilHost(caller);
+    params = prepareDeliverySchema.parse(params);
     const { data, error } = await supabase.rpc("prepare_council_delivery", {
         p_session_id: params.sessionId,
         p_agent_name: params.agentName,
@@ -106,7 +119,9 @@ export async function prepareDelivery(params: {
 
 export async function failDelivery(params: {
     deliveryId: string; hostId: string; leaseEpoch: number; error: string;
-}): Promise<boolean> {
+}, caller: CouncilCaller | undefined): Promise<boolean> {
+    requireCouncilHost(caller);
+    params = failDeliverySchema.parse(params);
     const { data, error } = await supabase.rpc("fail_council_delivery", {
         p_delivery_id: params.deliveryId,
         p_host_id: params.hostId,
@@ -119,7 +134,9 @@ export async function failDelivery(params: {
 
 export async function markDeliveryInFlight(params: {
     deliveryId: string; hostId: string; leaseEpoch: number;
-}): Promise<boolean> {
+}, caller: CouncilCaller | undefined): Promise<boolean> {
+    requireCouncilHost(caller);
+    params = deliveryFenceSchema.parse(params);
     const { data, error } = await supabase.rpc("mark_council_delivery_in_flight", {
         p_delivery_id: params.deliveryId,
         p_host_id: params.hostId,
@@ -131,7 +148,9 @@ export async function markDeliveryInFlight(params: {
 
 export async function acknowledgeDelivery(params: {
     deliveryId: string; hostId: string; leaseEpoch: number;
-}): Promise<{ ok: boolean; reason?: string; throughSeq?: number }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; throughSeq?: number }> {
+    requireCouncilHost(caller);
+    params = deliveryFenceSchema.parse(params);
     const { data, error } = await supabase.rpc("ack_council_delivery", {
         p_delivery_id: params.deliveryId,
         p_host_id: params.hostId,
@@ -161,7 +180,9 @@ export async function startAgentExecution(params: {
     branch?: string;
     worktree?: string;
     baseSha?: string;
-}): Promise<{ ok: boolean; reason?: string; executionId?: string }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; executionId?: string }> {
+    requireCouncilHost(caller);
+    params = startExecutionSchema.parse(params);
     const { data, error } = await supabase.rpc("start_council_agent_execution", {
         p_session_id: params.sessionId,
         p_agent_name: params.agentName,
@@ -191,7 +212,9 @@ export async function startAgentExecution(params: {
 
 export async function stopAgentExecution(params: {
     executionId: string; hostId: string; leaseEpoch: number; stopReason: string;
-}): Promise<boolean> {
+}, caller: CouncilCaller | undefined): Promise<boolean> {
+    requireCouncilHost(caller);
+    params = stopExecutionSchema.parse(params);
     const { data, error } = await supabase.rpc("stop_council_agent_execution", {
         p_execution_id: params.executionId,
         p_host_id: params.hostId,

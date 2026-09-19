@@ -32,13 +32,14 @@ import {
 } from "../src/lib/council/supervisor.ts";
 import {
     CODE_ALPHABET, COUNCIL_MCP_SERVER_NAME, DISPATCH_POLL_MS, HOST_PORT_FIRST, HOST_PORT_LAST,
-    MODERATOR_NAME, PERMISSION_PROMPT_TIMEOUT_MS, councilBranch, councilWorktreeDir,
+    MODERATOR_NAME, PERMISSION_PROMPT_TIMEOUT_MS, councilBranch, councilWorktreeDir, generateCouncilCode,
 } from "../src/lib/council/protocol.ts";
 import { parseKickoffBlocks, renderDispatchKickoff } from "../src/lib/council/render.ts";
 import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
 import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, type CouncilAgentSelection, type ConnectorCapabilitySnapshot } from "../src/lib/council/v3.ts";
 import { integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest } from "./council-git.mts";
 import { validateSelection } from "./council-models.mts";
+import { configuredSelection, preflightCouncilPaths, requireLaunchPreflightProtocol } from "./council-launch-preflight.mts";
 
 const HOST_VERSION = "3.1.0";
 const CAMPAIGN_POLL_MS = 30_000;
@@ -187,7 +188,7 @@ const config: HostConfig = JSON.parse(readFileSync(configPath, "utf8"));
 
 // The endpoint answers a bare tools/call with no initialize handshake, and
 // frames the reply as one SSE "data:" line.
-async function callTool(name: string, args: Record<string, unknown>, bearer = mcpHostKey): Promise<string> {
+async function callMcp(method: string, params: Record<string, unknown>, bearer = mcpHostKey) {
     const res = await fetch(config.mcpUrl, {
         method: "POST",
         headers: {
@@ -195,19 +196,24 @@ async function callTool(name: string, args: Record<string, unknown>, bearer = mc
             "Content-Type": "application/json",
             Accept: "application/json, text/event-stream",
         },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     });
     const raw = await res.text();
-    if (!res.ok) throw new Error(`${name} failed: HTTP ${res.status} ${raw.slice(0, 300)}`);
+    if (!res.ok) throw new Error(`${params.name ?? method} failed: HTTP ${res.status} ${raw.slice(0, 300)}`);
     const line = raw.split("\n").find((l) => l.startsWith("data:"));
     const payload = JSON.parse(line ? line.slice(5).trim() : raw);
-    if (payload.error) throw new Error(`${name} failed: ${payload.error.message ?? JSON.stringify(payload.error)}`);
-    const text = payload.result?.content?.[0]?.text;
+    if (payload.error) throw new Error(`${params.name ?? method} failed: ${payload.error.message ?? JSON.stringify(payload.error)}`);
+    return payload.result;
+}
+
+async function callTool(name: string, args: Record<string, unknown>, bearer = mcpHostKey): Promise<string> {
+    const result = await callMcp("tools/call", { name, arguments: args }, bearer);
+    const text = result?.content?.[0]?.text;
     // An unknown tool or a rejected key comes back as a RESULT carrying isError,
     // not as a JSON-RPC error. Returning that prose would hand a JSON caller a
     // parse failure instead of the reason, which is how "council_open not found"
     // reads as a syntax error.
-    if (payload.result?.isError) throw new Error(`${name} failed: ${typeof text === "string" ? text : "unknown error"}`);
+    if (result?.isError) throw new Error(`${name} failed: ${typeof text === "string" ? text : "unknown error"}`);
     if (typeof text !== "string") throw new Error(`${name} returned no text`);
     return text;
 }
@@ -467,7 +473,7 @@ function resolveAgent(name: string): { adapter: Adapter; provider: string; exper
     const instance = config.instances?.[name];
     const provider = instance?.provider ?? name;
     const adapter = config.agents[provider];
-    if (!adapter) die(`no provider adapter for "${name}" (provider "${provider}") in council-agents.json`);
+    if (!adapter) throw new Error(`no provider adapter for "${name}" (provider "${provider}") in council-agents.json`);
     return { adapter, provider, expertise: seatExpertise(name, provider) };
 }
 
@@ -542,7 +548,7 @@ function snapshot() {
         code: state.code,
         // Same rule convene() and attach() refuse on, so the app can grey out a
         // Launch button instead of learning by error.
-        busy: state.code !== null,
+        busy: state.code !== null || startingCouncil,
         instances: seats,
         topic: state.topic,
         status: state.campaignComplete ? "campaign_complete" : state.status,
@@ -571,7 +577,7 @@ function snapshot() {
  * the same thing to the caller - restarting now loses work in flight.
  */
 function healthMessage(): HostHealthV1 {
-    const inFlight = state.code !== null && !state.campaignComplete;
+    const inFlight = startingCouncil || (state.code !== null && !state.campaignComplete);
     facts.councilCode = state.code;
     facts.workInFlight = inFlight;
     facts.lifecycle = state.stopping ? "stopping"
@@ -1220,26 +1226,23 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
 
 // ---------------------------------------------------------------- lifecycle
 
-function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}): AgentRuntime {
+function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}, repo = state.repo): AgentRuntime {
     const { adapter, provider, expertise } = resolveAgent(name);
     const instance = config.instances?.[name];
-    const requestedModel = selection.modelId ?? seatDefaultModel(name);
-    const requestedReasoningEffort = selection.reasoningEffort ?? seatDefaultReasoning(name);
-    if (requestedModel && !(instance?.allowedModels ?? []).includes(requestedModel)) {
-        throw new Error(`${name}: model "${requestedModel}" is not in allowedModels`);
-    }
-    if (requestedReasoningEffort && !(instance?.allowedReasoningEfforts ?? []).includes(requestedReasoningEffort)) {
-        throw new Error(`${name}: reasoning effort "${requestedReasoningEffort}" is not allowed`);
-    }
-    const relDir = councilWorktreeDir(state.repo, code, name);
+    const { requestedModel, requestedReasoningEffort } = configuredSelection({
+        name, selection, defaultModel: seatDefaultModel(name), defaultReasoningEffort: seatDefaultReasoning(name),
+        allowedModels: instance?.allowedModels ?? [], allowedReasoningEfforts: instance?.allowedReasoningEfforts ?? [],
+    });
+    const relDir = councilWorktreeDir(repo, code, name);
+    const runDir = join(repo, "..", `.council-run-${code.toLowerCase()}`);
     return {
         name, provider, expertise, adapter,
         mode: adapter.mode ?? "acp",
         branch: councilBranch(code, name),
         relDir,
-        treeDir: resolve(state.repo, relDir),
-        logPath: join(state.runDir!, `${name}.log`),
-        mcpFile: join(state.runDir!, `${name}.mcp.json`),
+        treeDir: resolve(repo, relDir),
+        logPath: join(runDir, `${name}.log`),
+        mcpFile: join(runDir, `${name}.mcp.json`),
         state: "pending",
         detail: "",
         inFlight: false,
@@ -1334,11 +1337,11 @@ async function startAgents(kickoff: Map<string, string>): Promise<void> {
     broadcast({ type: "state", ...snapshot() });
 }
 
-function prepareRun(code: string, names: string[], selections: Record<string, CouncilAgentSelection> = {}): void {
+function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime[]): void {
     state.code = code;
     state.runDir = join(state.repo, "..", `.council-run-${code.toLowerCase()}`);
     mkdirSync(state.runDir, { recursive: true });
-    for (const name of names) state.agents.set(name, makeRuntime(name, code, selections[name]));
+    for (const agent of preparedAgents ?? names.map((name) => makeRuntime(name, code))) state.agents.set(agent.name, agent);
     writeFileSync(join(state.runDir, "campaign-run.json"), JSON.stringify({
         code, configPath, port: hostPort,
         hostId: state.hostId, leaseEpoch: state.leaseEpoch, baseSha: state.baseSha,
@@ -1395,54 +1398,84 @@ async function issueAgentSeats(): Promise<void> {
     }
 }
 
-async function convene(params: {
+interface ConveneParams {
     topic: string; brief: string; names: string[]; closer: string; councilType: string;
     workspace?: string; baseBranch?: string;
     selections?: Record<string, CouncilAgentSelection>;
-}): Promise<void> {
+}
+
+let startingCouncil = false;
+
+async function withCouncilStart(action: () => Promise<void>): Promise<void> {
     if (state.code) throw new Error(`this host already owns ${state.code}`);
+    if (startingCouncil || state.stopping) throw new Error("this host is already starting or stopping a council");
+    startingCouncil = true;
+    emitHealth();
+    try {
+        await action();
+    } finally {
+        startingCouncil = false;
+        emitHealth();
+    }
+}
+
+async function convene(params: ConveneParams): Promise<void> {
+    return withCouncilStart(() => launchCouncil(params));
+}
+
+async function launchCouncil(params: ConveneParams): Promise<void> {
     const { topic, brief, names, closer, councilType } = params;
     if (!topic || !brief || names.length < 2 || !closer) throw new Error("convene needs topic, brief, at least two agents and a closer");
     if (!names.includes(closer)) throw new Error(`closer "${closer}" is not one of ${names.join(", ")}`);
     if (new Set(names).size !== names.length) throw new Error("agent names must be unique");
     if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) throw new Error(`type must be one of ${COUNCIL_TYPES.join(", ")}`);
 
-    // A NAME resolved here, never a path off the wire.
+    let repo = state.repo;
+    let baseBranch = state.baseBranch;
     if (params.workspace) {
         const chosen = workspaceByName(params.workspace);
         if (!chosen) throw new Error(`workspace "${params.workspace}" is not in host.repos; known: ${workspaces.map((w) => w.name).join(", ")}`);
-        state.repo = chosen.path;
-        state.baseBranch = chosen.baseBranch;
+        repo = chosen.path;
+        baseBranch = chosen.baseBranch;
     }
-    if (!git(state.repo, ["rev-parse", "--git-dir"]).ok) throw new Error(`${state.repo} is not a git repository`);
+    if (!git(repo, ["rev-parse", "--git-dir"]).ok) throw new Error(`${repo} is not a git repository`);
 
     // Checked by MEMBERSHIP in the repo's own head list, not by pattern: that
     // rejects a name shaped like a git option before it can reach an argv.
-    if (params.baseBranch && params.baseBranch !== state.baseBranch) {
-        if (!listBranches(state.repo).includes(params.baseBranch)) {
-            throw new Error(`"${params.baseBranch}" is not a local branch of ${state.repo}`);
+    if (params.baseBranch && params.baseBranch !== baseBranch) {
+        if (!listBranches(repo).includes(params.baseBranch)) {
+            throw new Error(`"${params.baseBranch}" is not a local branch of ${repo}`);
         }
-        state.baseBranch = params.baseBranch;
+        baseBranch = params.baseBranch;
     }
 
-    const frozenBase = git(state.repo, ["rev-parse", "--verify", state.baseBranch]);
-    if (!frozenBase.ok) throw new Error(`could not freeze base branch ${state.baseBranch}`);
-    state.baseSha = frozenBase.out.split(/\s/)[0];
-    state.protectedRefs = snapshotProtectedRefs(state.repo, [state.baseBranch, "main"]);
+    const frozenBase = git(repo, ["rev-parse", "--verify", baseBranch]);
+    if (!frozenBase.ok) throw new Error(`could not freeze base branch ${baseBranch}`);
+    const baseSha = frozenBase.out.split(/\s/)[0];
+    const protectedRefs = snapshotProtectedRefs(repo, [baseBranch, "main"]);
+    const requestedCode = generateCouncilCode();
+    const preparedAgents = names.map((name) => makeRuntime(name, requestedCode, params.selections?.[name], repo));
+    await preflightCouncilPaths(repo, requestedCode, names, gitAsync);
+    await requireLaunchPreflightProtocol((cursor) => callMcp("tools/list", cursor ? { cursor } : {}));
+    if (state.stopping) throw new Error("host stopped during launch preflight");
 
     const text = await callTool("council_convene", {
-        topic, brief, closerName: closer, councilType,
-        participants: names.map((name) => ({ name, expertise: resolveAgent(name).expertise })),
-        workspace: { repoPath: state.repo, baseBranch: state.baseBranch, baseSha: state.baseSha },
+        topic, brief, closerName: closer, councilType, requestedCode,
+        participants: preparedAgents.map(({ name, expertise }) => ({ name, expertise })),
+        workspace: { repoPath: repo, baseBranch, baseSha },
     });
     const { code, blocks } = parseKickoffBlocks(text);
     if (!code) throw new Error(`could not read the council code from the convene reply:\n${text.slice(0, 300)}`);
+    if (code !== requestedCode) throw new Error(`server returned ${code} instead of preflighted code ${requestedCode}; refusing to launch`);
     if (blocks.length !== names.length) {
         throw new Error(`convene returned ${blocks.length} kickoff blocks for ${names.length} agents; refusing to launch a partial council`);
     }
 
     await claimLease(code);
-    prepareRun(code, names, params.selections ?? {});
+    state.repo = repo;
+    state.baseBranch = baseBranch;
+    state.protectedRefs = protectedRefs;
+    prepareRun(code, names, preparedAgents);
     state.topic = topic;
     state.status = "open";
     log(`Council ${code} opened: ${topic}`);
@@ -1456,7 +1489,10 @@ async function convene(params: {
 // killed. The agents get a fresh ACP session and the dispatch loop redelivers
 // whatever they never acknowledged.
 async function attach(code: string): Promise<void> {
-    if (state.code) throw new Error(`this host already owns ${state.code}`);
+    return withCouncilStart(() => attachCouncil(code));
+}
+
+async function attachCouncil(code: string): Promise<void> {
     const upper = code.trim().toUpperCase();
     const claim = await claimLease(upper);
     // The roster is the thing being read here; a name that is not on it gets no
@@ -2001,7 +2037,7 @@ let autoAdopting = false;
  * driving and no human present to notice.
  */
 async function autoAdoptTick(): Promise<void> {
-    if (!autoAdopt || state.code || state.stopping || autoAdopting) return;
+    if (!autoAdopt || state.code || state.stopping || startingCouncil || autoAdopting) return;
     autoAdopting = true;
     try {
         const payload = JSON.parse(await callTool("council_open", {})) as OpenCouncilsPayload;
@@ -2027,7 +2063,7 @@ async function autoAdoptTick(): Promise<void> {
 
 async function shutdown(code: number, reason: HostExitReason = "requested", detail: string | null = null): Promise<void> {
     if (state.stopping) return;
-    facts.workInFlight = state.code !== null && !state.campaignComplete;
+    facts.workInFlight = startingCouncil || (state.code !== null && !state.campaignComplete);
     state.stopping = true;
     log("stopping");
     emitHealth();

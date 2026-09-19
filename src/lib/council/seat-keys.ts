@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { issueHostSeatSchema, requireCouncilHost, type CouncilCaller } from "./host-contracts";
 
 const PREFIX = "zcs_";
 const TTL_HOURS = 24;
@@ -44,7 +45,9 @@ export async function issueHostSeatKey(params: {
     hostId: string;
     leaseEpoch: number;
     ttlHours?: number;
-}): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false; reason: string }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false; reason: string }> {
+    requireCouncilHost(caller);
+    params = issueHostSeatSchema.parse(params);
     const token = `${PREFIX}${randomBytes(32).toString("hex")}`;
     const expiresAt = new Date(Date.now() + (params.ttlHours ?? TTL_HOURS) * 3600_000).toISOString();
     const { data, error } = await supabase.rpc("issue_council_host_seat_key", {

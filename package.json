@@ -15,6 +15,8 @@
     "council:protocol:test": "tsx --env-file=.env.local scripts/test-council-protocol.mts",
     "council:supervisor:test": "tsx scripts/test-council-supervisor.mts",
     "council:paths:test": "tsx scripts/test-council-host-paths.mts",
+    "council:services:test": "tsx scripts/test-council-services.mts",
+    "council:preflight:test": "tsx scripts/test-council-launch-preflight.mts",
     "council:fault:test": "tsx scripts/test-council-fault.mts",
     "journal:test": "tsx --env-file=.env.local scripts/test-mutation-journal.mts"
   },

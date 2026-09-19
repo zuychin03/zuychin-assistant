@@ -15,7 +15,7 @@ import { getFile, getVaultConfig } from "@/lib/vault/github";
 import { ingestToVault, writeVaultPage, VAULT_CATEGORIES } from "@/lib/vault/ingest";
 import {
     INTENTS_REQUIRING_REPLY_TO, INTENTS_REQUIRING_TARGET, MAX_BODY_CHARS, MAX_OPEN_COUNCILS,
-    MODERATOR_NAME, clampWaitMs, type CouncilIntent,
+    MODERATOR_NAME, COUNCIL_CODE_PATTERN, clampWaitMs, type CouncilIntent,
 } from "@/lib/council/protocol";
 import {
     appendMessage, createCouncilSession, getParticipant, getSessionByCode, joinCouncil,
@@ -35,9 +35,13 @@ import { issueHostSeatKey, resolveSeatKey } from "@/lib/council/seat-keys";
 import { resolveAgentKey } from "@/lib/agents/clients";
 import {
     OWNER_SCOPES, READONLY_SCOPES, canOwnCouncil, canParticipateInCouncil, canWriteNotes,
-    canWriteVault, isCouncilHost, isCouncilOwner,
+    canWriteVault, isCouncilOwner,
 } from "@/lib/agents/scopes";
 import { councilHostService } from "@/lib/council/service";
+import {
+    exactVerificationSchema, integrationReportSchema, requireCouncilHost,
+    startExecutionSchema, stopExecutionSchema,
+} from "@/lib/council/host-contracts";
 import { promptDigest } from "@/lib/council/v3";
 
 export const maxDuration = 300;
@@ -64,8 +68,12 @@ function requireCouncil(extra: ToolExtra) {
 }
 
 function requireHost(extra: ToolExtra) {
-    if (isCouncilHost(extra.authInfo?.scopes)) return null;
-    return denied("This tool requires the dedicated Council host credential.");
+    try {
+        requireCouncilHost(extra.authInfo);
+        return null;
+    } catch (error) {
+        return denied(errMsg(error));
+    }
 }
 
 function requireOwnerOrHost(extra: ToolExtra) {
@@ -490,6 +498,7 @@ const handler = createMcpHandler(
                 description:
                     "[COUNCIL PROTOCOL] Open a new council: a live multi-round debate between several AI agents, held inside Zuychin. Returns a short session code plus a ready-to-paste kickoff block for every participant - hand each block to its agent unchanged and it will join and run the protocol on its own. You are convening, not debating: convene once, then paste. Name every participant up front; the roster is closed afterwards and an unknown agentName is rejected, which is what stops a typo from creating a phantom participant. Pick one closerName - only that participant may call council_conclude. Prefer save_note or vault_ingest if you only want to record a conclusion you already hold; a council is for questions where you want disagreement.",
                 inputSchema: {
+                    requestedCode: z.string().regex(COUNCIL_CODE_PATTERN).optional().describe("Host-only preflight code. Creation uses this exact code or fails without allocating another."),
                     topic: z.string().min(1).describe("The question under debate, phrased as one decidable question."),
                     brief: z.string().min(1).describe("Context every participant needs: constraints, what has been tried, what a good answer looks like. Pasted verbatim into each agent's first tool result."),
                     participants: z.array(z.object({
@@ -508,12 +517,13 @@ const handler = createMcpHandler(
                     }).optional().describe("Set ONLY when the council will change code. Gives each agent its own git worktree and branch, so they cannot overwrite each other, and returns the merge steps for you. Omit for a debate-only council."),
                 },
             },
-            async ({ topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace }, extra) => {
+            async ({ topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace, requestedCode }, extra) => {
                 // Master key only: a guest may take part in a council, never
                 // create one.
                 const denied = requireOwnerOrHost(extra);
                 if (denied) return denied;
                 try {
+                    if (requestedCode !== undefined) requireCouncilHost(extra.authInfo);
                     const names = participants.map((p) => p.name);
                     if (!names.includes(closerName)) {
                         return { content: [{ type: "text", text: `closerName "${closerName}" is not one of the participants (${names.join(", ")}). Nothing was created.` }] };
@@ -531,12 +541,12 @@ const handler = createMcpHandler(
 
                     const template = getCouncilTemplate(councilType);
                     const session = await createCouncilSession({
-                        topic, brief, closerName, participants, councilType,
+                        topic, brief, closerName, participants, councilType, requestedCode,
                         maxRounds: maxRounds ?? template.defaults.maxRounds,
                         maxMessages: maxMessages ?? template.defaults.maxMessages,
                         ttlMinutes: ttlMinutes ?? template.defaults.ttlMinutes,
                         workspace: workspace ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main", baseSha: workspace.baseSha } : undefined,
-                    });
+                    }, extra.authInfo);
                     const roster = await listParticipants(session.id);
                     const ws = workspace
                         ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main" }
@@ -838,7 +848,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const lease = await councilHostService.claimLease({ sessionId: session.id, hostId });
+                    const lease = await councilHostService.claimLease({ sessionId: session.id, hostId }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify({ ...lease, session: {
                         id: session.id, code: session.code, topic: session.topic, status: session.status,
                         protocolVersion: session.protocolVersion, baseSha: session.baseSha,
@@ -859,7 +869,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const lease = await councilHostService.renewLease({ sessionId: session.id, hostId, leaseEpoch });
+                    const lease = await councilHostService.renewLease({ sessionId: session.id, hostId, leaseEpoch }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify(lease) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -875,7 +885,7 @@ const handler = createMcpHandler(
                 const denied = requireHost(extra); if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
-                    const ok = !!session && await councilHostService.releaseLease({ sessionId: session.id, hostId, leaseEpoch });
+                    const ok = !!session && await councilHostService.releaseLease({ sessionId: session.id, hostId, leaseEpoch }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify({ ok }) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -895,7 +905,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const result = await issueHostSeatKey({ sessionId: session.id, seatName: agentName, hostId, leaseEpoch });
+                    const result = await issueHostSeatKey({ sessionId: session.id, seatName: agentName, hostId, leaseEpoch }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify(result) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -914,33 +924,20 @@ const handler = createMcpHandler(
                 const denied = requireHost(extra); if (denied) return denied;
                 try {
                     const ok = state === "in_flight"
-                        ? await councilHostService.markDeliveryInFlight({ deliveryId, hostId, leaseEpoch })
-                        : await councilHostService.failDelivery({ deliveryId, hostId, leaseEpoch, error: error ?? "agent turn failed" });
+                        ? await councilHostService.markDeliveryInFlight({ deliveryId, hostId, leaseEpoch }, extra.authInfo)
+                        : await councilHostService.failDelivery({ deliveryId, hostId, leaseEpoch, error: error ?? "agent turn failed" }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify({ ok }) }] };
                 } catch (cause) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(cause) }) }] }; }
             },
         );
 
-        const capabilitySchema = z.object({
-            kind: z.enum(["acp", "mcp", "managed_api", "managed_cli", "text_only", "manual"]),
-            source: z.enum(["probed", "configured", "declared"]),
-            streaming: z.boolean(), cancellation: z.boolean(), sessionResume: z.boolean(),
-            modelSelection: z.boolean(), structuredActions: z.boolean(), toolCalls: z.boolean(),
-            permissionCallbacks: z.boolean(), filesystemMediated: z.boolean(), terminalMediated: z.boolean(),
-            observedAt: z.string().datetime(),
-        });
         server.registerTool(
             "council_execution_start",
             {
                 description: "[COUNCIL V3 HOST] Append immutable connector, identity, model, branch and base evidence for an agent execution.",
                 inputSchema: {
-                    sessionCode: z.string().min(1), agentName: z.string().min(1), hostId: z.string().uuid(),
-                    leaseEpoch: z.number().int().positive(), hostGeneration: z.string().min(1), capabilities: capabilitySchema,
-                    identityAssurance: z.enum(["verified_seat", "host_bound", "owner_relay", "unverified_declaration"]),
-                    provider: z.string().min(1), adapterVersion: z.string().optional(), requestedModel: z.string().optional(),
-                    effectiveModel: z.string().optional(), requestedReasoningEffort: z.string().optional(),
-                    effectiveReasoningEffort: z.string().optional(), modelSource: z.string().optional(), branch: z.string().optional(),
-                    worktree: z.string().optional(), baseSha: z.string().optional(),
+                    ...startExecutionSchema.omit({ sessionId: true }).shape,
+                    sessionCode: z.string().min(1),
                 },
             },
             async ({ sessionCode, ...params }, extra) => {
@@ -948,7 +945,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const result = await councilHostService.startExecution({ sessionId: session.id, ...params });
+                    const result = await councilHostService.startExecution({ sessionId: session.id, ...params }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify(result) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -958,12 +955,12 @@ const handler = createMcpHandler(
             "council_execution_stop",
             {
                 description: "[COUNCIL V3 HOST] Close an immutable agent execution record.",
-                inputSchema: { executionId: z.string().uuid(), hostId: z.string().uuid(), leaseEpoch: z.number().int().positive(), stopReason: z.string().min(1).max(500) },
+                inputSchema: stopExecutionSchema.shape,
             },
             async ({ executionId, hostId, leaseEpoch, stopReason }, extra) => {
                 const denied = requireHost(extra); if (denied) return denied;
                 try {
-                    const ok = await councilHostService.stopExecution({ executionId, hostId, leaseEpoch, stopReason });
+                    const ok = await councilHostService.stopExecution({ executionId, hostId, leaseEpoch, stopReason }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify({ ok }) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -996,7 +993,7 @@ const handler = createMcpHandler(
                         return { content: [{ type: "text", text: JSON.stringify({ error: "not_v3", sessionCode: session.code }) }] };
                     }
                     for (const deliveryId of ackDeliveryIds ?? []) {
-                        const ack = await councilHostService.acknowledgeDelivery({ deliveryId, hostId, leaseEpoch });
+                        const ack = await councilHostService.acknowledgeDelivery({ deliveryId, hostId, leaseEpoch }, extra.authInfo);
                         if (!ack.ok) return { content: [{ type: "text", text: JSON.stringify({ error: ack.reason ?? "ack_failed", deliveryId }) }] };
                     }
                     const outcome = await dispatchCouncil({ session, agentNames, durable: true });
@@ -1041,7 +1038,7 @@ const handler = createMcpHandler(
                             sessionId: latest.id, agentName: name, hostId, leaseEpoch,
                             fromSeq: Math.max(0, view.participants.find((p) => p.name === name)?.cursorSeq ?? 0),
                             throughSeq: slice.delivered, promptHash: promptDigest(prompt), promptBody: prompt,
-                        });
+                        }, extra.authInfo);
                         if (!prepared.ok || !prepared.delivery) {
                             throw new Error(`delivery for ${name} rejected: ${prepared.reason ?? "unknown"}`);
                         }
@@ -1203,20 +1200,13 @@ const handler = createMcpHandler(
             "council_work_verify",
             {
                 description: "[COUNCIL WORK CAMPAIGN] Host only: record what the HOST observed about a submitted commit, independently of what the agent claimed. A failed check returns the task to its owner. The closer cannot accept a task until this passes.",
-                inputSchema: {
-                    itemId: z.string().uuid(), hostId: z.string().uuid(), leaseEpoch: z.number().int().positive(),
-                    commitSha: z.string().regex(/^[0-9a-f]{40}$/i), baseSha: z.string().regex(/^[0-9a-f]{40}$/i),
-                    branchName: z.string().min(1).max(300), profileId: z.string().min(1).max(100), passed: z.boolean(),
-                    receipts: z.array(z.object({ command: z.array(z.string()), exitCode: z.number().int().nullable(), durationMs: z.number().nonnegative(), outputDigest: z.string(), outputTail: z.string(), timedOut: z.boolean().optional() })).max(20),
-                    outputDigest: z.string().min(1),
-                    report: z.string().min(1).max(16000).describe("Checks run and their outcomes, bound to the exact commit and frozen base."),
-                },
+                inputSchema: exactVerificationSchema.shape,
             },
             async ({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, outputDigest, passed, report }, extra) => {
                 const denied = requireHost(extra);
                 if (denied) return denied;
                 try {
-                    const result = await recordExactVerification({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, outputDigest, passed, report });
+                    const result = await recordExactVerification({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, outputDigest, passed, report }, extra.authInfo);
                     return { content: [{ type: "text", text: result.ok ? JSON.stringify(result) : JSON.stringify(result) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: "Host verify failed: " + errMsg(error) }] };
@@ -1235,7 +1225,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const result = await freezeIntegrationManifest({ sessionId: session.id, hostId, leaseEpoch });
+                    const result = await freezeIntegrationManifest({ sessionId: session.id, hostId, leaseEpoch }, extra.authInfo);
                     const campaign = await getCampaignForSession(session.id);
                     return { content: [{ type: "text", text: JSON.stringify({ ...result, integratorAgent: campaign?.integratorAgent ?? null }) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
@@ -1247,13 +1237,8 @@ const handler = createMcpHandler(
             {
                 description: "[COUNCIL WORK CAMPAIGN] Host or nominated integrator: record the result of assembling every accepted task on a clean integration branch and running the full project checks. A campaign is not done because each task passed alone.",
                 inputSchema: {
+                    ...integrationReportSchema.omit({ sessionId: true }).shape,
                     sessionCode: z.string().min(1),
-                    status: z.enum(["running", "verified", "conflict", "failed"]),
-                    branch: z.string().max(200).optional(),
-                    tipSha: z.string().regex(/^[0-9a-f]{40}$/i).optional(),
-                    hostId: z.string().uuid(), leaseEpoch: z.number().int().positive(),
-                    reporter: z.string().min(1),
-                    report: z.string().min(1).max(16000),
                 },
             },
             async ({ sessionCode, status, branch, tipSha, hostId, leaseEpoch, reporter, report }, extra) => {
@@ -1262,7 +1247,7 @@ const handler = createMcpHandler(
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
-                    const res = await recordV3Integration({ sessionId: session.id, reporter, hostId, leaseEpoch, status, branch, tipSha, report });
+                    const res = await recordV3Integration({ sessionId: session.id, reporter, hostId, leaseEpoch, status, branch, tipSha, report }, extra.authInfo);
                     return { content: [{ type: "text", text: res.ok ? `INTEGRATION_${status.toUpperCase()}` : `INTEGRATION_REJECTED - ${res.reason ?? "unknown"}` }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: "Integration report failed: " + errMsg(error) }] };

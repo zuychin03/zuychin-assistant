@@ -1,4 +1,8 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import {
+    exactVerificationSchema, integrationReportSchema, requireCouncilHost,
+    sessionFenceSchema, type CouncilCaller,
+} from "./host-contracts";
 
 export type CampaignStatus = "running" | "complete" | "blocked" | "cancelled";
 export type WorkItemStatus = "queued" | "in_progress" | "awaiting_review" | "verified" | "blocked" | "cancelled";
@@ -239,7 +243,9 @@ export async function recordExactVerification(params: {
     itemId: string; hostId: string; leaseEpoch: number; commitSha: string; baseSha: string;
     branchName: string; profileId: string; receipts: VerificationReceipt[];
     outputDigest: string; passed: boolean; report: string;
-}): Promise<{ ok: boolean; reason?: string; verificationRunId?: string }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; verificationRunId?: string }> {
+    requireCouncilHost(caller);
+    params = exactVerificationSchema.parse(params);
     const { data, error } = await supabase.rpc("record_council_verification", {
         p_item_id: params.itemId, p_host_id: params.hostId, p_lease_epoch: params.leaseEpoch,
         p_commit_sha: params.commitSha, p_base_sha: params.baseSha, p_branch_name: params.branchName,
@@ -252,7 +258,9 @@ export async function recordExactVerification(params: {
 
 export async function freezeIntegrationManifest(params: {
     sessionId: string; hostId: string; leaseEpoch: number;
-}): Promise<{ ok: boolean; reason?: string; manifest?: CouncilIntegrationManifest; frozen?: boolean }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; manifest?: CouncilIntegrationManifest; frozen?: boolean }> {
+    requireCouncilHost(caller);
+    params = sessionFenceSchema.parse(params);
     const { data, error } = await supabase.rpc("freeze_council_integration_manifest", {
         p_session_id: params.sessionId, p_host_id: params.hostId, p_lease_epoch: params.leaseEpoch,
     });
@@ -262,8 +270,10 @@ export async function freezeIntegrationManifest(params: {
 
 export async function recordV3Integration(params: {
     sessionId: string; reporter: string; hostId: string; leaseEpoch: number;
-    status: IntegrationStatus; branch?: string; tipSha?: string; report: string;
-}): Promise<{ ok: boolean; reason?: string }> {
+    status: Exclude<IntegrationStatus, "pending">; branch?: string; tipSha?: string; report: string;
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string }> {
+    requireCouncilHost(caller);
+    params = integrationReportSchema.parse(params);
     const { data, error } = await supabase.rpc("record_council_integration_v3", {
         p_session_id: params.sessionId, p_reporter: params.reporter, p_host_id: params.hostId,
         p_lease_epoch: params.leaseEpoch, p_status: params.status, p_branch: params.branch ?? null,

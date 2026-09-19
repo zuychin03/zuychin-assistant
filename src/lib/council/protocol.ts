@@ -61,6 +61,7 @@ export const SESSION_TTL_MINUTES = 90;
 // Retyped by the human into several terminals: no 0/O/1/I.
 export const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 export const CODE_LENGTH = 4;
+export const COUNCIL_CODE_PATTERN = new RegExp(`^CN-[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
 
 export const MODERATOR_NAME = "zuychin";
 

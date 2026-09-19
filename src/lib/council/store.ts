@@ -1,11 +1,12 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { CouncilType } from "./templates";
 import { COUNCIL_PROTOCOL_VERSION } from "./v3";
+import { requireCouncilHost, type CouncilCaller } from "./host-contracts";
 import {
     MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
     SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
-    CODE_ALPHABET, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
+    CODE_ALPHABET, COUNCIL_CODE_PATTERN, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
     type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
 } from "./protocol";
 
@@ -210,17 +211,25 @@ export async function createCouncilSession(params: {
     userProfileId?: string;
     workspace?: { repoPath: string; baseBranch: string; baseSha?: string };
     councilType?: CouncilType;
-}): Promise<CouncilSession> {
+    requestedCode?: string;
+}, caller?: CouncilCaller): Promise<CouncilSession> {
+    if (params.requestedCode !== undefined) {
+        requireCouncilHost(caller);
+        if (typeof params.requestedCode !== "string" || !COUNCIL_CODE_PATTERN.test(params.requestedCode)) {
+            throw new Error("Invalid requested council code.");
+        }
+    }
     const ttl = params.ttlMinutes ?? SESSION_TTL_MINUTES;
     const expiresAt = new Date(Date.now() + ttl * 60_000).toISOString();
 
     // Retry only the code collision; anything else is a real failure.
     let row: SessionRow | null = null;
-    for (let attempt = 0; attempt < 5 && !row; attempt++) {
+    const attempts = params.requestedCode === undefined ? 5 : 1;
+    for (let attempt = 0; attempt < attempts && !row; attempt++) {
         const { data, error } = await supabase
             .from("council_sessions")
             .insert({
-                code: generateCouncilCode(),
+                code: params.requestedCode ?? generateCouncilCode(),
                 user_profile_id: params.userProfileId ?? null,
                 topic: params.topic,
                 brief: params.brief,
@@ -241,6 +250,7 @@ export async function createCouncilSession(params: {
             break;
         }
         if (error.code !== "23505") throwWrite("createCouncilSession", new Error(error.message));
+        if (params.requestedCode !== undefined) throw new Error("Requested council code is already in use. Nothing was created.");
     }
     if (!row) throwWrite("createCouncilSession", new Error("could not allocate a unique council code"));
     const session = row;
