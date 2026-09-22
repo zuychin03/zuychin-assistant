@@ -29,6 +29,13 @@ export interface CommitFileChange {
     delete?: boolean;
 }
 
+export class VaultConflictError extends Error {
+    constructor() {
+        super("The vault changed while this page was being edited. Your draft is safe. Reload the current page before saving again.");
+        this.name = "VaultConflictError";
+    }
+}
+
 export function getVaultConfig(): VaultConfig | null {
     const token = process.env.GITHUB_VAULT_TOKEN;
     const repo = process.env.GITHUB_VAULT_REPO;
@@ -95,10 +102,10 @@ function fromBase64(content: string): string {
     return Buffer.from(content.replace(/\n/g, ""), "base64").toString("utf-8");
 }
 
-export async function getFile(cfg: VaultConfig, path: string): Promise<VaultFile | null> {
+export async function getFile(cfg: VaultConfig, path: string, ref = cfg.branch): Promise<VaultFile | null> {
     const res = await githubFetch(
         cfg,
-        repoPath(cfg, `/contents/${encodePath(path)}?ref=${encodeURIComponent(cfg.branch)}`),
+        repoPath(cfg, `/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`),
     );
     if (res.status === 404) return null;
     if (!res.ok) {
@@ -206,14 +213,11 @@ export async function commitFiles(
     cfg: VaultConfig,
     changes: CommitFileChange[],
     message: string,
+    expectedHead?: string,
 ): Promise<{ commit: string }> {
     if (changes.length === 0) throw new Error("commitFiles called with no changes.");
 
-    const ref = await githubJson<{ object: { sha: string } }>(
-        cfg,
-        repoPath(cfg, `/git/ref/heads/${encodeURIComponent(cfg.branch)}`),
-    );
-    const headSha = ref.object.sha;
+    const headSha = expectedHead ?? await getBranchHead(cfg);
 
     const headCommit = await githubJson<{ tree: { sha: string } }>(
         cfg,
@@ -251,10 +255,18 @@ export async function commitFiles(
         body: JSON.stringify({ message, tree: tree.sha, parents: [headSha] }),
     });
 
-    await githubJson(cfg, repoPath(cfg, `/git/refs/heads/${encodeURIComponent(cfg.branch)}`), {
+    const updatePath = repoPath(cfg, `/git/refs/heads/${encodeURIComponent(cfg.branch)}`);
+    const updated = await githubFetch(cfg, updatePath, {
         method: "PATCH",
-        body: JSON.stringify({ sha: commit.sha }),
+        body: JSON.stringify({ sha: commit.sha, force: false }),
     });
+    if (!updated.ok) {
+        const detail = await updated.text().catch(() => "");
+        if (expectedHead !== undefined && (updated.status === 409 || updated.status === 422 || /not a fast.?forward/i.test(detail))) {
+            throw new VaultConflictError();
+        }
+        throw new Error(`GitHub ${updated.status} on ${updatePath}: ${detail.slice(0, 300)}`);
+    }
 
     return { commit: commit.sha };
 }

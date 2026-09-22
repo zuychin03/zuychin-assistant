@@ -1,7 +1,7 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { Type, ThinkingLevel } from "@google/genai";
 import {
-    commitFiles, getFile, requireVaultConfig,
+    commitFiles, getBranchHead, getFile, requireVaultConfig, VaultConflictError,
     type CommitFileChange,
 } from "@/lib/vault/github";
 import { searchVaultPages, upsertVaultPage, type VaultPageHit } from "@/lib/vault/store";
@@ -429,6 +429,7 @@ export interface WriteResult {
 export async function writeVaultPage(params: {
     path: string;
     markdown: string;
+    expectedMarkdown?: string;
     summary?: string;
     embRef: ResolvedEmbedding;
     // Defaults preserve today's behaviour; the council passes untrusted +
@@ -453,7 +454,11 @@ export async function writeVaultPage(params: {
         const category = match[1].toLowerCase() as VaultCategory;
         const path = `wiki/${category}/${slugify(match[2])}.md`;
 
-        const existing = await getFile(cfg, path);
+        const expectedHead = params.expectedMarkdown !== undefined ? await getBranchHead(cfg) : undefined;
+        const existing = await getFile(cfg, path, expectedHead);
+        if (params.expectedMarkdown !== undefined && (!existing || existing.text !== params.expectedMarkdown)) {
+            throw new VaultConflictError();
+        }
         const title = parseTitle(params.markdown, path.split("/").pop()!.replace(/\.md$/, ""));
         const summary = (params.summary ?? "").replace(/\s+/g, " ").trim() || `${title} (updated ${today()})`;
 
@@ -467,8 +472,8 @@ export async function writeVaultPage(params: {
             ...(params.status ? { status: params.status } : {}),
         });
         const [indexFile, logFile] = await Promise.all([
-            getFile(cfg, "index.md"),
-            getFile(cfg, "log.md"),
+            getFile(cfg, "index.md", expectedHead),
+            getFile(cfg, "log.md", expectedHead),
         ]);
 
         const changes: CommitFileChange[] = [
@@ -487,6 +492,7 @@ export async function writeVaultPage(params: {
             cfg,
             changes,
             `learn: ${existing ? "update" : "write"} ${title}`,
+            expectedHead,
         );
 
         await upsertVaultPage({ path, title, summary, category }, prepared.markdown, params.embRef);

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck } from "lucide-react";
-import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, type ProviderInfo } from "./home/controls";
+import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, modelSearchTerms, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
 import { chatMarkdownComponents } from "./home/markdown";
@@ -14,6 +14,9 @@ import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, sameDraft, type ChatDraft, type ChatSession } from "./home/chat-state";
+import { readChatDrafts, writeChatDraft } from "./home/chat-drafts";
+import { safeReturnTo, documentDestination, withReturnTo } from "@/lib/document-navigation";
 
 interface ChatMessage {
   id: string;
@@ -31,7 +34,7 @@ interface ChatMessage {
   /** Set on interruption notices: lets the user relaunch the agent run with prior progress. */
   resume?: { runId: string; text: string };
   /** Set on interruption notices without a resumable run: re-sends the original payload. */
-  retry?: { payload: OutgoingPayload; userMsgId: string };
+  retry?: { payload: OutgoingPayload; userMsgId: string; knownIds: string[] };
   /** Quoted excerpt of the earlier message this one replies to. */
   replyTo?: { role: "user" | "assistant"; content: string };
 }
@@ -158,21 +161,62 @@ interface GenParamsState {
   maxTokens: number | null;
 }
 
+type Session = ChatSession<ChatMessage, OutgoingPayload, AgentRun>;
+const chats = new ChatWorkspace<ChatMessage, OutgoingPayload, AgentRun>();
+let draftsLoaded: Promise<void> | undefined;
+let unloadProtectionInstalled = false;
+const unsavedDrafts = new Map<string, ChatDraft>();
+const persistDraft = async (key: string, draft: ChatDraft) => {
+  unsavedDrafts.set(key, draft);
+  try {
+    await writeChatDraft(key, draft);
+    if (unsavedDrafts.get(key) === draft) unsavedDrafts.delete(key);
+  } catch {
+    chats.storageError = "Your draft is kept in this tab, but browser storage could not save it. Keep this tab open and try saving again.";
+    chats.notify();
+    throw new Error("Draft storage is unavailable.");
+  }
+};
+chats.onDraftChange = (key, draft) => { void persistDraft(key, draft).catch(() => {}); };
+
+function conversationUrl(id: string | null) {
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set("c", id);
+  else url.searchParams.delete("c");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(response.status === 401 ? "Please sign in again." : `Request failed (${response.status}).`);
+  return response.json() as Promise<T>;
+}
+
 export default function Home() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  useSyncExternalStore(chats.subscribe, chats.snapshot, chats.serverSnapshot);
+  const session = chats.get();
+  const messages = session.messages;
+  const input = session.draft.text;
+  const pendingFile = session.draft.file;
+  const replyTo = session.draft.replyTo;
+  const queuedView = session.queue;
+  const isLoading = !!session.run;
+  const agentRun = session.progress;
+  const activeConversationId = session.key === NEW_CHAT ? null : session.key;
+  const setInput = (text: string) => chats.setDraft(chats.get(), { ...chats.get().draft, text });
+  const setPendingFile = (file: ChatDraft["file"]) => {
+    const target = chats.get();
+    target.fileRequest++;
+    chats.setDraft(target, { ...target.draft, file });
+  };
+  const setReplyTo = (reply: ChatDraft["replyTo"]) => chats.setDraft(chats.get(), { ...chats.get().draft, replyTo: reply });
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [cmdIndex, setCmdIndex] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
-  const [pendingFile, setPendingFile] = useState<{ name: string; mimeType: string; base64: string; size: number } | null>(null);
-  const [replyTo, setReplyTo] = useState<{ role: "user" | "assistant"; content: string } | null>(null);
-  const [queuedView, setQueuedView] = useState<{ id: string; payload: OutgoingPayload }[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [today, setToday] = useState<TodayData | null>(null);
@@ -180,7 +224,12 @@ export default function Home() {
   const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
-  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
+  const [actionError, setActionError] = useState<{ message: string; retry?: () => void } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ kind: "chat" | "project"; id: string; title: string; resolve: (ok: boolean) => void } | null>(null);
+  const [pendingActions, setPendingActions] = useState<string[]>([]);
+  const pendingActionsRef = useRef(new Set<string>());
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+  const [documentLinks, setDocumentLinks] = useState({ knowledge: "/knowledge", graph: "/graph" });
   const [isDesktop, setIsDesktop] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
 
@@ -197,7 +246,6 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
   const ttsPlayerRef = useRef<{ stop: () => void } | null>(null);
@@ -206,14 +254,11 @@ export default function Home() {
   // Hands-free voice conversation mode (see startVoiceRecording).
   const [voiceLoop, setVoiceLoop] = useState(false);
   const voiceLoopRef = useRef(false);
+  const voiceRequestRef = useRef(0);
   const srRef = useRef<SpeechRecognitionLike | null>(null);
   const vadCleanupRef = useRef<(() => void) | null>(null);
   const discardRecordingRef = useRef(false);
   const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
-  const queueRef = useRef<{ id: string; payload: OutgoingPayload }[]>([]);
-  // sendPayload runs from a drain in an old closure; the ref always has the
-  // current conversation so a queued send can't open a second conversation.
-  const activeConvIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const check = () => setIsDesktop(window.innerWidth >= 768);
@@ -223,8 +268,52 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    activeConvIdRef.current = activeConversationId;
-  }, [activeConversationId]);
+    const voiceRequest = voiceRequestRef;
+    const speakingSequence = speakSeqRef;
+    const protectUnsavedWork = (event: BeforeUnloadEvent) => {
+      if (!chats.hasPendingWork((message) => !!message.retry) && !chats.storageError && !unsavedDrafts.size) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    if (!unloadProtectionInstalled) {
+      window.addEventListener("beforeunload", protectUnsavedWork);
+      unloadProtectionInstalled = true;
+    }
+    return () => {
+      voiceRequest.current++;
+      voiceLoopRef.current = false;
+      discardRecordingRef.current = true;
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      try { srRef.current?.stop(); } catch {}
+      vadCleanupRef.current?.();
+      speakingSequence.current++;
+      ttsPlayerRef.current?.stop();
+    };
+  }, []);
+
+  const retryDraftStorage = async () => {
+    try {
+      for (const [key, draft] of await readChatDrafts()) chats.hydrateDraft(key, draft);
+      await Promise.all([...unsavedDrafts].map(([key, draft]) => persistDraft(key, draft)));
+      chats.storageError = "";
+      chats.notify();
+    } catch {
+      chats.storageError = "Browser storage is still unavailable. Your drafts remain in this tab.";
+      chats.notify();
+    }
+  };
+
+  useEffect(() => {
+    if (!draftsLoaded) {
+      draftsLoaded = readChatDrafts().then((drafts) => {
+        for (const [key, draft] of drafts) chats.hydrateDraft(key, draft);
+      }).catch(() => {
+        draftsLoaded = undefined;
+        chats.storageError = "Saved drafts could not be opened. New edits remain in this tab; try saving again before leaving.";
+        chats.notify();
+      });
+    }
+  }, []);
 
   useEffect(() => {
     fetch("/api/tts")
@@ -266,36 +355,38 @@ export default function Home() {
 
   const loadConversations = useCallback(async () => {
     try {
-      const res = await fetch("/api/conversations");
-      const data = await res.json();
-      if (data.conversations) {
-        setConversations(data.conversations);
-      }
-    } catch (err) {
-      console.error("Failed to load conversations:", err);
+      const data = await requestJson<{ conversations: Conversation[] }>("/api/conversations");
+      if (!Array.isArray(data.conversations)) throw new Error("Invalid conversation response.");
+      setConversations(data.conversations);
+      return true;
+    } catch {
+      return false;
     } finally {
       setConvosLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    loadConversations();
+    void loadConversations().then((ok) => {
+      if (!ok) setActionError({ message: "Your chats could not be loaded.", retry: () => { void loadConversations().then((loaded) => { if (loaded) setActionError(null); }); } });
+    });
   }, [loadConversations]);
 
   const loadProjects = useCallback(async () => {
     try {
-      const res = await fetch("/api/projects");
-      const data = await res.json();
-      if (data.projects) {
-        setProjects(data.projects);
-      }
-    } catch (err) {
-      console.error("Failed to load projects:", err);
+      const data = await requestJson<{ projects: ProjectItem[] }>("/api/projects");
+      if (!Array.isArray(data.projects)) throw new Error("Invalid project response.");
+      setProjects(data.projects);
+      return true;
+    } catch {
+      return false;
     }
   }, []);
 
   useEffect(() => {
-    loadProjects();
+    void loadProjects().then((ok) => {
+      if (!ok) setActionError({ message: "Your projects could not be loaded.", retry: () => { void loadProjects().then((loaded) => { if (loaded) setActionError(null); }); } });
+    });
   }, [loadProjects]);
 
   const loadNotes = useCallback(async () => {
@@ -501,205 +592,231 @@ export default function Home() {
     });
   };
 
+  const selectSession = (target: Session) => {
+    chats.select(target.key);
+    conversationUrl(target.key === NEW_CHAT ? null : target.key);
+    setSidebarOpen(false);
+    exitVoiceLoop();
+    if (inputRef.current) inputRef.current.style.height = "auto";
+  };
+
   const loadConversation = async (convId: string) => {
+    const target = chats.get(convId);
+    selectSession(target);
+    if (target.loaded || target.run) return;
+    const ticket = chats.beginHistory(target);
     try {
-      const res = await fetch(`/api/conversations?id=${convId}`);
-      const data = await res.json();
-      if (data.messages) {
-        setMessages(mapServerMessages(data.messages));
+      const data = await requestJson<{ messages: ServerMessage[] }>(`/api/conversations?id=${encodeURIComponent(convId)}`);
+      if (!Array.isArray(data.messages)) throw new Error("Invalid conversation response.");
+      chats.acceptHistory(target, ticket, mapServerMessages(data.messages));
+    } catch {
+      if (chats.get() === target && target.historyRequest === ticket.request) {
+        setActionError({ message: "This conversation could not be loaded. Your draft is safe.", retry: () => { setActionError(null); void loadConversation(convId); } });
       }
-      setActiveConversationId(convId);
-      setReplyTo(null);
-      queueRef.current = [];
-      setQueuedView([]);
-      setSidebarOpen(false);
-      exitVoiceLoop();
-    } catch (err) {
-      console.error("Failed to load conversation:", err);
+    } finally {
+      chats.finishHistory(target, ticket.request);
     }
   };
 
-  // /?c=<id> deep links (e.g. from search_history results) open that
-  // conversation. Ref-guarded instead of []-depped: loadConversation isn't a
-  // stable reference.
   const deepLinkDone = useRef(false);
+  const initialConversationLoader = useRef(loadConversation);
   useEffect(() => {
     if (deepLinkDone.current) return;
     deepLinkDone.current = true;
-    const c = new URLSearchParams(window.location.search).get("c");
-    if (c) {
-      void loadConversation(c);
-      window.history.replaceState(null, "", window.location.pathname);
-    }
-  });
+    const params = new URLSearchParams(window.location.search);
+    const previous = safeReturnTo(params.get("returnTo"));
+    setReturnTo(previous);
+    setDocumentLinks({
+      knowledge: previous?.startsWith("/knowledge") ? previous : documentDestination("/knowledge"),
+      graph: previous?.startsWith("/graph") ? previous : documentDestination("/graph"),
+    });
+    const id = params.get("c");
+    if (id) void initialConversationLoader.current(id);
+    else if (chats.activeKey !== NEW_CHAT) conversationUrl(chats.activeKey);
+  }, []);
 
   const dismissToday = () => {
     sessionStorage.setItem("zuychin-today-dismissed", "1");
     setToday(null);
   };
 
+  const refreshLists = async () => (await Promise.all([loadProjects(), loadConversations()])).every(Boolean);
+  const runAction = async (key: string, label: string, write: () => Promise<void>, refresh: () => Promise<boolean>, retryInPlace = true): Promise<boolean> => {
+    if (pendingActionsRef.current.has(key)) return false;
+    pendingActionsRef.current.add(key);
+    setPendingActions([...pendingActionsRef.current]);
+    setActionError(null);
+    try {
+      await write();
+    } catch (error) {
+      setActionError({
+        message: `Could not ${label}. ${error instanceof Error ? error.message : "Please try again."}${retryInPlace ? "" : " Your form is still open; use its button to try again."}`,
+        ...(retryInPlace ? { retry: () => { void runAction(key, label, write, refresh); } } : {}),
+      });
+      return false;
+    } finally {
+      pendingActionsRef.current.delete(key);
+      setPendingActions([...pendingActionsRef.current]);
+    }
+    if (!await refresh()) {
+      setActionError({ message: "Your change was saved, but the list could not refresh.", retry: () => { void refresh().then((ok) => { if (ok) setActionError(null); }); } });
+    }
+    return true;
+  };
+
   const handleNewChat = async (projectId?: string) => {
-    try {
-      const res = await fetch("/api/conversations", {
-        method: "POST",
-        ...(projectId && {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId }),
-        }),
+    const origin = chats.get();
+    return runAction("new-chat", "create the conversation", async () => {
+      const data = await requestJson<{ id: string }>("/api/conversations", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }),
       });
-      const data = await res.json();
-      setActiveConversationId(data.id);
-      setMessages([]);
-      setReplyTo(null);
-      queueRef.current = [];
-      setQueuedView([]);
-      setSidebarOpen(false);
-      exitVoiceLoop();
-      await loadConversations();
-    } catch (err) {
-      console.error("Failed to create conversation:", err);
-    }
+      if (!data.id) throw new Error("The server did not return a conversation.");
+      const target = chats.get(data.id);
+      target.loaded = true;
+      if (chats.get() === origin) selectSession(target);
+    }, loadConversations);
   };
 
-  const handleCreateProject = async (name: string) => {
-    try {
-      await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      await loadProjects();
-    } catch (err) {
-      console.error("Failed to create project:", err);
+  const handleCreateProject = (name: string) => runAction("create-project", "create the project", async () => {
+    await requestJson("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  }, loadProjects, false);
+
+  const handleUpdateProject = (id: string, patch: { name?: string; instructions?: string }) => runAction(`project:${id}`, "save the project", async () => {
+    await requestJson("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, ...patch }) });
+  }, loadProjects, false);
+
+  const handleDeleteProject = (id: string): Promise<boolean> => new Promise((resolve) => {
+    setDeleteConfirm({ kind: "project", id, title: projects.find((project) => project.id === id)?.name ?? "this project", resolve });
+  });
+
+  const handleMoveConversation = (convId: string, projectId: string | null) => runAction(`move:${convId}`, "move the conversation", async () => {
+    await requestJson("/api/conversations", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: convId, projectId }) });
+  }, loadConversations, false);
+
+  const handleDeleteConversation = (event: React.MouseEvent, convId: string) => {
+    event.stopPropagation();
+    const target = chats.get(convId);
+    if (target.run || target.queue.length) {
+      setActionError({ message: "Finish or stop this conversation’s reply and clear its queued messages before deleting it." });
+      return;
     }
+    setDeleteConfirm({ kind: "chat", id: convId, title: conversations.find((chat) => chat.id === convId)?.title ?? "this conversation", resolve: () => {} });
   };
 
-  const handleUpdateProject = async (id: string, patch: { name?: string; instructions?: string }) => {
-    try {
-      await fetch("/api/projects", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...patch }),
-      });
-      await loadProjects();
-    } catch (err) {
-      console.error("Failed to update project:", err);
-    }
-  };
-
-  const handleDeleteProject = async (id: string) => {
-    try {
-      await fetch(`/api/projects?id=${id}`, { method: "DELETE" });
-      await Promise.all([loadProjects(), loadConversations()]);
-    } catch (err) {
-      console.error("Failed to delete project:", err);
-    }
-  };
-
-  const handleMoveConversation = async (convId: string, projectId: string | null) => {
-    try {
-      await fetch("/api/conversations", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: convId, projectId }),
-      });
-      await loadConversations();
-    } catch (err) {
-      console.error("Failed to move conversation:", err);
-    }
-  };
-
-  const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
-    e.stopPropagation();
-    try {
-      await fetch(`/api/conversations?id=${convId}`, { method: "DELETE" });
-      if (activeConversationId === convId) {
-        setActiveConversationId(null);
-        setMessages([]);
+  const confirmDeletion = async () => {
+    if (!deleteConfirm) return;
+    const confirmation = deleteConfirm;
+    const ok = await runAction(`delete:${confirmation.id}`, `delete the ${confirmation.kind === "chat" ? "conversation" : "project"}`, async () => {
+      if (confirmation.kind === "chat") {
+        const target = chats.get(confirmation.id);
+        if (target.run || target.queue.length) throw new Error("Finish or stop its reply and clear queued messages first.");
       }
-      await loadConversations();
-    } catch (err) {
-      console.error("Failed to delete conversation:", err);
-    }
+      await requestJson(`/api/${confirmation.kind === "chat" ? "conversations" : "projects"}?id=${encodeURIComponent(confirmation.id)}`, { method: "DELETE" });
+      if (confirmation.kind === "chat") {
+        const wasActive = chats.activeKey === confirmation.id;
+        chats.remove(chats.get(confirmation.id));
+        if (wasActive) { conversationUrl(null); exitVoiceLoop(); }
+      }
+    }, refreshLists);
+    confirmation.resolve(ok);
+    setDeleteConfirm(null);
   };
 
   const handleSubmit = (e: React.FormEvent | null, resume?: { runId: string; text: string }) => {
     e?.preventDefault();
-    const text = resume?.text ?? input.trim();
-    if (!text && !pendingFile) return;
+    const target = chats.get();
+    if (!target.loaded || target.historyLoading) return;
+    const text = resume?.text ?? target.draft.text.trim();
+    if (!text && !target.draft.file) return;
 
     const payload: OutgoingPayload = {
       text,
-      file: resume ? null : pendingFile,
-      replyTo: resume ? null : replyTo,
+      file: resume ? null : target.draft.file,
+      replyTo: resume ? null : target.draft.replyTo,
       resume,
     };
     if (!resume) {
-      setInput("");
-      setPendingFile(null);
-      setReplyTo(null);
+      chats.setDraft(target, emptyDraft());
       if (inputRef.current) inputRef.current.style.height = "auto";
     }
 
-    // A send during an active stream queues; the queue drains one at a time
-    // as each response completes.
-    if (isLoading) {
-      queueRef.current.push({ id: Date.now().toString() + Math.random().toString(36).slice(2), payload });
-      setQueuedView([...queueRef.current]);
+    if (target.run || target.queue.length) {
+      chats.enqueue(target, payload);
+      if (!target.run) resumeQueue(target);
       return;
     }
-    void sendPayload(payload);
+    void sendPayload(payload, target);
   };
 
   const removeQueued = (id: string) => {
-    queueRef.current = queueRef.current.filter((q) => q.id !== id);
-    setQueuedView([...queueRef.current]);
+    chats.removeQueued(chats.get(), id);
   };
 
-  const sendPayload = async (p: OutgoingPayload) => {
-    setIsLoading(true);
+  const resumeQueue = (target: Session) => {
+    if (target.run || !target.loaded || target.historyLoading) return;
+    const next = chats.shift(target);
+    if (next) void sendPayload(next.payload, target);
+  };
 
-    let convId = activeConvIdRef.current;
-    if (!convId) {
-      try {
-        const res = await fetch("/api/conversations", { method: "POST" });
-        const data = await res.json();
-        convId = data.id;
-        activeConvIdRef.current = data.id;
-        setActiveConversationId(data.id);
-      } catch {
-      }
-    }
-
+  const sendPayload = async (p: OutgoingPayload, target = chats.get(), retryMessage?: ChatMessage) => {
+    const run = chats.beginRun(target);
+    if (!run) { if (!retryMessage) chats.enqueue(target, p); return; }
+    const controller = run.controller;
+    const recoverDraft = () => {
+      if (!p.resume) chats.restoreDraftIfEmpty(target, { text: p.text, file: p.file, replyTo: p.replyTo });
+    };
+    const knownIds = retryMessage?.retry?.knownIds ?? target.messages.map((message) => message.id);
+    const setMessages = (update: (messages: ChatMessage[]) => ChatMessage[]) => {
+      if (chats.ownsRun(target, run)) chats.updateMessages(target, update);
+    };
+    const setAgentRun = (update: (progress: AgentRun | null) => AgentRun) => {
+      if (!chats.ownsRun(target, run)) return;
+      target.progress = update(target.progress);
+      chats.notify();
+    };
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: "user",
       content: p.text || (p.file ? `[Sent ${p.file.name}]` : ""),
       fileName: p.file?.name,
       fileMimeType: p.file?.mimeType,
       ...(p.replyTo ? { replyTo: p.replyTo } : {}),
     };
-    setMessages((prev) => [...prev, userMessage]);
-
-    if (convId) {
-      const bumpedId = convId;
-      setConversations((prev) => {
-        const idx = prev.findIndex((c) => c.id === bumpedId);
-        if (idx <= 0) return prev;
-        const next = [...prev];
-        const [conv] = next.splice(idx, 1);
-        next.unshift({ ...conv, updatedAt: new Date().toISOString() });
-        return next;
-      });
-    }
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-    // Placeholder bubble that forms from streamed token events; replaced by
-    // the authoritative done.reply (or removed on error/abort).
     let streamId = "";
+    let started = false;
+    let canDrain = false;
 
     try {
+      if (retryMessage?.retry && target.key !== NEW_CHAT) {
+        const data = await requestJson<{ messages: ServerMessage[] }>(`/api/conversations?id=${encodeURIComponent(target.key)}`, { signal: controller.signal });
+        if (!Array.isArray(data.messages)) throw new Error("Could not check whether the reply was saved. Please retry.");
+        controller.signal.throwIfAborted();
+        if (completedRetry(data.messages, userMessage.content, knownIds)) {
+          setMessages(() => mapServerMessages(data.messages));
+          if (sameDraft(target.draft, { text: p.text, file: p.file, replyTo: p.replyTo })) chats.setDraft(target, emptyDraft());
+          canDrain = true;
+          return;
+        }
+      }
+      if (retryMessage?.retry) {
+        const { userMsgId } = retryMessage.retry;
+        setMessages((previous) => previous.filter((message) => message.id !== retryMessage.id && message.id !== userMsgId));
+        if (sameDraft(target.draft, { text: p.text, file: p.file, replyTo: p.replyTo })) chats.setDraft(target, emptyDraft());
+      }
+      setMessages((previous) => [...previous, userMessage]);
+      started = true;
+      if (target.key === NEW_CHAT) {
+        const data = await requestJson<{ id: string }>("/api/conversations", { method: "POST", signal: controller.signal });
+        controller.signal.throwIfAborted();
+        if (!data.id) throw new Error("The conversation could not be created. Please retry.");
+        chats.adopt(target, data.id);
+        if (chats.get() === target) conversationUrl(data.id);
+      }
+      const convId = target.key;
+      setConversations((previous) => {
+        const item = previous.find((conversation) => conversation.id === convId);
+        return item ? [{ ...item, updatedAt: new Date().toISOString() }, ...previous.filter((conversation) => conversation.id !== convId)] : previous;
+      });
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -738,7 +855,7 @@ export default function Home() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let done: { reply: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal } | null = null;
+      let done: { reply: string; messageId: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal } | null = null;
       let streamError = "";
       let runId = "";
 
@@ -746,6 +863,7 @@ export default function Home() {
 
       for (; ;) {
         const { done: finished, value } = await reader.read();
+        controller.signal.throwIfAborted();
         if (finished) break;
         buffer += decoder.decode(value, { stream: true });
 
@@ -777,7 +895,7 @@ export default function Home() {
             setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `Created ${evt.artifact.name}`] }));
           } else if (evt.type === "token") {
             if (!streamId) {
-              streamId = `stream-${Date.now()}`;
+              streamId = `stream-${run.id}`;
               const sid = streamId;
               const text = evt.text;
               setMessages((prev) => [...prev, { id: sid, role: "assistant", content: text }]);
@@ -787,7 +905,7 @@ export default function Home() {
               setMessages((prev) => prev.map((m) => (m.id === sid ? { ...m, content: reset ? text : m.content + text } : m)));
             }
           } else if (evt.type === "done") {
-            done = { reply: evt.reply, artifacts: evt.artifacts, councilProposal: evt.councilProposal };
+            done = { reply: evt.reply, messageId: evt.messageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal };
           } else if (evt.type === "error") {
             streamError = evt.message;
           }
@@ -799,20 +917,21 @@ export default function Home() {
       // when we know the run id, or a Retry affordance when we don't.
       if (streamError || !done) {
         const notice: ChatMessage = {
-          id: (Date.now() + 1).toString(),
+          id: crypto.randomUUID(),
           role: "assistant",
           content: streamError ? `⚠️ ${streamError}` : "⚠️ The run was interrupted before finishing.",
           ...(runId
             ? { resume: { runId, text: userMessage.content } }
-            : streamError ? {} : { retry: { payload: p, userMsgId: userMessage.id } }),
+            : { retry: { payload: p, userMsgId: userMessage.id, knownIds } }),
         };
         setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), notice]);
-        await loadConversations();
+        recoverDraft();
+        void loadConversations();
         return;
       }
 
       const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: done.messageId || crypto.randomUUID(),
         role: "assistant",
         content: done.reply,
         artifacts: done.artifacts,
@@ -830,16 +949,17 @@ export default function Home() {
       // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
       // toggleSpeak's completion restarts the mic while the loop is active.
       const micTurn = !!p.file && p.file.name.startsWith("voice-note.") && p.file.mimeType.startsWith("audio/");
-      if (micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
+      if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
         void toggleSpeak(assistantMessage);
       }
-      await loadConversations();
-      loadNotes();
+      canDrain = true;
+      void loadConversations();
+      void loadNotes();
     } catch (error: unknown) {
       // Full drop on cancel: the server deletes the errant user message and
       // saves no reply, so remove the optimistic user bubble (and any
       // partially streamed reply) to match.
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (controller.signal.aborted) {
         setMessages((prev) => prev.filter((m) => m.id !== userMessage.id && (!streamId || m.id !== streamId)));
         return;
       }
@@ -851,53 +971,29 @@ export default function Home() {
         ? "Connection lost before the reply arrived (this can happen when the app goes to the background)."
         : error instanceof Error ? error.message : "Something went wrong.";
       const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: retryMessage && !started ? retryMessage.id : crypto.randomUUID(),
         role: "assistant",
         content: `⚠️ ${errorMsg}`,
-        retry: { payload: p, userMsgId: userMessage.id },
+        retry: { payload: p, userMsgId: retryMessage && !started ? retryMessage.retry!.userMsgId : userMessage.id, knownIds },
       };
-      setMessages((prev) => [...prev.filter((m) => !streamId || m.id !== streamId), errorMessage]);
+      setMessages((prev) => [...prev.filter((m) => m.id !== errorMessage.id && (!streamId || m.id !== streamId)), errorMessage]);
+      recoverDraft();
     } finally {
-      abortRef.current = null;
-      setAgentRun(null);
-      const next = queueRef.current.shift();
-      setQueuedView([...queueRef.current]);
-      if (next) void sendPayload(next.payload);
-      else setIsLoading(false);
+      if (chats.finishRun(target, run) && canDrain && !controller.signal.aborted) resumeQueue(target);
     }
   };
 
-  const handleRetry = async (msg: ChatMessage) => {
-    if (!msg.retry || isLoading) return;
-    const { payload, userMsgId } = msg.retry;
-    // The reply may have landed server-side before the connection dropped;
-    // refetch first and only re-send when the turn really was lost.
-    const convId = activeConvIdRef.current;
-    if (convId) {
-      try {
-        const res = await fetch(`/api/conversations?id=${convId}`);
-        const data = await res.json();
-        if (Array.isArray(data.messages) && data.messages.length >= 2) {
-          const sent = payload.text || (payload.file ? `[Sent ${payload.file.name}]` : "");
-          const [prev, last] = data.messages.slice(-2) as ServerMessage[];
-          if (last.role === "assistant" && prev.role === "user" && prev.content === sent) {
-            setMessages(mapServerMessages(data.messages));
-            return;
-          }
-        }
-      } catch { }
-    }
-    setMessages((prevMsgs) => prevMsgs.filter((m) => m.id !== msg.id && m.id !== userMsgId));
-    void sendPayload(payload);
+  const handleRetry = (msg: ChatMessage) => {
+    const target = chats.get();
+    if (!msg.retry || target.run || !target.messages.includes(msg)) return;
+    void sendPayload(msg.retry.payload, target, msg);
   };
 
   const handleCancel = () => {
     // Stop means stop everything: drop the in-flight turn, the queue, and
     // any running voice conversation.
-    queueRef.current = [];
-    setQueuedView([]);
     exitVoiceLoop();
-    abortRef.current?.abort();
+    chats.cancel(chats.get());
   };
 
   const startReply = (msg: ChatMessage) => {
@@ -1098,6 +1194,7 @@ export default function Home() {
   // the conversation ends it.
 
   const exitVoiceLoop = () => {
+    voiceRequestRef.current++;
     voiceLoopRef.current = false;
     setVoiceLoop(false);
     try { srRef.current?.stop(); } catch { }
@@ -1111,8 +1208,15 @@ export default function Home() {
 
   const startVoiceRecording = async () => {
     if (recorderRef.current) return;
+    const origin = chats.get();
+    if (!origin.loaded || origin.historyLoading) return;
+    const request = ++voiceRequestRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (request !== voiceRequestRef.current || chats.get() !== origin) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       voiceLoopRef.current = true;
       setVoiceLoop(true);
 
@@ -1207,13 +1311,14 @@ export default function Home() {
         const ext = mimeType === "audio/mp4" ? "m4a" : mimeType.split("/")[1] || "webm";
         const reader = new FileReader();
         reader.onload = () => {
+          if (!chats.contains(origin)) return;
           const base64 = (reader.result as string).split(",")[1] ?? "";
           const file = { name: `voice-note.${ext}`, mimeType, base64, size: blob.size };
-          if (voiceLoopRef.current) {
-            void sendPayload({ text: "", file, replyTo: null });
+          if (voiceLoopRef.current && chats.get() === origin) {
+            void sendPayload({ text: "", file, replyTo: null }, origin);
           } else {
-            setPendingFile(file);
-            inputRef.current?.focus();
+            chats.setDraft(origin, { ...origin.draft, file });
+            if (chats.get() === origin) inputRef.current?.focus();
           }
         };
         reader.readAsDataURL(blob);
@@ -1243,6 +1348,8 @@ export default function Home() {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const origin = chats.get();
+    const request = ++origin.fileRequest;
 
     if (!isSupportedAttachment(file.type, file.name)) {
       alert(`Unsupported file type: ${file.type || file.name}\n\nSupported: images, audio, video, PDF, and text/data files (Markdown, YAML, CSV, JSON, code, …).`);
@@ -1255,15 +1362,17 @@ export default function Home() {
 
     const reader = new FileReader();
     reader.onload = () => {
+      if (!chats.contains(origin) || request !== origin.fileRequest) return;
       const result = reader.result as string;
       const base64 = result.split(",")[1];
-      setPendingFile({
+      chats.setDraft(origin, { ...origin.draft, file: {
         name: file.name,
         mimeType: file.type,
         base64,
         size: file.size,
-      });
+      } });
     };
+    reader.onerror = () => setActionError({ message: `Could not read ${file.name}. Please attach it again.`, retry: () => { setActionError(null); fileInputRef.current?.click(); } });
     reader.readAsDataURL(file);
 
     e.target.value = "";
@@ -1342,9 +1451,9 @@ export default function Home() {
       : styles.graphBtn;
     return (
       <>
-        <Link href="/knowledge" style={linkStyle} aria-label="Knowledge workspace" title="Knowledge workspace">
+        <Link href={withReturnTo(returnTo?.startsWith("/graph") ? returnTo : documentLinks.knowledge, activeConversationId ? `/?c=${encodeURIComponent(activeConversationId)}` : "/")} style={linkStyle} aria-label={returnTo?.startsWith("/graph") ? "Return to cosmos" : "Knowledge workspace"} title={returnTo?.startsWith("/graph") ? "Return to cosmos" : "Knowledge workspace"}>
           <Waypoints size={14} color="var(--color-text-muted)" />
-          <span>Knowledge</span>
+          <span>{returnTo?.startsWith("/graph") ? "Cosmos" : "Knowledge"}</span>
         </Link>
         <Link href="/council" style={linkStyle} aria-label="Council" title="Council">
           <Gavel size={14} color="var(--color-text-muted)" />
@@ -1362,6 +1471,7 @@ export default function Home() {
     providers.length > 0 ? (
       <div style={styles.modelControlCluster}>
         <SelectMenu
+          searchable
           compact={compact}
           integrated
           align="right"
@@ -1371,7 +1481,7 @@ export default function Home() {
           onChange={handleChatSelChange}
           groups={providers.map((p) => ({
             label: p.label,
-            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label })),
+            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label, searchTerms: modelSearchTerms(m) })),
           }))}
         />
         <button
@@ -1492,6 +1602,19 @@ export default function Home() {
         />
       )}
 
+      {deleteConfirm && (
+        <ConfirmModal
+          title={`Delete ${deleteConfirm.kind === "chat" ? "conversation" : "project"}?`}
+          body={deleteConfirm.kind === "chat"
+            ? `Delete “${deleteConfirm.title}” and its messages? This cannot be undone.`
+            : `Delete “${deleteConfirm.title}”? Its conversations will remain in Ungrouped.`}
+          confirmLabel="Delete"
+          busyText={pendingActions.includes(`delete:${deleteConfirm.id}`) ? "Deleting…" : undefined}
+          onConfirm={() => { void confirmDeletion(); }}
+          onCancel={() => { deleteConfirm.resolve(false); setDeleteConfirm(null); }}
+        />
+      )}
+
       <aside
         style={{
           ...(isDesktop ? {
@@ -1566,7 +1689,7 @@ export default function Home() {
 
         <NewProjectButton onCreate={handleCreateProject} />
 
-        <button onClick={() => handleNewChat()} style={{ ...styles.newChatBtn, marginTop: 8 }}>
+        <button onClick={() => handleNewChat()} disabled={pendingActions.includes("new-chat")} style={{ ...styles.newChatBtn, marginTop: 8 }}>
           <Plus size={16} />
           <span>New Chat</span>
         </button>
@@ -1576,6 +1699,8 @@ export default function Home() {
           projects={projects}
           activeConversationId={activeConversationId}
           loaded={convosLoaded}
+          runningConversationIds={chats.runningKeys()}
+          deletingConversationIds={[...(deleteConfirm?.kind === "chat" ? [deleteConfirm.id] : []), ...pendingActions.filter((key) => key.startsWith("delete:")).map((key) => key.slice(7))]}
           onSelect={loadConversation}
           onDelete={handleDeleteConversation}
           onNewChat={handleNewChat}
@@ -1630,7 +1755,7 @@ export default function Home() {
               <button onClick={() => setSidebarOpen((prev) => !prev)} style={styles.iconBtn} aria-label="Conversation history" title="History">
                 <History size={19} color="var(--color-text-primary)" />
               </button>
-              <button onClick={() => handleNewChat()} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
+              <button onClick={() => handleNewChat()} disabled={pendingActions.includes("new-chat")} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
                 <Plus size={20} color="var(--color-text-primary)" />
               </button>
             </div>
@@ -1649,11 +1774,34 @@ export default function Home() {
           )}
         </header>
 
+        {actionError && (
+          <div role="alert" style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid var(--color-border)", color: "var(--color-text-primary)", fontSize: 13 }}>
+            <span style={{ flex: 1 }}>{actionError.message}</span>
+            {actionError.retry && <button type="button" onClick={actionError.retry} style={styles.exportBtn}>Retry</button>}
+            <button type="button" onClick={() => setActionError(null)} style={styles.iconBtn} aria-label="Dismiss error"><X size={15} /></button>
+          </div>
+        )}
+        {chats.storageError && (
+          <div role="alert" style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 16px", color: "var(--color-text-primary)", fontSize: 13 }}>
+            <span style={{ flex: 1 }}>{chats.storageError}</span>
+            <button type="button" onClick={() => { void retryDraftStorage(); }} style={styles.exportBtn}>Save again</button>
+          </div>
+        )}
+        {chats.runningKeys().some((key) => key !== session.key) && (
+          <div role="status" style={{ padding: "6px 16px" }}>
+            <button type="button" style={styles.exportBtn} onClick={() => { const key = chats.runningKeys().find((id) => id !== session.key); if (key) void loadConversation(key); }}>
+              Reply running in another chat
+            </button>
+          </div>
+        )}
+
         <main
           onScroll={handleMessagesScroll}
           style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}
         >
-          {messages.length === 0 && (
+          {session.historyLoading && <p role="status" style={styles.emptySubtitle}>Loading conversation…</p>}
+          {!session.loaded && !session.historyLoading && <p role="status" style={styles.emptySubtitle}>Load this conversation before sending a message. Your draft is safe.</p>}
+          {messages.length === 0 && session.loaded && (
             <div style={styles.emptyState} className="animate-fade-in-scale">
               <div style={styles.emptyIcon} className="animate-float">
                 <Bot size={32} color="var(--color-primary-foreground)" />
@@ -1937,6 +2085,12 @@ export default function Home() {
             </div>
           )}
 
+          {queuedView.length > 0 && !isLoading && (
+            <div role="status" style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--color-text-secondary)" }}>
+              <span>Queued messages are paused.</span>
+              <button type="button" style={styles.exportBtn} onClick={() => resumeQueue(chats.get())}>Send next</button>
+            </div>
+          )}
           {queuedView.map((q) => (
             <div
               key={q.id}
@@ -2074,6 +2228,7 @@ export default function Home() {
             <button
               type="button"
               onClick={toggleRecording}
+              disabled={!session.loaded || session.historyLoading}
               style={styles.attachBtn}
               aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
               title={isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat - replies are spoken, say “Zuychin, stop” to end"}
@@ -2117,10 +2272,10 @@ export default function Home() {
             )}
             <button
               type="submit"
-              disabled={!input.trim() && !pendingFile}
+              disabled={(!input.trim() && !pendingFile) || !session.loaded || session.historyLoading}
               style={{
                 ...styles.sendButton,
-                opacity: !input.trim() && !pendingFile ? 0.3 : 1,
+                opacity: (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading ? 0.3 : 1,
               }}
               aria-label={isLoading ? "Queue message" : "Send message"}
               title={isLoading ? "Queue message (sends after the current reply)" : "Send message"}

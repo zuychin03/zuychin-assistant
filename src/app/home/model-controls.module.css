@@ -1,0 +1,30 @@
+.control:focus-visible,
+.search:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.modelDialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.modelDialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modelDialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+}

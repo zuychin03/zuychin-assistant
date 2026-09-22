@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { getFile, requireVaultConfig } from "@/lib/vault/github";
+import { getFile, requireVaultConfig, VaultConflictError } from "@/lib/vault/github";
 import { applyKnowledgeLifecycle, type KnowledgeLifecycleAction } from "@/lib/knowledge/lifecycle";
 
 export const maxDuration = 60;
@@ -55,23 +55,29 @@ export async function POST(req: NextRequest) {
             action?: KnowledgeLifecycleAction;
             documentId?: string;
             markdown?: string;
+            expectedMarkdown?: string;
             sourceIds?: string[];
             scope?: "user" | "project" | "repository" | "session";
             trust?: "trusted" | "reviewed" | "untrusted";
         };
-        if (!body.action || !body.documentId) {
+        if (!body?.action || !body.documentId) {
             return NextResponse.json({ error: "action and documentId are required." }, { status: 400 });
+        }
+        if (body.action === "correct" && typeof body.expectedMarkdown !== "string") {
+            return NextResponse.json({ error: "expectedMarkdown is required for a correction." }, { status: 400 });
         }
         const result = await applyKnowledgeLifecycle({
             action: body.action,
             documentId: body.documentId,
             markdown: body.markdown,
+            expectedMarkdown: body.action === "correct" ? body.expectedMarkdown : undefined,
             sourceIds: body.sourceIds,
             scope: body.scope,
             trust: body.trust,
         });
         return NextResponse.json(result);
     } catch (error) {
+        if (error instanceof VaultConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
         console.error("[Knowledge Lifecycle]", error);
         return NextResponse.json({
             error: error instanceof Error ? error.message : "Knowledge update failed.",

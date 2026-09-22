@@ -1,12 +1,9 @@
 "use client";
 
-// Sidebar conversation list with project grouping: collapsible project
-// sections above the flat "Ungrouped" rows. Purely presentational; all
-// fetching lives in the page, this component only holds menu/edit UI state.
-
 import { useState, useRef, useEffect } from "react";
-import { MessageSquare, Trash2, Folder, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X } from "lucide-react";
+import { MessageSquare, Trash2, Folder, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X, LoaderCircle } from "lucide-react";
 import { styles } from "./styles";
+import ui from "./conversation-list.module.css";
 
 export interface ConversationItem {
   id: string;
@@ -22,40 +19,52 @@ export interface ProjectItem {
   color: string;
 }
 
-// Rendered by the page above the New Chat button, outside the scrolling list.
-export function NewProjectButton({ onCreate }: { onCreate: (name: string) => Promise<void> }) {
+export function NewProjectButton({ onCreate }: { onCreate: (name: string) => Promise<boolean> }) {
   const [creating, setCreating] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
 
   const submit = async () => {
     const name = nameDraft.trim();
-    setCreating(false);
-    setNameDraft("");
-    if (name) await onCreate(name);
+    if (!name || pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    try {
+      if (await onCreate(name)) {
+        setCreating(false);
+        setNameDraft("");
+      }
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
   };
 
   if (creating) {
     return (
-      <div style={{ ...local.inlineForm, margin: "12px 12px 0", marginBottom: 0 }}>
+      <div className={ui.scope} aria-busy={pending} style={{ ...local.inlineForm, margin: "12px 12px 0", marginBottom: 0 }}>
         <input
           autoFocus
+          aria-label="Project name"
+          disabled={pending}
           value={nameDraft}
           onChange={(e) => setNameDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-            if (e.key === "Escape") { setCreating(false); setNameDraft(""); }
+            if (e.key === "Enter") { e.preventDefault(); void submit(); }
+            if (e.key === "Escape" && !pending) { setCreating(false); setNameDraft(""); }
           }}
           placeholder="Project name"
           style={local.input}
         />
-        <button style={local.iconBtn} onClick={submit} aria-label="Create project"><Check size={14} /></button>
-        <button style={local.iconBtn} onClick={() => { setCreating(false); setNameDraft(""); }} aria-label="Cancel"><X size={14} /></button>
+        <button style={local.iconBtn} disabled={pending || !nameDraft.trim()} onClick={submit} aria-label={pending ? "Creating project" : "Create project"}>{pending ? <LoaderCircle size={14} /> : <Check size={14} />}</button>
+        <button style={local.iconBtn} disabled={pending} onClick={() => { setCreating(false); setNameDraft(""); }} aria-label="Cancel"><X size={14} /></button>
       </div>
     );
   }
 
   return (
-    <button style={{ ...local.newProjectBtn, width: "auto", margin: "12px 12px 0" }} onClick={() => setCreating(true)}>
+    <button className={ui.focus} style={{ ...local.newProjectBtn, width: "auto", margin: "12px 12px 0" }} onClick={() => setCreating(true)}>
       <FolderPlus size={14} />
       <span>New Project</span>
     </button>
@@ -65,6 +74,7 @@ export function NewProjectButton({ onCreate }: { onCreate: (name: string) => Pro
 export function ConversationList({
   conversations, projects, activeConversationId, loaded,
   onSelect, onDelete, onNewChat, onUpdateProject, onDeleteProject, onMoveConversation, formatTime,
+  runningConversationIds = [], deletingConversationIds = [],
 }: {
   conversations: ConversationItem[];
   projects: ProjectItem[];
@@ -73,10 +83,12 @@ export function ConversationList({
   onSelect: (id: string) => void;
   onDelete: (e: React.MouseEvent, id: string) => void;
   onNewChat: (projectId?: string) => void;
-  onUpdateProject: (id: string, patch: { name?: string; instructions?: string }) => Promise<void>;
-  onDeleteProject: (id: string) => Promise<void>;
-  onMoveConversation: (convId: string, projectId: string | null) => Promise<void>;
+  onUpdateProject: (id: string, patch: { name?: string; instructions?: string }) => Promise<boolean>;
+  onDeleteProject: (id: string) => Promise<boolean>;
+  onMoveConversation: (convId: string, projectId: string | null) => Promise<boolean>;
   formatTime: (dateStr: string) => string;
+  runningConversationIds?: readonly string[];
+  deletingConversationIds?: readonly string[];
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -86,6 +98,20 @@ export function ConversationList({
   const [instructionsId, setInstructionsId] = useState<string | null>(null);
   const [instructionsDraft, setInstructionsDraft] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const pendingRef = useRef<string | null>(null);
+
+  const perform = async (key: string, action: () => Promise<boolean>, complete: () => void) => {
+    if (pendingRef.current) return;
+    pendingRef.current = key;
+    setPendingAction(key);
+    try {
+      if (await action()) complete();
+    } finally {
+      pendingRef.current = null;
+      setPendingAction(null);
+    }
+  };
 
   useEffect(() => {
     if (!menuFor && !moveFor) return;
@@ -110,14 +136,12 @@ export function ConversationList({
   const submitRename = async () => {
     const id = renamingId;
     const name = renameDraft.trim();
-    setRenamingId(null);
-    if (id && name) await onUpdateProject(id, { name });
+    if (id && name) await perform(`rename:${id}`, () => onUpdateProject(id, { name }), () => setRenamingId(null));
   };
 
   const submitInstructions = async () => {
     const id = instructionsId;
-    setInstructionsId(null);
-    if (id) await onUpdateProject(id, { instructions: instructionsDraft.trim() });
+    if (id) await perform(`instructions:${id}`, () => onUpdateProject(id, { instructions: instructionsDraft.trim() }), () => setInstructionsId(null));
   };
 
   const renderRow = (conv: ConversationItem, indented: boolean) => (
@@ -126,7 +150,12 @@ export function ConversationList({
         onClick={() => onSelect(conv.id)}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && onSelect(conv.id)}
+        onKeyDown={(e) => {
+          if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            onSelect(conv.id);
+          }
+        }}
         style={{
           ...styles.conversationItem,
           ...(activeConversationId === conv.id ? styles.conversationItemActive : {}),
@@ -135,7 +164,7 @@ export function ConversationList({
         <MessageSquare size={14} style={{ flexShrink: 0, marginTop: 2 }} />
         <div style={styles.conversationInfo}>
           <span style={styles.conversationTitle}>{conv.title}</span>
-          <span style={styles.conversationTime}>{formatTime(conv.updatedAt)}</span>
+          <span style={styles.conversationTime}>{runningConversationIds.includes(conv.id) ? "Replying…" : formatTime(conv.updatedAt)}</span>
         </div>
         {projects.length > 0 && (
           <button
@@ -145,6 +174,7 @@ export function ConversationList({
               setMenuFor(null);
             }}
             style={styles.deleteBtn}
+            disabled={!!pendingAction || deletingConversationIds.includes(conv.id)}
             aria-label="Move to project"
             title="Move to project"
           >
@@ -154,7 +184,9 @@ export function ConversationList({
         <button
           onClick={(e) => onDelete(e, conv.id)}
           style={styles.deleteBtn}
-          aria-label="Delete conversation"
+          disabled={deletingConversationIds.includes(conv.id) || runningConversationIds.includes(conv.id)}
+          title={runningConversationIds.includes(conv.id) ? "Stop the reply before deleting this conversation." : "Delete conversation"}
+          aria-label={`Delete conversation: ${conv.title}`}
         >
           <Trash2 size={13} />
         </button>
@@ -163,8 +195,8 @@ export function ConversationList({
         <div style={local.menu}>
           <button
             style={local.menuItem}
-            onClick={() => { setMoveFor(null); onMoveConversation(conv.id, null); }}
-            disabled={!conv.projectId}
+            onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, null), () => setMoveFor(null))}
+            disabled={!!pendingAction || !conv.projectId}
           >
             Ungrouped
           </button>
@@ -172,8 +204,8 @@ export function ConversationList({
             <button
               key={p.id}
               style={local.menuItem}
-              onClick={() => { setMoveFor(null); onMoveConversation(conv.id, p.id); }}
-              disabled={conv.projectId === p.id}
+              onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, p.id), () => setMoveFor(null))}
+              disabled={!!pendingAction || conv.projectId === p.id}
             >
               {p.name}
             </button>
@@ -184,7 +216,7 @@ export function ConversationList({
   );
 
   return (
-    <div ref={rootRef} style={styles.conversationList}>
+    <div ref={rootRef} className={ui.scope} aria-busy={!!pendingAction} style={styles.conversationList}>
       {projects.map((p) => {
         const convs = grouped.get(p.id) ?? [];
         const isCollapsed = collapsed[p.id] ?? false;
@@ -195,26 +227,37 @@ export function ConversationList({
               onClick={() => setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }))}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }))}
+              onKeyDown={(e) => {
+                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }));
+                }
+              }}
             >
               {isCollapsed ? <ChevronRight size={13} style={{ flexShrink: 0 }} /> : <ChevronDown size={13} style={{ flexShrink: 0 }} />}
               <Folder size={13} style={{ flexShrink: 0 }} />
               {renamingId === p.id ? (
                 <input
                   autoFocus
+                  aria-label={`Rename project: ${p.name}`}
+                  disabled={!!pendingAction}
                   value={renameDraft}
                   onChange={(e) => setRenameDraft(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") submitRename();
-                    if (e.key === "Escape") setRenamingId(null);
+                    e.stopPropagation();
+                    if (e.key === "Enter") { e.preventDefault(); void submitRename(); }
+                    if (e.key === "Escape" && !pendingAction) setRenamingId(null);
                   }}
-                  onBlur={submitRename}
                   style={{ ...local.input, flex: 1 }}
                 />
               ) : (
                 <span style={local.projectName}>{p.name}</span>
               )}
+              {renamingId === p.id && <>
+                <button style={local.iconBtn} disabled={!!pendingAction || !renameDraft.trim()} onClick={(e) => { e.stopPropagation(); void submitRename(); }} aria-label="Save project name"><Check size={14} /></button>
+                <button style={local.iconBtn} disabled={!!pendingAction} onClick={(e) => { e.stopPropagation(); setRenamingId(null); }} aria-label="Cancel rename"><X size={14} /></button>
+              </>}
               <span style={local.projectCount}>{convs.length}</span>
               <button
                 style={styles.deleteBtn}
@@ -226,6 +269,7 @@ export function ConversationList({
               </button>
               <button
                 style={styles.deleteBtn}
+                disabled={!!pendingAction}
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuFor(menuFor === p.id ? null : p.id);
@@ -241,23 +285,23 @@ export function ConversationList({
               <div style={local.menu}>
                 <button
                   style={local.menuItem}
+                  disabled={!!pendingAction}
                   onClick={() => { setMenuFor(null); setRenamingId(p.id); setRenameDraft(p.name); }}
                 >
                   Rename
                 </button>
                 <button
                   style={local.menuItem}
+                  disabled={!!pendingAction}
                   onClick={() => { setMenuFor(null); setInstructionsId(p.id); setInstructionsDraft(p.instructions); }}
                 >
                   Instructions
                 </button>
                 <button
                   style={{ ...local.menuItem, color: "var(--color-danger, #d5484f)" }}
+                  disabled={!!pendingAction}
                   onClick={() => {
-                    setMenuFor(null);
-                    if (window.confirm(`Delete project "${p.name}"? Its chats move to Ungrouped.`)) {
-                      onDeleteProject(p.id);
-                    }
+                    void perform(`delete-project:${p.id}`, () => onDeleteProject(p.id), () => setMenuFor(null));
                   }}
                 >
                   Delete
@@ -269,6 +313,8 @@ export function ConversationList({
               <div style={local.instructionsBox}>
                 <textarea
                   autoFocus
+                  aria-label={`Instructions for ${p.name}`}
+                  disabled={!!pendingAction}
                   value={instructionsDraft}
                   onChange={(e) => setInstructionsDraft(e.target.value)}
                   placeholder="Instructions injected into every chat in this project…"
@@ -276,8 +322,8 @@ export function ConversationList({
                   style={local.textarea}
                 />
                 <div style={local.instructionsActions}>
-                  <button style={local.iconBtn} onClick={submitInstructions} aria-label="Save instructions"><Check size={14} /></button>
-                  <button style={local.iconBtn} onClick={() => setInstructionsId(null)} aria-label="Cancel"><X size={14} /></button>
+                  <button style={local.iconBtn} disabled={!!pendingAction} onClick={submitInstructions} aria-label="Save instructions"><Check size={14} /></button>
+                  <button style={local.iconBtn} disabled={!!pendingAction} onClick={() => setInstructionsId(null)} aria-label="Cancel"><X size={14} /></button>
                 </div>
               </div>
             )}
@@ -394,9 +440,8 @@ const local: Record<string, React.CSSProperties> = {
     border: "1px solid var(--color-border)",
     borderRadius: 6,
     color: "var(--color-text-primary)",
-    fontSize: 12.5,
+    fontSize: 16,
     fontFamily: "var(--font-family)",
-    outline: "none",
   },
   textarea: {
     width: "100%",
@@ -405,9 +450,8 @@ const local: Record<string, React.CSSProperties> = {
     border: "1px solid var(--color-border)",
     borderRadius: 6,
     color: "var(--color-text-primary)",
-    fontSize: 12.5,
+    fontSize: 16,
     fontFamily: "var(--font-family)",
-    outline: "none",
     resize: "vertical",
   },
   instructionsBox: {

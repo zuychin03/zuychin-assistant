@@ -1,5 +1,5 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { commitFiles, getFile, requireVaultConfig, type CommitFileChange } from "@/lib/vault/github";
+import { commitFiles, getBranchHead, getFile, requireVaultConfig, VaultConflictError, type CommitFileChange } from "@/lib/vault/github";
 import { parseFrontmatter, serializeFrontmatter } from "@/lib/knowledge/markdown";
 import { documentMeta, indexKnowledgeDocument } from "@/lib/knowledge/store";
 import { knowledgeService } from "@/lib/knowledge/service";
@@ -43,13 +43,14 @@ async function commitLifecycleChanges(params: {
     changes: { document: DocumentRow; markdown: string; status: KnowledgeStatus; supersedesId?: string }[];
     message: string;
     action: "corrected" | "promoted" | "merged" | "archived" | "restored" | "deleted";
+    expectedHead?: string;
 }): Promise<{ commit: string }> {
     const cfg = requireVaultConfig();
     const fileChanges: CommitFileChange[] = params.changes.map((change) => ({
         path: change.document.path,
         content: change.markdown,
     }));
-    const { commit } = await commitFiles(cfg, fileChanges, params.message);
+    const { commit } = await commitFiles(cfg, fileChanges, params.message, params.expectedHead);
     const embRef = await vaultEmbeddingRef();
 
     for (const change of params.changes) {
@@ -94,13 +95,18 @@ export async function applyKnowledgeLifecycle(input: {
     action: KnowledgeLifecycleAction;
     documentId: string;
     markdown?: string;
+    expectedMarkdown?: string;
     sourceIds?: string[];
     scope?: KnowledgeScope;
     trust?: KnowledgeTrust;
 }): Promise<{ commit: string; affected: string[] }> {
-    const target = await getDocument(input.documentId);
     const cfg = requireVaultConfig();
-    const targetFile = await getFile(cfg, target.path);
+    const expectedHead = input.action === "correct" && input.expectedMarkdown !== undefined ? await getBranchHead(cfg) : undefined;
+    const target = await getDocument(input.documentId);
+    const targetFile = await getFile(cfg, target.path, expectedHead);
+    if (expectedHead !== undefined && (!targetFile || targetFile.text !== input.expectedMarkdown)) {
+        throw new VaultConflictError();
+    }
     if (!targetFile) throw new Error(`${target.path} no longer exists in the vault.`);
     const today = new Date().toISOString().slice(0, 10);
 
@@ -193,6 +199,7 @@ export async function applyKnowledgeLifecycle(input: {
         changes: [{ document: target, markdown, status }],
         message: `curator: ${input.action} ${target.title}`,
         action,
+        expectedHead,
     });
     return { ...result, affected: [target.id] };
 }

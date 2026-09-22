@@ -4,6 +4,8 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
 import styles from "./markdown-reader.module.css";
+import { documentHeadings } from "../graph/cosmos/sections";
+import type { ElementType, ReactNode } from "react";
 
 interface MarkdownReaderProps {
     markdown: string;
@@ -30,7 +32,16 @@ function vaultReference(href: string) {
 }
 
 export function MarkdownReader({ markdown, variant = "document", onVaultLink }: MarkdownReaderProps) {
+    const headings = new Map(documentHeadings(markdown).map((heading) => [heading.line, heading]));
+    const heading = (Tag: ElementType) => function Heading({ node, children }: {
+        node?: { position?: { start: { line: number } } }; children?: ReactNode;
+    }) {
+        const match = headings.get(node?.position?.start.line ?? -1);
+        return <Tag data-section-id={match?.id} tabIndex={-1}>{children}</Tag>;
+    };
     const components: Components = {
+        h1: heading("h1"), h2: heading("h2"), h3: heading("h3"),
+        h4: heading("h4"), h5: heading("h5"), h6: heading("h6"),
         table: ({ children }) => <div className={styles.tableScroll}><table>{children}</table></div>,
         a: ({ href = "", children }) => {
             if (href.startsWith("vault://")) {

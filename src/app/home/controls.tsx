@@ -1,11 +1,12 @@
 "use client";
 
-// Presentational controls for the Home chat page: grouped model dropdown,
-// generation-parameter row and the model-details modal.
-
-import { useState, useRef, useEffect } from "react";
-import { Check, ChevronDown, X } from "lucide-react";
+import { useState, useRef, useEffect, useId } from "react";
+import { Check, ChevronDown, Search, X } from "lucide-react";
 import { styles } from "./styles";
+import { filterModelGroups, nextModelOption, type ModelPickerGroup } from "./model-picker";
+import controlStyles from "./model-controls.module.css";
+
+export { modelSearchTerms } from "./model-picker";
 
 export interface ModelMeta {
   developer: string;
@@ -39,10 +40,10 @@ export interface ProviderInfo {
 }
 
 export function SelectMenu({
-  icon, groups, value, onChange, ariaLabel, align = "left", compact = false, dropUp = false, wide = false, integrated = false,
+  icon, groups, value, onChange, ariaLabel, align = "left", compact = false, dropUp = false, wide = false, integrated = false, searchable = false,
 }: {
   icon: React.ReactNode;
-  groups: { label: string; options: { value: string; label: string }[] }[];
+  groups: ModelPickerGroup[];
   value: string;
   onChange: (v: string) => void;
   ariaLabel: string;
@@ -53,28 +54,100 @@ export function SelectMenu({
   wide?: boolean;
   /** Uses the selector as the leading part of a related control group. */
   integrated?: boolean;
+  searchable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeValue, setActiveValue] = useState(value);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const filteredGroups = filterModelGroups(groups, query);
+  const options = filteredGroups.flatMap((group) => group.options);
+  const activeIndex = Math.max(0, options.findIndex((option) => option.value === activeValue));
+  const activeOption = options[activeIndex];
+  const optionId = (index: number) => `${listId}-option-${index}`;
+
+  const closeMenu = (restoreFocus = false) => {
+    setOpen(false);
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
+  };
+
+  const openMenu = (edge?: "first" | "last") => {
+    setQuery("");
+    const allOptions = groups.flatMap((group) => group.options);
+    setActiveValue(edge === "last" ? allOptions.at(-1)?.value ?? ""
+      : edge === "first" ? allOptions[0]?.value ?? "" : value || allOptions[0]?.value || "");
+    setOpen(true);
+  };
+
+  const selectOption = (selected: string) => {
+    onChange(selected);
+    closeMenu(true);
+  };
+
+  const handleNavigation = (event: React.KeyboardEvent) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu(true);
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && !event.shiftKey) {
+      event.preventDefault();
+      const next = nextModelOption(activeIndex, options.length, event.key);
+      if (options[next]) setActiveValue(options[next].value);
+    } else if (event.key === "Enter" || (!searchable && event.key === " ")) {
+      event.preventDefault();
+      if (activeOption) selectOption(activeOption.value);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    (searchable ? searchRef.current : listRef.current)?.focus({ preventScroll: true });
+    const onDoc = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        const focusTarget = e.target instanceof Element && e.target.closest("button, a[href], input, select, textarea, [tabindex], [contenteditable=true]");
+        if (!focusTarget) triggerRef.current?.focus({ preventScroll: true });
+      }
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+    document.addEventListener("pointerdown", onDoc);
+    return () => document.removeEventListener("pointerdown", onDoc);
+  }, [open, searchable]);
+
+  useEffect(() => {
+    if (open && activeOption) document.getElementById(`${listId}-option-${activeIndex}`)?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex, activeOption, listId]);
 
   const current = groups.flatMap((g) => g.options).find((o) => o.value === value);
 
   return (
-    <div ref={ref} style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}), ...(integrated ? dropdown.wrapIntegrated : {}) }}>
+    <div
+      ref={ref}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) closeMenu();
+      }}
+      style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}), ...(integrated ? dropdown.wrapIntegrated : {}) }}
+    >
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        className={controlStyles.control}
+        onClick={() => open ? closeMenu() : openMenu()}
+        onKeyDown={(event) => {
+          if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+            event.preventDefault();
+            openMenu(event.key === "ArrowUp" || event.key === "End" ? "last" : event.key === "Home" ? "first" : undefined);
+          }
+        }}
         style={{ ...dropdown.trigger, ...(compact ? { width: "100%" } : {}), ...(integrated ? dropdown.triggerIntegrated : {}), ...(open ? dropdown.triggerOpen : {}) }}
-        aria-label={ariaLabel}
+        aria-label={`${ariaLabel}: ${current?.label ?? "Select"}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
         title={current?.label}
       >
         <span style={dropdown.triggerIcon}>{icon}</span>
@@ -93,22 +166,74 @@ export function SelectMenu({
           }}
           className="animate-fade-in-scale"
         >
-          {groups.map((g) => (
-            <div key={g.label} style={dropdown.group}>
-              <div style={dropdown.groupLabel}>{g.label}</div>
-              {g.options.map((o) => (
-                <button
-                  key={o.value}
-                  type="button"
-                  onClick={() => { onChange(o.value); setOpen(false); }}
-                  style={{ ...dropdown.item, ...(o.value === value ? dropdown.itemActive : {}) }}
-                >
-                  <span style={dropdown.itemLabel}>{o.label}</span>
-                  {o.value === value && <Check size={14} style={{ flexShrink: 0 }} />}
-                </button>
-              ))}
+          {searchable && (
+            <div style={dropdown.searchWrap}>
+              <Search size={15} aria-hidden="true" style={{ flexShrink: 0, color: "var(--color-text-muted)" }} />
+              <input
+                ref={searchRef}
+                role="combobox"
+                type="text"
+                className={controlStyles.search}
+                style={dropdown.search}
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setActiveValue("");
+                }}
+                onKeyDown={handleNavigation}
+                aria-label={`Search ${ariaLabel.toLowerCase()}s`}
+                aria-controls={listId}
+                aria-expanded={open}
+                aria-autocomplete="list"
+                aria-activedescendant={activeOption ? optionId(activeIndex) : undefined}
+                placeholder="Search models or capabilities"
+                autoComplete="off"
+                spellCheck={false}
+              />
             </div>
-          ))}
+          )}
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            aria-label={`${ariaLabel} options`}
+            aria-activedescendant={!searchable && activeOption ? optionId(activeIndex) : undefined}
+            tabIndex={searchable ? undefined : 0}
+            onKeyDown={searchable ? undefined : handleNavigation}
+            style={dropdown.options}
+          >
+            {filteredGroups.map((group, groupIndex) => (
+              <div key={group.label} role="group" aria-labelledby={`${listId}-group-${groupIndex}`} style={dropdown.group}>
+                <div id={`${listId}-group-${groupIndex}`} style={dropdown.groupLabel}>{group.label}</div>
+                {group.options.map((option) => {
+                  const index = options.indexOf(option);
+                  return (
+                    <button
+                      key={option.value}
+                      id={optionId(index)}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={option.value === value}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onPointerMove={() => setActiveValue(option.value)}
+                      onClick={() => selectOption(option.value)}
+                      style={{ ...dropdown.item, ...(option.value === value ? dropdown.itemActive : {}), ...(index === activeIndex ? dropdown.itemFocused : {}) }}
+                    >
+                      <span style={dropdown.itemLabel}>{option.label}</span>
+                      {option.value === value && <Check size={14} aria-hidden="true" style={{ flexShrink: 0 }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+          {searchable && (
+            <p role="status" aria-live="polite" style={dropdown.resultStatus}>
+              {options.length ? `${options.length} model${options.length === 1 ? "" : "s"}` : "No matching models. Try a model or provider name, or a capability such as vision."}
+            </p>
+          )}
+          {!searchable && !options.length && <p style={dropdown.resultStatus}>No models available.</p>}
         </div>
       )}
     </div>
@@ -175,6 +300,22 @@ export function ModelInfoModal({
   providerLabel: string;
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog?.showModal();
+    closeRef.current?.focus({ preventScroll: true });
+    return () => {
+      dialog?.close();
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, []);
+
   const meta = model.meta;
   const specs: { label: string; value: string }[] = [];
   if (meta?.context) specs.push({ label: "Context", value: meta.context });
@@ -190,23 +331,29 @@ export function ModelInfoModal({
   if (model.supportsStructuredOutput) caps.push("Structured output");
 
   return (
-    <div style={modal.overlay} className="animate-overlay-in" onClick={onClose}>
-      <div style={modal.card} className="animate-fade-in-scale" onClick={(e) => e.stopPropagation()}>
+    <dialog
+      ref={dialogRef}
+      className={controlStyles.modelDialog}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      aria-modal="true"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div style={modal.card} className="animate-fade-in-scale">
         <div style={modal.header}>
           <div style={{ minWidth: 0 }}>
-            <h2 style={modal.title}>{model.label}</h2>
+            <h2 id={titleId} style={modal.title}>{model.label}</h2>
             <p style={modal.subtitle}>
               {providerLabel}{meta?.developer ? ` · ${meta.developer}` : ""}
             </p>
           </div>
-          <button onClick={onClose} style={styles.iconBtn} aria-label="Close">
+          <button ref={closeRef} type="button" onClick={onClose} style={styles.iconBtn} className={controlStyles.control} aria-label="Close model details">
             <X size={18} color="var(--color-text-muted)" />
           </button>
         </div>
 
-        {meta?.description && <p style={modal.desc}>{meta.description}</p>}
-
-        {!meta && <p style={modal.desc}>No details available for this model yet.</p>}
+        <p id={descriptionId} style={modal.desc}>{meta?.description || "No details available for this model yet."}</p>
 
         {specs.length > 0 && (
           <div style={modal.specGrid}>
@@ -255,7 +402,7 @@ export function ModelInfoModal({
           </div>
         )}
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -270,28 +417,76 @@ export function ConfirmModal({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmingRef = useRef(false);
+  const dismissedRef = useRef(false);
+  // The opening render disables the source button before effects run.
+  const [previousFocus] = useState<HTMLElement | null>(() =>
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    cancelRef.current?.focus({ preventScroll: true });
+    return () => {
+      dialog?.close();
+      requestAnimationFrame(() => {
+        if (!dialog?.open && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      });
+    };
+  }, [previousFocus]);
+
+  useEffect(() => {
+    if (busyText) dialogRef.current?.focus({ preventScroll: true });
+    else confirmingRef.current = false;
+  }, [busyText]);
+
+  const cancel = () => {
+    if (busyText || confirmingRef.current || dismissedRef.current) return;
+    dismissedRef.current = true;
+    onCancel();
+  };
+  const confirm = () => {
+    if (busyText || confirmingRef.current || dismissedRef.current) return;
+    confirmingRef.current = true;
+    onConfirm();
+  };
+
   return (
-    <div style={modal.overlay} className="animate-overlay-in" onClick={busyText ? undefined : onCancel}>
-      <div style={modal.card} className="animate-fade-in-scale" onClick={(e) => e.stopPropagation()}>
+    <dialog
+      ref={dialogRef}
+      tabIndex={-1}
+      className={controlStyles.modelDialog}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      aria-modal="true"
+      aria-busy={!!busyText}
+      onCancel={(event) => { event.preventDefault(); cancel(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) cancel(); }}
+    >
+      <div style={modal.card} className="animate-fade-in-scale">
         <div style={modal.header}>
-          <h2 style={modal.title}>{title}</h2>
+          <h2 id={titleId} style={modal.title}>{title}</h2>
           {!busyText && (
-            <button onClick={onCancel} style={styles.iconBtn} aria-label="Close">
+            <button type="button" onClick={cancel} style={styles.iconBtn} className={controlStyles.control} aria-label="Close">
               <X size={18} color="var(--color-text-muted)" />
             </button>
           )}
         </div>
-        <p style={modal.desc}>{body}</p>
+        <p id={descriptionId} style={modal.desc}>{body}</p>
         {busyText ? (
-          <p style={{ ...modal.desc, color: "var(--color-primary)", fontWeight: 600 }}>{busyText}</p>
+          <p role="status" style={{ ...modal.desc, color: "var(--color-primary)", fontWeight: 600 }}>{busyText}</p>
         ) : (
           <div style={confirmRow}>
-            <button onClick={onCancel} style={confirmCancelBtn}>Cancel</button>
-            <button onClick={onConfirm} style={confirmDangerBtn}>{confirmLabel}</button>
+            <button ref={cancelRef} type="button" onClick={cancel} style={confirmCancelBtn} className={controlStyles.control}>Cancel</button>
+            <button type="button" onClick={confirm} style={confirmDangerBtn} className={controlStyles.control}>{confirmLabel}</button>
           </div>
         )}
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -376,18 +571,51 @@ const dropdown: Record<string, React.CSSProperties> = {
     position: "absolute",
     top: "calc(100% + 6px)",
     zIndex: 50,
-    // Matches the trigger it hangs off rather than a fixed cap, so a wide selector
-    // gets a wide list instead of ellipsising every model name.
     width: "100%",
     minWidth: 240,
     maxWidth: "calc(100vw - 20px)",
-    maxHeight: 360,
-    overflowY: "auto",
+    maxHeight: "min(420px, 65dvh)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
     background: "var(--color-background)",
     border: "1px solid var(--color-border)",
     borderRadius: 12,
     padding: 6,
     boxShadow: "0 12px 32px rgba(0,0,0,0.16)",
+  },
+  searchWrap: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 8px 10px",
+    borderBottom: "1px solid var(--color-border)",
+    flexShrink: 0,
+  },
+  search: {
+    width: "100%",
+    minWidth: 0,
+    padding: "5px 2px",
+    border: "none",
+    borderRadius: 3,
+    background: "transparent",
+    color: "var(--color-text-primary)",
+    fontSize: 16,
+    fontFamily: "var(--font-family)",
+  },
+  options: {
+    minHeight: 0,
+    overflowY: "auto",
+    overscrollBehavior: "contain",
+    padding: 2,
+  },
+  resultStatus: {
+    padding: "8px 10px 4px",
+    margin: 0,
+    fontSize: 12,
+    lineHeight: 1.5,
+    color: "var(--color-text-muted)",
+    flexShrink: 0,
   },
   group: {
     marginBottom: 2,
@@ -406,6 +634,7 @@ const dropdown: Record<string, React.CSSProperties> = {
     justifyContent: "space-between",
     gap: 8,
     width: "100%",
+    minHeight: 44,
     padding: "8px 10px",
     background: "transparent",
     border: "none",
@@ -421,6 +650,11 @@ const dropdown: Record<string, React.CSSProperties> = {
     background: "var(--color-surface)",
     color: "var(--color-text-primary)",
     fontWeight: 600,
+  },
+  itemFocused: {
+    outline: "2px solid var(--color-primary)",
+    outlineOffset: -2,
+    background: "var(--color-surface)",
   },
   itemLabel: {
     whiteSpace: "nowrap",

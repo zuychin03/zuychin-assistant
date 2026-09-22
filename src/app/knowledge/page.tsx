@@ -10,6 +10,8 @@ import {
 import { MarkdownReader } from "./markdown-reader";
 import styles from "./knowledge.module.css";
 import { Dropdown } from "@/components/dropdown";
+import { useDocumentDraft } from "../use-document-draft";
+import { documentDestination, readDocumentPosition, rememberDocumentLocation, rememberDocumentPosition, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
 
 type Tab = "library" | "recall" | "timeline" | "maintenance";
 interface DocumentSummary {
@@ -65,7 +67,22 @@ export default function KnowledgePage() {
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
     const [editing, setEditing] = useState(false);
-    const [markdown, setMarkdown] = useState("");
+    const [documentId, setDocumentId] = useState<string | null>(null);
+    const [requestedPath, setRequestedPath] = useState<string | null>(null);
+    const [urlReady, setUrlReady] = useState(false);
+    const [currentUrl, setCurrentUrl] = useState("/knowledge");
+    const [returnTo, setReturnTo] = useState<string | null>(null);
+    const [sectionId, setSectionId] = useState<string | null>(null);
+    const [mobileReader, setMobileReader] = useState(false);
+    const listRef = useRef<HTMLDivElement>(null);
+    const readerRef = useRef<HTMLDivElement>(null);
+    const titleRef = useRef<HTMLHeadingElement>(null);
+    const activeId = useRef(documentId);
+    activeId.current = documentId;
+    const draft = useDocumentDraft(detail?.document.path ?? null, detail?.markdown ?? null);
+    const markdown = draft.text;
+    const markdownRef = useRef(markdown);
+    markdownRef.current = markdown;
     const [importFile, setImportFile] = useState<File>();
     const [importPlan, setImportPlan] = useState<ImportPlan>();
     const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -74,6 +91,47 @@ export default function KnowledgePage() {
     const [mergeMarkdown, setMergeMarkdown] = useState("");
     const fileInput = useRef<HTMLInputElement>(null);
     const obsidianVault = process.env.NEXT_PUBLIC_OBSIDIAN_VAULT_NAME;
+
+    useEffect(() => {
+        const restore = () => {
+            const params = new URLSearchParams(window.location.search);
+            const nextTab = params.get("tab") as Tab;
+            setTab(TABS.some((item) => item.id === nextTab) ? nextTab : "library");
+            setFilter(params.get("filter") ?? "");
+            const nextStatus = params.get("status") ?? "active";
+            setStatus(["active", "suggested", "archived", "superseded", "deleted", "all"].includes(nextStatus) ? nextStatus : "active");
+            setDocumentId(params.get("document")); setRequestedPath(params.get("path"));
+            setReturnTo(safeReturnTo(params.get("returnTo")));
+            setSectionId(params.get("section"));
+            setMobileReader(params.get("view") !== "pages" && Boolean(params.get("document") || params.get("path")));
+            setUrlReady(true);
+        };
+        restore(); window.addEventListener("popstate", restore);
+        return () => window.removeEventListener("popstate", restore);
+    }, []);
+
+    useEffect(() => {
+        if (!urlReady) return;
+        const params = new URLSearchParams();
+        if (tab !== "library") params.set("tab", tab);
+        if (filter) params.set("filter", filter);
+        if (status !== "active") params.set("status", status);
+        if (documentId) params.set("document", documentId);
+        const path = detail?.document.id === documentId ? detail.document.path : requestedPath;
+        if (path) params.set("path", path);
+        if (sectionId) params.set("section", sectionId);
+        if (documentId && !mobileReader) params.set("view", "pages");
+        if (returnTo) params.set("returnTo", returnTo);
+        const url = `/knowledge${params.size ? `?${params}` : ""}`;
+        window.history.replaceState(window.history.state, "", url);
+        rememberDocumentLocation(url); setCurrentUrl(url);
+    }, [urlReady, tab, filter, status, documentId, detail, requestedPath, returnTo, mobileReader, sectionId]);
+
+    useEffect(() => {
+        if (!requestedPath || documentId) return;
+        const match = documents.find((item) => item.path === requestedPath);
+        if (match) setDocumentId(match.id);
+    }, [requestedPath, documentId, documents]);
 
     const loadDocuments = useCallback(async () => {
         const response = await fetch(`/api/knowledge/documents?status=${encodeURIComponent(status)}`);
@@ -100,15 +158,71 @@ export default function KnowledgePage() {
     useEffect(() => { if (tab === "timeline") loadEvents().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadEvents]);
     useEffect(() => { if (tab === "maintenance") loadSuggestions().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadSuggestions]);
 
-    async function selectDocument(id: string) {
-        setBusy("document"); setError("");
-        try {
-            const response = await fetch(`/api/knowledge/documents?id=${encodeURIComponent(id)}`);
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || "Failed to load document.");
-            setDetail(payload); setMarkdown(payload.markdown); setEditing(false);
-        } catch (reason) { setError(reason instanceof Error ? reason.message : "Failed to load document."); }
-        finally { setBusy(""); }
+    async function fetchDocument(id: string, signal?: AbortSignal): Promise<DocumentDetail> {
+        const response = await fetch(`/api/knowledge/documents?id=${encodeURIComponent(id)}`, { signal });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Failed to load document.");
+        return payload;
+    }
+
+    useEffect(() => {
+        if (!documentId) { setDetail(undefined); return; }
+        const controller = new AbortController();
+        setBusy("document"); setError(""); setEditing(false);
+        fetchDocument(documentId, controller.signal).then((payload) => {
+            if (!controller.signal.aborted) setDetail(payload);
+        }).catch((reason: unknown) => {
+            if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Failed to load document.");
+        }).finally(() => { if (!controller.signal.aborted) setBusy(""); });
+        return () => controller.abort();
+    }, [documentId]);
+
+    useEffect(() => {
+        if (!detail || detail.document.id !== documentId || tab !== "library") return;
+        const frame = requestAnimationFrame(() => {
+            if (readerRef.current) readerRef.current.scrollTop = readDocumentPosition(`library:${detail.document.path}`);
+            if (sectionId && readerRef.current) {
+                const heading = [...readerRef.current.querySelectorAll<HTMLElement>("[data-section-id]")]
+                    .find((element) => element.dataset.sectionId === sectionId);
+                if (heading) {
+                    readerRef.current.scrollTop += heading.getBoundingClientRect().top - readerRef.current.getBoundingClientRect().top - 16;
+                    heading.focus({ preventScroll: true });
+                }
+            }
+            if (window.matchMedia("(max-width: 900px)").matches && mobileReader) {
+                if (!sectionId) titleRef.current?.focus({ preventScroll: true });
+                readerRef.current?.scrollIntoView({ block: "start" });
+            }
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [detail, documentId, tab, mobileReader, sectionId]);
+
+    useEffect(() => {
+        if (tab !== "library" || (mobileReader && window.matchMedia("(max-width: 900px)").matches)) return;
+        const frame = requestAnimationFrame(() => {
+            if (listRef.current) listRef.current.scrollTop = readDocumentPosition(`list:${status}:${filter}`);
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [tab, mobileReader, documents, status, filter]);
+
+    function selectDocument(id: string) {
+        const item = documents.find((entry) => entry.id === id);
+        const params = new URLSearchParams(window.location.search);
+        params.set("document", id); if (item) params.set("path", item.path);
+        window.history.pushState(window.history.state, "", `/knowledge?${params}`);
+        setRequestedPath(item?.path ?? null); setDocumentId(id); setMobileReader(true); setSectionId(null);
+    }
+
+    function backToPages() {
+        setMobileReader(false);
+        requestAnimationFrame(() => {
+            if (listRef.current) {
+                listRef.current.scrollTop = readDocumentPosition(`list:${status}:${filter}`);
+                [...listRef.current.querySelectorAll<HTMLButtonElement>("[data-document-id]")]
+                    .find((button) => button.dataset.documentId === documentId)?.focus({ preventScroll: true });
+                listRef.current.scrollIntoView({ block: "start" });
+            }
+        });
     }
 
     const visibleDocuments = useMemo(() => {
@@ -121,16 +235,41 @@ export default function KnowledgePage() {
     async function lifecycle(action: "archive" | "restore" | "forget" | "promote" | "correct") {
         if (!detail) return;
         if (action === "forget" && !window.confirm("Retire this page from recall while preserving Markdown and history?")) return;
+        const selectedDetail = detail;
+        const submitted = markdown;
+        let applied = false;
         setBusy(action); setError("");
         try {
+            if (action === "correct") {
+                const latest = await fetchDocument(selectedDetail.document.id);
+                if (latest.markdown !== draft.base) {
+                    if (activeId.current === selectedDetail.document.id) setDetail(latest);
+                    throw new Error("This page changed since the draft began. Your draft is safe. Copy it before discarding it to reopen the current page.");
+                }
+            }
             const response = await fetch("/api/knowledge/documents", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action, documentId: detail.document.id, ...(action === "correct" ? { markdown } : {}) }),
+                body: JSON.stringify({ action, documentId: selectedDetail.document.id,
+                    ...(action === "correct" ? { markdown: submitted, expectedMarkdown: draft.base } : {}) }),
             });
             const payload = await response.json();
+            if (response.status === 409 && action === "correct") {
+                const latest = await fetchDocument(selectedDetail.document.id).catch(() => null);
+                if (latest && activeId.current === selectedDetail.document.id) setDetail(latest);
+                throw new Error(payload.error || "The page changed during save. Your draft is kept; review the current page before trying again.");
+            }
             if (!response.ok) throw new Error(payload.error || "Knowledge update failed.");
-            await loadDocuments(); await selectDocument(detail.document.id);
-        } catch (reason) { setError(reason instanceof Error ? reason.message : "Knowledge update failed."); }
+            applied = true;
+            const refreshed = await fetchDocument(selectedDetail.document.id);
+            const unchangedDraft = markdownRef.current === submitted;
+            if (action === "correct") draft.saved(selectedDetail.document.path, submitted, refreshed.markdown);
+            if (activeId.current === selectedDetail.document.id) {
+                setDetail(refreshed);
+                if (unchangedDraft) setEditing(false);
+            }
+            await loadDocuments();
+        } catch (reason) { setError(applied ? "The update was saved, but refresh failed. Your local draft is kept; reopen the page before saving again."
+            : reason instanceof Error ? reason.message : "Knowledge update failed. Your draft is kept."); }
         finally { setBusy(""); }
     }
 
@@ -263,18 +402,22 @@ export default function KnowledgePage() {
     const obsidianHref = detail && obsidianVault
         ? `obsidian://open?vault=${encodeURIComponent(obsidianVault)}&file=${encodeURIComponent(detail.document.path.replace(/\.md$/i, ""))}`
         : undefined;
+    const cosmosHref = withReturnTo(detail
+        ? `/graph?node=${encodeURIComponent(detail.document.path)}&root=${encodeURIComponent(detail.document.path)}&local=1${sectionId ? `&section=${encodeURIComponent(sectionId)}` : ""}`
+        : documentDestination("/graph"), currentUrl);
+    const backHref = returnTo && !returnTo.startsWith("/?") && returnTo !== "/" ? returnTo : withReturnTo(returnTo ?? documentDestination("/"), currentUrl);
 
     return <main className={styles.shell}>
         <header className={styles.header}>
             <div className={styles.titleGroup}>
-                <Link href="/" className={styles.iconButton} aria-label="Back to chat"><ArrowLeft size={18} /></Link>
+                <Link href={backHref} className={styles.iconButton} aria-label={returnTo?.startsWith("/graph") ? "Back to Cosmos" : "Back to chat"}><ArrowLeft size={18} /></Link>
                 <div><span className={styles.eyebrow}>Second brain</span><h1>Knowledge workspace</h1><p>Markdown-first, explainable, and portable to Obsidian.</p></div>
             </div>
             <div className={styles.actions}>
                 <button onClick={() => syncVault()} disabled={!!busy}><RefreshCw size={15} /> Reconcile</button>
                 <a href="/api/knowledge/export"><Download size={15} /> Export</a>
                 <button onClick={() => fileInput.current?.click()} disabled={!!busy}><Upload size={15} /> Import</button>
-                <Link href="/graph"><GitBranch size={15} /> Graph</Link>
+                <Link href={cosmosHref}><GitBranch size={15} /> {detail ? "Explore page" : "Cosmos"}</Link>
                 <input ref={fileInput} type="file" accept=".zip,application/zip" hidden onChange={(event) => {
                     const file = event.target.files?.[0]; if (file) { setImportFile(file); uploadVault(file, true); }
                 }} />
@@ -285,9 +428,9 @@ export default function KnowledgePage() {
         )}</nav>
         {error && <div className={styles.error}><XCircle size={16} /> {error}</div>}
 
-        {tab === "library" && <section className={styles.library}>
+        {tab === "library" && <section className={styles.library} data-reading={mobileReader}>
             <aside className={styles.sidebar}>
-                <div className={styles.filters}><label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter pages" /></label>
+                <div className={styles.filters}><label><Search size={15} /><input aria-label="Filter pages" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter pages" /></label>
                     <Dropdown
                         ariaLabel="Status filter"
                         value={status}
@@ -297,26 +440,29 @@ export default function KnowledgePage() {
                     />
                 </div>
                 <small className={styles.count}>{visibleDocuments.length} documents</small>
-                <div className={styles.documentList}>
+                <div className={styles.documentList} ref={listRef}
+                    onScroll={(event) => rememberDocumentPosition(`list:${status}:${filter}`, event.currentTarget.scrollTop)}>
                     {!visibleDocuments.length && <div className={styles.emptyList}>
                         <BookOpen size={20} /><strong>{documents.length ? "No matching pages" : "No indexed pages yet"}</strong>
                         <p>{documents.length ? "Try another filter or status." : "Reconcile the workspace or import an Obsidian vault."}</p>
                         {!documents.length && <button onClick={() => syncVault()} disabled={!!busy}><RefreshCw size={13} /> Reconcile now</button>}
                     </div>}
                     {visibleDocuments.map((item) =>
-                        <button key={item.id} className={detail?.document.id === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
+                        <button key={item.id} data-document-id={item.id} className={documentId === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
                             <FileText size={15} /><span><strong>{item.title}</strong><small>{item.path}</small><em>{item.kind} / {item.scope}</em></span>
                         </button>,
                     )}
                 </div>
             </aside>
-            <div className={styles.detail}>
+            <div className={styles.detail} ref={readerRef}
+                onScroll={(event) => { if (detail) rememberDocumentPosition(`library:${detail.document.path}`, event.currentTarget.scrollTop); }}>
+                <button className={styles.backToPages} onClick={backToPages}><ArrowLeft size={16} /> Back to pages</button>
                 {busy === "document" && <div className={styles.blank}><Loader2 className={styles.spin} /> Loading page</div>}
                 {!detail && busy !== "document" && <div className={styles.blank}><BookOpen size={30} /><h2>{documents.length ? "Choose a page to read" : "Your knowledge library is empty"}</h2><p>{documents.length ? "Open a page to read its formatted Markdown and inspect its sources." : "Import your Obsidian vault or reconcile the workspace to begin."}</p></div>}
-                {detail && <>
+                {detail && detail.document.id === documentId && <>
                     <div className={styles.detailHeader}><div><div className={styles.badges}>
                         {[detail.document.status, detail.document.kind, detail.document.trust, detail.document.sensitivity].map((value) => <span key={value}>{value}</span>)}
-                    </div><h2>{detail.document.title}</h2><code>{detail.document.path}</code></div>
+                    </div><h2 ref={titleRef} tabIndex={-1}>{detail.document.title}</h2><code>{detail.document.path}</code></div>
                     <div className={styles.actions}>
                         {obsidianHref && <a href={obsidianHref}><ExternalLink size={14} /> Obsidian</a>}
                         <button onClick={() => setEditing((value) => !value)}><FileText size={14} /> {editing ? "Reader" : "Source"}</button>
@@ -324,8 +470,17 @@ export default function KnowledgePage() {
                             ? <button onClick={() => lifecycle("archive")}><Archive size={14} /> Archive</button>
                             : <button onClick={() => lifecycle("restore")}><RotateCcw size={14} /> Restore</button>}
                     </div></div>
-                    {editing ? <div className={styles.editor}><textarea value={markdown} onChange={(event) => setMarkdown(event.target.value)} /><div>
-                        <button className={styles.primary} onClick={() => lifecycle("correct")} disabled={!!busy}><CheckCircle2 size={15} /> Save correction</button>
+                    {draft.dirty && <div className={styles.draftStatus} role="status">
+                        <span>{draft.conflict ? "The saved page changed. Copy your draft before discarding it to reopen the current page."
+                            : draft.persisted ? "Unsaved changes · Draft saved on this device" : "Unsaved changes · Keep this tab open; draft recovery is unavailable"}</span>
+                        {!editing && <button onClick={() => setEditing(true)}>Resume editing</button>}
+                        {draft.conflict && <button onClick={() => navigator.clipboard.writeText(markdown).catch(() => setError("Could not copy the draft. Select and copy its text in Source."))}>Copy draft</button>}
+                        <button disabled={!!busy} onClick={() => {
+                            if (window.confirm("Discard this document draft? The saved page will stay unchanged.") && !draft.discard()) setError("Could not clear the stored draft. Keep this tab open and try again.");
+                        }}>Discard draft</button>
+                    </div>}
+                    {editing ? <div className={styles.editor}><textarea aria-label="Document Markdown" value={markdown} onChange={(event) => draft.change(event.target.value)} /><div>
+                        <button className={styles.primary} onClick={() => lifecycle("correct")} disabled={!!busy || !draft.dirty || draft.conflict || !markdown.trim()}><CheckCircle2 size={15} /> {busy === "correct" ? "Saving…" : "Save correction"}</button>
                         <button onClick={() => lifecycle("promote")} disabled={!!busy}><Sparkles size={15} /> Promote</button>
                         <button className={styles.danger} onClick={() => lifecycle("forget")} disabled={!!busy}>Retire</button>
                     </div></div> : <div className={styles.markdown}>

@@ -14,7 +14,9 @@ import {
     buildAdjacency, createView, deriveVisible, earliestCreated, endpoints, localNodeIds, pathLinkKeys,
     readCategories, visiblePath, writeCategories, type ApiGraph, type GLink, type GNode, type NodeHealth, type SelectedLink,
 } from "./cosmos/model";
-import { parseSections } from "./cosmos/sections";
+import { documentHeadings, parseSections } from "./cosmos/sections";
+import { useDocumentDraft } from "../use-document-draft";
+import { documentDestination, libraryDocumentDestination, rememberDocumentLocation, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
 import ExplorePanel, { type SearchHit } from "./panels/explore-panel";
 import LensPanel from "./panels/lens-panel";
 import { ClustersPanel, HealthPanel, HubsPanel } from "./panels/insight-panels";
@@ -41,7 +43,9 @@ export default function GraphPage() {
     const nodeCache = useRef(new Map<string, GNode>());
     const linkCache = useRef(new Map<string, GLink>());
     const searchInputRef = useRef<HTMLInputElement>(null);
-    const urlLoaded = useRef(false);
+    const [urlHydrated, setUrlHydrated] = useState(false);
+    const [currentUrl, setCurrentUrl] = useState("/graph");
+    const [returnTo, setReturnTo] = useState<string | null>(null);
     const graphRequest = useRef(0);
     const pendingFocus = useRef<string | null>(null);
     const systemFrameTimer = useRef<number | null>(null);
@@ -99,7 +103,8 @@ export default function GraphPage() {
     const pageMd = selectedId ? pageContents[selectedId] ?? null : null;
     const [pageLoading, setPageLoading] = useState(false);
     const [editMode, setEditMode] = useState(false);
-    const [editText, setEditText] = useState("");
+    const draft = useDocumentDraft(selectedId, pageMd);
+    const editText = draft.text;
     const editTextRef = useRef(editText);
     editTextRef.current = editText;
     const [busy, setBusy] = useState<string | null>(null);
@@ -204,17 +209,22 @@ export default function GraphPage() {
     // ---- URL state ----
 
     useEffect(() => {
-        if (urlLoaded.current) return;
-        urlLoaded.current = true;
+        const restore = () => {
         const params = new URLSearchParams(window.location.search);
+        setReturnTo(safeReturnTo(params.get("returnTo")));
+        const section = params.get("section");
+        setFocusedSection(section ? { id: section, title: "Selected section" } : null);
+        const savedDock = params.get("dock");
+        setDock(savedDock === "third" || savedDock === "tall" ? savedDock : "half");
 
         const urlLens = params.get("lens");
-        if (urlLens && (LENSES as readonly string[]).includes(urlLens)) setLens(urlLens as Lens);
+        setLens(urlLens && (LENSES as readonly string[]).includes(urlLens) ? urlLens as Lens : "category");
         const urlQuery = params.get("q");
-        if (urlQuery) setQuery(urlQuery);
+        setQuery(urlQuery ?? "");
         setCategoryFilter(readCategories(params.get("cat")));
-        if (params.get("sug") === "1") setShowSuggestions(true);
-        if (params.get("quality") === "plain") setQuality("plain");
+        setShowSuggestions(params.get("sug") === "1");
+        setQuality(params.get("quality") === "plain" ? "plain" : "auto");
+        setTrustFilter([]);
         const trustParam = params.get("trust");
         if (trustParam) {
             const buckets = trustParam
@@ -224,10 +234,11 @@ export default function GraphPage() {
         }
         const from = params.get("from");
         const to = params.get("to");
-        if (from) setRouteFrom(from);
-        if (to) setRouteTo(to);
+        setRouteFrom(from);
+        setRouteTo(to);
         const node = params.get("node");
-        if (node) setSelected({ type: "node", id: node });
+        setSelected(node ? { type: "node", id: node } : null);
+        setLocalRoot(null);
 
         // The system root is recorded separately from the open page, because the two
         // diverge the moment a neighbour is opened from inside a system. Deriving the
@@ -245,6 +256,7 @@ export default function GraphPage() {
             }
         }
         const stamp = params.get("t");
+        setTimeActive(false);
         if (stamp) {
             const parsed = Date.parse(stamp);
             if (!Number.isNaN(parsed)) {
@@ -252,10 +264,14 @@ export default function GraphPage() {
                 setTimeValue(parsed);
             }
         }
+        setUrlHydrated(true);
+        };
+        restore(); window.addEventListener("popstate", restore);
+        return () => window.removeEventListener("popstate", restore);
     }, []);
 
     useEffect(() => {
-        if (!urlLoaded.current) return;
+        if (!urlHydrated) return;
         const params = new URLSearchParams();
         if (lens !== "category") params.set("lens", lens);
         if (query) params.set("q", query);
@@ -264,6 +280,9 @@ export default function GraphPage() {
         if (routeFrom) params.set("from", routeFrom);
         if (routeTo) params.set("to", routeTo);
         if (selected?.type === "node") params.set("node", selected.id);
+        if (selected?.type === "node" && focusedSection) params.set("section", focusedSection.id);
+        if (dock !== "half") params.set("dock", dock);
+        if (returnTo) params.set("returnTo", returnTo);
         if (localRoot) {
             params.set("root", localRoot);
             params.set("local", String(localDepth));
@@ -274,8 +293,16 @@ export default function GraphPage() {
         if (categories !== null) params.set("cat", categories);
         const search = params.toString();
         // replaceState, not push: dragging a slider must not fill the back stack.
-        window.history.replaceState(null, "", search ? `?${search}` : window.location.pathname);
-    }, [lens, query, showSuggestions, quality, routeFrom, routeTo, selected, localRoot, localDepth, timeActive, timeValue, categoryFilter, trustFilter]);
+        const url = `/graph${search ? `?${search}` : ""}`;
+        window.history.replaceState(window.history.state, "", url);
+        rememberDocumentLocation(url); setCurrentUrl(url);
+    }, [urlHydrated, lens, query, showSuggestions, quality, routeFrom, routeTo, selected, localRoot, localDepth, timeActive, timeValue, categoryFilter, trustFilter, focusedSection, dock, returnTo]);
+
+    useEffect(() => {
+        if (!pageMd || !focusedSection) return;
+        const heading = documentHeadings(pageMd).find((item) => item.id === focusedSection.id);
+        if (heading && heading.title !== focusedSection.title) setFocusedSection({ id: heading.id, title: heading.title });
+    }, [pageMd, focusedSection]);
 
     // ---- Selection ----
 
@@ -306,7 +333,6 @@ export default function GraphPage() {
                 if (cancelled) return;
                 if (!response.ok) throw new Error(json.error || "Failed to load the page.");
                 setPageContents((current) => ({ ...current, [path]: json.markdown }));
-                setEditText(json.markdown);
             } catch (caught) {
                 if (!cancelled) showToast(caught instanceof Error ? caught.message : "Failed to load the page.");
             } finally {
@@ -713,23 +739,47 @@ export default function GraphPage() {
         if (selected?.type !== "node") return;
         const id = selected.id;
         const markdown = editText;
+        const base = draft.base;
+        let committed = false;
         setBusy("save");
         try {
+            const latestResponse = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`);
+            const latest = await latestResponse.json();
+            if (!latestResponse.ok) throw new Error(latest.error || "Could not check the current page.");
+            if (latest.markdown !== base) {
+                setPageContents((current) => ({ ...current, [id]: latest.markdown }));
+                throw new Error("This page changed since your draft began. Your draft is safe; copy it before discarding it to reopen the current page.");
+            }
             const response = await fetch("/api/vault/page", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: id, markdown }),
+                body: JSON.stringify({ path: id, markdown, expectedMarkdown: base }),
             });
             const json = await response.json();
+            if (response.status === 409) {
+                try {
+                    const refreshed = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`);
+                    const latestPage = await refreshed.json();
+                    if (refreshed.ok) setPageContents((current) => ({ ...current, [id]: latestPage.markdown }));
+                } catch { /* The draft stays recoverable if refresh also fails. */ }
+                throw new Error(json.error || "The page changed during save. Your draft is kept; review the current page before trying again.");
+            }
             if (!response.ok) throw new Error(json.error || "Save failed.");
-            setPageContents((current) => ({ ...current, [id]: markdown }));
-            if (selectedRef.current?.type === "node" && selectedRef.current.id === id && editTextRef.current === markdown) {
+            committed = true;
+            const savedResponse = await fetch(`/api/vault/page?path=${encodeURIComponent(id)}`);
+            const saved = await savedResponse.json();
+            if (!savedResponse.ok) throw new Error("Could not reload the saved page.");
+            const unchangedDraft = editTextRef.current === markdown;
+            draft.saved(id, markdown, saved.markdown);
+            setPageContents((current) => ({ ...current, [id]: saved.markdown }));
+            if (selectedRef.current?.type === "node" && selectedRef.current.id === id && unchangedDraft) {
                 setEditMode(false);
             }
             showToast("Page saved and committed.");
             void fetchGraph("rebuild");
         } catch (caught) {
-            showToast(caught instanceof Error ? caught.message : "Save failed.");
+            showToast(committed ? "Page saved, but reload failed. Your local draft is kept; reopen the page before saving again."
+                : caught instanceof Error ? caught.message : "Save failed. Your draft is kept.");
         } finally {
             setBusy(null);
         }
@@ -1060,6 +1110,10 @@ export default function GraphPage() {
                 loading={pageLoading}
                 editMode={editMode}
                 editText={editText}
+                draftDirty={draft.dirty}
+                draftPersisted={draft.persisted}
+                draftConflict={draft.conflict}
+                libraryHref={withReturnTo(libraryDocumentDestination(selected.id, returnTo ?? documentDestination("/knowledge"), focusedSection?.id), currentUrl)}
                 busy={busy}
                 confirming={confirming}
                 suggestions={suggestions}
@@ -1079,8 +1133,12 @@ export default function GraphPage() {
                     if (!localRoot) cosmosRef.current?.releaseFocus();
                 }}
                 onEdit={() => setEditMode(true)}
-                onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
-                onEditText={setEditText}
+                onCancelEdit={() => setEditMode(false)}
+                onEditText={draft.change}
+                onDiscardDraft={() => {
+                    if (window.confirm("Discard this document draft? The saved page will stay unchanged.") && !draft.discard()) showToast("Could not clear the stored draft. Keep this tab open and try again.");
+                }}
+                onCopyDraft={() => { void navigator.clipboard.writeText(editText).catch(() => showToast("Could not copy the draft. Select and copy its text in the editor.")); }}
                 onSave={() => void savePage()}
                 onDelete={() => void deletePage()}
                 onConfirm={setConfirming}
@@ -1151,7 +1209,9 @@ export default function GraphPage() {
                 ref={topBarRef}
             >
                 <div style={styles.topBarGroup}>
-                    <Link href="/" style={styles.backBtn} aria-label="Back to chat" title="Back to chat">
+                    <Link href={returnTo?.startsWith("/knowledge") ? returnTo : withReturnTo(returnTo ?? documentDestination("/"), currentUrl)} style={styles.backBtn}
+                        aria-label={returnTo?.startsWith("/knowledge") ? "Back to Library" : "Back to chat"}
+                        title={returnTo?.startsWith("/knowledge") ? "Back to Library" : "Back to chat"}>
                         <ArrowLeft size={16} />
                     </Link>
                     <div style={styles.titleStack}>

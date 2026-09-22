@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getFile, requireVaultConfig } from "@/lib/vault/github";
+import { getFile, requireVaultConfig, VaultConflictError } from "@/lib/vault/github";
 import { writeVaultPage } from "@/lib/vault/ingest";
 import { deleteGraphPage } from "@/lib/vault/graph";
 import { listVaultPages } from "@/lib/vault/store";
@@ -34,10 +34,10 @@ export async function GET(req: NextRequest) {
 export async function PUT(req: NextRequest) {
     try {
         const body = await req.json();
-        const path = typeof body.path === "string" ? body.path : null;
-        const markdown = typeof body.markdown === "string" ? body.markdown : "";
-        if (badPath(path) || !markdown.trim()) {
-            return NextResponse.json({ error: "A valid path and non-empty markdown are required." }, { status: 400 });
+        const path = typeof body?.path === "string" ? body.path : null;
+        const markdown = typeof body?.markdown === "string" ? body.markdown : "";
+        if (badPath(path) || !markdown.trim() || typeof body.expectedMarkdown !== "string") {
+            return NextResponse.json({ error: "A valid path, non-empty markdown and expectedMarkdown are required." }, { status: 400 });
         }
 
         // Preserve the catalogued summary; writeVaultPage would otherwise stamp a generic one.
@@ -45,11 +45,13 @@ export async function PUT(req: NextRequest) {
         const result = await writeVaultPage({
             path,
             markdown,
+            expectedMarkdown: body.expectedMarkdown,
             summary: row?.summary || undefined,
             embRef: getEmbeddingRef(row?.embeddingModel),
         });
         return NextResponse.json({ success: true, commit: result.commit });
     } catch (error: unknown) {
+        if (error instanceof VaultConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
         console.error("[Vault Page API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });

@@ -1,0 +1,9 @@
+.scope :is(button, input, textarea, [role="button"]):focus-visible,
+.focus:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.scope button:disabled {
+  opacity: 0.55;
+}

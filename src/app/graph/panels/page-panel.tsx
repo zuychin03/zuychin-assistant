@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -13,6 +14,7 @@ import { styles } from "../cosmos/styles";
 import { displayMarkdown, humanizePath, type GraphNode } from "../cosmos/model";
 import { documentHeadings } from "../cosmos/sections";
 import { Badge, PanelShell } from "./ui";
+import { readDocumentPosition, rememberDocumentPosition } from "@/lib/document-navigation";
 
 const TRUST_COLORS: Record<string, string> = {
     trusted: "#dce8ff",
@@ -39,6 +41,10 @@ export default function PagePanel(props: {
     loading: boolean;
     editMode: boolean;
     editText: string;
+    draftDirty: boolean;
+    draftPersisted: boolean;
+    draftConflict: boolean;
+    libraryHref: string;
     busy: string | null;
     confirming: string | null;
     suggestions: PageSuggestion[];
@@ -56,6 +62,8 @@ export default function PagePanel(props: {
     onEdit(): void;
     onCancelEdit(): void;
     onEditText(value: string): void;
+    onDiscardDraft(): void;
+    onCopyDraft(): void;
     onSave(): void;
     onDelete(): void;
     onConfirm(key: string | null): void;
@@ -73,6 +81,7 @@ export default function PagePanel(props: {
 }) {
     const {
         node, markdown, loading, editMode, editText, busy, confirming,
+        draftDirty, draftPersisted, draftConflict, libraryHref, onDiscardDraft, onCopyDraft,
         suggestions, suggestionsLoading, selectedSuggestions,
         linkQuery, linkTargets, linkTargetId, linkLabel, focusedSection, onFocusSection, onClearSection, titleOf,
         onClose, onEdit, onCancelEdit, onEditText, onSave, onDelete, onConfirm,
@@ -84,6 +93,7 @@ export default function PagePanel(props: {
     const markdownRef = useRef<HTMLDivElement>(null);
     const navigationRef = useRef<HTMLDivElement>(null);
     const [outlineOpen, setOutlineOpen] = useState(false);
+    const restoredPath = useRef<string | null>(null);
     const headings = useMemo(() => documentHeadings(markdown ?? ""), [markdown]);
     const headingByLine = useMemo(() => new Map(headings.map(heading => [heading.line, heading])), [headings]);
     const headingComponents = useMemo(() => {
@@ -115,6 +125,12 @@ export default function PagePanel(props: {
         pane.scrollTop += heading.getBoundingClientRect().top - pane.getBoundingClientRect().top - 14;
         heading.focus({ preventScroll: true });
     }, [focusedSection, markdown, editMode, loading]);
+
+    useEffect(() => {
+        if (loading || !markdown || editMode || restoredPath.current === node.id) return;
+        restoredPath.current = node.id;
+        if (!focusedSection && markdownRef.current) markdownRef.current.scrollTop = readDocumentPosition(`cosmos:${node.id}`);
+    }, [node.id, markdown, loading, editMode, focusedSection]);
 
     return (
         <section style={styles.panel}>
@@ -149,17 +165,18 @@ export default function PagePanel(props: {
             <div style={styles.actionRow}>
                 {!editMode && (
                     <button style={styles.action} onClick={onEdit} disabled={loading || markdown === null}>
-                        <Pencil size={12} /> Edit
+                        <Pencil size={12} /> {draftDirty ? "Resume editing" : "Edit"}
                     </button>
                 )}
                 {editMode && (
                     <>
-                        <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onSave} disabled={busy === "save"}>
+                        <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onSave} disabled={busy === "save" || !draftDirty || draftConflict || !editText.trim()}>
                             {busy === "save" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Save
                         </button>
-                        <button style={styles.action} onClick={onCancelEdit} disabled={busy === "save"}>Cancel</button>
+                        <button style={styles.action} onClick={onCancelEdit}>Reader</button>
                     </>
                 )}
+                <Link href={libraryHref} style={{ ...styles.action, textDecoration: "none" }}>Open in Library</Link>
                 <button style={styles.action} onClick={onLocal} title="Isolate this system">
                     <Crosshair size={12} /> System
                 </button>
@@ -182,6 +199,15 @@ export default function PagePanel(props: {
                     </button>
                 )}
             </div>
+
+            {draftDirty && <div style={{ ...styles.empty, padding: "10px 0", display: "grid", gap: 8 }} role="status">
+                <span>{draftConflict ? "The saved page changed. Copy your draft before discarding it to reopen the current page."
+                    : draftPersisted ? "Unsaved changes · Draft saved on this device" : "Unsaved changes · Keep this tab open; draft recovery is unavailable"}</span>
+                <div style={styles.actionRow}>
+                    {draftConflict && <button style={styles.action} onClick={onCopyDraft}>Copy draft</button>}
+                    <button style={styles.action} onClick={onDiscardDraft} disabled={busy === "save"}>Discard draft</button>
+                </div>
+            </div>}
 
             {loading && (
                 <div style={{ ...styles.empty, display: "flex", alignItems: "center", gap: 7 }}>
@@ -233,7 +259,8 @@ export default function PagePanel(props: {
             )}
 
             {!loading && !editMode && markdown && (
-                <div ref={markdownRef} style={styles.markdown} className="graph-markdown" aria-label={`${node.title} document`}>
+                <div ref={markdownRef} style={styles.markdown} className="graph-markdown" aria-label={`${node.title} document`}
+                    onScroll={(event) => rememberDocumentPosition(`cosmos:${node.id}`, event.currentTarget.scrollTop)}>
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={headingComponents}>{displayMarkdown(markdown)}</ReactMarkdown>
                 </div>
             )}
