@@ -1,16 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-    Check, Crosshair, Link2, Loader2, Orbit, Pencil, Route, Sparkles, Trash2, X,
+    Check, ChevronDown, Crosshair, Link2, List, Loader2, Orbit, Pencil, Route, Sparkles, Trash2, X,
 } from "lucide-react";
 import {
     CATEGORY_COLORS, COSMOS, HEALTH_COLORS, HEALTH_LABELS,
 } from "../cosmos/palette";
 import { styles } from "../cosmos/styles";
 import { displayMarkdown, humanizePath, type GraphNode } from "../cosmos/model";
+import { documentHeadings } from "../cosmos/sections";
 import { Badge, PanelShell } from "./ui";
 
 const TRUST_COLORS: Record<string, string> = {
@@ -47,8 +48,8 @@ export default function PagePanel(props: {
     linkTargets: GraphNode[];
     linkTargetId: string | null;
     linkLabel: string;
-    /** Section whose planet was clicked in local mode; scrolled to on change. */
     focusedSection: { id: string; title: string } | null;
+    onFocusSection(sectionId: string, title: string): void;
     onClearSection(): void;
     titleOf(path: string): string;
     onClose(): void;
@@ -73,7 +74,7 @@ export default function PagePanel(props: {
     const {
         node, markdown, loading, editMode, editText, busy, confirming,
         suggestions, suggestionsLoading, selectedSuggestions,
-        linkQuery, linkTargets, linkTargetId, linkLabel, focusedSection, onClearSection, titleOf,
+        linkQuery, linkTargets, linkTargetId, linkLabel, focusedSection, onFocusSection, onClearSection, titleOf,
         onClose, onEdit, onCancelEdit, onEditText, onSave, onDelete, onConfirm,
         onFocus, onLocal, onRouteFrom, onRouteTo,
         onToggleSuggestion, onAcceptSuggestion, onLinkSelected,
@@ -81,17 +82,39 @@ export default function PagePanel(props: {
     } = props;
 
     const markdownRef = useRef<HTMLDivElement>(null);
+    const navigationRef = useRef<HTMLDivElement>(null);
+    const [outlineOpen, setOutlineOpen] = useState(false);
+    const headings = useMemo(() => documentHeadings(markdown ?? ""), [markdown]);
+    const headingByLine = useMemo(() => new Map(headings.map(heading => [heading.line, heading])), [headings]);
+    const headingComponents = useMemo(() => {
+        const renderHeading = (Tag: ElementType) => function Heading({ node: element, children }: {
+            node?: { position?: { start: { line: number } } };
+            children?: React.ReactNode;
+        }) {
+            const heading = headingByLine.get(element?.position?.start.line ?? -1);
+            return <Tag id={heading ? `vault-section-${heading.id}` : undefined}
+                data-section-id={heading?.id} tabIndex={-1}
+                data-focused={heading?.id === focusedSection?.id || undefined}>{children}</Tag>;
+        };
+        return {
+            h1: renderHeading("h1"), h2: renderHeading("h2"), h3: renderHeading("h3"),
+            h4: renderHeading("h4"), h5: renderHeading("h5"), h6: renderHeading("h6"),
+        };
+    }, [headingByLine, focusedSection?.id]);
 
     useEffect(() => {
-        if (!focusedSection || !markdownRef.current) return;
-        const wanted = focusedSection.title.trim();
-        const heading = [...markdownRef.current.querySelectorAll("h1, h2, h3")]
-            .find((element) => (element.textContent ?? "").trim() === wanted);
+        if (loading || !focusedSection || !markdownRef.current) return;
+        const heading = [...markdownRef.current.querySelectorAll<HTMLElement>("[data-section-id]")]
+            .find(element => element.dataset.sectionId === focusedSection.id);
         if (!heading) return;
-        // scrollIntoView would also scroll the surrounding rail; keep it to the pane.
         const pane = markdownRef.current;
-        pane.scrollTop = (heading as HTMLElement).offsetTop - pane.offsetTop;
-    }, [focusedSection, markdown, editMode]);
+        // Keep the document and its containing rail in view without scrolling the canvas.
+        const rail = pane.closest<HTMLElement>(".cosmos-rail, .cosmos-dock-body");
+        if (rail) rail.scrollTop += pane.getBoundingClientRect().top - rail.getBoundingClientRect().top
+            - (navigationRef.current?.offsetHeight ?? 0) - 12;
+        pane.scrollTop += heading.getBoundingClientRect().top - pane.getBoundingClientRect().top - 14;
+        heading.focus({ preventScroll: true });
+    }, [focusedSection, markdown, editMode, loading]);
 
     return (
         <section style={styles.panel}>
@@ -116,23 +139,11 @@ export default function PagePanel(props: {
                 ))}
             </div>
 
-            <div style={styles.statsGrid}>
-                <div style={styles.statCard}>
-                    <span style={styles.statValue}>{node.links}</span>
-                    <span style={styles.statLabel}>Filaments</span>
-                </div>
-                <div style={styles.statCard}>
-                    <span style={styles.statValue}>{Math.round(node.centrality * 100)}%</span>
-                    <span style={styles.statLabel}>Centrality</span>
-                </div>
-                <div style={styles.statCard}>
-                    <span style={styles.statValue}>{node.words}</span>
-                    <span style={styles.statLabel}>Words</span>
-                </div>
-                <div style={styles.statCard}>
-                    <span style={styles.statValue}>{node.updated ?? "-"}</span>
-                    <span style={styles.statLabel}>Updated</span>
-                </div>
+            <div style={styles.documentMeta}>
+                <span><strong>{node.words.toLocaleString()}</strong> words</span>
+                <span><strong>{node.links}</strong> connections</span>
+                <span title="PageRank relative to the most central page"><strong>{Math.round(node.centrality * 100)}%</strong> centrality</span>
+                {node.updated && <span>Updated {node.updated}</span>}
             </div>
 
             <div style={styles.actionRow}>
@@ -188,17 +199,42 @@ export default function PagePanel(props: {
                 />
             )}
 
-            {focusedSection && (
-                <div style={{ ...styles.badgeRow, marginTop: 10 }}>
-                    <button style={styles.chip} onClick={onClearSection} title="Clear section focus">
-                        <Orbit size={11} /> {focusedSection.title} <X size={11} />
+            {!loading && !editMode && headings.length > 0 && (
+                <div ref={navigationRef} style={styles.documentNav}>
+                    <button style={styles.outlineToggle} onClick={() => setOutlineOpen(value => !value)}
+                        aria-expanded={outlineOpen} aria-controls="cosmos-document-outline">
+                        <List size={15} /> In this document
+                        <span style={{ marginLeft: "auto", color: COSMOS.muted }}>{headings.length}</span>
+                        <ChevronDown size={14} style={{ transform: outlineOpen ? "rotate(180deg)" : undefined }} />
                     </button>
+                    {outlineOpen && (
+                        <nav id="cosmos-document-outline" aria-label="Document sections" style={styles.outline}>
+                            {headings.map(heading => (
+                                <button key={heading.id} style={{ ...styles.outlineItem,
+                                    paddingLeft: 10 + Math.max(0, heading.level - 1) * 10,
+                                    ...(heading.id === focusedSection?.id ? styles.outlineItemActive : {}) }}
+                                    aria-current={heading.id === focusedSection?.id ? "location" : undefined}
+                                    onClick={() => { onFocusSection(heading.id, heading.title); setOutlineOpen(false); }}>
+                                    {heading.title}
+                                </button>
+                            ))}
+                        </nav>
+                    )}
+                    {focusedSection && (
+                        <div style={styles.sectionFocus} role="status">
+                            <Orbit size={14} style={{ flexShrink: 0 }} />
+                            <span style={{ flex: 1, minWidth: 0 }}>Reading: <strong>{focusedSection.title}</strong></span>
+                            <button style={styles.clearBtn} onClick={onClearSection} aria-label="Clear section focus">
+                                <X size={14} />
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
             {!loading && !editMode && markdown && (
-                <div ref={markdownRef} style={styles.markdown} className="graph-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayMarkdown(markdown)}</ReactMarkdown>
+                <div ref={markdownRef} style={styles.markdown} className="graph-markdown" aria-label={`${node.title} document`}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={headingComponents}>{displayMarkdown(markdown)}</ReactMarkdown>
                 </div>
             )}
 

@@ -120,13 +120,18 @@ edited and deleted in place.
   chain of links between any two pages, detected communities separate into named
   constellations, and a time scrubber replays the vault's growth. Health findings (orphans,
   dead links, stale and unreviewed pages) surface on the graph itself, and pages and
-  connections stay editable in place with every change landing as an atomic Git commit
+  connections stay editable in place with every change landing as an atomic Git commit.
+  Opening a page reveals textured section planets and moons with exact document navigation,
+  a sticky reader outline, orbital clearance, and pause, zoom and fit controls
 - Web search: Gemini grounds answers with real-time Google Search (inline citations + URL context); the other models get a `search_web` tool so they can pull live info too, automatically or on demand with `/search`
 - Maps grounding: location questions get routed to Google Maps (places, directions, hours)
 - Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
 - Think mode: a deep-reasoning toggle (`/think`), tunable per model
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
 - Dark / light mode: theme toggle that remembers your choice and respects the system setting
+- Assistant identity: one source SVG generates the navigation mark, theme-aware favicon,
+  Apple and PWA icons, notification badge and desktop icon assets; see the
+  [brand asset guide](scripts/ASSISTANT_BRAND.md) for regeneration and verification
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
 - Cron jobs: daily briefing (LLM-triaged inbox - only the emails that matter, icon-coded
   by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
@@ -915,9 +920,9 @@ Obsidian adapter can be added without changing lifecycle or retrieval services.
 ### Knowledge cosmos (`/graph`)
 
 The **Graph** button in the header (or `/graph`) opens the vault as a dark planetarium. It is
-deliberately dark-only whatever the app theme is set to. Every visual property carries
-information: a page is a star, its size is its degree, its brightness is its PageRank
-centrality, and its shape says what kind of page it is - a crisp main-sequence star is
+deliberately dark-only whatever the app theme is set to. In the overview, a page is a star,
+its size reflects its degree, its brightness reflects its PageRank centrality, and its shape
+says what kind of page it is - a crisp main-sequence star is
 reviewed, a hazy protostar has never been reviewed, a swollen red giant has gone stale, and a
 white dwarf has been archived or superseded.
 
@@ -931,8 +936,8 @@ white dwarf has been archived or superseded.
   pages about transformers. Matches flare, everything else fades to dust. A local substring
   pass answers instantly while the request is in flight.
 - **Routes** answer "how are these two connected": right-click two stars, and the shortest
-  chain of links lights up as a corridor with every hop listed. It says so plainly when no
-  route exists, which itself tells you the vault is fragmented there.
+  chain of visible links lights up as a corridor with every hop listed. If no route exists in
+  the current view, broaden the filters or return to the overview to check the rest of the vault.
 - **Constellations** are detected communities (label propagation), each with its own hue, a
   soft nebula, and a name taken from its most central page. A cohesion force pulls each one
   together so they physically separate.
@@ -942,11 +947,18 @@ white dwarf has been archived or superseded.
 - **Time travel** replays the vault's growth from a scrubber; stars ignite in creation order.
   Page dates are real, link dates are inferred from their endpoints, and the UI says so.
 - **Section systems**: isolating a page ("System", or double-click a star) turns its own
-  headings into planets orbiting it, with sub-headings as their moons - sized by how much prose
-  each section holds, on concentric orbits that scale to any heading count. Click a planet to
-  read that section; the page panel scrolls to it. Neighbouring pages stay stars, because a
-  wikilink is symmetric and has no parent to orbit, whereas a heading really does belong to its
-  page.
+  headings into planets orbiting it, with deeper headings as moons. Clicking a body or its
+  keyboard-accessible label opens the exact heading without selecting a star behind it. The
+  sticky **In this document** outline provides access to every heading, including those whose
+  canvas labels are hidden to avoid crowding.
+- **Materials and spacing**: lit sphere surfaces, clouds, craters, gas bands, tilted rings and
+  a textured central star blend cinematic detail with atlas labels. Orbits account for the
+  full planet, ring and moon envelope. Neighbouring stars stay outside that space and retain
+  a minimum visible size; the scene favours readability rather than astronomical scale.
+- **System navigation**: pause the orbits, zoom with the visible controls, or use **Fit** or
+  `f` to frame the current system. Hover and keyboard focus pause bodies for selection. The
+  camera adapts to the reader and mobile dock, while reduced-motion preferences stop orbital
+  motion and animated camera transitions.
 - **Gravity wells** ranks the most central and most weakly held pages.
 - Click a page to read, edit or delete it - deletion strips every reference in other pages,
   the `index.md` entry and the pgvector row in one atomic commit. Click a connection to remove
@@ -954,14 +966,20 @@ white dwarf has been archived or superseded.
 - **Suggested arcs** are curved cyan links between similar-but-unlinked pages. The page panel
   also lists candidates for that one page with a checkbox column, so several can be accepted at
   once (each as its own commit).
-- Every view is addressable: lens, query, selection, route ends, local mode and the timeline
-  position all live in the URL, so a view can be bookmarked or pasted into chat.
+- Every view is addressable: lens, categories, query, selection, route ends, local mode and the
+  timeline position live in the URL. All categories disabled is preserved too, with a reset
+  action for the empty view.
 - Labels are an HTML overlay with distance culling rather than per-node textures, and a bloom
   pass turns itself off above 600 nodes or on a software renderer. `Full effects` in the
   Explore panel is the manual override.
 
 You can still point Obsidian at a clone of the repo - the on-disk format is plain
 Markdown + wikilinks.
+
+Run `npm run cosmos:test` for heading identity, filters, camera gestures, orbital spacing and
+force-engine clearance regressions. The [cosmos design record](scripts/COSMOS_DESIGN.md)
+documents the local desktop/mobile browser checks and their limits. No new environment
+variables or database setup are required for this visual refinement.
 
 ## Deployment
 

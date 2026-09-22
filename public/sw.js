@@ -16,7 +16,7 @@ self.addEventListener("push", (event) => {
             return self.registration.showNotification(data.title || "Zuychin", {
                 body: data.body || "",
                 icon: "/icons/icon-192.png",
-                badge: "/icons/icon-192.png",
+                badge: "/icons/badge-72.png",
                 data: { url: data.url || "/" },
             });
         })

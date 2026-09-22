@@ -79,6 +79,8 @@ export function createLabelLayer(options: {
 
         const place = (node: GNode, forced: boolean): boolean => {
             if (node.x === undefined) return false;
+            if (view.systemFocus && node.id === view.systemFocus && view.hover !== node.id) return false;
+            if (view.systemFocus && node.id !== view.systemFocus && !forced) return false;
             if (!forced && view.searchActive && !view.searchScores.has(node.id)) return false;
             if (!forced && view.pathActive) return false;
             // Never leave a name floating over a star the lens has faded out.

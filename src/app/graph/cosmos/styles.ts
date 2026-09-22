@@ -1,16 +1,44 @@
 import type { CSSProperties } from "react";
 import { COSMOS } from "./palette";
 
-// Literal colours throughout: the graph is dark-only, so nothing here may inherit
-// the app theme.
+export const COSMOS_CSS = `
+.graph-markdown h1,.graph-markdown h2,.graph-markdown h3,.graph-markdown h4,.graph-markdown h5,.graph-markdown h6{font-size:15px;font-weight:650;line-height:1.45;margin:22px 0 9px;color:#e8ecf8;scroll-margin-top:14px;border-radius:5px}
+.graph-markdown h1{font-size:19px;letter-spacing:-.02em}
+.graph-markdown h2{font-size:17px;letter-spacing:-.015em}
+.graph-markdown h4,.graph-markdown h5,.graph-markdown h6{font-size:14px}
+.graph-markdown [data-focused]{background:rgba(107,167,255,.15);box-shadow:0 0 0 6px rgba(107,167,255,.15);color:#c4dcff}
+.graph-markdown p{margin:0 0 12px}
+.graph-markdown ul,.graph-markdown ol{margin:0 0 12px;padding-left:20px}
+.graph-markdown li{margin:5px 0}
+.graph-markdown code{background:rgba(148,163,201,.14);padding:2px 4px;border-radius:4px;font-size:.9em}
+.graph-markdown pre{background:rgba(4,6,11,.7);padding:12px;border-radius:9px;overflow-x:auto;margin:0 0 12px}
+.graph-markdown pre code{background:transparent;padding:0}
+.graph-markdown a{color:#a4ccff;text-underline-offset:3px}
+.graph-markdown table{border-collapse:collapse;font-size:12px;margin:0 0 12px;display:block;overflow-x:auto}
+.graph-markdown th,.graph-markdown td{border:1px solid rgba(126,141,184,.3);padding:6px 8px}
+.graph-markdown blockquote{margin:0 0 12px;padding-left:12px;border-left:1px solid rgba(126,141,184,.5);color:#abb8d1}
+.graph-markdown img{max-width:100%;height:auto}
+.graph-markdown{overflow-wrap:anywhere}
+.cosmos-rail::-webkit-scrollbar{width:7px}
+.cosmos-rail::-webkit-scrollbar-thumb{background:rgba(126,141,184,.35);border-radius:99px}
+.cosmos-rail::-webkit-scrollbar-track{background:transparent}
+.cosmos-rail>*{pointer-events:auto}
+.cosmos-root ::selection{color:#edf4ff;background:#31476d}
+.cosmos-root input,.cosmos-root textarea{caret-color:#a4ccff}
+.cosmos-root input::placeholder,.cosmos-root textarea::placeholder{color:#99a5be;opacity:1}
+.cosmos-root button:focus-visible,.cosmos-root a:focus-visible,.cosmos-root input:focus-visible,.cosmos-root textarea:focus-visible,.graph-markdown [tabindex]:focus-visible{outline:2px solid #a4ccff!important;outline-offset:3px}
+.cosmos-root button:disabled{opacity:.45;cursor:default}
+@media(hover:hover){.cosmos-root button:enabled:hover{filter:brightness(1.16)}}
+@media(max-width:759px){.cosmos-root button,.cosmos-root a{min-height:40px}.graph-markdown{max-height:55dvh!important;font-size:14px!important}}
+@media(prefers-reduced-motion:reduce){.cosmos-root *{transition:none!important;scroll-behavior:auto!important}}
+`;
 
 const card: CSSProperties = {
     background: COSMOS.panel,
     border: `1px solid ${COSMOS.border}`,
-    borderRadius: 16,
-    backdropFilter: "blur(18px)",
-    WebkitBackdropFilter: "blur(18px)",
-    boxShadow: "0 18px 48px rgba(0,0,0,0.55)",
+    borderRadius: 14,
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
     color: COSMOS.text,
 };
 
@@ -32,7 +60,7 @@ export const styles: Record<string, CSSProperties> = {
     root: {
         position: "fixed",
         inset: 0,
-        overflow: "hidden",
+        overflow: "clip",
         background: COSMOS.background,
         color: COSMOS.text,
         fontFamily: "var(--font-family, system-ui)",
@@ -469,15 +497,37 @@ export const styles: Record<string, CSSProperties> = {
         borderColor: "transparent",
     },
     markdown: {
-        maxHeight: 300,
+        maxHeight: "min(52dvh, 560px)",
+        minHeight: 120,
         overflowY: "auto",
-        fontSize: 12.5,
-        lineHeight: 1.55,
-        color: "#c9d2e8",
+        overscrollBehavior: "contain",
+        fontSize: 14,
+        lineHeight: 1.7,
+        color: "#cfd8ea",
         marginTop: 10,
-        paddingRight: 6,
+        padding: "8px 10px 18px 7px",
         scrollbarWidth: "thin",
         scrollbarColor: "rgba(126,141,184,0.42) transparent",
+    },
+    documentNav: {
+        position: "sticky", top: 0, zIndex: 2, background: COSMOS.panelSolid,
+        marginTop: 16, borderTop: `1px solid ${COSMOS.border}`, padding: "7px 0 10px",
+    },
+    documentMeta: { display: "flex", flexWrap: "wrap", columnGap: 14, rowGap: 5, marginTop: 12, color: COSMOS.muted, fontSize: 11.5, fontVariantNumeric: "tabular-nums" },
+    outlineToggle: {
+        ...controlBase, width: "100%", display: "flex", alignItems: "center", gap: 8,
+        background: "transparent", borderColor: "transparent", padding: "9px 0", fontSize: 12.5,
+    },
+    outline: { display: "flex", flexDirection: "column", maxHeight: 240, overflowY: "auto", padding: "4px 0" },
+    outlineItem: {
+        ...controlBase, borderColor: "transparent", background: "transparent", textAlign: "left",
+        padding: "8px 10px", fontSize: 12.5, lineHeight: 1.45, borderRadius: 6,
+    },
+    outlineItemActive: { background: "rgba(107,167,255,.14)", color: "#c4dcff" },
+    sectionFocus: {
+        display: "flex", alignItems: "center", gap: 8, margin: "8px 0 0", padding: "9px 10px",
+        color: "#b7d5ff", background: "rgba(107,167,255,.10)", borderRadius: 8,
+        fontSize: 12, lineHeight: 1.4,
     },
     editArea: {
         width: "100%",

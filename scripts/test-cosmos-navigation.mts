@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { BodyGesture, cameraStandOff, orbitalDelta, resizeSystemView, systemFrameDistance } from "../src/app/graph/cosmos/navigation.ts";
+
+const origin = { x: 0, y: 0, z: 0 };
+const initial = { x: 0, y: 50, z: 200 };
+const framed = cameraStandOff(initial, origin, origin, 300);
+assert.ok(Math.abs(Math.hypot(framed.x, framed.y, framed.z) - 300) < 1e-8);
+assert.equal(framed.y / framed.z, initial.y / initial.z);
+const destination = { x: -40, y: 15, z: 20 };
+const translated = cameraStandOff(initial, origin, destination, 300);
+assert.deepEqual(translated, { x: framed.x - 40, y: framed.y + 15, z: framed.z + 20 });
+const degenerate = cameraStandOff(origin, origin, origin, 100);
+assert.ok(Object.values(degenerate).every(Number.isFinite));
+assert.ok(Math.abs(Math.hypot(degenerate.x, degenerate.y, degenerate.z) - 100) < 1e-8);
+
+const portrait = systemFrameDistance(100, 50, 0.5);
+const landscape = systemFrameDistance(100, 50, 1.6);
+assert.ok(portrait > landscape);
+assert.ok(portrait * Math.sin(Math.atan(Math.tan(25 * Math.PI / 180) * 0.5)) > 100);
+const dockAspect = 390 / 422, fullAspect = 390 / 844;
+const userView = { x: 20, y: 110, z: 430 }, userTarget = { x: -10, y: 30, z: 50 };
+const fullView = resizeSystemView(userView, userTarget, 50, dockAspect, fullAspect);
+const offset = (point: typeof userView) => Math.hypot(point.x - userTarget.x, point.y - userTarget.y, point.z - userTarget.z);
+assert.ok(offset(fullView) > offset(userView));
+assert.ok(Math.abs(offset(fullView) / systemFrameDistance(1, 50, fullAspect) - offset(userView) / systemFrameDistance(1, 50, dockAspect)) < 1e-8);
+assert.ok(Math.abs((fullView.y - userTarget.y) / (fullView.z - userTarget.z) - (userView.y - userTarget.y) / (userView.z - userTarget.z)) < 1e-8);
+const restoredView = resizeSystemView(fullView, userTarget, 50, fullAspect, dockAspect);
+for (const axis of ["x", "y", "z"] as const) assert.ok(Math.abs(restoredView[axis] - userView[axis]) < 1e-8);
+assert.deepEqual(resizeSystemView(userView, userTarget, 50, 1.4, 1.8), userView);
+assert.equal(orbitalDelta(80_000, null), 0);
+assert.equal(orbitalDelta(80_000, 100), 0.05);
+assert.equal(orbitalDelta(100, 110), 0);
+assert.equal(orbitalDelta(140, 100), 0.04);
+
+const gesture = new BodyGesture();
+const sample = (x: number, y = 20, pointerId = 1) => ({ clientX: x, clientY: y, pointerId });
+gesture.begin(sample(20));
+assert.equal(gesture.finish(sample(22)), "click");
+assert.equal(gesture.finish(sample(22)), null);
+gesture.begin(sample(20));
+gesture.move(sample(40));
+gesture.move(sample(20));
+assert.equal(gesture.finish(sample(20)), "drag");
+gesture.begin(sample(20));
+assert.equal(gesture.finish(sample(35)), "drag");
+gesture.begin(sample(20));
+gesture.begin(sample(25, 20, 2));
+assert.equal(gesture.finish(sample(25, 20, 2)), null);
+assert.equal(gesture.finish(sample(20)), "drag");
+gesture.begin(sample(20));
+gesture.cancel();
+assert.equal(gesture.finish(sample(20)), null);
+
+console.log("Cosmos navigation: origin framing, camera direction, portrait bounds, dock resize preserving zoom and target, clock resumption, clicks, drags and multitouch passed.");

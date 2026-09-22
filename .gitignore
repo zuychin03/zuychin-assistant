@@ -11,6 +11,7 @@
 
 # testing
 /coverage
+/.impeccable/review/
 
 # misc
 .DS_Store

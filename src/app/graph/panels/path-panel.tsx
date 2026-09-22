@@ -27,7 +27,7 @@ export default function PathPanel({ from, to, path, titleOf, onFocus, onClear, o
                     ? "Right-click a star to set each end"
                     : found
                         ? `${path.length - 1} hop${path.length - 1 === 1 ? "" : "s"} between them`
-                        : "No chain of links connects these two"
+                        : "No route in this view"
             }
             aside={
                 <button style={styles.iconBtn} onClick={onClear} aria-label="Clear route" title="Clear route">
@@ -70,8 +70,8 @@ export default function PathPanel({ from, to, path, titleOf, onFocus, onClear, o
 
             {complete && !found && (
                 <div style={{ ...styles.empty, color: COSMOS.muted }}>
-                    These pages sit in separate parts of the vault. That is itself worth knowing: a
-                    link between them would join two disconnected regions.
+                    No visible links connect these pages. Broaden the filters or return to the
+                    overview to check the rest of the vault.
                 </div>
             )}
         </PanelShell>

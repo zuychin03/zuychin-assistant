@@ -1,7 +1,13 @@
 import * as THREE from "three";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import type { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { BodyGesture, cameraStandOff, orbitalDelta, resizeSystemView, systemFrameDistance } from "./navigation";
 import type { ForceGraph3DInstance } from "3d-force-graph";
+import { createPhotosphere } from "./stellar";
+import { layoutSystemOrbits } from "./orbits";
+import { createSystemClearance } from "./clearance";
 import {
-    bodyLook, CORE_OVERDRIVE, createAtmosphere, createBodySprite, createNebulaSprite,
+    bodyLook, CORE_OVERDRIVE, createAtmosphere, createBodyMesh, createNebulaSprite,
     createOrbitRing, createPlanetRing, createSelectionRing, createStarCoreMaterial,
     createStarfield, createStarMaterial, getTexture, STAR_CORE_FRACTION,
 } from "./textures";
@@ -55,9 +61,8 @@ export interface SystemSpec {
 }
 
 interface OrbitingBody {
-    sprite: THREE.Sprite;
-    /** Limb glow, on worlds that have an atmosphere. Moves with the sprite. */
-    atmosphere: THREE.Sprite | null;
+    mesh: THREE.Mesh;
+    atmosphere: THREE.Mesh | null;
     ring: THREE.Mesh | null;
     /** Scale before any hover growth, so the highlight is reversible. */
     baseScale: number;
@@ -67,46 +72,23 @@ interface OrbitingBody {
     radius: number;
     angle: number;
     speed: number;
-    /** Tilt of this orbit, so the system does not read as one flat disc. */
     tilt: number;
     moons: OrbitingBody[];
 }
 
-// The size hierarchy is expressed as ratios of the parent body, never as independent
-// constants. Fixed values had inverted it: on a page with few links the star's disc
-// measured 0.25x its own largest planet, so a system read as planets orbiting a speck.
-// Ratios cannot invert.
-// System view magnifies EVERY star by the same factor, so the size relationships
-// between pages read exactly as they do in the full view. Boosting only the root made
-// its neighbours look shrunken next to it and too small to aim at.
 const SYSTEM_ZOOM = 2.6;
-// Neighbours sit slightly under their true proportion, which is what marks them as
-// context without touching their glow.
-const SYSTEM_NEIGHBOUR_SHRINK = 0.78;
-const PLANET_OF_SUN_MAX = 0.42;
-const PLANET_OF_SUN_MIN = 0.2;
-const MOON_OF_PLANET_MAX = 0.4;
-const MOON_OF_PLANET_MIN = 0.22;
-// A world's sprite is filled by its disc, unlike a star's, so any comparison between
-// the two goes through STAR_CORE_FRACTION on one side and this on the other.
+const SYSTEM_NEIGHBOUR_SHRINK = 0.85;
+const PLANET_OF_SUN_MAX = 0.52;
+const PLANET_OF_SUN_MIN = 0.28;
+const MOON_OF_PLANET_MAX = 0.34;
+const MOON_OF_PLANET_MIN = 0.2;
 const BODY_FILL = 0.9;
+const BODY_DETAIL_SCALE = 1.5;
 const SYSTEM_FRAME_MS = 33;
-// Generous, with the nearest body inside it winning. Sprite raycasting demanded a
-// direct hit on a shape a few pixels across, which is unusable with a fingertip.
 const PICK_RADIUS_FLOOR = 17;
-// Orbits were drawn in COSMOS.filament at 0.18, which is all but invisible against the
-// background. They are the structure that makes a system read as a system.
-const ORBIT_COLOR = "#8ea3d2";
-const ORBIT_OPACITY = 0.42;
-// Gap held between the outermost orbit and the nearest neighbouring star. Wide on
-// purpose: a neighbour is the exit from this system, so it has to sit clear of the
-// orbits and stay big enough to aim at from a zoomed-out view.
-// Room for the outermost orbit AND a magnified neighbour's own corona beyond it.
-const SYSTEM_CLEARANCE = 430;
-// Extra repulsion between everything rendered while a system is open. Clearance alone
-// only pushes neighbours off the ROOT: without this they settle at that distance but
-// bunch together on one side of it.
-const SYSTEM_REPEL_BOOST = 2.4;
+const ORBIT_COLOR = "#81909f";
+const ORBIT_OPACITY = 0.095;
+const SYSTEM_REPEL_BOOST = 1.6;
 
 // Core size as a fraction of the corona, matching STAR_CORE_FRACTION's readable disc.
 const CORE_RELATIVE_SIZE = 0.46;
@@ -117,42 +99,15 @@ function bodyScale(chars: number, min: number, max: number): number {
     return min + (max - min) * t;
 }
 
-// One orbit per planet, never a shared ring. An earlier draft packed six planets onto
-// ring 1, and since most vault pages have six or fewer sections that made nearly every
-// system a single flat circle of identical bodies.
-//
-// Every distance is a multiple of the sun's HALO radius, not its core. Measuring from
-// the core put the inner orbits inside the corona and the bloom, where a planet is a
-// speck against a wall of light. Scaling off the star also means a big hub gets a big
-// system and a small page a small one, instead of one fixed envelope for both.
-const ORBIT_BASE_OF_HALO = 1.75;
-const ORBIT_SPAN_OF_HALO = 4.3;
-const ORBIT_GAP_MAX_OF_HALO = 0.64;
-// Floor is set by the widest planet, so neighbouring orbits can never let their bodies
-// touch however many sections a page has.
-const ORBIT_GAP_MIN_OF_PLANET = 1.55;
-// Successive planets sit ~137.5 degrees apart, so no two line up radially and the
-// system never resolves into spokes.
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-
-function orbitGap(count: number, halo: number, planetMax: number): number {
-    const gapMax = halo * ORBIT_GAP_MAX_OF_HALO;
-    const gapMin = planetMax * ORBIT_GAP_MIN_OF_PLANET;
-    if (count <= 1) return gapMax;
-    return Math.max(gapMin, Math.min(gapMax, (halo * ORBIT_SPAN_OF_HALO) / count));
-}
 
 /** Kepler's third law, so outer bodies visibly lag rather than turning in lockstep. */
 function orbitSpeed(base: number, radius: number, k: number): number {
     return k / Math.pow(Math.max(1, radius / base), 1.5);
 }
 
-/**
- * Inclination per planet. Cycling three offsets with an alternating sign keeps
- * neighbouring orbits crossing at a visible angle instead of nesting into a disc.
- */
 function orbitTilt(index: number): number {
-    return 0.3 + (index % 3) * 0.17 + (index % 2 === 0 ? 0.11 : -0.13);
+    return 0.7 + Math.sin(index * GOLDEN_ANGLE) * 0.06;
 }
 
 export interface Cosmos {
@@ -164,11 +119,13 @@ export interface Cosmos {
     flyTo(node: GNode, distance?: number): void;
     /** Frame the open system, sized from its own extent. */
     frameSystem(): void;
+    zoom(factor: number): void;
     releaseFocus(): void;
     frameAll(): void;
     frameNodes(ids: Set<string>): void;
     applyPhysics(settings: PhysicsSettings): void;
     setQuality(quality: Quality): void;
+    setMotionPaused(paused: boolean): void;
     bloomActive(): boolean;
     resize(width: number, height: number): void;
     dispose(): void;
@@ -236,15 +193,23 @@ export function createCosmos(
 
     // Each star is two additive sprites in a group: a coloured corona and a white-hot
     // core. Scaling the group scales both, so sizing stays one number.
-    interface StarObject { group: THREE.Group; corona: THREE.Sprite; core: THREE.Sprite; }
+    interface StarObject { group: THREE.Group; corona: THREE.Sprite; core: THREE.Sprite; baseSize: number; }
     const starById = new Map<string, StarObject>();
     const nodeById = new Map<string, GNode>();
     const nebulaById = new Map<number, THREE.Sprite>();
     let clusters: GraphCluster[] = [];
     let physics = { ...DEFAULT_PHYSICS };
     let quality: Quality = "auto";
-    let bloom: { pass: unknown; enabled: boolean } | null = null;
+    let motionPaused = false;
+    let bloom: { pass: UnrealBloomPass; enabled: boolean } | null = null;
+    let bloomPending = false;
+    let bloomRevision = 0;
+    let disposed = false;
+    const consumedPointers = new WeakSet<MouseEvent>();
+    const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let reducedMotion = motionPreference.matches;
     let styleDirty = true;
+    let simulationReady = false;
     let tickCount = 0;
     let lastClick = { id: "", at: 0 };
 
@@ -263,7 +228,7 @@ export function createCosmos(
             // Corona first: additive, so ordering only matters for the depth-sorted pass.
             group.add(corona, core);
             group.scale.setScalar(starSize(node));
-            starById.set(node.id, { group, corona, core });
+            starById.set(node.id, { group, corona, core, baseSize: starSize(node) });
             styleDirty = true;
             return group;
         })
@@ -319,7 +284,8 @@ export function createCosmos(
             handlers.onNodeHover(node);
             element.style.cursor = node ? "pointer" : "default";
         })
-        .onNodeClick((node) => {
+        .onNodeClick((node, event) => {
+            if (consumedPointers.has(event)) return;
             const now = Date.now();
             if (lastClick.id === node.id && now - lastClick.at < 350) {
                 lastClick = { id: "", at: 0 };
@@ -331,19 +297,28 @@ export function createCosmos(
         })
         .onNodeRightClick((node, event) => handlers.onNodeRightClick(node, event))
         .onLinkHover((link) => { element.style.cursor = link ? "pointer" : "default"; })
-        .onLinkClick((link) => handlers.onLinkClick(link))
-        .onBackgroundClick(() => handlers.onBackgroundClick());
+        .onLinkClick((link, event) => { if (!consumedPointers.has(event)) handlers.onLinkClick(link); })
+        .onBackgroundClick((event) => { if (!consumedPointers.has(event)) handlers.onBackgroundClick(); });
 
     const scene = graph.scene();
+    // Clear in the active render target's colour space before the output pass.
+    scene.background = new THREE.Color(COSMOS.background);
+    const renderer = graph.renderer();
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.12;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    const outputPass = new OutputPass();
+    graph.postProcessingComposer().addPass(outputPass);
     const starfield = createStarfield();
     scene.add(starfield);
 
     const selectionRing = createSelectionRing();
     scene.add(selectionRing);
 
-    // A little ambient fill keeps sprite-free helpers visible; stars are additive
-    // and light themselves.
-    graph.lights([new THREE.AmbientLight(0xffffff, 0.4)]);
+    graph.lights([
+        new THREE.AmbientLight(0xc4d1e4, 0.45),
+        new THREE.HemisphereLight(0xc8dcf5, 0x414854, 0.7),
+    ]);
 
     graph.d3Force("cluster", createClusterForce(() => physics.cluster));
 
@@ -372,7 +347,7 @@ export function createCosmos(
             if (focus === null || systemOuterRadius <= 0) return physics.linkDist;
             const { s: source, t: target } = endpoints(link);
             if (source !== focus && target !== focus) return physics.linkDist;
-            return Math.max(physics.linkDist, systemOuterRadius + SYSTEM_CLEARANCE);
+            return Math.max(physics.linkDist, systemOuterRadius * 1.3 + 72);
         });
     }
 
@@ -384,8 +359,13 @@ export function createCosmos(
     const systemGroup = new THREE.Group();
     systemGroup.visible = false;
     scene.add(systemGroup);
+    const systemLight = new THREE.PointLight(0xffedcc, 3.2, 0, 0);
+    scene.add(systemLight);
+    systemLight.visible = false;
 
     let system: { rootId: string; bodies: OrbitingBody[] } | null = null;
+    let photosphere: ReturnType<typeof createPhotosphere> | null = null;
+    let fixedRoot: { node: GNode & { fx?: number; fy?: number; fz?: number }; fx?: number; fy?: number; fz?: number } | null = null;
     // Outermost orbit of the open system, so the layout can hold neighbouring stars
     // outside it. At the default linkDist a neighbour settles at 115 while a system
     // with several sections reaches past 130, which put other stars inside the orbits.
@@ -393,7 +373,13 @@ export function createCosmos(
     let systemSunHalo = 0;
     let hoveredBody: OrbitingBody | null = null;
     let systemRaf = 0;
-    let lastSystemPaint = 0;
+    let lastSystemPaint: number | null = null;
+    const sectionLabels = new Map<string, HTMLButtonElement>();
+    const clearance = createSystemClearance<GNode>(
+        () => system ? { rootId: system.rootId, radius: systemOuterRadius + Math.max(60, systemOuterRadius * 0.15) } : null,
+        node => starSize(node) * 0.5,
+    );
+    graph.d3Force("system-clearance", clearance);
     const bodyWorld = new THREE.Vector3();
     const projected = new THREE.Vector3();
 
@@ -410,15 +396,27 @@ export function createCosmos(
     element.appendChild(tooltip);
 
     function clearSystem() {
+        if (fixedRoot) {
+            const { node, fx, fy, fz } = fixedRoot;
+            Object.assign(node, { fx, fy, fz });
+            fixedRoot = null;
+        }
+        for (const label of sectionLabels.values()) label.remove();
+        sectionLabels.clear();
         for (const child of [...systemGroup.children]) {
             systemGroup.remove(child);
-            if (child instanceof THREE.Sprite) (child.material as THREE.SpriteMaterial).dispose();
-            if (child instanceof THREE.Line || child instanceof THREE.Mesh) {
-                child.geometry.dispose();
-                (child.material as THREE.Material).dispose();
-            }
+            child.traverse((part) => {
+                if (part instanceof THREE.Line || part instanceof THREE.Mesh) part.geometry.dispose();
+                if (part instanceof THREE.Sprite || part instanceof THREE.Line || part instanceof THREE.Mesh) {
+                    const materials = Array.isArray(part.material) ? part.material : [part.material];
+                    materials.forEach(material => material.dispose());
+                }
+            });
         }
         system = null;
+        photosphere = null;
+        lastSystemPaint = null;
+        systemLight.visible = false;
         systemOuterRadius = 0;
         systemSunHalo = 0;
         hoveredBody = null;
@@ -430,36 +428,47 @@ export function createCosmos(
         clearSystem();
         const root = nodeById.get(spec.rootId);
         if (!root || spec.planets.length === 0) return;
+        // Keep the reading target still while neighbouring stars settle.
+        const anchor = root as GNode & { fx?: number; fy?: number; fz?: number };
+        fixedRoot = { node: anchor, fx: anchor.fx, fy: anchor.fy, fz: anchor.fz };
+        anchor.fx = root.x ?? 0;
+        anchor.fy = root.y ?? 0;
+        anchor.fz = root.z ?? 0;
 
-        // Every size below is measured against the sun's visible DISC, not its sprite
-        // box, and divided back through BODY_FILL because a world fills its own sprite
-        // while a star does not.
+        // Compare body diameters to the photosphere, excluding the corona.
         const sunSprite = starSize(root) * SYSTEM_ZOOM;
         const sunDisc = sunSprite * STAR_CORE_FRACTION;
-        // Half the sprite: where the corona actually fades out, which is what a planet
-        // has to clear to be visible at all.
         const sunHalo = sunSprite * 0.5;
         const planetMax = (sunDisc * PLANET_OF_SUN_MAX) / BODY_FILL;
         const planetMin = (sunDisc * PLANET_OF_SUN_MIN) / BODY_FILL;
-        const base = sunHalo * ORBIT_BASE_OF_HALO + planetMax + 12;
-        const gap = orbitGap(spec.planets.length, sunHalo, planetMax);
+        const appearances = spec.planets.map(planet => {
+            const look = bodyLook(planet.id, planet.chars);
+            const scale = bodyScale(planet.chars, planetMin, planetMax) * BODY_DETAIL_SCALE;
+            const moonScales = planet.moons.map(moon => bodyScale(moon.chars, scale * MOON_OF_PLANET_MIN, scale * MOON_OF_PLANET_MAX));
+            return { look, scale, moonScales };
+        });
+        const layout = layoutSystemOrbits(sunHalo, appearances.map(({ look, scale, moonScales }) => ({
+            bodyRadius: scale * 0.49 * 1.12,
+            ringOuterRadius: look.ringed ? scale * 1.42 * 1.12 : undefined,
+            moonRadii: moonScales.map(moonScale => moonScale * 0.45 * 1.12),
+        })));
+        const base = layout.planets[0].orbitRadius;
         systemSunHalo = sunHalo;
         const bodies: OrbitingBody[] = [];
+        photosphere = createPhotosphere(sunDisc * 0.5, lensColor(root, view.lens));
+        systemGroup.add(photosphere);
 
         spec.planets.forEach((planet, index) => {
-            const radius = base + index * gap;
+            const { orbitRadius: radius, moonOrbitRadii } = layout.planets[index];
             const tilt = orbitTilt(index);
 
             const orbit = createOrbitRing(radius, ORBIT_COLOR, ORBIT_OPACITY);
             orbit.rotation.x = tilt;
             systemGroup.add(orbit);
 
-            const look = bodyLook(planet.id, planet.chars);
-            const scale = bodyScale(planet.chars, planetMin, planetMax);
+            const { look, scale, moonScales } = appearances[index];
 
-            // Glow first, then the ring, then the body. Sprites carry depthWrite false,
-            // so draw order is what puts the limb glow behind the surface.
-            const atmosphere = createAtmosphere(look.type, scale);
+            const atmosphere = createAtmosphere(look.type, scale, systemGroup.position);
             if (atmosphere) systemGroup.add(atmosphere);
 
             let ring: THREE.Mesh | null = null;
@@ -471,27 +480,16 @@ export function createCosmos(
                 ring = mesh;
             }
 
-            const sprite = createBodySprite(look.type, look.variant, scale);
-            systemGroup.add(sprite);
-
-            const moonMax = scale * MOON_OF_PLANET_MAX;
-            const moonMin = scale * MOON_OF_PLANET_MIN;
-            const moonBase = scale * BODY_FILL * 0.8 + moonMax + 3.4;
-            // Budgeted from this planet's lane so a moon family does not wander into the
-            // next orbit. The floor wins for a section with many subsections, and there
-            // the tilt spread below is what separates them.
-            const moonSpan = Math.min(gap * 0.42, 20);
-            const moonGap = planet.moons.length > 1
-                ? Math.max(moonMax * 1.55, moonSpan / (planet.moons.length - 1))
-                : 0;
+            const mesh = createBodyMesh(look.type, look.variant, scale);
+            systemGroup.add(mesh);
 
             const moons: OrbitingBody[] = planet.moons.map((moon, moonIndex) => {
-                const moonScale = bodyScale(moon.chars, moonMin, moonMax);
-                const moonSprite = createBodySprite("moon", (moonIndex + look.variant) % 3, moonScale);
-                systemGroup.add(moonSprite);
-                const moonRadius = moonBase + moonIndex * moonGap;
+                const moonScale = moonScales[moonIndex];
+                const moonMesh = createBodyMesh("moon", (moonIndex + look.variant) % 3, moonScale);
+                systemGroup.add(moonMesh);
+                const moonRadius = moonOrbitRadii[moonIndex];
                 return {
-                    sprite: moonSprite,
+                    mesh: moonMesh,
                     atmosphere: null,
                     ring: null,
                     baseScale: moonScale,
@@ -500,14 +498,14 @@ export function createCosmos(
                     kind: "moon" as const,
                     radius: moonRadius,
                     angle: moonIndex * GOLDEN_ANGLE,
-                    speed: orbitSpeed(moonBase, moonRadius, 0.0135),
-                    tilt: tilt + 0.32 + moonIndex * 0.15,
+                    speed: orbitSpeed(moonOrbitRadii[0], moonRadius, 0.2),
+                    tilt: tilt + 0.1 + Math.sin(moonIndex * GOLDEN_ANGLE) * 0.08,
                     moons: [],
                 };
             });
 
             bodies.push({
-                sprite,
+                mesh,
                 atmosphere,
                 ring,
                 baseScale: scale,
@@ -516,15 +514,48 @@ export function createCosmos(
                 kind: "planet",
                 radius,
                 angle: index * GOLDEN_ANGLE,
-                speed: orbitSpeed(base, radius, 0.0032),
+                speed: orbitSpeed(base, radius, 0.055),
                 tilt,
                 moons,
             });
+            if (index < 16) {
+                const label = document.createElement("button");
+                label.dataset.cosmosSection = planet.id;
+                label.setAttribute("aria-label", `Read section: ${planet.title}`);
+                label.title = planet.title;
+                label.style.cssText = "position:absolute;z-index:3;max-width:168px;padding:4px 5px;"
+                    + "color:#aab8cc;background:rgba(5,6,10,.5);border:0;border-radius:3px;"
+                    + "font:500 11px/1.4 var(--font-family,system-ui);white-space:nowrap;"
+                    + "overflow:hidden;text-overflow:ellipsis;cursor:pointer;text-align:left;";
+                label.textContent = `${String(index + 1).padStart(2, "0")}  ${planet.title}`;
+                label.addEventListener("pointerdown", event => event.stopPropagation());
+                label.addEventListener("pointerup", event => event.stopPropagation());
+                label.addEventListener("click", event => {
+                    event.stopPropagation();
+                    handlers.onSectionClick(planet.id, planet.title);
+                });
+                label.addEventListener("pointerenter", () => setHoveredBody(bodies[index]));
+                label.addEventListener("pointerleave", () => setHoveredBody(null));
+                label.addEventListener("focus", () => setHoveredBody(bodies[index]));
+                label.addEventListener("blur", () => setHoveredBody(null));
+                element.appendChild(label);
+                sectionLabels.set(planet.id, label);
+            }
         });
 
         system = { rootId: spec.rootId, bodies };
-        systemOuterRadius = bodies.length > 0 ? bodies[bodies.length - 1].radius + planetMax : 0;
+        systemOuterRadius = layout.outerRadius;
+        clearance.constrain();
+        lastSystemPaint = null;
+        systemLight.visible = true;
         systemGroup.visible = true;
+        systemGroup.position.set(root.x ?? 0, root.y ?? 0, root.z ?? 0);
+        systemLight.position.copy(systemGroup.position);
+        for (const body of bodies) {
+            placeBody(body, origin);
+            for (const moon of body.moons) placeBody(moon, body.mesh.position);
+        }
+        systemGroup.updateMatrixWorld(true);
     }
 
     const orbitOffset = new THREE.Vector3();
@@ -533,37 +564,46 @@ export function createCosmos(
     function placeBody(body: OrbitingBody, centre: THREE.Vector3) {
         orbitOffset.set(Math.cos(body.angle) * body.radius, 0, Math.sin(body.angle) * body.radius);
         orbitOffset.applyAxisAngle(xAxis, body.tilt);
-        body.sprite.position.copy(centre).add(orbitOffset);
-        body.atmosphere?.position.copy(body.sprite.position);
-        body.ring?.position.copy(body.sprite.position);
+        body.mesh.position.copy(centre).add(orbitOffset);
+        body.atmosphere?.position.copy(body.mesh.position);
+        body.ring?.position.copy(body.mesh.position);
     }
+
+    const origin = new THREE.Vector3();
+    const onMotionPreference = () => { reducedMotion = motionPreference.matches; lastSystemPaint = null; };
+    const onVisibilityChange = () => { lastSystemPaint = null; };
+    motionPreference.addEventListener("change", onMotionPreference);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     function animateSystem(now: number) {
         systemRaf = requestAnimationFrame(animateSystem);
-        if (!system) return;
-        if (now - lastSystemPaint < SYSTEM_FRAME_MS) return;
-        const elapsed = now - lastSystemPaint;
+        if (!system || document.hidden) { lastSystemPaint = null; return; }
+        if (lastSystemPaint !== null && now - lastSystemPaint < SYSTEM_FRAME_MS) return;
+        const elapsed = reducedMotion || motionPaused || hoveredBody ? 0 : orbitalDelta(now, lastSystemPaint);
         lastSystemPaint = now;
-
         const root = nodeById.get(system.rootId);
         if (!root || root.x === undefined) {
             systemGroup.visible = false;
+            systemLight.visible = false;
             return;
         }
         systemGroup.visible = true;
+        systemLight.visible = true;
         systemGroup.position.set(root.x, root.y ?? 0, root.z ?? 0);
-
-        const step = elapsed / 16;
-        const origin = new THREE.Vector3(0, 0, 0);
+        systemLight.position.copy(systemGroup.position);
+        if (photosphere) photosphere.material.uniforms.time.value += elapsed;
         for (const planet of system.bodies) {
-            planet.angle += planet.speed * step;
+            planet.angle += planet.speed * elapsed;
+            planet.mesh.rotation.y += elapsed * 0.045;
             placeBody(planet, origin);
             for (const moon of planet.moons) {
-                moon.angle += moon.speed * step;
-                placeBody(moon, planet.sprite.position);
+                moon.angle += moon.speed * elapsed;
+                placeBody(moon, planet.mesh.position);
             }
         }
-        // The label has to track the body it names while that body is still moving.
+        systemGroup.updateMatrixWorld(true);
+        for (const [id, star] of starById) updateStarSize(id, star);
+        updateSectionLabels();
         if (hoveredBody) showBodyTooltip(hoveredBody);
     }
     systemRaf = requestAnimationFrame(animateSystem);
@@ -573,41 +613,71 @@ export function createCosmos(
         return system.bodies.flatMap((planet) => [planet, ...planet.moons]);
     }
 
+    function updateSectionLabels() {
+        if (!system) return;
+        const rect = element.getBoundingClientRect();
+        const occupied: { left: number; top: number; right: number; bottom: number }[] = [];
+        for (const body of system.bodies) {
+            const label = sectionLabels.get(body.sectionId);
+            if (!label) continue;
+            const point = projectBody(body, rect);
+            if (!view.labelsOn || rect.height < 240 || !point || point.radius < 1.5) {
+                label.style.display = "none";
+                continue;
+            }
+            const width = Math.min(168, body.title.length * 5.8 + 28, rect.width - 24);
+            const left = Math.max(12, Math.min(rect.width - width - 12, point.x - width / 2));
+            const top = point.y + point.radius + 7;
+            const height = rect.width < 760 ? 40 : 24;
+            const box = { left, top, right: left + width, bottom: top + height };
+            const hidden = point.x < 0 || point.x > rect.width || top < 0 || box.bottom > rect.height
+                || occupied.some(other => box.left < other.right && box.right > other.left
+                    && box.top < other.bottom && box.bottom > other.top);
+            label.style.display = hidden ? "none" : "block";
+            if (hidden) continue;
+            occupied.push(box);
+            label.style.left = `${left}px`;
+            label.style.top = `${top}px`;
+            label.style.width = `${width}px`;
+        }
+    }
+
     /** Canvas-space centre and radius of a body, in CSS pixels. */
     function projectBody(body: OrbitingBody, rect: DOMRect) {
         const camera = graph.camera() as THREE.PerspectiveCamera;
-        body.sprite.getWorldPosition(bodyWorld);
-        const distance = camera.position.distanceTo(bodyWorld);
+        body.mesh.getWorldPosition(bodyWorld);
+        const depth = -bodyWorld.clone().applyMatrix4(camera.matrixWorldInverse).z;
         projected.copy(bodyWorld).project(camera);
         if (projected.z < -1 || projected.z > 1) return null;
         const pxPerUnit = rect.height
-            / (2 * Math.tan((camera.fov * Math.PI) / 360) * Math.max(distance, 0.001));
+            / (2 * Math.tan((camera.fov * Math.PI) / 360) * Math.max(depth, 0.001));
         return {
             x: (projected.x * 0.5 + 0.5) * rect.width,
             y: (-projected.y * 0.5 + 0.5) * rect.height,
-            radius: body.sprite.scale.x * 0.5 * BODY_FILL * pxPerUnit,
+            radius: body.mesh.scale.x * 0.5 * BODY_FILL * pxPerUnit,
+            depth,
         };
     }
 
-    /**
-     * Nearest body within a generous screen-space radius, rather than a raycast against
-     * the sprite quad. A planet is a handful of pixels across at normal zoom, so an
-     * exact hit test is unusable with a fingertip and barely usable with a mouse.
-     */
+    /** Prefer visible discs, then their forgiving screen-space hit targets. */
     function pickBody(clientX: number, clientY: number): OrbitingBody | null {
-        if (!system) return null;
+        if (!system || !systemGroup.visible) return null;
+        systemGroup.updateMatrixWorld(true);
         const rect = element.getBoundingClientRect();
         const px = clientX - rect.left;
         const py = clientY - rect.top;
         let best: OrbitingBody | null = null;
         let bestDistance = Infinity;
+        let bestDepth = Infinity;
         for (const body of allBodies()) {
             const point = projectBody(body, rect);
             if (!point) continue;
             const distance = Math.hypot(point.x - px, point.y - py);
             if (distance > Math.max(point.radius, PICK_RADIUS_FLOOR)) continue;
-            if (distance < bestDistance) {
-                bestDistance = distance;
+            const score = Math.max(0, distance - point.radius);
+            if (score < bestDistance || (score === bestDistance && point.depth < bestDepth)) {
+                bestDistance = score;
+                bestDepth = point.depth;
                 best = body;
             }
         }
@@ -629,8 +699,9 @@ export function createCosmos(
     function setHoveredBody(body: OrbitingBody | null) {
         if (hoveredBody === body) return;
         if (hoveredBody) {
-            hoveredBody.sprite.scale.setScalar(hoveredBody.baseScale);
-            hoveredBody.atmosphere?.scale.setScalar(hoveredBody.baseScale * 1.5);
+            hoveredBody.mesh.scale.setScalar(hoveredBody.baseScale);
+            hoveredBody.atmosphere?.scale.setScalar(hoveredBody.baseScale);
+            hoveredBody.ring?.scale.setScalar(1);
         }
         hoveredBody = body;
         if (!body) {
@@ -639,34 +710,45 @@ export function createCosmos(
         }
         // Grow, do not dim. The previous handler dropped the hovered body's opacity to
         // 0.72, which reads as pushing it away rather than picking it out.
-        body.sprite.scale.setScalar(body.baseScale * 1.2);
-        body.atmosphere?.scale.setScalar(body.baseScale * 1.8);
+        body.mesh.scale.setScalar(body.baseScale * 1.12);
+        body.atmosphere?.scale.setScalar(body.baseScale * 1.12);
+        body.ring?.scale.setScalar(1.12);
         showBodyTooltip(body);
     }
 
+    const gesture = new BodyGesture();
+    const onSystemPointerDown = (event: PointerEvent) => {
+        if ((event.target as HTMLElement).closest("[data-cosmos-section]")) return;
+        if (event.button === 0) gesture.begin(event);
+    };
     const onSystemPointerMove = (event: PointerEvent) => {
-        // Touch has no hover, and picking on every move of a drag would both cost frames
-        // and leave a planet stuck enlarged after the finger lifts.
-        if (event.pointerType === "touch") return;
+        gesture.move(event);
+        if (event.pointerType === "touch" || event.buttons !== 0) { setHoveredBody(null); return; }
         const body = pickBody(event.clientX, event.clientY);
         setHoveredBody(body);
         if (body) element.style.cursor = "pointer";
-        // The graph's own hover handler will not fire when leaving a planet, so the
-        // pointer cursor would otherwise stick.
         else if (!view.hover) element.style.cursor = "default";
     };
-    // Capture phase: a hit must not also reach the graph, which would read it as a
-    // background click and clear the selection.
-    const onSystemClick = (event: MouseEvent) => {
+    const onSystemPointerUp = (event: PointerEvent) => {
+        if ((event.target as HTMLElement).closest("[data-cosmos-section]")) return;
+        const action = gesture.finish(event);
+        if (!action || event.button !== 0) return;
+        if (action === "drag") { consumedPointers.add(event); return; }
         const body = pickBody(event.clientX, event.clientY);
         if (!body) return;
-        event.stopPropagation();
-        event.preventDefault();
-        setHoveredBody(body);
+        // ForceGraph dispatches from this pointerup on its next frame, not from click.
+        consumedPointers.add(event);
+        lastClick = { id: "", at: 0 };
+        setHoveredBody(event.pointerType === "touch" ? null : body);
         handlers.onSectionClick(body.sectionId, body.title);
     };
-    element.addEventListener("pointermove", onSystemPointerMove);
-    element.addEventListener("click", onSystemClick, true);
+    const onSystemPointerCancel = () => { gesture.cancel(); setHoveredBody(null); };
+    const onSystemPointerLeave = () => { setHoveredBody(null); };
+    element.addEventListener("pointerdown", onSystemPointerDown, true);
+    element.addEventListener("pointermove", onSystemPointerMove, true);
+    element.addEventListener("pointerup", onSystemPointerUp, true);
+    element.addEventListener("pointercancel", onSystemPointerCancel, true);
+    element.addEventListener("pointerleave", onSystemPointerLeave);
 
     function applyStarStyle(node: GNode, star: StarObject) {
         const material = star.corona.material as THREE.SpriteMaterial;
@@ -717,33 +799,41 @@ export function createCosmos(
             scale = Math.max(scale, 1.2);
         }
 
-        // Neighbours are set apart by SIZE, not by brightness: they keep close to their
-        // normal glow and sit a little under their true proportion. Dimming them to a
-        // third looked washed out, and because the treatment used to live only in the
-        // resting branch, hovering removed it altogether and threw a neighbour plus all
-        // of ITS neighbours from a third to near-full at 2.6x size, which is what blew
-        // them into one white glob. Applying it in every branch keeps hover a nudge.
-        if (view.systemFocus !== null && node.id !== view.systemFocus) {
-            opacity *= SYSTEM_BACKGROUND_OPACITY;
-            scale *= SYSTEM_NEIGHBOUR_SHRINK;
+        if (view.systemFocus !== null) {
+            if (node.id === view.systemFocus) scale *= SYSTEM_ZOOM;
+            else {
+                opacity *= SYSTEM_BACKGROUND_OPACITY;
+                scale *= SYSTEM_NEIGHBOUR_SHRINK;
+            }
         }
 
-        // Every star in system view, after the selection override which would clamp it.
-        if (view.systemFocus !== null) scale *= SYSTEM_ZOOM;
-
         material.color.set(color);
-        material.opacity = opacity;
+        material.opacity = node.id === system?.rootId ? opacity * 0.55 : opacity;
         material.map = getTexture(classifyStar(node));
 
         // The core is driven past 1 so a lone star clears the bloom threshold on its
         // own, and is mixed toward white so the colour reads as corona rather than as a
         // flat tint over the whole disc. A protostar has no resolved core to burn.
         const resolved = classifyStar(node) !== "protostar";
-        coreMaterial.visible = resolved && opacity > 0.25;
+        coreMaterial.visible = resolved && opacity > 0.25 && node.id !== system?.rootId;
         coreMaterial.color.set(color).lerp(WHITE, 0.72).multiplyScalar(CORE_OVERDRIVE);
         coreMaterial.opacity = opacity;
 
-        star.group.scale.setScalar(starSize(node) * scale);
+        star.baseSize = starSize(node) * scale;
+        updateStarSize(node.id, star);
+    }
+
+    const starDepth = new THREE.Vector3();
+    function updateStarSize(id: string, star: StarObject) {
+        let size = star.baseSize;
+        if (view.systemFocus && id !== view.systemFocus) {
+            const camera = graph.camera() as THREE.PerspectiveCamera;
+            const depth = -star.group.getWorldPosition(starDepth).applyMatrix4(camera.matrixWorldInverse).z;
+            const pixels = graph.width() < 760 ? 22 : 28;
+            const minimum = pixels * 2 * Math.tan(camera.fov * Math.PI / 360) * Math.max(0, depth) / Math.max(1, graph.height());
+            size = Math.max(size, minimum);
+        }
+        star.group.scale.setScalar(size);
     }
 
     function applyNodeStyles() {
@@ -762,7 +852,8 @@ export function createCosmos(
         }
         selectionRing.visible = true;
         selectionRing.position.set(node.x, node.y ?? 0, node.z ?? 0);
-        selectionRing.scale.setScalar(starSize(node) * 2.3);
+        selectionRing.scale.setScalar((starById.get(node.id)?.group.scale.x ?? starSize(node)) * 0.82);
+        (selectionRing.material as THREE.SpriteMaterial).color.set(lensColor(node, view.lens));
     }
 
     function updateNebulae() {
@@ -812,6 +903,8 @@ export function createCosmos(
     }
 
     graph.onEngineTick(() => {
+        simulationReady = true;
+        clearance.constrain();
         tickCount++;
         if (styleDirty) {
             applyNodeStyles();
@@ -823,44 +916,42 @@ export function createCosmos(
 
     function flyToNode(node: GNode, distance: number) {
         if (node.x === undefined) return;
-        const length = Math.hypot(node.x, node.y ?? 0, node.z ?? 0) || 1;
-        const factor = 1 + distance / length;
-        graph.cameraPosition(
-            { x: node.x * factor, y: (node.y ?? 0) * factor, z: (node.z ?? 0) * factor },
-            { x: node.x, y: node.y ?? 0, z: node.z ?? 0 },
-            900,
-        );
+        const camera = graph.camera();
+        const controls = graph.controls() as { target?: THREE.Vector3 };
+        const target = controls.target ?? new THREE.Vector3();
+        const destination = { x: node.x, y: node.y ?? 0, z: node.z ?? 0 };
+        graph.cameraPosition(cameraStandOff(camera.position, target, destination, distance), destination, reducedMotion ? 0 : 900);
+    }
+
+    function bloomWanted() {
+        return !disposed && quality === "auto" && nodeById.size <= BLOOM_NODE_LIMIT && !isSoftwareRenderer(renderer);
     }
 
     async function ensureBloom(width: number, height: number) {
-        const nodeCount = nodeById.size;
-        const renderer = graph.renderer();
-        const wanted = quality === "auto" && nodeCount <= BLOOM_NODE_LIMIT && !isSoftwareRenderer(renderer);
-
-        if (!wanted) {
-            if (bloom?.enabled) {
-                try {
-                    const composer = graph.postProcessingComposer() as unknown as { removePass(pass: unknown): void };
-                    composer.removePass(bloom.pass);
-                } catch { /* composer may already be torn down */ }
-                bloom.enabled = false;
-            }
+        const revision = ++bloomRevision;
+        const composer = graph.postProcessingComposer();
+        if (!bloomWanted()) {
+            if (bloom?.enabled) { composer.removePass(bloom.pass); bloom.enabled = false; }
             return;
         }
-        if (bloom?.enabled) return;
-
+        if (bloom?.enabled || bloomPending) return;
+        if (bloom) {
+            composer.insertPass(bloom.pass, composer.passes.indexOf(outputPass));
+            bloom.enabled = true;
+            return;
+        }
+        bloomPending = true;
         try {
             const { UnrealBloomPass } = await import("three/examples/jsm/postprocessing/UnrealBloomPass.js");
-            // Threshold has to clear the planets: they are normal-blended lit discs, so
-            // a low threshold haloes them into stars. Stars are additive and their cores
-            // stack well past this, so strength carries the glow instead.
-            const pass = bloom?.pass ?? new UnrealBloomPass(new THREE.Vector2(width, height), 1.18, 0.82, 0.62);
-            const composer = graph.postProcessingComposer() as unknown as { addPass(pass: unknown): void };
-            composer.addPass(pass);
+            if (!bloomWanted()) return;
+            const pass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.55, 0.45, 1.12);
+            composer.insertPass(pass, composer.passes.indexOf(outputPass));
             bloom = { pass, enabled: true };
         } catch (error) {
-            console.warn("[Cosmos] Bloom unavailable; falling back to plain rendering.", error);
-            bloom = null;
+            if (!disposed) console.warn("[Cosmos] Bloom unavailable; falling back to plain rendering.", error);
+        } finally {
+            bloomPending = false;
+            if (!disposed && revision !== bloomRevision && bloomWanted() && !bloom) void ensureBloom(graph.width(), graph.height());
         }
     }
 
@@ -894,6 +985,9 @@ export function createCosmos(
             // Link accessors are re-read only when reassigned.
             graph.linkColor(graph.linkColor());
             graph.linkWidth(graph.linkWidth());
+            updateNebulae();
+            const root = system ? nodeById.get(system.rootId) : undefined;
+            if (photosphere && root) photosphere.material.uniforms.surfaceColor.value.set(lensColor(root, view.lens));
         },
 
         setClusters(next) {
@@ -903,13 +997,17 @@ export function createCosmos(
         },
 
         setSystem(spec) {
+            view.systemFocus = spec?.rootId ?? null;
+            graph.enableNodeDrag(!spec);
             if (!spec) clearSystem();
             else buildSystem(spec);
-            // Link lengths and repulsion both depend on the system, so they have to be
-            // recomputed and the layout reheated whenever it changes.
+            applyNodeStyles();
+            updateSelectionRing();
+            graph.linkColor(graph.linkColor());
+            graph.linkWidth(graph.linkWidth());
             applyLinkDistance();
             applyChargeStrength();
-            if (graph.graphData().nodes.length > 0) graph.d3ReheatSimulation();
+            if (simulationReady && nodeById.size > 0) graph.d3ReheatSimulation();
         },
 
         // Standoff is derived from filament length, not fixed: at a hard 150 the camera
@@ -929,7 +1027,17 @@ export function createCosmos(
             // Floored against the sun's own halo so a one-planet system is not framed so
             // close that the star fills the viewport.
             const extent = Math.max(systemOuterRadius, systemSunHalo * 3.4);
-            flyToNode(root, Math.max(extent * 2.4, physics.linkDist * FLY_STANDOFF));
+            const camera = graph.camera() as THREE.PerspectiveCamera;
+            const safeWidth = Math.max(graph.width() * 0.35, graph.width() - view.labelSafeArea.left - view.labelSafeArea.right);
+            flyToNode(root, systemFrameDistance(extent, camera.fov, safeWidth / Math.max(1, graph.height())));
+        },
+
+        zoom(factor) {
+            const camera = graph.camera();
+            const controls = graph.controls() as { target?: THREE.Vector3; minDistance?: number; maxDistance?: number };
+            const target = controls.target ?? new THREE.Vector3();
+            const distance = Math.max(controls.minDistance ?? 1, Math.min(controls.maxDistance ?? Infinity, camera.position.distanceTo(target) * factor));
+            graph.cameraPosition(cameraStandOff(camera.position, target, target, distance), target, reducedMotion ? 0 : 260);
         },
 
         // flyTo parks the trackball pivot on the star it framed, and nothing else ever
@@ -960,17 +1068,17 @@ export function createCosmos(
             graph.cameraPosition(
                 { x: next.x, y: next.y, z: next.z },
                 { x: target.x, y: target.y, z: target.z },
-                700,
+                reducedMotion ? 0 : 700,
             );
         },
 
         frameAll() {
-            graph.zoomToFit(800, 90);
+            graph.zoomToFit(reducedMotion ? 0 : 800, 90);
         },
 
         frameNodes(ids) {
             if (ids.size === 0) return;
-            graph.zoomToFit(800, 100, (node) => ids.has(node.id));
+            graph.zoomToFit(reducedMotion ? 0 : 800, 100, (node) => ids.has(node.id));
         },
 
         applyPhysics(settings) {
@@ -978,8 +1086,8 @@ export function createCosmos(
             applyChargeStrength();
             applyLinkDistance();
             (graph.d3Force("center") as { strength?: (v: number) => void } | undefined)?.strength?.(settings.center);
-            // Reheating before the first graphData() crashes tickFrame (state.layout is undefined).
-            if (graph.graphData().nodes.length > 0) graph.d3ReheatSimulation();
+            // graphData is synchronous; its first simulation layout is installed later.
+            if (simulationReady && nodeById.size > 0) graph.d3ReheatSimulation();
         },
 
         setQuality(next) {
@@ -989,30 +1097,57 @@ export function createCosmos(
             updateNebulae();
         },
 
+        setMotionPaused(paused) {
+            motionPaused = paused;
+            lastSystemPaint = null;
+        },
+
         bloomActive() {
             return bloom?.enabled === true;
         },
 
         resize(width, height) {
+            const previousWidth = graph.width(), previousHeight = graph.height();
+            const camera = graph.camera() as THREE.PerspectiveCamera;
+            const controls = graph.controls() as { target?: THREE.Vector3 };
+            const target = controls.target?.clone();
+            const nextPosition = system && target && previousWidth > 0 && previousHeight > 0 && width > 0 && height > 0
+                ? resizeSystemView(camera.position, target, camera.fov, previousWidth / previousHeight, width / height)
+                : null;
             graph.width(width).height(height);
+            if (nextPosition && target && Math.hypot(
+                nextPosition.x - camera.position.x, nextPosition.y - camera.position.y, nextPosition.z - camera.position.z,
+            ) > 0.001) graph.cameraPosition(nextPosition, target, 0);
         },
 
         dispose() {
+            disposed = true;
+            bloomRevision++;
             if (systemRaf) cancelAnimationFrame(systemRaf);
             systemRaf = 0;
-            element.removeEventListener("pointermove", onSystemPointerMove);
-            element.removeEventListener("click", onSystemClick, true);
+            element.removeEventListener("pointerdown", onSystemPointerDown, true);
+            element.removeEventListener("pointermove", onSystemPointerMove, true);
+            element.removeEventListener("pointerup", onSystemPointerUp, true);
+            element.removeEventListener("pointercancel", onSystemPointerCancel, true);
+            element.removeEventListener("pointerleave", onSystemPointerLeave);
+            motionPreference.removeEventListener("change", onMotionPreference);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
+            if (bloom) { graph.postProcessingComposer().removePass(bloom.pass); bloom.pass.dispose(); }
+            graph.postProcessingComposer().removePass(outputPass);
+            outputPass.dispose();
             clearSystem();
             tooltip.remove();
-            scene.remove(systemGroup);
+            scene.remove(systemGroup, systemLight);
+            systemLight.dispose();
             for (const sprite of nebulaById.values()) {
                 scene.remove(sprite);
                 (sprite.material as THREE.SpriteMaterial).dispose();
             }
             nebulaById.clear();
             scene.remove(starfield);
-            starfield.geometry.dispose();
-            (starfield.material as THREE.PointsMaterial).dispose();
+            starfield.traverse((child) => {
+                if (child instanceof THREE.Points) { child.geometry.dispose(); (child.material as THREE.PointsMaterial).dispose(); }
+            });
             scene.remove(selectionRing);
             (selectionRing.material as THREE.SpriteMaterial).dispose();
             starById.clear();

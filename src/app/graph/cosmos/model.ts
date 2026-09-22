@@ -2,7 +2,7 @@ import type {
     GraphCluster, GraphEdge, GraphNode, HealthSummary, LinkSuggestion, NodeHealth,
 } from "@/lib/vault/graph-types";
 import { shortestPath, type Adjacency } from "@/lib/vault/graph-analysis";
-import { trustBucket, type Lens, type TrustBucket } from "./palette";
+import { CATEGORIES, trustBucket, type Lens, type TrustBucket } from "./palette";
 
 export type { GraphCluster, GraphEdge, GraphNode, HealthSummary, LinkSuggestion, NodeHealth };
 export { shortestPath };
@@ -123,6 +123,34 @@ export function buildAdjacency(edges: GraphEdge[]): Adjacency {
     return map;
 }
 
+export function readCategories(value: string | null): Record<string, boolean> {
+    if (value === null) return {};
+    const enabled = new Set(value.split(",").filter(Boolean));
+    return Object.fromEntries(CATEGORIES.map((category) => [category, enabled.has(category)]));
+}
+
+export function writeCategories(filter: Record<string, boolean>): string | null {
+    const enabled = CATEGORIES.filter((category) => filter[category] !== false);
+    return enabled.length === CATEGORIES.length ? null : enabled.join(",");
+}
+
+export function localNodeIds(root: string, depth: 1 | 2, adjacency: Adjacency): Set<string> {
+    const within = new Set([root]);
+    let frontier = [root];
+    for (let step = 0; step < depth; step++) {
+        const next: string[] = [];
+        for (const id of frontier) {
+            for (const neighbour of adjacency.get(id) ?? []) {
+                if (within.has(neighbour)) continue;
+                within.add(neighbour);
+                next.push(neighbour);
+            }
+        }
+        frontier = next;
+    }
+    return within;
+}
+
 export interface VisibleParams {
     data: ApiGraph;
     adjacency: Adjacency;
@@ -144,6 +172,17 @@ export interface VisibleParams {
 export interface VisibleSlice {
     nodes: GNode[];
     links: GLink[];
+}
+
+export function visiblePath(from: string | null, to: string | null, visible: VisibleSlice): string[] {
+    if (!from || !to) return [];
+    const ids = new Set(visible.nodes.map((node) => node.id));
+    if (!ids.has(from) || !ids.has(to)) return [];
+    const edges = visible.links.filter((link) => link.kind === "real").map((link) => {
+        const { s, t } = endpoints(link);
+        return { source: s, target: t, mutual: link.mutual };
+    });
+    return shortestPath(from, to, buildAdjacency(edges));
 }
 
 /**
@@ -170,22 +209,11 @@ export function deriveVisible(params: VisibleParams): VisibleSlice {
             .map((node) => node.id),
     );
 
-    if (localRoot && keep.has(localRoot)) {
-        const within = new Set([localRoot]);
-        let frontier = [localRoot];
-        for (let depth = 0; depth < localDepth; depth++) {
-            const next: string[] = [];
-            for (const id of frontier) {
-                for (const neighbour of adjacency.get(id) ?? []) {
-                    if (!within.has(neighbour) && keep.has(neighbour)) {
-                        within.add(neighbour);
-                        next.push(neighbour);
-                    }
-                }
-            }
-            frontier = next;
-        }
-        keep = within;
+    if (localRoot) {
+        const within = localNodeIds(localRoot, localDepth, adjacency);
+        keep = keep.has(localRoot)
+            ? new Set([...keep].filter((id) => within.has(id)))
+            : new Set();
     }
 
     const nodes: GNode[] = [];

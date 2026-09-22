@@ -17,6 +17,7 @@ export const metadata: Metadata = {
   description: "Personal AI assistant",
   icons: {
     icon: "/favicon.svg",
+    apple: "/apple-touch-icon.png",
   },
 };
 

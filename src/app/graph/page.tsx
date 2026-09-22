@@ -3,16 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-    ArrowLeft, ChevronDown, ChevronUp, Clock, Crosshair, Layers, Loader2, RefreshCw, Route,
+    ArrowLeft, ChevronDown, ChevronUp, Clock, Crosshair, Layers, Loader2, Minus, Pause, Play, Plus, RefreshCw, Route,
     SlidersHorizontal, Type, X,
 } from "lucide-react";
 import { COSMOS, LENSES, TRUST_BUCKETS, type Lens, type TrustBucket } from "./cosmos/palette";
-import { styles } from "./cosmos/styles";
+import { COSMOS_CSS, styles } from "./cosmos/styles";
 import { createCosmos, DEFAULT_PHYSICS, type Cosmos, type PhysicsSettings, type Quality } from "./cosmos/scene";
 import { createLabelLayer, type LabelLayer } from "./cosmos/labels";
 import {
-    buildAdjacency, createView, deriveVisible, earliestCreated, endpoints, pathLinkKeys,
-    shortestPath, type ApiGraph, type GLink, type GNode, type NodeHealth, type SelectedLink,
+    buildAdjacency, createView, deriveVisible, earliestCreated, endpoints, localNodeIds, pathLinkKeys,
+    readCategories, visiblePath, writeCategories, type ApiGraph, type GLink, type GNode, type NodeHealth, type SelectedLink,
 } from "./cosmos/model";
 import { parseSections } from "./cosmos/sections";
 import ExplorePanel, { type SearchHit } from "./panels/explore-panel";
@@ -33,23 +33,6 @@ type DockSize = "third" | "half" | "tall";
 const DOCK_SHARE: Record<DockSize, number> = { third: 0.34, half: 0.5, tall: 0.82 };
 const DOCK_NEXT: Record<DockSize, DockSize> = { third: "half", half: "tall", tall: "third" };
 
-const MARKDOWN_CSS = `
-.graph-markdown h1,.graph-markdown h2,.graph-markdown h3{font-size:13.5px;font-weight:700;margin:12px 0 5px;color:#e8ecf8}
-.graph-markdown p{margin:0 0 8px}
-.graph-markdown ul,.graph-markdown ol{margin:0 0 8px;padding-left:18px}
-.graph-markdown li{margin:2px 0}
-.graph-markdown code{background:rgba(148,163,201,0.14);padding:1px 4px;border-radius:4px;font-size:11.5px}
-.graph-markdown pre{background:rgba(4,6,11,0.7);padding:9px;border-radius:9px;overflow-x:auto;margin:0 0 9px}
-.graph-markdown a{color:#8fc2ff}
-.graph-markdown table{border-collapse:collapse;font-size:11.5px;margin:0 0 9px}
-.graph-markdown th,.graph-markdown td{border:1px solid rgba(126,141,184,0.22);padding:3px 7px}
-.graph-markdown blockquote{margin:0 0 9px;padding-left:9px;border-left:2px solid rgba(126,141,184,0.35);color:#98a2bd}
-.cosmos-rail::-webkit-scrollbar{width:7px}
-.cosmos-rail::-webkit-scrollbar-thumb{background:rgba(126,141,184,0.26);border-radius:99px}
-.cosmos-rail::-webkit-scrollbar-track{background:transparent}
-.cosmos-rail>*{pointer-events:auto}
-`;
-
 export default function GraphPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const cosmosRef = useRef<Cosmos | null>(null);
@@ -59,6 +42,11 @@ export default function GraphPage() {
     const linkCache = useRef(new Map<string, GLink>());
     const searchInputRef = useRef<HTMLInputElement>(null);
     const urlLoaded = useRef(false);
+    const graphRequest = useRef(0);
+    const pendingFocus = useRef<string | null>(null);
+    const systemFrameTimer = useRef<number | null>(null);
+    const systemFrameRequest = useRef<string | null>(null);
+    const cameraRevision = useRef(0);
 
     const [data, setData] = useState<ApiGraph | null>(null);
     const [loading, setLoading] = useState(true);
@@ -67,6 +55,8 @@ export default function GraphPage() {
     const [ready, setReady] = useState(false);
 
     const [railOpen, setRailOpen] = useState(true);
+    const [orbitsPaused, setOrbitsPaused] = useState(false);
+    const controlsBeforeSystem = useRef(true);
     const [viewport, setViewport] = useState({ width: 1440, height: 900 });
     // The top bar wraps on narrow panes, so the rails cannot use a fixed offset.
     const topBarRef = useRef<HTMLDivElement>(null);
@@ -102,10 +92,16 @@ export default function GraphPage() {
     const [timePlaying, setTimePlaying] = useState(false);
 
     const [selected, setSelected] = useState<Selection>(null);
-    const [pageMd, setPageMd] = useState<string | null>(null);
+    const selectedRef = useRef(selected);
+    selectedRef.current = selected;
+    const [pageContents, setPageContents] = useState<Record<string, string>>({});
+    const selectedId = selected?.type === "node" ? selected.id : null;
+    const pageMd = selectedId ? pageContents[selectedId] ?? null : null;
     const [pageLoading, setPageLoading] = useState(false);
     const [editMode, setEditMode] = useState(false);
     const [editText, setEditText] = useState("");
+    const editTextRef = useRef(editText);
+    editTextRef.current = editText;
     const [busy, setBusy] = useState<string | null>(null);
     const [confirming, setConfirming] = useState<string | null>(null);
 
@@ -117,8 +113,6 @@ export default function GraphPage() {
     const [linkLabel, setLinkLabel] = useState("");
     const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
 
-    // Matched back to a rendered heading by title, not slug: slugs carry collision
-    // suffixes that would not survive a round trip through the DOM.
     const [focusedSection, setFocusedSection] = useState<{ id: string; title: string } | null>(null);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
     const [toast, setToast] = useState<string | null>(null);
@@ -131,20 +125,26 @@ export default function GraphPage() {
     // ---- Data ----
 
     const fetchGraph = useCallback(async (mode: "initial" | "refresh" | "rebuild") => {
+        const request = ++graphRequest.current;
         if (mode === "initial") setLoading(true);
         else setRefreshing(true);
         try {
             const url = mode === "rebuild" ? "/api/vault/graph?refresh=1" : "/api/vault/graph";
             const response = await fetch(url);
             const json = await response.json();
+            if (request !== graphRequest.current) return;
             if (!response.ok) throw new Error(json.error || "Failed to load the graph.");
             setData(json as ApiGraph);
             setError(null);
         } catch (caught) {
-            setError(caught instanceof Error ? caught.message : "Failed to load the graph.");
+            if (request === graphRequest.current) {
+                setError(caught instanceof Error ? caught.message : "Failed to load the graph.");
+            }
         } finally {
-            setLoading(false);
-            setRefreshing(false);
+            if (request === graphRequest.current) {
+                setLoading(false);
+                setRefreshing(false);
+            }
         }
     }, []);
 
@@ -155,6 +155,18 @@ export default function GraphPage() {
         for (const node of data?.nodes ?? []) map.set(node.id, node);
         return map;
     }, [data]);
+
+    useEffect(() => {
+        if (!data) return;
+        setSelected((current) => {
+            if (current?.type === "node" && !nodeById.has(current.id)) return null;
+            if (current?.type === "link" && (!nodeById.has(current.link.source) || !nodeById.has(current.link.target))) return null;
+            return current;
+        });
+        setLocalRoot((current) => current && !nodeById.has(current) ? null : current);
+        setRouteFrom((current) => current && !nodeById.has(current) ? null : current);
+        setRouteTo((current) => current && !nodeById.has(current) ? null : current);
+    }, [data, nodeById]);
 
     const titleOf = useCallback(
         (path: string) => nodeById.get(path)?.title ?? path.replace(/\.md$/, "").split("/").pop() ?? path,
@@ -186,10 +198,8 @@ export default function GraphPage() {
         });
     }, [data, adjacency, categoryFilter, showOrphans, showSuggestions, localRoot, localDepth, timeActive, timeValue, findings, trustFilter]);
 
-    const path = useMemo(() => {
-        if (!routeFrom || !routeTo) return [];
-        return shortestPath(routeFrom, routeTo, adjacency);
-    }, [routeFrom, routeTo, adjacency]);
+    const visibleIds = useMemo(() => new Set(visible.nodes.map((node) => node.id)), [visible]);
+    const path = useMemo(() => visiblePath(routeFrom, routeTo, visible), [routeFrom, routeTo, visible]);
 
     // ---- URL state ----
 
@@ -202,13 +212,7 @@ export default function GraphPage() {
         if (urlLens && (LENSES as readonly string[]).includes(urlLens)) setLens(urlLens as Lens);
         const urlQuery = params.get("q");
         if (urlQuery) setQuery(urlQuery);
-        const categories = params.get("cat");
-        if (categories) {
-            const allowed = new Set(categories.split(",").filter(Boolean));
-            setCategoryFilter(Object.fromEntries(
-                ["sources", "concepts", "entities", "synthesis"].map((category) => [category, allowed.has(category)]),
-            ));
-        }
+        setCategoryFilter(readCategories(params.get("cat")));
         if (params.get("sug") === "1") setShowSuggestions(true);
         if (params.get("quality") === "plain") setQuality("plain");
         const trustParam = params.get("trust");
@@ -234,6 +238,8 @@ export default function GraphPage() {
         if (local === "1" || local === "2") {
             const root = params.get("root") ?? node;
             if (root) {
+                systemFrameRequest.current = root;
+                setRailOpen(false);
                 setLocalRoot(root);
                 setLocalDepth(local === "2" ? 2 : 1);
             }
@@ -264,10 +270,8 @@ export default function GraphPage() {
         }
         if (timeActive) params.set("t", new Date(timeValue).toISOString().slice(0, 10));
         if (trustFilter.length > 0) params.set("trust", trustFilter.join(","));
-        const disabled = Object.entries(categoryFilter).filter(([, on]) => on === false);
-        if (disabled.length > 0) {
-            params.set("cat", Object.entries(categoryFilter).filter(([, on]) => on !== false).map(([key]) => key).join(","));
-        }
+        const categories = writeCategories(categoryFilter);
+        if (categories !== null) params.set("cat", categories);
         const search = params.toString();
         // replaceState, not push: dragging a slider must not fill the back stack.
         window.history.replaceState(null, "", search ? `?${search}` : window.location.pathname);
@@ -277,6 +281,7 @@ export default function GraphPage() {
 
     const openNode = useCallback((id: string) => {
         setSelected({ type: "node", id });
+        setFocusedSection(null);
         setDock("half");
         setEditMode(false);
         setConfirming(null);
@@ -289,18 +294,18 @@ export default function GraphPage() {
 
     // Selection drives the fetch, so a deep-linked ?node= loads exactly like a click.
     useEffect(() => {
-        if (selected?.type !== "node") return;
-        const path = selected.id;
+        if (!selectedId) return;
+        const path = selectedId;
         let cancelled = false;
-        setPageMd(null);
+        const controller = new AbortController();
         setPageLoading(true);
         (async () => {
             try {
-                const response = await fetch(`/api/vault/page?path=${encodeURIComponent(path)}`);
+                const response = await fetch(`/api/vault/page?path=${encodeURIComponent(path)}`, { signal: controller.signal });
                 const json = await response.json();
                 if (cancelled) return;
                 if (!response.ok) throw new Error(json.error || "Failed to load the page.");
-                setPageMd(json.markdown);
+                setPageContents((current) => ({ ...current, [path]: json.markdown }));
                 setEditText(json.markdown);
             } catch (caught) {
                 if (!cancelled) showToast(caught instanceof Error ? caught.message : "Failed to load the page.");
@@ -308,8 +313,26 @@ export default function GraphPage() {
                 if (!cancelled) setPageLoading(false);
             }
         })();
-        return () => { cancelled = true; };
-    }, [selected, showToast]);
+        return () => { cancelled = true; controller.abort(); };
+    }, [selectedId, showToast]);
+
+    useEffect(() => {
+        if (!localRoot || localRoot === selectedId || pageContents[localRoot] !== undefined) return;
+        const controller = new AbortController();
+        let cancelled = false;
+        void (async () => {
+            try {
+                const response = await fetch(`/api/vault/page?path=${encodeURIComponent(localRoot)}`, { signal: controller.signal });
+                const json = await response.json();
+                if (cancelled) return;
+                if (!response.ok) throw new Error(json.error || "Failed to load the system page.");
+                setPageContents((current) => ({ ...current, [localRoot]: json.markdown }));
+            } catch (caught) {
+                if (!cancelled) showToast(caught instanceof Error ? caught.message : "Failed to load the system page.");
+            }
+        })();
+        return () => { cancelled = true; controller.abort(); };
+    }, [localRoot, selectedId, pageContents, showToast]);
 
     useEffect(() => {
         if (selected?.type !== "node") return;
@@ -331,17 +354,77 @@ export default function GraphPage() {
     }, [selected]);
 
     const focusNode = useCallback((id: string) => {
-        const node = nodeCache.current.get(id);
-        if (node) cosmosRef.current?.flyTo(node);
-        void openNode(id);
-    }, [openNode]);
+        const node = nodeById.get(id);
+        if (!node) return;
+        cameraRevision.current++;
+        systemFrameRequest.current = null;
+        if (!visibleIds.has(id)) {
+            const insideSystem = localRoot && localNodeIds(localRoot, localDepth, adjacency).has(id);
+            const rootCategory = insideSystem ? nodeById.get(localRoot)?.category : undefined;
+            setCategoryFilter((current) => ({
+                ...current, [node.category]: true, ...(rootCategory ? { [rootCategory]: true } : {}),
+            }));
+            setShowOrphans(true);
+            setFindings([]);
+            setTrustFilter([]);
+            setTimeActive(false);
+            setTimePlaying(false);
+            if (localRoot && !insideSystem) setLocalRoot(null);
+        }
+        pendingFocus.current = id;
+        openNode(id);
+    }, [openNode, nodeById, visibleIds, localRoot, localDepth, adjacency]);
 
-    // Shrinking the dock is the point of entering a system: the planets are what was
-    // asked for. The page stays selected because systemSpec needs it, so the dock gives
-    // the graph more room rather than closing.
     const enterSystem = useCallback((id: string) => {
+        cameraRevision.current++;
+        pendingFocus.current = null;
+        systemFrameRequest.current = id;
+        if (localRoot === id && pageContents[id] !== undefined) {
+            systemFrameRequest.current = null;
+            cosmosRef.current?.frameSystem();
+        }
+        openNode(id);
+        if (!localRoot) controlsBeforeSystem.current = railOpen;
+        setRailOpen(false);
         setLocalRoot(id);
         setDock("third");
+    }, [openNode, localRoot, pageContents, railOpen]);
+
+    useEffect(() => { cosmosRef.current?.setMotionPaused(orbitsPaused); }, [orbitsPaused, ready]);
+
+    const exitSystem = useCallback(() => {
+        cameraRevision.current++;
+        systemFrameRequest.current = null;
+        setLocalRoot(null);
+        setRailOpen(controlsBeforeSystem.current);
+        setFocusedSection(null);
+        window.requestAnimationFrame(() => cosmosRef.current?.releaseFocus());
+    }, []);
+
+    const readSection = useCallback((pageId: string, sectionId: string, title: string) => {
+        cameraRevision.current++;
+        systemFrameRequest.current = null;
+        pendingFocus.current = null;
+        if (systemFrameTimer.current !== null) window.clearTimeout(systemFrameTimer.current);
+        systemFrameTimer.current = null;
+        if (selectedId !== pageId) openNode(pageId);
+        setFocusedSection({ id: sectionId, title });
+        if (window.innerWidth < MOBILE_BREAKPOINT) setDock("tall");
+    }, [selectedId, openNode]);
+
+    const fitView = useCallback(() => {
+        cameraRevision.current++;
+        systemFrameRequest.current = null;
+        pendingFocus.current = null;
+        if (localRoot) cosmosRef.current?.frameSystem();
+        else cosmosRef.current?.frameAll();
+    }, [localRoot]);
+
+    const zoomView = useCallback((factor: number) => {
+        cameraRevision.current++;
+        systemFrameRequest.current = null;
+        pendingFocus.current = null;
+        cosmosRef.current?.zoom(factor);
     }, []);
 
     // ---- Cosmos instance ----
@@ -358,6 +441,9 @@ export default function GraphPage() {
 
     handlersRef.current = {
         onNodeClick: (node) => {
+            cameraRevision.current++;
+            systemFrameRequest.current = null;
+            pendingFocus.current = null;
             void openNode(node.id);
             cosmosRef.current?.flyTo(node);
         },
@@ -396,14 +482,11 @@ export default function GraphPage() {
             // Guarded: a background click with nothing open must not move the camera.
             if (!selected) return;
             setSelected(null);
-            cosmosRef.current?.releaseFocus();
+            if (!localRoot) cosmosRef.current?.releaseFocus();
         },
         onSectionClick: (sectionId, title) => {
-            setFocusedSection({ id: sectionId, title });
-            // Clicking a planet is a request to READ that section. At a third of the
-            // screen the dock scrolls a pane the user cannot see, so the click looked
-            // like it did nothing at all.
-            if (window.innerWidth < MOBILE_BREAKPOINT) setDock("tall");
+            if (!localRoot || !visibleIds.has(localRoot)) return;
+            readSection(localRoot, sectionId, title);
         },
     };
 
@@ -470,47 +553,45 @@ export default function GraphPage() {
     }, [ready, visible]);
 
     useEffect(() => {
+        if (!ready || !pendingFocus.current || !visibleIds.has(pendingFocus.current)) return;
+        const node = nodeCache.current.get(pendingFocus.current);
+        pendingFocus.current = null;
+        if (node) cosmosRef.current?.flyTo(node);
+    }, [ready, visibleIds, selected]);
+
+    useEffect(() => {
         if (ready && data) cosmosRef.current?.setClusters(data.clusters ?? []);
     }, [ready, data]);
 
-    // The root's own headings become its planets. Only built when the loaded
-    // markdown actually belongs to the local root, so selecting a neighbour while
-    // in local mode never hangs that page's sections off this star.
+    const rootMarkdown = localRoot ? pageContents[localRoot] : undefined;
+    const rootTitle = localRoot ? nodeById.get(localRoot)?.title : undefined;
+    const rootVisible = localRoot !== null && visibleIds.has(localRoot);
     const systemSpec = useMemo(() => {
-        if (!localRoot || selected?.type !== "node" || selected.id !== localRoot || !pageMd) return null;
-        const root = nodeById.get(localRoot);
-        if (!root) return null;
-        const { planets } = parseSections(pageMd, root.title);
-        return planets.length > 0 ? { rootId: localRoot, planets } : null;
-    }, [localRoot, selected, pageMd, nodeById]);
+        if (!localRoot || !rootVisible || rootMarkdown === undefined || rootTitle === undefined) return null;
+        const { planets } = parseSections(rootMarkdown, rootTitle);
+        return { rootId: localRoot, planets };
+    }, [localRoot, rootVisible, rootMarkdown, rootTitle]);
 
     useEffect(() => {
         if (!ready) return;
         cosmosRef.current?.setSystem(systemSpec);
-        if (!systemSpec) return;
-        // Entering a system stretches the layout to hold neighbours outside the orbits,
-        // so the camera has to be re-aimed once that has settled.
-        const timer = window.setTimeout(() => cosmosRef.current?.frameSystem?.(), 700);
-        return () => window.clearTimeout(timer);
+        if (!systemSpec || systemFrameRequest.current !== systemSpec.rootId) return;
+        const revision = cameraRevision.current;
+        systemFrameTimer.current = window.setTimeout(() => {
+            systemFrameTimer.current = null;
+            systemFrameRequest.current = null;
+            if (cameraRevision.current === revision) cosmosRef.current?.frameSystem();
+        }, 700);
+        return () => {
+            if (systemFrameTimer.current !== null) window.clearTimeout(systemFrameTimer.current);
+            systemFrameTimer.current = null;
+        };
     }, [ready, systemSpec]);
 
-    useEffect(() => { setFocusedSection(null); }, [localRoot, selected]);
-
-    // Gated on the same condition as systemSpec, not on localRoot alone. The dimming is
-    // what says "you are inside this system", so it has to leave together with the
-    // planets: keyed only on localRoot it survived deselection, and the graph was left
-    // dark around one lit star with nothing on screen accounting for it. The visibility
-    // check covers the other half, where a category toggle, the time scrubber, a health
-    // filter or a stale ?node= deep link removes the root and dims everything with
-    // nothing lit at all.
+    useEffect(() => { setFocusedSection(null); }, [localRoot]);
     useEffect(() => {
-        const open = localRoot !== null
-            && selected?.type === "node"
-            && selected.id === localRoot
-            && visible.nodes.some((node) => node.id === localRoot);
-        viewRef.current.systemFocus = open ? localRoot : null;
-        cosmosRef.current?.restyle();
-    }, [localRoot, selected, visible]);
+        if (selected?.type !== "node") setFocusedSection(null);
+    }, [selected]);
 
     useEffect(() => { if (ready) cosmosRef.current?.applyPhysics(physics); }, [ready, physics]);
 
@@ -518,7 +599,10 @@ export default function GraphPage() {
     // certainly off-screen and the graph just looks empty.
     useEffect(() => {
         if (!ready || (findings.length === 0 && trustFilter.length === 0)) return;
-        const timer = window.setTimeout(() => cosmosRef.current?.frameAll(), 400);
+        const revision = cameraRevision.current;
+        const timer = window.setTimeout(() => {
+            if (cameraRevision.current === revision) cosmosRef.current?.frameAll();
+        }, 400);
         return () => window.clearTimeout(timer);
     }, [ready, findings, trustFilter]);
 
@@ -544,8 +628,10 @@ export default function GraphPage() {
         view.pathActive = path.length > 1;
         cosmosRef.current?.restyle();
         if (path.length < 2) return;
-        // A corridor nobody can see is not an answer; frame the hops themselves.
-        const timer = window.setTimeout(() => cosmosRef.current?.frameNodes(new Set(path)), 350);
+        const revision = cameraRevision.current;
+        const timer = window.setTimeout(() => {
+            if (cameraRevision.current === revision) cosmosRef.current?.frameNodes(new Set(path));
+        }, 350);
         return () => window.clearTimeout(timer);
     }, [path]);
 
@@ -603,10 +689,6 @@ export default function GraphPage() {
                     .sort((a, b) => b.similarity - a.similarity);
                 setHits(combined.slice(0, 8));
                 cosmosRef.current?.restyle();
-                // Bring the constellation the query lit up into view; without this the
-                // hits can sit behind a rail and the graph just looks dark.
-                const top = combined[0] && nodeCache.current.get(combined[0].path);
-                if (top) cosmosRef.current?.flyTo(top);
             } catch {
                 // The local pass already gave usable results.
             } finally {
@@ -629,17 +711,21 @@ export default function GraphPage() {
 
     const savePage = async () => {
         if (selected?.type !== "node") return;
+        const id = selected.id;
+        const markdown = editText;
         setBusy("save");
         try {
             const response = await fetch("/api/vault/page", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: selected.id, markdown: editText }),
+                body: JSON.stringify({ path: id, markdown }),
             });
             const json = await response.json();
             if (!response.ok) throw new Error(json.error || "Save failed.");
-            setPageMd(editText);
-            setEditMode(false);
+            setPageContents((current) => ({ ...current, [id]: markdown }));
+            if (selectedRef.current?.type === "node" && selectedRef.current.id === id && editTextRef.current === markdown) {
+                setEditMode(false);
+            }
             showToast("Page saved and committed.");
             void fetchGraph("rebuild");
         } catch (caught) {
@@ -664,10 +750,15 @@ export default function GraphPage() {
                 edges: graph.edges.filter((edge) => edge.source !== id && edge.target !== id),
                 suggestions: graph.suggestions.filter((s) => s.source !== id && s.target !== id),
             }));
-            setSelected(null);
-            if (localRoot === id) setLocalRoot(null);
-            if (routeFrom === id) setRouteFrom(null);
-            if (routeTo === id) setRouteTo(null);
+            setPageContents((current) => {
+                const next = { ...current };
+                delete next[id];
+                return next;
+            });
+            setSelected((current) => current?.type === "node" && current.id === id ? null : current);
+            setLocalRoot((current) => current === id ? null : current);
+            setRouteFrom((current) => current === id ? null : current);
+            setRouteTo((current) => current === id ? null : current);
             showToast(`Page deleted; ${json.changedPages?.length ?? 0} reference(s) cleaned.`);
             void fetchGraph("rebuild");
         } catch (caught) {
@@ -787,11 +878,11 @@ export default function GraphPage() {
                 if (selected) {
                     setSelected(null);
                     setConfirming(null);
-                    cosmosRef.current?.releaseFocus();
+                    if (!localRoot) cosmosRef.current?.releaseFocus();
                     return;
                 }
                 if (routeFrom || routeTo) { setRouteFrom(null); setRouteTo(null); return; }
-                if (localRoot) { setLocalRoot(null); return; }
+                if (localRoot) { exitSystem(); return; }
                 if (timeActive) { setTimeActive(false); setTimePlaying(false); }
                 return;
             }
@@ -801,7 +892,10 @@ export default function GraphPage() {
                 setLens(LENSES[Number(event.key) - 1]);
                 return;
             }
-            if (event.key === "f") { cosmosRef.current?.frameAll(); return; }
+            if (event.key === "f") {
+                fitView();
+                return;
+            }
             if (event.key === "r") { setPhysics(DEFAULT_PHYSICS); return; }
             if (event.key === "l") { setLabelsOn((on) => !on); return; }
             if (event.key === " " && timeActive) {
@@ -811,7 +905,7 @@ export default function GraphPage() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [editMode, selected, routeFrom, routeTo, localRoot, timeActive, contextMenu]);
+    }, [editMode, selected, routeFrom, routeTo, localRoot, timeActive, contextMenu, exitSystem, fitView]);
 
     // ---- Derived panel inputs ----
 
@@ -877,15 +971,10 @@ export default function GraphPage() {
         const observer = new ResizeObserver(() => setBannerHeight(element.offsetHeight + 8));
         observer.observe(element);
         return () => observer.disconnect();
-    }, [localRoot]);
+    }, [localRoot, mobile, dockContent]);
 
     useEffect(() => {
-        viewRef.current.labelSafeArea = {
-            left: leftRailVisible ? 316 : 0,
-            // The dock claims its own space below the canvas, so it shadows no band
-            // of the graph and needs no allowance here.
-            right: !mobile && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
-        };
+        viewRef.current.labelSafeArea = { left: 0, right: 0 };
     }, [leftRailVisible, rightPanelOpen, viewport.width, mobile]);
 
     const controlPanels = (
@@ -981,12 +1070,13 @@ export default function GraphPage() {
                 linkTargetId={linkTargetId}
                 linkLabel={linkLabel}
                 focusedSection={focusedSection}
+                onFocusSection={(id, title) => readSection(selected.id, id, title)}
                 onClearSection={() => setFocusedSection(null)}
                 titleOf={titleOf}
                 onClose={() => {
                     setSelected(null);
                     setConfirming(null);
-                    cosmosRef.current?.releaseFocus();
+                    if (!localRoot) cosmosRef.current?.releaseFocus();
                 }}
                 onEdit={() => setEditMode(true)}
                 onCancelEdit={() => { setEditMode(false); setEditText(pageMd ?? ""); }}
@@ -1036,11 +1126,25 @@ export default function GraphPage() {
     );
 
     return (
-        <div style={styles.root}>
-            <style>{MARKDOWN_CSS}</style>
+        <div style={styles.root} className="cosmos-root">
+            <style>{COSMOS_CSS}</style>
             <div style={styles.nebulaOne} />
             <div style={styles.nebulaTwo} />
-            <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight }} />
+            <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight,
+                top: mobile ? contentTop + (!dockContent && localRoot ? bannerHeight : 0) : 0,
+                left: leftRailVisible ? 316 : 0,
+                right: !mobile && rightPanelOpen ? 404 : 0 }} />
+            {ready && (!mobile || viewport.height - dockHeight - contentTop - bannerHeight > 200) && (
+                <div role="group" aria-label="View controls" style={{ position: "absolute", zIndex: 4,
+                    right: !mobile && rightPanelOpen ? 420 : 16, bottom: dockHeight + 16,
+                    display: "flex", gap: 4, padding: 4, borderRadius: 12,
+                    background: COSMOS.panelSolid, border: `1px solid ${COSMOS.border}` }}>
+                    <button style={styles.iconBtn} onClick={() => zoomView(1 / 0.7)} aria-label="Zoom out" title="Zoom out"><Minus size={15} /></button>
+                    <button style={styles.iconBtn} onClick={fitView} aria-label={localRoot ? "Fit system in view" : "Fit graph in view"}
+                        title={localRoot ? "Fit system (f)" : "Fit graph (f)"}><Crosshair size={15} /></button>
+                    <button style={styles.iconBtn} onClick={() => zoomView(0.7)} aria-label="Zoom in" title="Zoom in"><Plus size={15} /></button>
+                </div>
+            )}
 
             <div
                 style={mobile ? { ...styles.topBar, flexWrap: "nowrap" as const } : styles.topBar}
@@ -1050,10 +1154,7 @@ export default function GraphPage() {
                     <Link href="/" style={styles.backBtn} aria-label="Back to chat" title="Back to chat">
                         <ArrowLeft size={16} />
                     </Link>
-                    {/* The eyebrow is the first thing to go on a phone: it is what forced the
-                        bar onto a second row, and every row costs the graph its height. */}
                     <div style={styles.titleStack}>
-                        {!mobile && <span style={styles.eyebrow}>Second Brain</span>}
                         <span style={styles.pageTitle}>{mobile ? "Cosmos" : "Knowledge Cosmos"}</span>
                     </div>
                 </div>
@@ -1109,19 +1210,26 @@ export default function GraphPage() {
                 </div>
             </div>
 
-            {/* Desktop only. On a phone this floated over the panel and clipped off the
-                right edge; its content now lives in the dock header instead. */}
-            {localRoot && !mobile && (
-                <div ref={bannerRef} style={{ ...styles.banner, top: contentTop }} className="animate-fade-in-scale">
+            {localRoot && (!mobile || !dockContent) && (
+                <div ref={bannerRef} style={{ ...styles.banner, top: contentTop,
+                    ...(mobile ? { left: 12, right: 12, transform: "none", width: "auto", maxWidth: "none" } : {}) }}>
                     <Crosshair size={12} style={{ flexShrink: 0 }} />
-                    <span style={styles.bannerLabel}>System: <b>{titleOf(localRoot)}</b></span>
+                    <button style={{ ...styles.bannerLabel, border: 0, background: "transparent", color: "inherit", textAlign: "left", padding: 0, cursor: "pointer" }}
+                        onClick={fitView} aria-label="Fit system" title="Fit system (f)">
+                        System: <b>{titleOf(localRoot)}</b>
+                    </button>
+                    <button style={styles.iconBtn} onClick={() => setOrbitsPaused(paused => !paused)}
+                        aria-label={orbitsPaused ? "Resume orbits" : "Pause orbits"}
+                        title={orbitsPaused ? "Resume orbits" : "Pause orbits"}>
+                        {orbitsPaused ? <Play size={13} /> : <Pause size={13} />}
+                    </button>
                     <button
                         style={{ ...styles.chip, flexShrink: 0 }}
                         onClick={() => setLocalDepth((depth) => (depth === 1 ? 2 : 1))}
                     >
                         {localDepth} hop{localDepth > 1 ? "s" : ""}
                     </button>
-                    <button style={{ ...styles.chip, flexShrink: 0 }} onClick={() => setLocalRoot(null)}>
+                    <button style={{ ...styles.chip, flexShrink: 0 }} onClick={exitSystem}>
                         Exit
                     </button>
                 </div>
@@ -1149,17 +1257,22 @@ export default function GraphPage() {
                         >
                             {dock === "tall" ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
                         </button>
-                        <span style={styles.mobileDockLabel}>
-                            {dockContent === "controls"
-                                ? "Controls"
-                                : localRoot
-                                    ? `System: ${titleOf(localRoot)}`
-                                    : selected?.type === "node"
-                                        ? titleOf(selected.id)
-                                        : "Connection"}
-                        </span>
+                        {localRoot && dockContent === "page" ? (
+                            <button style={{ ...styles.mobileDockLabel, border: 0, background: "transparent", color: "inherit", textAlign: "left", padding: 0, cursor: "pointer" }}
+                                onClick={fitView} aria-label="Fit system" title="Fit system (f)">
+                                System: {titleOf(localRoot)}
+                            </button>
+                        ) : (
+                            <span style={styles.mobileDockLabel}>
+                                {dockContent === "controls" ? "Controls" : selected?.type === "node" ? titleOf(selected.id) : "Connection"}
+                            </span>
+                        )}
                         {dockContent === "page" && localRoot && (
                             <>
+                                <button style={styles.mobileGrip} onClick={() => setOrbitsPaused(paused => !paused)}
+                                    aria-label={orbitsPaused ? "Resume orbits" : "Pause orbits"}>
+                                    {orbitsPaused ? <Play size={13} /> : <Pause size={13} />}
+                                </button>
                                 <button
                                     style={{ ...styles.chip, flexShrink: 0 }}
                                     title={`Showing ${localDepth} hop${localDepth > 1 ? "s" : ""}`}
@@ -1169,7 +1282,7 @@ export default function GraphPage() {
                                 </button>
                                 <button
                                     style={{ ...styles.chip, flexShrink: 0 }}
-                                    onClick={() => setLocalRoot(null)}
+                                    onClick={exitSystem}
                                 >
                                     Exit
                                 </button>
@@ -1184,7 +1297,7 @@ export default function GraphPage() {
                                 }
                                 setSelected(null);
                                 setConfirming(null);
-                                cosmosRef.current?.releaseFocus();
+                                if (!localRoot) cosmosRef.current?.releaseFocus();
                             }}
                             aria-label="Close"
                         >
@@ -1226,6 +1339,39 @@ export default function GraphPage() {
                     <button style={styles.contextItem} onClick={() => { focusNode(contextMenu.id); setContextMenu(null); }}>
                         <Layers size={13} /> Open page
                     </button>
+                </div>
+            )}
+
+            {!loading && !error && data && visible.nodes.length === 0 && (
+                <div style={{
+                    ...styles.overlay, bottom: dockHeight, top: railTop,
+                    left: leftRailVisible ? 316 : 0,
+                    right: !mobile && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
+                    zIndex: 3, background: "transparent", pointerEvents: "none",
+                }}>
+                    <div style={{ display: "grid", gap: 12, justifyItems: "center", textAlign: "center", padding: 20, pointerEvents: "auto" }}>
+                        <span role="status">
+                            {data.nodes.length === 0
+                                ? "No pages in the vault yet."
+                                : localRoot ? "This system is hidden by your filters." : "No stars match these filters."}
+                        </span>
+                        {data.nodes.length > 0 && (
+                            <button
+                                style={{ ...styles.action, ...styles.actionPrimary }}
+                                onClick={() => {
+                                    setCategoryFilter({});
+                                    setShowOrphans(true);
+                                    setFindings([]);
+                                    setTrustFilter([]);
+                                    setTimeActive(false);
+                                    setTimePlaying(false);
+                                    if (localRoot && !nodeById.has(localRoot)) exitSystem();
+                                }}
+                            >
+                                Reset filters
+                            </button>
+                        )}
+                    </div>
                 </div>
             )}
 
