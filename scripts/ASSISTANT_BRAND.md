@@ -27,6 +27,10 @@ node scripts/generate-brand.cjs --sharp-module $env:BRAND_SHARP_MODULE --check
 node --test --test-isolation=none scripts/brand-assets.test.cjs
 ```
 
+After regenerating changed web assets, update their `?v=` values in `src/app/manifest.ts`, `src/app/layout.tsx` and `public/sw.js` to the first 12 characters of each file's SHA-256 hash. The existing consumer test checks these values. Versioned URLs refresh browser icon caches; the push-only service worker activates updates immediately and does not cache page assets.
+
+Installed home-screen icons refresh according to the browser and operating system. Existing iOS home-screen shortcuts may need to be removed and added again to pick up the updated Apple icon.
+
 ## Verification and limits
 
 Ten focused asset tests, exact regeneration, scoped ESLint, project TypeScript and `git diff --check` passed. An independent Astra review rendered the actual assets and source-derived header masks in Chrome 153, light and dark, with zero browser errors. The 16 px favicon retains the silhouette but its fine lens detail is dense.

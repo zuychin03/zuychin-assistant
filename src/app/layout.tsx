@@ -16,8 +16,8 @@ export const metadata: Metadata = {
   title: "Zuychin Assistant",
   description: "Personal AI assistant",
   icons: {
-    icon: "/favicon.svg",
-    apple: "/apple-touch-icon.png",
+    icon: "/favicon.svg?v=291360ae65a9",
+    apple: "/apple-touch-icon.png?v=aca5b8cc139b",
   },
 };
 

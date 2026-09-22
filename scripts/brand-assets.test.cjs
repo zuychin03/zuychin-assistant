@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { Buffer } = require('node:buffer');
 const test = require('node:test');
 const brand = require('./generate-brand.cjs');
@@ -108,11 +109,14 @@ test('Windows ICO has four valid independently decodable PNG frames', async () =
 
 test('existing consumers reference generated assets and Apple metadata', () => {
   const layout = read('src/app/layout.tsx').toString();
-  assert.match(layout, /icon: "\/favicon.svg"/);
-  assert.match(layout, /apple: "\/apple-touch-icon.png"/);
-  assert.match(read('public/sw.js').toString(), /badge: "\/icons\/badge-72.png"/);
+  const worker = read('public/sw.js').toString();
   const manifest = read('src/app/manifest.ts').toString();
-  for (const name of ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png']) assert(manifest.includes(name));
+  const versioned = file => `/${file}?v=${createHash('sha256').update(read(`public/${file}`)).digest('hex').slice(0, 12)}`;
+  assert(layout.includes(`icon: "${versioned('favicon.svg')}"`));
+  assert(layout.includes(`apple: "${versioned('apple-touch-icon.png')}"`));
+  assert(worker.includes(`icon: "${versioned('icons/icon-192.png')}"`));
+  assert(worker.includes(`badge: "${versioned('icons/badge-72.png')}"`));
+  for (const name of ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png']) assert(manifest.includes(versioned(`icons/${name}`)));
   assert.match(manifest, /purpose: "maskable"/);
 });
 

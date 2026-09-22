@@ -1,4 +1,5 @@
-// Push-only service worker: no offline caching (v1).
+// Push-only updates can activate immediately because no page assets are cached.
+self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
 
 self.addEventListener("push", (event) => {
     let data = {};
@@ -15,8 +16,8 @@ self.addEventListener("push", (event) => {
             if (focused) return undefined;
             return self.registration.showNotification(data.title || "Zuychin", {
                 body: data.body || "",
-                icon: "/icons/icon-192.png",
-                badge: "/icons/badge-72.png",
+                icon: "/icons/icon-192.png?v=b879353ceb1b",
+                badge: "/icons/badge-72.png?v=b2f03a77318b",
                 data: { url: data.url || "/" },
             });
         })
