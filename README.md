@@ -216,6 +216,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `OPENROUTER_API_KEY` | OpenRouter key (Nemotron / Laguna / Gemma 4 chat) |
 | `OPENROUTER_SITE_URL` | Optional `HTTP-Referer` for OpenRouter rankings |
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
+| `KILO_API_KEY` | Kilo gateway key for the qualified free-only catalogue: Nemotron Ultra/Lightning, Ling Flash VL, Step 3.7 Flash and Laguna S. See [setup and verification](scripts/KILO_SETUP.md) |
 | `GEMINI_FREE_API_KEY` | Second Google AI Studio key on a free-tier project. Lists the same Gemini models a second time as "(free)", and calls made with them go to that key's quota rather than the paid project's |
 | `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): canonical `deepseek-flash` and `deepseek-v4-pro`. Metered and excluded from the free worker pool |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
@@ -413,13 +414,14 @@ chat or tool call, and a timeout or rate limit is not evidence that a model has 
 | DeepSeek | OpenAI-compatible | `deepseek-flash`, `deepseek-v4-pro` | Metered; excluded from the free worker pool. Flash is labelled V4.1 Flash. `json_object` only, no `json_schema` |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it`, `nvidia/nemotron-3.5-lightning:free` | Gemma 4 26B is metered and excluded from free workers |
 | NVIDIA NIM | OpenAI-compatible | `moonshotai/kimi-k3`, `z-ai/glm-5.3`, `z-ai/glm-5.3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. DiffusionGemma does not use tools. See the audit for timeout and capability limits |
-| OpenCode Zen | OpenAI-compatible | `mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free` | Retained but unavailable: the free endpoint rejects use outside OpenCode |
+| Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
+| OpenCode Zen | Restricted catalogue | `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free` | Free-only; access remains restricted. Muse also requires the unsupported Responses transport and contributor training terms. See [setup](scripts/OPENCODE_ZEN_SETUP.md) |
 | TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
-  OpenRouter, NVIDIA NIM and OpenCode Zen with streamed responses. Gemini keeps
+  OpenRouter, Kilo, NVIDIA NIM and Zen chat-completion models with streamed responses. Gemini keeps
   its own native path.
 - Tool dispatch follows each model's declared capability. Some endpoints remain unverified
   under load; successful HTTP responses alone do not prove a tool was executed. If a model

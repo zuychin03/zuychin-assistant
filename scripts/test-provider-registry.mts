@@ -89,6 +89,88 @@ try {
         }
     });
 
+    check("Zen keeps only the qualified free shortlist with conservative endpoint capabilities", () => {
+        const provider = getProvider("opencode-zen")!;
+        assert.equal(provider.baseUrl, "https://opencode.ai/zen/v1");
+        assert.equal(provider.apiKeyEnv, "OPENCODE_ZEN_API_KEY");
+        assert.deepEqual(provider.chatModels.map((model) => model.id), [
+            "mimo-v2.6-flash-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+            "muse-spark-1.3-contributor-free",
+        ]);
+        for (const model of provider.chatModels) {
+            assert.ok(model.id.endsWith("-free"));
+            assert.ok(!model.metered && !provider.metered);
+            assert.ok(model.supportsTools && model.supportsThinking);
+            assert.ok(!model.supportsStructuredOutput);
+            assert.equal(modelMaxOutputTokens(model.id), model.apiFormat === "responses" ? 131072 : 8192);
+            assert.ok(MODEL_META[model.id]);
+        }
+        assert.equal(provider.embeddingModels.length, 0);
+        assert.equal(provider.chatModels.find((model) => model.id === "muse-spark-1.3-contributor-free")?.apiFormat, "responses");
+        assert.ok(!resolveWorkerChain(true).some((entry) => entry.provider.id === provider.id));
+        delete process.env.OPENCODE_ZEN_API_KEY;
+        assert.equal(isProviderAvailable(provider), false);
+        assert.equal(resolveModelKey("opencode-zen::nemotron-3-ultra-free"), null);
+        process.env.OPENCODE_ZEN_API_KEY = "registry-test-key";
+    });
+
+    check("Kilo resolves only qualified free endpoints and honours its own key", () => {
+        const provider = getProvider("kilo")!;
+        assert.equal(provider.baseUrl, "https://api.kilo.ai/api/gateway");
+        assert.equal(provider.apiKeyEnv, "KILO_API_KEY");
+        assert.equal(isProviderAvailable(provider), true);
+        for (const model of provider.chatModels) {
+            assert.ok(model.id.endsWith(":free"));
+            assert.ok(!model.metered && !provider.metered);
+            assert.equal(resolveModelKey(`kilo::${model.id}`)?.provider.id, "kilo");
+            assert.equal(resolveChatByName("Kilo", model.name)?.model.id, model.id);
+            assert.equal(modelMaxOutputTokens(model.id), model.maxOutputTokens);
+            assert.ok(!model.supportsStructuredOutput);
+            assert.throws(() => resolveChat("kilo", model.id.replace(":free", "")), /Unknown model/);
+        }
+        assert.throws(() => resolveChat("kilo", "kilo-auto/free"), /Unknown model/);
+        assert.equal(resolveChat("kilo", "step-3.7-flash").model.id, "stepfun/step-3.7-flash:free");
+        assert.ok(resolveWorkerChain(true).some((entry) => entry.provider.id === "kilo"));
+        delete process.env.KILO_API_KEY;
+        assert.equal(isProviderAvailable(provider), false);
+        assert.throws(() => resolveChat("kilo"), /no API key/);
+        assert.equal(resolveModelKey("kilo::stepfun/step-3.7-flash:free"), null);
+        assert.ok(!availableChatModels().some((entry) => entry.providerId === "kilo"));
+        assert.ok(!resolveWorkerChain(true).some((entry) => entry.provider.id === "kilo"));
+        process.env.KILO_API_KEY = "registry-test-key";
+    });
+
+    check("removed Kilo endpoints cannot appear or resolve and Muse requires its own protocol", () => {
+        const provider = getProvider("kilo")!;
+        const removedIds = [
+            "minimax/minimax-m3:free", "tencent/hy3:free", "inclusionai/ring-2.6-1t:free",
+        ];
+        const publicProvider = listProvidersPublic().find((p) => p.id === "kilo")!;
+        assert.equal(provider.chatModels.length, 5);
+        assert.equal(publicProvider.chatModels.length, 5);
+        assert.equal(publicProvider.unavailableChatModels.length, 0);
+        for (const id of removedIds) {
+            assert.throws(() => resolveChat("kilo", id), /Unknown model/);
+            assert.equal(resolveModelKey(`kilo::${id}`), null);
+            assert.equal(resolveChatByName("Kilo", id), null);
+            assert.equal(resolveChatModelByName(id), null);
+            assert.ok(!provider.chatModels.some((model) => model.id === id));
+            assert.ok(!resolveWorkerChain(true).some((entry) => entry.model.id === id));
+            assert.ok(!publicProvider.chatModels.some((entry) => entry.id === id));
+            assert.equal(MODEL_META[id], undefined);
+        }
+        assert.equal(resolveChat("kilo", "nemotron-3.5-lightning").model.supportsSearch, false);
+        const zen = getProvider("opencode-zen")!;
+        const reason = zen.unavailableReason;
+        delete zen.unavailableReason;
+        try {
+            assert.throws(() => resolveChat("opencode-zen", "muse-spark-1.3-contributor-free"), /Responses API/);
+            assert.equal(resolveModelKey("opencode-zen::muse-spark-1.3-contributor-free"), null);
+        } finally {
+            zen.unavailableReason = reason;
+        }
+    });
+
     check("explicit unknown providers and missing keys cannot silently fall back", () => {
         assert.throws(() => resolveChat("unknown-provider"), /Unknown chat provider/);
         delete process.env.DEEPSEEK_API_KEY;
@@ -138,7 +220,7 @@ try {
         delete process.env.NVIDIA_NIM_API_KEY;
         assert.equal(resolveMessagingDefault().model.id, "gemini-3.8-flash");
         assert.equal(resolveMessagingEmbedding().model.id, "gemini-embedding-2");
-        assert.ok(resolveWorkerChain(true).every((w) => w.provider.id === "openrouter"));
+        assert.ok(resolveWorkerChain(true).every((w) => ["openrouter", "kilo"].includes(w.provider.id)));
         process.env.NVIDIA_NIM_API_KEY = "registry-test-key";
         assert.equal(WORKER_GEMINI_FALLBACK.complex, "gemini-3.8-flash");
     });

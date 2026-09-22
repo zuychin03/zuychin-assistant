@@ -49,6 +49,8 @@ interface ProviderInfo {
     id: string;
     label: string;
     available: boolean;
+    unavailableReason?: string;
+    unavailableChatModels?: { id: string; label: string; reason: string }[];
     chatModels: ProviderModel[];
     embeddingModels: ProviderModel[];
 }
@@ -243,12 +245,23 @@ export default function DashboardPage() {
                                     <span style={styles.providerName}>{provider.label}</span>
                                     <span style={{ ...styles.smallPill, ...(provider.available ? styles.pillGood : styles.pillMuted) }}>
                                         {provider.available ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                                        {provider.available ? "Ready" : "Missing key"}
+                                        {provider.available ? "Ready" : provider.unavailableReason ? "Unavailable" : "Missing key"}
                                     </span>
                                 </div>
                                 <div style={styles.providerMeta}>
                                     {provider.chatModels.length} chat · {provider.embeddingModels.length} embedding
                                 </div>
+                                {!provider.available && provider.unavailableReason && (
+                                    <div style={styles.providerMeta}>{provider.unavailableReason}</div>
+                                )}
+                                {!!provider.unavailableChatModels?.length && (
+                                    <details style={styles.providerMeta}>
+                                        <summary>{provider.unavailableChatModels.length} unavailable model{provider.unavailableChatModels.length === 1 ? "" : "s"}</summary>
+                                        {provider.unavailableChatModels.map((model) => (
+                                            <p key={model.id}><strong>{model.label}</strong>: {model.reason}</p>
+                                        ))}
+                                    </details>
+                                )}
                             </div>
                         ))}
                         {providers.length === 0 && <div style={styles.emptyText}>No providers loaded.</div>}

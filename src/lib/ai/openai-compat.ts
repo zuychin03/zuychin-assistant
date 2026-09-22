@@ -49,9 +49,7 @@ interface ChatMessage {
 
 const MAX_TOOL_ROUNDS = 5;
 
-// Every gateway on this path (NIM, OpenRouter, OpenCode Zen, TokenRouter) can
-// end a request while the model is still writing, so long or reasoning-heavy
-// answers stop mid-sentence. The resume contract lives in ./continuation.
+// Gateway timeouts can interrupt a turn; ./continuation handles partial replies.
 const REQUEST_TIMEOUT_MS = 60_000;
 
 // DeepSeek reasons before it emits anything, and v4-pro's minimum effort is
@@ -121,6 +119,9 @@ export async function openaiCompatChat(params: {
     onToken?: (text: string, reset?: boolean) => void;
 }): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx, allowTools } = params;
+    if (model.apiFormat === "responses") {
+        throw new Error(`${model.label} requires the Responses API, which is not supported by this chat adapter.`);
+    }
 
     const usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 };
     const trackUsage = (d: ChatCompletion) => {
@@ -194,7 +195,7 @@ export async function openaiCompatChat(params: {
 
     const tools = model.supportsTools ? buildOpenAIToolDeclarations(allowTools) : undefined;
 
-    const forceSearch = !!params.search && !!tools
+    const forceSearch = !!params.search && model.supportsSearch && !!tools
         ? { type: "function" as const, function: { name: "search_web" } }
         : undefined;
 
@@ -384,6 +385,10 @@ async function postChat(
         } else if (provider.id === "openrouter") {
             body.reasoning = { effort: "high" };
         }
+    }
+
+    if (provider.id === "kilo") {
+        body.reasoning = thinking ? { enabled: true, effort: "high" } : { enabled: false };
     }
 
     // DeepSeek thinks by DEFAULT, so this branch runs whether or not the user

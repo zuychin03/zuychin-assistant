@@ -10,6 +10,7 @@ export interface ChatModel {
     supportsVision: boolean;
     supportsThinking: boolean;
     supportsSearch: boolean;
+    apiFormat?: "responses";
     metered?: boolean;
     /** Endpoint accepts response_format json_schema, verified by a live probe. */
     supportsStructuredOutput?: boolean;
@@ -90,6 +91,21 @@ export const PROVIDERS: ProviderConfig[] = [
         embeddingModels: [],
     },
     {
+        id: "kilo",
+        label: "Kilo",
+        kind: "openai-compatible",
+        baseUrl: "https://api.kilo.ai/api/gateway",
+        apiKeyEnv: "KILO_API_KEY",
+        chatModels: [
+            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false, maxOutputTokens: 65536 },
+            { id: "inclusionai/ling-3.0-flash-vl:free", label: "Ling 3.0 Flash VL (free)", name: "ling-3.0-flash-vl", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { id: "stepfun/step-3.7-flash:free", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 262144 },
+            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+        ],
+        embeddingModels: [],
+    },
+    {
         id: "nvidia-nim",
         label: "NVIDIA NIM",
         kind: "openai-compatible",
@@ -133,7 +149,9 @@ export const PROVIDERS: ProviderConfig[] = [
         unavailableReason: "OpenCode's free tier can only be used within OpenCode (checked 23/09/2026).",
         chatModels: [
             { id: "mimo-v2.6-flash-free", label: "MiMo V2.6 Flash (free)", name: "mimo-v2.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { id: "nemotron-3.5-lightning-free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { id: "muse-spark-1.3-contributor-free", label: "Muse Spark 1.3 Contributor (free)", name: "muse-spark-1.3-contributor", apiFormat: "responses", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
         ],
         embeddingModels: [],
     },
@@ -255,6 +273,12 @@ export function isProviderAvailable(p: ProviderConfig): boolean {
     return !p.unavailableReason && !!getProviderApiKey(p);
 }
 
+function chatModelUnavailableReason(model: ChatModel): string | undefined {
+    return model.apiFormat === "responses"
+        ? "Requires the Responses API, which this app does not yet support."
+        : undefined;
+}
+
 export interface ResolvedChat {
     provider: ProviderConfig;
     model: ChatModel;
@@ -271,8 +295,10 @@ export function resolveChat(providerId?: string, modelId?: string): ResolvedChat
     const canonicalModelId = canonicalChatModelId(provider.id, requestedModelId);
     const model = canonicalModelId
         ? provider.chatModels.find((m) => m.id === canonicalModelId || m.name === canonicalModelId)
-        : provider.chatModels[0];
+        : provider.chatModels.find((m) => !chatModelUnavailableReason(m));
     if (!model) throw new Error(`Unknown model for ${provider.label}: ${requestedModelId}`);
+    const unavailableReason = chatModelUnavailableReason(model);
+    if (unavailableReason) throw new Error(`${model.label} is unavailable: ${unavailableReason}`);
     return { provider, model };
 }
 
@@ -281,7 +307,7 @@ function resolveAvailable(providerId: string, modelId: string): ResolvedChat | n
     if (!provider || !isProviderAvailable(provider)) return null;
     const canonicalModelId = canonicalChatModelId(provider.id, modelId);
     const model = provider.chatModels.find((m) => m.id === canonicalModelId || m.name === canonicalModelId);
-    return model ? { provider, model } : null;
+    return model && !chatModelUnavailableReason(model) ? { provider, model } : null;
 }
 
 export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
@@ -311,7 +337,7 @@ export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
     const out: ResolvedChat[] = [];
     const seen = new Set<string>();
     const push = (r: ResolvedChat | null) => {
-        if (!r || r.provider.metered || r.model.metered || (needsTools && !r.model.supportsTools)) return;
+        if (!r || chatModelUnavailableReason(r.model) || r.provider.metered || r.model.metered || (needsTools && !r.model.supportsTools)) return;
         const key = `${r.provider.id}::${r.model.id}`;
         if (!seen.has(key)) {
             seen.add(key);
@@ -361,7 +387,7 @@ export function resolveChatByName(providerArg: string, modelArg: string): Resolv
     const model = provider.chatModels.find(
         (mod) => mod.name.toLowerCase() === m || mod.id.toLowerCase() === m
     );
-    return model ? { provider, model } : null;
+    return model && !chatModelUnavailableReason(model) ? { provider, model } : null;
 }
 
 export function resolveChatModelByName(name: string): ResolvedChat | null {
@@ -372,10 +398,10 @@ export function resolveChatModelByName(name: string): ResolvedChat | null {
         const model = provider.chatModels.find(
             (m) => m.name.toLowerCase() === n || m.id.toLowerCase() === n,
         );
-        if (model) return { provider, model };
+        if (model && !chatModelUnavailableReason(model)) return { provider, model };
         const canonicalName = canonicalChatModelId(provider.id, n);
         const aliased = provider.chatModels.find((m) => m.id === canonicalName);
-        if (aliased) aliases.push({ provider, model: aliased });
+        if (aliased && !chatModelUnavailableReason(aliased)) aliases.push({ provider, model: aliased });
     }
     return aliases.length === 1 ? aliases[0] : null;
 }
@@ -386,8 +412,8 @@ export function availableChatModels(): { provider: string; providerId: string; m
         .map((p) => ({
             provider: p.label,
             providerId: p.id,
-            models: p.chatModels.map((m) => ({ name: m.name, label: m.label })),
-        }));
+            models: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => ({ name: m.name, label: m.label })),
+        })).filter((p) => p.models.length > 0);
 }
 
 export interface ResolvedEmbedding {
@@ -458,7 +484,7 @@ export function listProvidersPublic() {
         available: isProviderAvailable(p),
         unavailableReason: p.unavailableReason,
         chatModelAliases: LEGACY_CHAT_MODELS[p.id] ?? {},
-        chatModels: p.chatModels.map((m) => ({
+        chatModels: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,
             label: m.label,
             supportsTools: m.supportsTools,
@@ -468,6 +494,11 @@ export function listProvidersPublic() {
             supportsStructuredOutput: m.supportsStructuredOutput ?? false,
             maxOutputTokens: m.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS,
             meta: getModelMeta(m.id),
+        })),
+        unavailableChatModels: p.chatModels.filter((m) => chatModelUnavailableReason(m)).map((m) => ({
+            id: m.id,
+            label: m.label,
+            reason: chatModelUnavailableReason(m)!,
         })),
         embeddingModels: p.embeddingModels.map((m) => ({
             id: m.id,

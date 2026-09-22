@@ -124,7 +124,7 @@ const MIMO_V26_FLASH: ModelMeta = {
     developer: "Xiaomi",
     description: "Multimodal Flash model for coding and agent tasks. OpenCode's free endpoint is restricted to the OpenCode client.",
     inputs: ["Text", "Image", "Audio", "Video"],
-    context: "1M",
+    context: "200K",
     strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Multimodal", "Fast"],
 };
 
@@ -160,6 +160,23 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "google/gemma-4-31b-it:free": GEMMA_4_31B,
     "google/gemma-4-26b-a4b-it": GEMMA_4_26B_A4B,
     "nvidia/nemotron-3.5-lightning:free": NEMOTRON_35_LIGHTNING,
+    "inclusionai/ling-3.0-flash-vl:free": {
+        developer: "InclusionAI",
+        description: "Multimodal Flash model for image understanding, reasoning and tool-driven workflows.",
+        inputs: ["Text", "Image"],
+        context: "256K",
+        maxOutput: "32K",
+        strengths: ["Fast", "Vision", "Multimodal", "Reasoning", "Tool use"],
+    },
+    "stepfun/step-3.7-flash:free": {
+        developer: "StepFun",
+        description: "Efficient multimodal model for coding, reasoning and agent tasks. Available through Kilo's free endpoint.",
+        inputs: ["Text", "Image"],
+        context: "256K",
+        maxOutput: "256K",
+        params: "196B total · 11B active (MoE)",
+        strengths: ["Fast", "Coding", "Vision", "Reasoning", "Tool use"],
+    },
     "moonshotai/kimi-k3": KIMI_K3,
     "z-ai/glm-5.3": GLM_53,
     "deepseek-ai/deepseek-v4.1-flash": DEEPSEEK_V41_FLASH,
@@ -173,7 +190,16 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "poolside/laguna-xs-2.1": LAGUNA_XS_21,
     "nvidia/nemotron-3-embed-1b": NEMOTRON_3_EMBED_1B,
     "mimo-v2.6-flash-free": MIMO_V26_FLASH,
-    "nemotron-3.5-lightning-free": NEMOTRON_35_LIGHTNING,
+    "nemotron-3-ultra-free": NEMOTRON_3_ULTRA,
+    "nemotron-3.5-lightning-free": { ...NEMOTRON_35_LIGHTNING, context: "256K" },
+    "muse-spark-1.3-contributor-free": {
+        developer: "Meta",
+        description: "Multimodal reasoning model. Contributor requests may train future Meta models. Requires the Responses API; unavailable through this app's Zen integration.",
+        inputs: ["Text", "Image", "Audio", "Video", "PDF"],
+        context: "1M",
+        maxOutput: "128K",
+        strengths: ["Reasoning", "Coding", "Agentic", "Multimodal", "Tool use"],
+    },
     "moonshotai/kimi-k3-free": KIMI_K3,
 };
 
