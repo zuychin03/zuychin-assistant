@@ -33,6 +33,7 @@ export interface ProviderInfo {
   id: string;
   label: string;
   available: boolean;
+  chatModelAliases?: Record<string, string>;
   chatModels: ProviderModel[];
   embeddingModels: ProviderModel[];
 }

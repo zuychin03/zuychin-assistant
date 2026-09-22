@@ -1,7 +1,7 @@
 # Zuychin Assistant
 
 A personal AI chatbot you can talk to from the web, Discord, or Telegram. It lets you
-switch chat model providers per message (Google Gemini, DeepSeek, OpenRouter, NVIDIA NIM, OpenCode Zen),
+switch chat model providers per message (Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM),
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
 grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
@@ -15,10 +15,9 @@ edited and deleted in place.
 
 ## Features
 
-- Multi-provider chat: switch the model per message between Gemini (paid or a free-tier key),
-  DeepSeek (V4 Flash, V4 Pro), OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM
-  (MiniMax M3, DeepSeek V4, Step, GLM, Gemma 4) and OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1,
-  Ling 3.0 Flash), straight from the chat header
+- Multi-provider chat: switch the model per message between Gemini 3.8 Flash / 3.5 Flash-Lite,
+  DeepSeek V4.1 Flash / V4 Pro, OpenRouter and NVIDIA NIM, straight from the chat header.
+  Retired model IDs resolve to replacements; unavailable gateways are hidden and excluded from workers
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -47,8 +46,9 @@ edited and deleted in place.
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
-  free fast models (DeepSeek V4 Flash, Step 3.7 Flash, any Fast-tagged tool-capable model)
-  with Gemini only as the fallback - 3 Flash for simple subtasks, 3.5 Flash for complex ones
+  free fast models (GLM-5.3 Flash, DeepSeek V4.1 Flash, Nemotron 3.5 Lightning and available Fast-tagged
+  tool-capable models), with Gemini 3.5 Flash-Lite for simple fallback subtasks and 3.8 Flash
+  for complex ones. Metered models stay out of the free worker pool
 - Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
   token usage); long runs self-compact their context, and if a stream dies mid-run the web
   UI offers a **Resume run** chip that continues from where it stopped. Interrupted plain
@@ -156,8 +156,8 @@ edited and deleted in place.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.7 Flash / 3.5 Flash-Lite (paid or free-tier key), DeepSeek V4 Flash / Pro, OpenRouter (Nemotron, Laguna S 2.1, Gemma 4), NVIDIA NIM (MiniMax M3, DeepSeek V4, Nemotron, Gemma 4, Step, GLM), OpenCode Zen (MiMo, DeepSeek, Laguna S 2.1, Ling 3.0 Flash) |
-| Embeddings | Gemini Embedding 2 (768d), NVIDIA NIM Llama Nemotron Embed 1B v2 (2048d) & Llama Embed Nemotron 8B (4096d) |
+| Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Kimi K3, GLM-5.3, DeepSeek V4.1 Flash, Nemotron, Gemma 4, Laguna XS) |
+| Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3 Embed 1B (2048d, default) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
 | Push | web-push (VAPID) + service worker (PWA) |
@@ -171,15 +171,16 @@ edited and deleted in place.
 
 ## Prerequisites
 
-You only really need the first two to run the core app. Everything else is optional and
-unlocks the matching feature.
+The core app needs Node.js, Supabase, a Gemini key and a configured embedding provider.
+Other integrations unlock their matching features.
 
 | Requirement | For |
 |-------------|-----|
 | Node.js 20+ and npm | Required |
 | Supabase project (URL + anon key) | Required, for chat history and RAG memory |
-| Google AI Studio key ([aistudio.google.com](https://aistudio.google.com/apikey)) | Required, the default chat + embedding provider |
-| OpenRouter / NVIDIA NIM / OpenCode Zen keys | Optional, extra chat models (and the free NVIDIA NIM embedding models) |
+| Google AI Studio key ([aistudio.google.com](https://aistudio.google.com/apikey)) | Default chat provider; also supports Gemini Embedding 2 |
+| NVIDIA NIM key | Default knowledge embeddings and optional chat models; use a registered Gemini embedding override if NIM is not configured |
+| OpenRouter / DeepSeek keys | Optional extra chat models; metered models are excluded from the free worker pool |
 | Google Cloud OAuth client | Optional, Calendar + Gmail tools |
 | Discord bot token | Optional, Discord channel |
 | Telegram bot token | Optional, Telegram channel |
@@ -206,9 +207,9 @@ Required:
 |----------|-------------|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key |
-| `GEMINI_API_KEY` | Google AI Studio API key (default chat + embedding provider) |
+| `GEMINI_API_KEY` | Google AI Studio API key (default chat provider and optional Gemini embeddings) |
 
-Optional extra model providers (a provider with no key is hidden in the UI):
+Model-provider configuration (missing keys and explicitly unavailable providers are hidden in the UI):
 
 | Variable | Description |
 |----------|-------------|
@@ -216,11 +217,11 @@ Optional extra model providers (a provider with no key is hidden in the UI):
 | `OPENROUTER_SITE_URL` | Optional `HTTP-Referer` for OpenRouter rankings |
 | `OPENROUTER_APP_NAME` | Optional `X-Title` for OpenRouter rankings |
 | `GEMINI_FREE_API_KEY` | Second Google AI Studio key on a free-tier project. Lists the same Gemini models a second time as "(free)", and calls made with them go to that key's quota rather than the paid project's |
-| `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): V4 Flash and V4 Pro on DeepSeek's own API. **Metered** - unlike the other optional providers here it bills per token, so it is excluded from the free sub-agent pool |
-| `NVIDIA_NIM_API_KEY` | NVIDIA NIM key (`nvapi-…`): MiniMax M3 / DeepSeek V4 / Gemma 4 chat + Llama Nemotron, the default embedding model for the knowledge store |
-| `OPENCODE_ZEN_API_KEY` | OpenCode Zen key, MiMo V2.5, etc. |
-| `TOKENROUTER_API_KEY` | TokenRouter key ([tokenrouter.com](https://www.tokenrouter.com)): Kimi K3 chat |
-| `KNOWLEDGE_EMBEDDING_MODEL` | Optional: swap the knowledge store to another registered embedding model (fallback if NIM is down). After changing it, run `npx tsx --env-file=<env> scripts/reembed-knowledge.ts` to re-embed the store |
+| `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): canonical `deepseek-flash` and `deepseek-v4-pro`. Metered and excluded from the free worker pool |
+| `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
+| `OPENCODE_ZEN_API_KEY` | Retained configuration; unavailable to this app because the probed free tier requires OpenCode itself |
+| `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
+| `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
 
 Optional auth, integrations, channels and cron:
@@ -395,29 +396,37 @@ public webhook, cron and headless-chat routes protect themselves with bearer cre
 
 ## Providers & Models
 
-The chat model is chosen per message from the header dropdown (saved in `localStorage`). The
-settings drop-up picks the embedding model - changing it (behind a confirm modal) migrates
-the whole knowledge store to the new partition - and tunes hyperparameters. Only
-providers whose API key is set show up in the UI. Discord/Telegram and cron always use the
-default (Gemini Flash). The registry lives in [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts),
-so add models or providers there.
+The chat model is chosen per message from the header dropdown (saved in `localStorage`).
+Generation settings include the embedding migration selector and hyperparameters. Providers
+need a configured key and must not carry an unavailable reason. The default web chat model
+is Gemini 3.5 Flash-Lite; messaging uses the separate chain below. The registry lives in
+[`src/lib/ai/providers.ts`](src/lib/ai/providers.ts).
+
+The [23/09/2026 model audit](scripts/MODEL_AUDIT_2026_09.md) records exact IDs, live probe
+results and unresolved capability checks. A catalogue entry is not proof of a successful
+chat or tool call, and a timeout or rate limit is not evidence that a model has retired.
 
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
-| Google Gemini | native | `gemini-3.7-flash`, `gemini-3.5-flash-lite` | Full features: grounding, thinking, vision, function calling |
+| Google Gemini | native | `gemini-3.8-flash`, `gemini-3.5-flash-lite` | Grounding, thinking, vision and function calling; stable `gemini-embedding-2` at 768 dimensions |
 | Google Gemini (free) | native | the same two ids | Same models on a free-tier project's key. Picking one routes the call through that key's own client, so it draws on the free quota instead of the paid project |
-| DeepSeek | OpenAI-compatible | `deepseek-v4-flash`, `deepseek-v4-pro` | DeepSeek's own API. **Metered**, so it is kept out of the free sub-agent pool. Thinks by default: `/think` off sends `thinking: {type: "disabled"}` rather than paying for reasoning on every turn. `json_object` only, no `json_schema` |
-| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it` | Chat only |
-| NVIDIA NIM | OpenAI-compatible | `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `stepfun-ai/step-3.7-flash`, `z-ai/glm-5.2` | Free preview inference (MiniMax M3 & Gemma 4 are multimodal); also the non-Gemini **embedding** models (`llama-nemotron-embed-1b-v2`, `llama-embed-nemotron-8b`) |
-| OpenCode Zen | OpenAI-compatible | `mimo-v2.5-free`, `deepseek-v4-flash-free`, `laguna-s-2.1-free`, `ling-3.0-flash-free` | Chat only; every model here takes a 131,072-token output budget |
+| DeepSeek | OpenAI-compatible | `deepseek-flash`, `deepseek-v4-pro` | Metered; excluded from the free worker pool. Flash is labelled V4.1 Flash. `json_object` only, no `json_schema` |
+| OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it`, `nvidia/nemotron-3.5-lightning:free` | Gemma 4 26B is metered and excluded from free workers |
+| NVIDIA NIM | OpenAI-compatible | `moonshotai/kimi-k3`, `z-ai/glm-5.3`, `z-ai/glm-5.3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. DiffusionGemma does not use tools. See the audit for timeout and capability limits |
+| OpenCode Zen | OpenAI-compatible | `mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free` | Retained but unavailable: the free endpoint rejects use outside OpenCode |
+| TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
   OpenRouter, NVIDIA NIM and OpenCode Zen with streamed responses. Gemini keeps
   its own native path.
-- MCP tool-calling works on all providers. If a model rejects tools, the request retries
-  without them.
+- Tool dispatch follows each model's declared capability. Some endpoints remain unverified
+  under load; successful HTTP responses alone do not prove a tool was executed. If a model
+  rejects tools, the client can retry without them.
+- NIM DeepSeek V4.1 Flash supports automatic tool calls in streamed probes, but forced
+  tool selection returned plain JSON. Its explicit Search toggle is disabled; automatic
+  tool use remains enabled.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
   can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning`,
@@ -430,21 +439,49 @@ How it works:
   current info, and `/search` forces it. The `search_web` tool is intentionally not given to
   Gemini.
 - Hyperparameters (temperature, top_p, max tokens) are optional, sanitized on the server and
-  mapped per provider. NIM requests backfill NVIDIA's recommended defaults so models like
-  MiniMax M3 always get a token budget.
+  mapped per provider. NIM requests receive model-specific defaults and a bounded token budget.
 - Max tokens is bounded **per model** by that model's output ceiling rather than one
-  global cap, so the slider goes to 393,216 on DeepSeek's own V4 models, 131,072 on MiniMax M3,
-  65,536 on Gemini 3.7 Flash, and 16,384 on Gemma 4 26B. Ceilings were measured against each
-  platform (`models.get` for Gemini, `top_provider.max_completion_tokens` for OpenRouter, and
-  direct `chat/completions` probes for NVIDIA NIM and OpenCode Zen, whose model lists omit them);
-  DeepSeek's is read from its published 384K rather than probed.
+  global cap: 393,216 for direct DeepSeek, 65,536 for Gemini and 16,384 for OpenRouter
+  Gemma 4 26B. Newly added endpoints without a verified ceiling use a conservative 8,192
+  fallback; a copied limit from a retired endpoint is not treated as evidence.
   Requests are clamped to the resolved model's ceiling server-side, because exceeding it makes
   the provider reject the whole call instead of quietly truncating.
 - Embeddings are model-aware: each embedding model writes and reads its own partition of the
   vector store, because vectors from different models (and dimensions) aren't comparable.
-  Switching the embedding model in settings runs a real migration: `/api/admin/reembed`
-  re-embeds the store in resumable 20-row batches (embeddings + memories) and flips the
-  active partition only once nothing is left, so a mid-migration failure never strands you.
+  The CLI and `/api/admin/reembed` share migration logic covering all five vector-bearing
+  tables and activate the target only after a fresh verification pass. The admin route
+  processes up to 20 rows per request with four concurrent preparations and reports failures
+  instead of presenting an unavailable count as zero. Removed embedding IDs fail explicitly
+  instead of silently interpreting old vectors as a new model's partition.
+
+### Migrating knowledge embeddings
+
+Supported targets are `nvidia/nemotron-3-embed-1b` (2048d, default) and
+`gemini-embedding-2` (768d). Run a read-only plan first, using the environment that owns the
+store and the target provider's key:
+
+```powershell
+npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3-embed-1b --concurrency 6
+```
+
+For an authorised migration, add `--apply` to the same command:
+
+```powershell
+npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3-embed-1b --concurrency 6 --apply
+```
+
+The script scans `embeddings`, `memories`, `vault_pages`, `knowledge_chunks` and
+`knowledge_assertions`, including rows with missing or invalid vectors. It prepares and
+validates target vectors before writes, conditionally updates unchanged source rows, then
+rescans every table. Conflicts, failed writes or remaining rows prevent activation and
+produce a non-zero exit. Rerunning skips valid rows already on the target model. This is
+resumable work, not an atomic database transaction; partially updated rows remain after a
+write-phase failure. Concurrency defaults to 2 and accepts 1–8.
+
+After successful verification, `cron_state.knowledge_embedding` activates the target.
+Runtime selection resolves explicit model, saved runtime override, environment override,
+then registry default. No SQL/schema change is required for this model refresh. A changed
+registry or a successful endpoint probe does not establish that a hosted store was migrated.
 
 ## MCP Tools
 
@@ -761,12 +798,11 @@ Review and merge the named worktree branches yourself when the campaign is compl
 
 ## Models on Discord / Telegram
 
-The messaging channels have no model dropdown, so they default to free models and pick the
-first one whose provider key is set, in this order:
+The messaging channels pick the first available configured model in this order:
 
-1. DeepSeek V4 Flash (NVIDIA NIM, then OpenCode Zen)
-2. MiMo V2.5 (OpenCode Zen)
-3. Gemini 3.7 Flash (always available)
+1. GLM-5.3 Flash (NVIDIA NIM)
+2. Nemotron 3 Ultra (NVIDIA NIM)
+3. Gemini 3.8 Flash
 
 Switch the model from inside a chat with the `/model` command. The choice is saved per channel
 and reused until you change it again. Every command also accepts a `!` prefix (e.g. `!model`)
@@ -774,7 +810,7 @@ since Discord reserves `/` for its own slash-command UI:
 
 - `/model` (or `/model list`) shows the current model and every available provider + model.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
-  `/model nvidia-nim deepseek-v4-flash` or `/model gemini gemini-3.7-flash`.
+  `/model nvidia-nim deepseek-v4.1-flash` or `/model gemini gemini-3.8-flash`.
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
   memory partition the channel uses (memories are stored per embedding model).
 

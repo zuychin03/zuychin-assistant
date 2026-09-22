@@ -374,7 +374,14 @@ export default function Home() {
         const avail: ProviderInfo[] = (data.providers ?? []).filter((p: ProviderInfo) => p.available);
         setProviders(avail);
 
-        const savedChat = localStorage.getItem("zuychin-chat-model");
+        let savedChat = localStorage.getItem("zuychin-chat-model");
+        const savedProvider = avail.find((p) => savedChat?.startsWith(`${p.id}::`));
+        const savedModel = savedChat?.slice((savedProvider?.id.length ?? 0) + 2);
+        const replacement = savedModel && savedProvider?.chatModelAliases?.[savedModel];
+        if (replacement && savedProvider?.chatModels.some((m) => m.id === replacement)) {
+          savedChat = `${savedProvider.id}::${replacement}`;
+          localStorage.setItem("zuychin-chat-model", savedChat);
+        }
         const validChat = avail.some((p) =>
           savedChat?.startsWith(p.id + "::") && p.chatModels.some((m) => `${p.id}::${m.id}` === savedChat)
         );

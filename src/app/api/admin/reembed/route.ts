@@ -1,100 +1,84 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { embedText, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride, setEmbeddingOverride } from "@/lib/ai/embedding-override";
+import {
+    MIGRATION_TABLES, applyMigration, planMigration, prepareMigration, verifyMigration, type MigrationTable,
+} from "@/lib/ai/embedding-migration";
+import { createMigrationStore } from "@/lib/ai/embedding-migration-store";
 
 export const maxDuration = 60;
 
-// Rows per call: each needs one embedding API round trip (~0.3s), so a chunk
-// stays well inside maxDuration. The client keeps POSTing until done:true -
-// an interrupted migration resumes exactly where it stopped because progress
-// is the rows themselves (embedding_model != target).
 const CHUNK = 20;
+const CONCURRENCY = 4;
 
-// The vault is deliberately excluded: its pages resolve their own majority
-// partition (see vault/store.ts) and are re-embedded by vault lint flows.
-const TABLES = [
-    { table: "embeddings", textColumn: "content" },
-    { table: "memories", textColumn: "fact" },
-] as const;
-
-async function countRemaining(target: string): Promise<number> {
-    let total = 0;
-    for (const { table } of TABLES) {
-        // .neq alone would skip NULL rows (SQL three-valued logic), stranding
-        // any legacy row without a recorded model.
+async function countRemaining(target: string, signal: AbortSignal): Promise<Record<MigrationTable, number>> {
+    const counts = await Promise.all(MIGRATION_TABLES.map(async (table) => {
         const { count, error } = await supabase
             .from(table)
             .select("id", { count: "exact", head: true })
-            .or(`embedding_model.is.null,embedding_model.neq.${target}`);
-        if (error) throw new Error(`${table} count failed: ${error.message}`);
-        total += count ?? 0;
-    }
-    return total;
+            .or(`embedding.is.null,embedding_model.is.null,embedding_model.neq.${target}`)
+            .abortSignal(signal);
+        if (error || count === null) throw new Error("Embedding migration status is unavailable.");
+        return [table, count] as const;
+    }));
+    return Object.fromEntries(counts) as Record<MigrationTable, number>;
 }
 
+const totalRemaining = (counts: Record<MigrationTable, number>) => Object.values(counts).reduce((total, count) => total + count, 0);
+
 export async function GET() {
-    await refreshEmbeddingOverride();
-    const active = getEmbeddingRef().model.id;
     try {
-        return NextResponse.json({ active, remaining: await countRemaining(active) });
+        const signal = AbortSignal.timeout(40_000);
+        await refreshEmbeddingOverride(signal);
+        const active = getEmbeddingRef().model.id;
+        return NextResponse.json({ active, remaining: totalRemaining(await countRemaining(active, signal)) });
     } catch {
-        // Pre-DDL or transient: the selector still needs to know the model.
-        return NextResponse.json({ active, remaining: 0 });
+        return NextResponse.json({ error: "Embedding migration status is unavailable. Please retry." }, { status: 503 });
     }
 }
 
 export async function POST(req: NextRequest) {
-    let target = "";
+    let targetRef: ResolvedEmbedding;
     try {
-        const body = await req.json();
-        if (typeof body.target === "string") target = body.target.trim();
-    } catch { }
-    if (!target) {
-        return NextResponse.json({ error: "target model id is required" }, { status: 400 });
-    }
-
-    const targetRef = getEmbeddingRef(target);
-    if (targetRef.model.id !== target) {
-        return NextResponse.json({ error: `Unknown embedding model "${target}"` }, { status: 400 });
+        const body = await req.json() as { target?: unknown } | null;
+        const target = typeof body?.target === "string" ? body.target.trim() : "";
+        if (!target) throw new Error("Missing target.");
+        targetRef = getEmbeddingRef(target);
+    } catch {
+        return NextResponse.json({ error: "A supported target model id is required." }, { status: 400 });
     }
 
     try {
-        let migrated = 0;
-        for (const { table, textColumn } of TABLES) {
-            if (migrated >= CHUNK) break;
-            const { data, error } = await supabase
-                .from(table)
-                .select(`id, ${textColumn}`)
-                .or(`embedding_model.is.null,embedding_model.neq.${target}`)
-                .limit(CHUNK - migrated);
-            if (error) throw new Error(`${table} read failed: ${error.message}`);
-
-            for (const row of (data ?? []) as unknown as Record<string, string>[]) {
-                const embedding = await embedText(targetRef, row[textColumn]);
-                const { error: upErr } = await supabase
-                    .from(table)
-                    .update({ embedding: JSON.stringify(embedding), embedding_model: target })
-                    .eq("id", row.id);
-                if (upErr) throw new Error(`${table} update failed: ${upErr.message}`);
-                migrated++;
-            }
+        const signal = AbortSignal.timeout(40_000);
+        const pending = await countRemaining(targetRef.model.id, signal);
+        const hasPending = totalRemaining(pending) > 0;
+        const store = createMigrationStore(supabase, setEmbeddingOverride, { signal });
+        const source = hasPending
+            ? createMigrationStore(supabase, undefined, { signal, pendingModel: targetRef.model.id })
+            : store;
+        const plan = await planMigration(source, targetRef.model.id, targetRef.model.dimension, {
+            maxItems: CHUNK, stopAfterMaxItems: hasPending,
+        });
+        const prepared = await prepareMigration(plan, (text) => embedText(targetRef, text, "passage", signal), CONCURRENCY);
+        const result = await applyMigration(store, plan, prepared, CONCURRENCY, async (current, target, dimension) => {
+            const remaining = await countRemaining(target, signal);
+            return totalRemaining(remaining) ? remaining : verifyMigration(current, target, dimension);
+        });
+        const progress = {
+            done: result.complete,
+            migrated: result.updated,
+            remaining: totalRemaining(result.remaining),
+        };
+        if (result.conflicts.length || result.failures.length) {
+            return NextResponse.json({
+                ...progress,
+                error: "Some rows changed or could not be saved. Retry to continue the migration.",
+                retryable: true,
+            }, { status: 409 });
         }
-
-        const remaining = await countRemaining(target);
-        if (remaining === 0) {
-            // Flip only after every row is in the new partition, so searches
-            // stay consistent throughout the migration.
-            await setEmbeddingOverride(target);
-            console.log(`[Reembed] Store migrated to ${target}.`);
-            return NextResponse.json({ done: true, migrated, remaining: 0 });
-        }
-        return NextResponse.json({ done: false, migrated, remaining });
-    } catch (err) {
-        console.error("[Reembed] Chunk failed:", err);
-        return NextResponse.json(
-            { error: err instanceof Error ? err.message : "Re-embed chunk failed" },
-            { status: 502 }
-        );
+        return NextResponse.json(progress);
+    } catch {
+        return NextResponse.json({ error: "Re-embedding could not finish this batch. Please retry." }, { status: 502 });
     }
 }

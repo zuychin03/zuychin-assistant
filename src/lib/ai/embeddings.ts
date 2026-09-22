@@ -1,4 +1,4 @@
-import { ai } from "@/lib/gemini";
+import { geminiClient } from "@/lib/gemini";
 import {
     resolveEmbedding, getProviderApiKey,
     type ResolvedEmbedding,
@@ -15,27 +15,37 @@ export function getEmbeddingRef(modelId?: string): ResolvedEmbedding {
 
 export type EmbedInputType = "query" | "passage";
 
+function validatedVector(ref: ResolvedEmbedding, vector: unknown): number[] {
+    if (!Array.isArray(vector) || vector.length !== ref.model.dimension
+        || vector.some((value) => typeof value !== "number" || !Number.isFinite(value))
+        || !vector.some((value) => value !== 0)) {
+        throw new Error(`Invalid ${ref.model.dimension}-dimensional embedding from ${ref.provider.label}.`);
+    }
+    return vector;
+}
+
 export async function embedText(
     ref: ResolvedEmbedding,
     text: string,
     inputType: EmbedInputType = "passage",
+    signal?: AbortSignal,
 ): Promise<number[]> {
-    if (ref.provider.kind === "gemini") {
-        const result = await ai.models.embedContent({
-            model: ref.model.id,
-            contents: text,
-            config: { outputDimensionality: ref.model.dimension },
-        });
-        return result.embeddings?.[0]?.values ?? [];
-    }
-
+    const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
+    requestSignal.throwIfAborted();
     const apiKey = getProviderApiKey(ref.provider);
     if (!apiKey) {
         throw new Error(`Missing API key (${ref.provider.apiKeyEnv}) for ${ref.provider.label}.`);
     }
+    if (ref.provider.kind === "gemini") {
+        const result = await geminiClient(apiKey).models.embedContent({
+            model: ref.model.id,
+            contents: text,
+            config: { outputDimensionality: ref.model.dimension, abortSignal: requestSignal },
+        });
+        return validatedVector(ref, result.embeddings?.[0]?.values);
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body: Record<string, any> = {
+    const body: Record<string, unknown> = {
         model: ref.model.id,
         input: text,
         encoding_format: "float",
@@ -50,6 +60,7 @@ export async function embedText(
             ...(ref.provider.extraHeaders ?? {}),
         },
         body: JSON.stringify(body),
+        signal: requestSignal,
     });
 
     if (!res.ok) {
@@ -58,9 +69,5 @@ export async function embedText(
     }
 
     const json = (await res.json()) as { data?: { embedding?: number[] }[] };
-    const vector = json.data?.[0]?.embedding;
-    if (!vector || !Array.isArray(vector)) {
-        throw new Error(`Embedding response from ${ref.provider.label} had no vector.`);
-    }
-    return vector;
+    return validatedVector(ref, json.data?.[0]?.embedding);
 }

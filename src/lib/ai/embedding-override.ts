@@ -18,10 +18,10 @@ export function cachedEmbeddingOverride(): string | null {
 }
 
 /** TTL-cached read of the override; never throws (falls back to env/default). */
-export async function refreshEmbeddingOverride(): Promise<void> {
+export async function refreshEmbeddingOverride(signal?: AbortSignal): Promise<void> {
     if (loadedAt && Date.now() - loadedAt < TTL_MS) return;
     try {
-        const state = await getCronState<{ model?: string }>(STATE_KEY);
+        const state = await getCronState<{ model?: string }>(STATE_KEY, signal);
         cached = state?.model ?? null;
     } catch {
         // Pre-DDL or transient failure: keep the last known value.
@@ -29,8 +29,8 @@ export async function refreshEmbeddingOverride(): Promise<void> {
     loadedAt = Date.now();
 }
 
-export async function setEmbeddingOverride(model: string): Promise<void> {
-    await setCronState(STATE_KEY, { model });
+export async function setEmbeddingOverride(model: string, signal?: AbortSignal): Promise<void> {
+    await setCronState(STATE_KEY, { model }, signal);
     cached = model;
     loadedAt = Date.now();
 }
