@@ -131,7 +131,7 @@ export async function runAgent(opts: {
                 onEvent?.({ type: "subagent", objective, model: modelHint ?? "auto", phase: "start" });
                 const { value: res, timedOut } = await withDeadline(
                     (workerSignal) => runWorker({
-                        objective, modelHint, needsTools, complexity,
+                        objective, modelHint, needsTools, complexity, paidOnly: rag.paidOnly,
                         contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx, signal: workerSignal,
                     }),
                     AGENT_CONFIG.workerTimeoutMs,

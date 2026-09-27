@@ -327,7 +327,8 @@ const WORKER_PREFERRED: { providerId: string; modelId: string }[] = [
 // Tried first for no-tool subtasks; cannot call functions.
 export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "google/diffusiongemma-26b-a4b-it" };
 
-// Paid fallback after free workers fail, sized to subtask complexity.
+// Paid Gemini for workers, sized to subtask complexity: the fallback after free
+// workers fail, and the only model on a paid-only run.
 export const WORKER_GEMINI_FALLBACK = {
     simple: "gemini-3.5-flash-lite",
     complex: "gemini-3.8-flash",
@@ -366,6 +367,16 @@ export function resolveMessagingDefault(): ResolvedChat {
         if (resolved) return resolved;
     }
     return resolveChat();
+}
+
+// Google keeps paid-tier prompts out of training; free routes may train on them.
+// Matched by provider id, not kind: "gemini-free" is Gemini on the free tier.
+const PAID_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-lite" };
+
+/** A stored choice already on the paid key, else the paid default. Throws rather than fall back to a free route. */
+export function resolvePaidChat(storedKey?: string | null): ResolvedChat {
+    const stored = resolveModelKey(storedKey);
+    return stored?.provider.id === PAID_CHAT.providerId ? stored : resolveChat(PAID_CHAT.providerId, PAID_CHAT.modelId);
 }
 
 export function resolveModelKey(key?: string | null): ResolvedChat | null {

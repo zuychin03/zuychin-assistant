@@ -9,8 +9,10 @@ export interface WorkerParams {
     objective: string;
     modelHint?: string;
     needsTools?: boolean;
-    /** Sizes the paid Gemini fallback only; free fast models always run first. */
+    /** Sizes the paid Gemini run; free fast models go first unless paidOnly. */
     complexity?: "simple" | "complex";
+    /** Skips the model hint and the free chain, so the subtask stays on the paid Gemini key. */
+    paidOnly?: boolean;
     contextBlock: string;
     embRef: ResolvedEmbedding;
     toolCtx: ToolContext;
@@ -51,12 +53,12 @@ const isEmptyReply = (out: string) => !out.trim() || out.trim() === EMPTY_REPLY;
 export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string; tokens: number }> {
     const needsTools = p.needsTools ?? true;
 
-    // Candidates: explicit model hint first, then the free fast chain.
-    // Gemini runs only when all candidates error or return nothing.
-    const hinted = p.modelHint ? resolveChatModelByName(p.modelHint) : null;
+    // Candidates: explicit model hint first, then the free fast chain. Paid
+    // Gemini runs once they all fail, or straight away on a paid-only run.
+    const pool = p.paidOnly ? [] : [p.modelHint ? resolveChatModelByName(p.modelHint) : null, ...resolveWorkerChain(needsTools)];
     const seen = new Set<string>();
     const candidates: ResolvedChat[] = [];
-    for (const c of [hinted, ...resolveWorkerChain(needsTools)]) {
+    for (const c of pool) {
         if (!c) continue;
         const key = `${c.provider.id}::${c.model.id}`;
         if (!seen.has(key)) {
@@ -105,9 +107,7 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
     }
 
     p.signal?.throwIfAborted();
-    // Paid last resort, sized to the subtask: 3-flash for simple work,
-    // 3.5-flash where weak reasoning would just waste the retry.
     const fallbackModel = p.complexity === "complex" ? WORKER_GEMINI_FALLBACK.complex : WORKER_GEMINI_FALLBACK.simple;
     const { text, usage } = await geminiRun(fallbackModel);
-    return { model: `${fallbackModel} (fallback)`, output: text, tokens: usage.totalTokens };
+    return { model: p.paidOnly ? fallbackModel : `${fallbackModel} (fallback)`, output: text, tokens: usage.totalTokens };
 }

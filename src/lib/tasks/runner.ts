@@ -13,12 +13,7 @@ export interface TaskRunResult {
     detail: string;
 }
 
-/**
- * Execute a claimed task through the normal chat pipeline (real channel =
- * model prefs, memory partition, persistence and agent tracing all apply),
- * then deliver the reply to the task's channel. Web tasks need no delivery:
- * ragChat already persisted the exchange into the target conversation.
- */
+// Scheduled chat generation must not inherit a channel's free model route.
 export async function runScheduledTask(task: ScheduledTask): Promise<TaskRunResult> {
     try {
         const { reply, artifacts } = await ragChat({
@@ -26,6 +21,7 @@ export async function runScheduledTask(task: ScheduledTask): Promise<TaskRunResu
             channel: task.channel,
             conversationId: task.channel === "web" ? (task.conversationId ?? undefined) : undefined,
             agent: task.agentMode,
+            paidOnly: true,
         });
 
         let delivered = true;

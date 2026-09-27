@@ -11,7 +11,7 @@ import { extractMemories } from "@/lib/ai/memory/extractor";
 import { getConversationProject } from "@/lib/projects";
 import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, resolveMessagingDefault, resolvePaidChat, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -209,8 +209,10 @@ function resolveChatForRequest(
     channel: MessageChannel,
     provider: string | undefined,
     model: string | undefined,
-    profile: Profile
+    profile: Profile,
+    paidOnly: boolean
 ): ResolvedChat {
+    if (paidOnly) return resolvePaidChat(getStoredChannelModel(profile, channel));
     if (provider || model) return resolveChat(provider, model);
     if (channel !== "web") {
         return resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
@@ -316,6 +318,8 @@ export interface RagContext {
     lastAssistantMessage?: string;
     /** Set when the conversation belongs to a project; scopes fact extraction. */
     projectId?: string;
+    /** Keeps the reply and every sub-agent on the paid Gemini key. */
+    paidOnly: boolean;
 }
 
 // Per-channel tone overlay layered on the base persona: terse on the Discord
@@ -344,10 +348,12 @@ export async function buildRagContext(params: {
     hasAudioAttachment?: boolean;
     /** Row id of the already-saved user message; links its embedding for history search. */
     userMessageId?: string;
+    paidOnly?: boolean;
 }): Promise<RagContext> {
     const { message, channel, conversationId, provider, model, thinking, search, profile } = params;
+    const paidOnly = !!params.paidOnly;
 
-    let chat = resolveChatForRequest(channel, provider, model, profile);
+    let chat = resolveChatForRequest(channel, provider, model, profile, paidOnly);
     // Only Gemini can hear: the OpenAI-compat client drops audio bytes, so an
     // audio turn on a non-Gemini selection falls back to Gemini for this turn.
     if (params.hasAudioAttachment && chat.provider.kind !== "gemini") {
@@ -480,7 +486,7 @@ export async function buildRagContext(params: {
 
     const lastAssistantMessage = [...recentMessages].reverse().find((m) => m.role === "assistant")?.content;
 
-    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage, projectId: project?.id };
+    return { profile, chat, embRef, contextBlock, allowThinking, allowSearch, lastAssistantMessage, projectId: project?.id, paidOnly };
 }
 
 // Summarizes an interrupted run so a fresh agent pass can pick up where it
@@ -531,6 +537,8 @@ export async function ragChat(params: {
     resumeRunId?: string;
     replyTo?: ReplyRef;
     signal?: AbortSignal;
+    /** Keeps lead and worker chat generation on the paid Gemini key. */
+    paidOnly?: boolean;
 }, onEvent?: AgentEventSink): Promise<{ reply: string; messageId: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal }> {
     const {
         message, channel, imageBase64, file, conversationId,
@@ -578,6 +586,7 @@ export async function ragChat(params: {
         embeddingModel, thinking, search, profile,
         hasAudioAttachment: !!file && file.mimeType.startsWith("audio/"),
         userMessageId: userMsgId || undefined,
+        paidOnly: params.paidOnly,
     });
 
     const artifacts: ArtifactDescriptor[] = [];
