@@ -1,0 +1,40 @@
+.trigger {
+    flex: 1 1 180px;
+    min-height: 44px;
+    font-size: 13px;
+    border: 1px solid var(--color-border);
+    transition: border-color 120ms ease, background-color 120ms ease;
+    touch-action: manipulation;
+}
+
+.trigger:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+}
+
+.trigger[aria-expanded="true"] {
+    border-color: var(--color-primary);
+}
+
+.chevron {
+    flex-shrink: 0;
+    opacity: 0.65;
+    transition: transform 120ms ease;
+}
+
+.trigger[aria-expanded="true"] .chevron {
+    transform: rotate(180deg);
+}
+
+@media (hover: hover) {
+    .trigger:hover:not(:disabled) {
+        border-color: var(--color-text-muted);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .trigger,
+    .chevron {
+        transition: none;
+    }
+}

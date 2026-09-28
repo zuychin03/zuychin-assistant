@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
-
-// The listbox is positioned fixed against the trigger's viewport rect rather
-// than absolutely inside it: several call sites sit in panels that clip
-// overflow, and an absolutely positioned menu is cut off by them.
+import { observeAnchoredMenu } from "./anchored-menu";
+import styles from "./dropdown.module.css";
 
 export interface DropdownOption {
     value: string;
@@ -18,6 +17,8 @@ export interface DropdownProps {
     onChange: (value: string) => void;
     options: ReadonlyArray<DropdownOption | string>;
     ariaLabel?: string;
+    id?: string;
+    autoFocus?: boolean;
     /** Shown only when `value` matches no option. */
     placeholder?: string;
     disabled?: boolean;
@@ -28,8 +29,6 @@ export interface DropdownProps {
 }
 
 const MENU_MAX_HEIGHT = 280;
-const MENU_GAP = 4;
-// Long enough to type a word, short enough that a pause starts a new search.
 const TYPEAHEAD_RESET_MS = 700;
 
 function normalize(option: DropdownOption | string): DropdownOption {
@@ -41,85 +40,92 @@ function labelOf(option: DropdownOption): string {
 }
 
 export function Dropdown({
-    value, onChange, options, ariaLabel, placeholder, disabled, style, className, align = "start",
+    value, onChange, options, ariaLabel, id, autoFocus, placeholder, disabled, style, className, align = "start",
 }: DropdownProps) {
     const items = options.map(normalize);
     const selectedIndex = items.findIndex((item) => item.value === value);
     const selected = selectedIndex >= 0 ? items[selectedIndex] : null;
 
     const [open, setOpen] = useState(false);
-    const [activeIndex, setActiveIndex] = useState(-1);
-    const [rect, setRect] = useState<{ top: number; left: number; width: number; drop: "down" | "up" } | null>(null);
+    const [activeValue, setActiveValue] = useState<string | null>(null);
+    const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+    const enabledSelectedIndex = selectedIndex >= 0 && !items[selectedIndex].disabled ? selectedIndex : -1;
+    const requestedIndex = items.findIndex((item) => item.value === activeValue && !item.disabled);
+    const activeIndex = requestedIndex >= 0 ? requestedIndex
+        : enabledSelectedIndex >= 0 ? enabledSelectedIndex : items.findIndex((item) => !item.disabled);
 
     const triggerRef = useRef<HTMLButtonElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const typeahead = useRef<{ buffer: string; at: number }>({ buffer: "", at: 0 });
     const listId = useId();
 
-    // Defined inside the effect so the listener is its own dependency-free
-    // identity; the trigger ref is the only thing it reads.
+    if (open && disabled) setOpen(false);
+
     useLayoutEffect(() => {
-        if (!open) return;
-        const place = () => {
-            const trigger = triggerRef.current;
-            if (!trigger) return;
-            const box = trigger.getBoundingClientRect();
-            const below = window.innerHeight - box.bottom;
-            const drop: "down" | "up" = below < Math.min(MENU_MAX_HEIGHT, 160) && box.top > below ? "up" : "down";
-            setRect({
-                top: drop === "down" ? box.bottom + MENU_GAP : box.top - MENU_GAP,
-                left: box.left,
-                width: box.width,
-                drop,
-            });
-        };
-        place();
-        // Reposition rather than close: closing on any ancestor scroll makes the
-        // control feel broken inside the scrolling council panels.
-        window.addEventListener("scroll", place, true);
-        window.addEventListener("resize", place);
-        return () => {
-            window.removeEventListener("scroll", place, true);
-            window.removeEventListener("resize", place);
-        };
-    }, [open]);
+        if (!open || !triggerRef.current || !menuRef.current) return;
+        return observeAnchoredMenu(triggerRef.current, menuRef.current, { align, maxHeight: MENU_MAX_HEIGHT });
+    }, [open, portalTarget, align, items.length]);
 
     useEffect(() => {
         if (!open) return;
-        const onPointerDown = (event: PointerEvent) => {
-            const target = event.target as Node;
+        const dismissOutside = (event: Event) => {
+            const target = event.target;
+            if (!(target instanceof Node)) return;
             if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
             setOpen(false);
+            typeahead.current = { buffer: "", at: 0 };
         };
-        document.addEventListener("pointerdown", onPointerDown, true);
-        return () => document.removeEventListener("pointerdown", onPointerDown, true);
+        document.addEventListener("pointerdown", dismissOutside, true);
+        document.addEventListener("focusin", dismissOutside);
+        return () => {
+            document.removeEventListener("pointerdown", dismissOutside, true);
+            document.removeEventListener("focusin", dismissOutside);
+        };
     }, [open]);
 
-    // Keep the active option in view for keyboard and type-ahead movement.
+    useEffect(() => {
+        const trigger = triggerRef.current;
+        if (!open || !trigger) return;
+        const observer = new MutationObserver(() => {
+            if (trigger.matches(":disabled")) setOpen(false);
+        });
+        for (let parent = trigger.parentElement; parent; parent = parent.parentElement) {
+            if (parent instanceof HTMLFieldSetElement) observer.observe(parent, { attributes: true, attributeFilter: ["disabled"] });
+        }
+        return () => observer.disconnect();
+    }, [open]);
+
     useEffect(() => {
         if (!open || activeIndex < 0) return;
-        menuRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)
-            ?.scrollIntoView({ block: "nearest" });
+        const menu = menuRef.current;
+        const option = menu?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+        if (!menu || !option) return;
+        if (option.offsetTop < menu.scrollTop) menu.scrollTop = option.offsetTop;
+        else if (option.offsetTop + option.offsetHeight > menu.scrollTop + menu.clientHeight) {
+            menu.scrollTop = option.offsetTop + option.offsetHeight - menu.clientHeight;
+        }
     }, [open, activeIndex]);
 
-    // Plain functions: the React Compiler handles memoization, and none of
-    // these is an effect dependency.
-    function openMenu(startAt?: number) {
-        if (disabled) return;
-        setActiveIndex(startAt ?? (selectedIndex >= 0 ? selectedIndex : 0));
+    function openMenu(startAt?: number, resetSearch = true) {
+        if (disabled || triggerRef.current?.matches(":disabled")) return;
+        if (resetSearch) typeahead.current = { buffer: "", at: 0 };
+        setActiveValue(items[startAt ?? (enabledSelectedIndex >= 0 ? enabledSelectedIndex : edge(1))]?.value ?? null);
+        setPortalTarget(triggerRef.current?.closest("dialog") ?? document.body);
         setOpen(true);
     }
 
     function closeMenu(refocus = true) {
         setOpen(false);
-        setActiveIndex(-1);
-        if (refocus) triggerRef.current?.focus();
+        setActiveValue(null);
+        typeahead.current = { buffer: "", at: 0 };
+        if (refocus) triggerRef.current?.focus({ preventScroll: true });
     }
 
     function commit(index: number) {
         const item = items[index];
         if (!item || item.disabled) return;
-        onChange(item.value);
+        if (disabled || triggerRef.current?.matches(":disabled")) { closeMenu(false); return; }
+        if (item.value !== value) onChange(item.value);
         closeMenu();
     }
 
@@ -131,7 +137,7 @@ export function Dropdown({
             next = (next + direction + count) % count;
             if (!items[next].disabled) return next;
         }
-        return from;
+        return -1;
     }
 
     function edge(direction: 1 | -1): number {
@@ -143,128 +149,137 @@ export function Dropdown({
         for (let hop = 1; hop <= count; hop++) {
             const index = (from + hop) % count;
             if (items[index].disabled) continue;
-            if (labelOf(items[index]).toLowerCase().startsWith(buffer)) return index;
+            if (labelOf(items[index]).toLocaleLowerCase().startsWith(buffer)) return index;
         }
         return -1;
     }
 
+    function activate(index: number) {
+        setActiveValue(items[index]?.value ?? null);
+    }
+
     const onKeyDown = (event: React.KeyboardEvent) => {
-        if (disabled) return;
+        if (disabled || triggerRef.current?.matches(":disabled") || event.nativeEvent.isComposing) return;
         const key = event.key;
+        const now = event.timeStamp;
+        const hasSearch = typeahead.current.buffer.length > 0 && now - typeahead.current.at <= TYPEAHEAD_RESET_MS;
 
         if (!open) {
             if (key === "ArrowDown" || key === "ArrowUp" || key === "Enter" || key === " ") {
                 event.preventDefault();
-                openMenu();
+                openMenu(enabledSelectedIndex >= 0 ? enabledSelectedIndex : edge(key === "ArrowUp" ? -1 : 1));
+                return;
             }
-            return;
-        }
-
-        switch (key) {
+            if (key === "Home" || key === "End") {
+                event.preventDefault();
+                openMenu(edge(key === "Home" ? 1 : -1));
+                return;
+            }
+        } else switch (key) {
             case "Escape":
                 event.preventDefault();
+                event.stopPropagation();
                 closeMenu();
                 return;
             case "Tab":
-                // Tab commits nothing; it is a move, not a choice.
-                setOpen(false);
-                setActiveIndex(-1);
+                closeMenu(false);
                 return;
             case "ArrowDown":
                 event.preventDefault();
-                setActiveIndex((current) => step(current < 0 ? -1 : current, 1));
+                activate(step(activeIndex, 1));
                 return;
             case "ArrowUp":
                 event.preventDefault();
-                setActiveIndex((current) => step(current < 0 ? items.length : current, -1));
+                if (event.altKey) closeMenu();
+                else activate(step(activeIndex < 0 ? items.length : activeIndex, -1));
                 return;
             case "Home":
                 event.preventDefault();
-                setActiveIndex(edge(1));
+                activate(edge(1));
                 return;
             case "End":
                 event.preventDefault();
-                setActiveIndex(edge(-1));
+                activate(edge(-1));
                 return;
             case "Enter":
             case " ":
+                if (key === " " && hasSearch) break;
                 event.preventDefault();
                 if (activeIndex >= 0) commit(activeIndex);
                 return;
         }
 
         if (key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-            // The event's own timestamp, not Date.now(): only the delta matters
-            // here, and reading a clock during render is impure.
-            const now = event.timeStamp;
+            event.preventDefault();
             const state = typeahead.current;
-            state.buffer = now - state.at > TYPEAHEAD_RESET_MS ? key.toLowerCase() : state.buffer + key.toLowerCase();
+            state.buffer = hasSearch ? state.buffer + key.toLocaleLowerCase() : key.toLocaleLowerCase();
             state.at = now;
-            // A repeated single character cycles matches instead of narrowing.
             const repeated = state.buffer.length > 1 && state.buffer.split("").every((c) => c === state.buffer[0]);
             const needle = repeated ? state.buffer[0] : state.buffer;
             const from = needle === state.buffer && state.buffer.length > 1 ? activeIndex - 1 : activeIndex;
             const found = searchFrom(needle, Math.max(-1, from));
-            if (found >= 0) setActiveIndex(found);
+            if (found >= 0) {
+                if (open) activate(found);
+                else openMenu(found, false);
+            }
         }
     };
 
-    const triggerLabel = selected ? labelOf(selected) : (placeholder ?? "");
+    const triggerLabel = selected ? labelOf(selected) : (placeholder ?? "Select an option");
+    const accessibleLabel = ariaLabel || placeholder || "Select an option";
 
     return (
         <>
             <button
                 ref={triggerRef}
+                id={id}
+                autoFocus={autoFocus}
                 type="button"
                 role="combobox"
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 aria-controls={open ? listId : undefined}
-                aria-label={ariaLabel}
+                aria-activedescendant={open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined}
+                aria-label={accessibleLabel}
                 aria-disabled={disabled || undefined}
                 disabled={disabled}
                 onClick={() => (open ? closeMenu() : openMenu())}
                 onKeyDown={onKeyDown}
-                className={className}
+                className={[styles.trigger, className].filter(Boolean).join(" ")}
                 style={{ ...triggerStyle, ...(disabled ? disabledStyle : null), ...style }}
             >
-                <span style={valueStyle}>{triggerLabel}</span>
+                <span style={valueStyle} title={triggerLabel}>{triggerLabel}</span>
                 <ChevronDown
                     size={14}
                     aria-hidden
-                    style={{ flexShrink: 0, opacity: 0.65, transform: open ? "rotate(180deg)" : undefined, transition: "transform 120ms ease" }}
+                    className={styles.chevron}
                 />
             </button>
 
-            {open && rect && (
+            {open && portalTarget && createPortal(
                 <div
                     ref={menuRef}
                     id={listId}
                     role="listbox"
-                    aria-label={ariaLabel}
+                    aria-label={accessibleLabel}
                     tabIndex={-1}
                     onKeyDown={onKeyDown}
-                    style={{
-                        ...menuStyle,
-                        top: rect.drop === "down" ? rect.top : undefined,
-                        bottom: rect.drop === "up" ? window.innerHeight - rect.top : undefined,
-                        left: align === "start" ? rect.left : undefined,
-                        right: align === "end" ? window.innerWidth - (rect.left + rect.width) : undefined,
-                        minWidth: rect.width,
-                    }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    style={menuStyle}
                 >
-                    {items.length === 0 && <div style={emptyStyle}>No options</div>}
+                    {items.length === 0 && <div role="status" style={emptyStyle}>No options available</div>}
                     {items.map((item, index) => {
                         const isSelected = item.value === value;
                         const isActive = index === activeIndex;
                         return (
                             <div
-                                key={item.value}
+                                key={`${item.value}-${index}`}
+                                id={`${listId}-option-${index}`}
                                 data-index={index}
                                 role="option"
                                 aria-selected={isSelected}
                                 aria-disabled={item.disabled || undefined}
-                                onPointerEnter={() => !item.disabled && setActiveIndex(index)}
+                                onPointerMove={(event) => event.pointerType === "mouse" && !item.disabled && activate(index)}
                                 onClick={() => commit(index)}
                                 style={{
                                     ...optionStyle,
@@ -277,7 +292,8 @@ export function Dropdown({
                             </div>
                         );
                     })}
-                </div>
+                </div>,
+                portalTarget,
             )}
         </>
     );
@@ -285,8 +301,8 @@ export function Dropdown({
 
 const triggerStyle: React.CSSProperties = {
     display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 6,
-    flex: "1 1 180px", minWidth: 0, padding: "8px 10px", fontSize: 13,
-    borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border)",
+    minWidth: 0, padding: "8px 10px",
+    borderRadius: "var(--radius-sm)",
     background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
     color: "var(--color-text-primary)", fontFamily: "inherit", textAlign: "left",
     cursor: "pointer", appearance: "none",
@@ -300,24 +316,26 @@ const valueStyle: React.CSSProperties = {
 
 const menuStyle: React.CSSProperties = {
     position: "fixed", zIndex: 1000, maxHeight: MENU_MAX_HEIGHT, overflowY: "auto",
+    width: "max-content", boxSizing: "border-box", visibility: "hidden", overscrollBehavior: "contain",
     padding: 4, borderRadius: "var(--radius-md)", border: "1px solid var(--color-border)",
     background: "var(--color-background)", color: "var(--color-text-primary)",
-    boxShadow: "0 10px 30px rgba(0, 0, 0, 0.18)", fontSize: 13, fontFamily: "inherit",
+    boxShadow: "0 10px 30px rgba(0, 0, 0, 0.18)", fontSize: 13, fontFamily: "var(--font-family)",
 };
 
 const optionStyle: React.CSSProperties = {
     display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-    padding: "7px 9px", borderRadius: "var(--radius-sm)", cursor: "pointer",
+    minHeight: 44, padding: "9px", borderRadius: "var(--radius-sm)", cursor: "pointer",
 };
 
 const optionActiveStyle: React.CSSProperties = {
     background: "color-mix(in srgb, var(--color-surface) 85%, transparent)",
+    outline: "2px solid var(--color-primary)", outlineOffset: -2,
 };
 
 const optionDisabledStyle: React.CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
 
 const optionLabelStyle: React.CSSProperties = {
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+    minWidth: 0, overflowWrap: "anywhere", whiteSpace: "normal",
 };
 
 const emptyStyle: React.CSSProperties = {

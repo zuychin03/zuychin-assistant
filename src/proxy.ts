@@ -10,7 +10,7 @@ const PUBLIC_PATHS = [
   "/api/agent/claim",
   // Browsers fetch the manifest and service worker without cookies; gating
   // them silently breaks PWA install.
-  "/manifest.webmanifest", "/sw.js", "/icons",
+  "/manifest.webmanifest", "/sw.js", "/icons", "/offline.html", "/offline-reader.js", "/offline-reader.css",
 ];
 
 function isPublicPath(pathname: string): boolean {

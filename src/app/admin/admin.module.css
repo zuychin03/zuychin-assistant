@@ -1,0 +1,60 @@
+.dashboard {
+  --admin-success: #167344;
+  --admin-info: #285ec0;
+  --admin-warning: #805900;
+  --admin-danger: #b42318;
+  --admin-purple: #76419d;
+}
+
+:global([data-theme="dark"]) .dashboard {
+  --admin-success: #53d693;
+  --admin-info: #8eb2ff;
+  --admin-warning: #edc26b;
+  --admin-danger: #ff9c91;
+  --admin-purple: #d3a7ed;
+}
+
+.dashboard :is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--color-primary) !important;
+  outline-offset: 3px;
+}
+
+.dashboard button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dashboard :is(p, pre, dd) {
+  overflow-wrap: anywhere;
+}
+
+.dashboard :is(input, textarea, select) {
+  max-width: 100%;
+}
+
+@media (max-width: 639px) {
+  .dashboard {
+    padding: 24px 16px 40px !important;
+  }
+
+  .dashboard :is(input:not([type="checkbox"]), textarea, select) {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 639px), (pointer: coarse) {
+  .dashboard :is(button, summary) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .dashboard :is(input:not([type="checkbox"]), textarea) {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard svg {
+    animation: none !important;
+  }
+}

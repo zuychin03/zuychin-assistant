@@ -1,0 +1,59 @@
+:root {
+  color-scheme: light;
+  --color-primary: #000;
+  --color-background: #fff;
+  --color-surface: #f2f2f7;
+  --color-text-primary: #000;
+  --color-text-muted: #636366;
+  --color-border: #d1d1d6;
+  --color-danger: #c22935;
+  font-family: system-ui, -apple-system, sans-serif;
+  line-height: 1.6;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-primary: #fff;
+  --color-background: #0f172a;
+  --color-surface: #1e293b;
+  --color-text-primary: #f8fafc;
+  --color-text-muted: #94a3b8;
+  --color-border: #334155;
+  --color-danger: #fb7185;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--color-background); color: var(--color-text-primary); overflow-wrap: anywhere; }
+main { max-width: 900px; margin: auto; padding: 28px 20px 70px; }
+h1 { font-size: 1.7rem; }
+h2 { font-size: 1.2rem; overflow-wrap: anywhere; }
+p { max-width: 75ch; }
+a { color: var(--color-primary); }
+ul { list-style: none; padding: 0; }
+li { padding: 14px 0; border-bottom: 1px solid var(--color-border); }
+button, textarea { font: inherit; color: inherit; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 14px; }
+button { cursor: pointer; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
+button:focus-visible, a:focus-visible, #title:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 ui-monospace, monospace; border-block: 1px solid var(--color-border); padding: 18px 0; }
+label { display: block; margin-top: 22px; }
+textarea { width: 100%; min-height: 130px; margin: 10px 0; resize: vertical; caret-color: var(--color-text-primary); }
+textarea:focus { outline: none; }
+small { display: block; margin-top: 6px; color: var(--color-text-muted); }
+#status { font-weight: 550; }
+#status[role="alert"] { color: var(--color-danger); }
+section[hidden], button[hidden] { display: none; }
+#documents button { text-align: left; }
+#documents button[aria-pressed="true"] { border-color: var(--color-primary); outline: 1px solid var(--color-primary); }
+::selection { background: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+@media (forced-colors: active) {
+  :root, [data-theme="dark"] {
+    --color-primary: Highlight;
+    --color-background: Canvas;
+    --color-surface: Canvas;
+    --color-text-primary: CanvasText;
+    --color-text-muted: CanvasText;
+    --color-border: ButtonText;
+    --color-danger: CanvasText;
+  }
+  textarea:focus-visible { outline: 2px solid Highlight; outline-offset: 3px; }
+  ::selection { background: Highlight; color: HighlightText; }
+}

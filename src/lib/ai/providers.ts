@@ -6,6 +6,7 @@ export interface ChatModel {
     id: string;
     label: string;
     name: string;
+    free?: boolean;
     supportsTools: boolean;
     supportsVision: boolean;
     supportsThinking: boolean;
@@ -28,6 +29,7 @@ export interface EmbeddingModel {
     id: string;
     label: string;
     name: string;
+    free?: boolean;
     dimension: number;
 }
 
@@ -52,11 +54,11 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
         chatModels: [
-            { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", name: "gemini-3.8-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
-            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { free: false, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", name: "gemini-3.8-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { free: false, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [
-            { id: "gemini-embedding-2", label: "Gemini Embedding 2 (768d)", name: "gemini-embedding-2", dimension: 768 },
+            { free: false, id: "gemini-embedding-2", label: "Gemini Embedding 2 (768d)", name: "gemini-embedding-2", dimension: 768 },
         ],
     },
     {
@@ -66,8 +68,8 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "gemini",
         apiKeyEnv: "GEMINI_FREE_API_KEY",
         chatModels: [
-            { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (free)", name: "gemini-3.8-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
-            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { free: true, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (free)", name: "gemini-3.8-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
+            { free: true, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [],
     },
@@ -82,11 +84,11 @@ export const PROVIDERS: ProviderConfig[] = [
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
         chatModels: [
-            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
-            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", metered: true, supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 16384 },
-            { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { free: true, id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { free: true, id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { free: false, id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", metered: true, supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 16384 },
+            { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [],
     },
@@ -97,11 +99,11 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://api.kilo.ai/api/gateway",
         apiKeyEnv: "KILO_API_KEY",
         chatModels: [
-            { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
-            { id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false, maxOutputTokens: 65536 },
-            { id: "inclusionai/ling-3.0-flash-vl:free", label: "Ling 3.0 Flash VL (free)", name: "ling-3.0-flash-vl", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { id: "stepfun/step-3.7-flash:free", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 262144 },
-            { id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false, maxOutputTokens: 65536 },
+            { free: true, id: "inclusionai/ling-3.0-flash-vl:free", label: "Ling 3.0 Flash VL (free)", name: "ling-3.0-flash-vl", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
+            { free: true, id: "stepfun/step-3.7-flash:free", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 262144 },
+            { free: true, id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
         ],
         embeddingModels: [],
     },
@@ -112,18 +114,18 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
         chatModels: [
-            { id: "moonshotai/kimi-k3", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "z-ai/glm-5.3", label: "GLM-5.3 (free)", name: "glm-5.3", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "deepseek-ai/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (free)", name: "deepseek-v4.1-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: false },
-            { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
-            { id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
-            { id: "google/diffusiongemma-26b-a4b-it", label: "DiffusionGemma 26B (free)", name: "diffusiongemma", supportsTools: false, supportsVision: true, supportsThinking: false, supportsSearch: false, supportsStructuredOutput: true, maxOutputTokens: 131072 },
-            { id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "poolside/laguna-xs-2.1", label: "Laguna XS 2.1 (free)", name: "laguna-xs-2.1", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true }
+            { free: true, id: "moonshotai/kimi-k3", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "z-ai/glm-5.3", label: "GLM-5.3 (free)", name: "glm-5.3", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "deepseek-ai/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (free)", name: "deepseek-v4.1-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: false },
+            { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
+            { free: true, id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
+            { free: true, id: "google/diffusiongemma-26b-a4b-it", label: "DiffusionGemma 26B (free)", name: "diffusiongemma", supportsTools: false, supportsVision: true, supportsThinking: false, supportsSearch: false, supportsStructuredOutput: true, maxOutputTokens: 131072 },
+            { free: true, id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "poolside/laguna-xs-2.1", label: "Laguna XS 2.1 (free)", name: "laguna-xs-2.1", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true }
         ],
         embeddingModels: [
-            { id: "nvidia/nemotron-3-embed-1b", label: "Nemotron 3 Embed 1B (free, 2048d)", name: "nemotron-3-embed-1b", dimension: 2048 },
+            { free: true, id: "nvidia/nemotron-3-embed-1b", label: "Nemotron 3 Embed 1B (free, 2048d)", name: "nemotron-3-embed-1b", dimension: 2048 },
         ],
     },
     {
@@ -135,8 +137,8 @@ export const PROVIDERS: ProviderConfig[] = [
         metered: true,
         chatModels: [
             // DeepSeek accepts json_object, not strict json_schema output.
-            { id: "deepseek-flash", label: "DeepSeek V4.1 Flash", name: "deepseek-v4.1-flash-api", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
-            { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", name: "deepseek-v4-pro-api", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
+            { free: false, id: "deepseek-flash", label: "DeepSeek V4.1 Flash", name: "deepseek-v4.1-flash-api", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
+            { free: false, id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", name: "deepseek-v4-pro-api", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
         ],
         embeddingModels: [],
     },
@@ -148,10 +150,10 @@ export const PROVIDERS: ProviderConfig[] = [
         apiKeyEnv: "OPENCODE_ZEN_API_KEY",
         unavailableReason: "OpenCode's free tier can only be used within OpenCode (checked 23/09/2026).",
         chatModels: [
-            { id: "mimo-v2.6-flash-free", label: "MiMo V2.6 Flash (free)", name: "mimo-v2.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "nemotron-3.5-lightning-free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { id: "muse-spark-1.3-contributor-free", label: "Muse Spark 1.3 Contributor (free)", name: "muse-spark-1.3-contributor", apiFormat: "responses", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
+            { free: true, id: "mimo-v2.6-flash-free", label: "MiMo V2.6 Flash (free)", name: "mimo-v2.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "nemotron-3.5-lightning-free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "muse-spark-1.3-contributor-free", label: "Muse Spark 1.3 Contributor (free)", name: "muse-spark-1.3-contributor", apiFormat: "responses", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
         ],
         embeddingModels: [],
     },
@@ -163,7 +165,7 @@ export const PROVIDERS: ProviderConfig[] = [
         apiKeyEnv: "TOKENROUTER_API_KEY",
         unavailableReason: "No usable free endpoint for the configured key (checked 23/09/2026).",
         chatModels: [
-            { id: "moonshotai/kimi-k3-free", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
+            { free: true, id: "moonshotai/kimi-k3-free", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [],
     },
@@ -417,13 +419,13 @@ export function resolveChatModelByName(name: string): ResolvedChat | null {
     return aliases.length === 1 ? aliases[0] : null;
 }
 
-export function availableChatModels(): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
+export function availableChatModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
     return PROVIDERS
         .filter((p) => isProviderAvailable(p) && p.chatModels.length > 0)
         .map((p) => ({
             provider: p.label,
             providerId: p.id,
-            models: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => ({ name: m.name, label: m.label })),
+            models: p.chatModels.filter((m) => !chatModelUnavailableReason(m) && (!freeOnly || m.free === true)).map((m) => ({ name: m.name, label: m.label })),
         })).filter((p) => p.models.length > 0);
 }
 
@@ -459,13 +461,13 @@ export function resolveEmbeddingByName(providerArg: string, modelArg: string): R
     return model ? { provider, model } : null;
 }
 
-export function availableEmbeddingModels(): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
+export function availableEmbeddingModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
     return PROVIDERS
         .filter((p) => isProviderAvailable(p) && p.embeddingModels.length > 0)
         .map((p) => ({
             provider: p.label,
             providerId: p.id,
-            models: p.embeddingModels.map((m) => ({ name: m.name, label: m.label })),
+            models: p.embeddingModels.filter((m) => !freeOnly || m.free === true).map((m) => ({ name: m.name, label: m.label })),
         }));
 }
 
@@ -498,6 +500,7 @@ export function listProvidersPublic() {
         chatModels: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,
             label: m.label,
+            free: m.free === true,
             supportsTools: m.supportsTools,
             supportsVision: m.supportsVision,
             supportsThinking: m.supportsThinking,
@@ -509,11 +512,13 @@ export function listProvidersPublic() {
         unavailableChatModels: p.chatModels.filter((m) => chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,
             label: m.label,
+            free: m.free === true,
             reason: chatModelUnavailableReason(m)!,
         })),
         embeddingModels: p.embeddingModels.map((m) => ({
             id: m.id,
             label: m.label,
+            free: m.free === true,
             dimension: m.dimension,
             meta: getModelMeta(m.id),
         })),

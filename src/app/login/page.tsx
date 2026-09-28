@@ -1,5 +1,6 @@
 "use client";
 
+import ui from "./login.module.css";
 import { useState } from "react";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { Bot, KeyRound, Lock, Loader2, ShieldCheck } from "lucide-react";
@@ -9,13 +10,14 @@ export default function LoginPage() {
   const [totp, setTotp] = useState("");
   const [needsTotp, setNeedsTotp] = useState(false);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [pending, setPending] = useState<"password" | "passkey" | "totp" | null>(null);
+  const loading = pending !== null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!password.trim() || loading) return;
 
-    setLoading(true);
+    setPending("password");
     setError("");
 
     try {
@@ -37,59 +39,67 @@ export default function LoginPage() {
     } catch {
       setError("Something went wrong. Try again.");
     } finally {
-      setLoading(false);
+      setPending(null);
     }
   };
 
   const handlePasskey = async () => {
     if (loading) return;
-    setLoading(true); setError("");
+    setPending("passkey"); setError("");
     try {
       const optionsRes = await fetch("/api/auth/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "authentication-options" }) });
       const options = await optionsRes.json();
-      if (!optionsRes.ok) throw new Error(options.error);
+      if (!optionsRes.ok) throw new Error(options.error || "Could not start passkey sign-in. Please try again.");
       const response = await startAuthentication({ optionsJSON: options });
       const verifyRes = await fetch("/api/auth/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "authentication-verify", response }) });
       const verified = await verifyRes.json();
-      if (!verifyRes.ok) throw new Error(verified.error);
+      if (!verifyRes.ok) throw new Error(verified.error || "Passkey verification failed. Please try again.");
       window.location.href = "/";
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey sign-in was cancelled or failed.");
-    } finally { setLoading(false); }
+    } finally { setPending(null); }
   };
 
   const handleTotp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!/^\d{6}$/.test(totp) || loading) return;
-    setLoading(true); setError("");
+    setPending("totp"); setError("");
     try {
       const res = await fetch("/api/auth/totp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "recover", code: totp }) });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error || "Could not verify the authenticator code. Please retry.");
       window.location.href = "/";
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not verify authenticator code.");
-    } finally { setLoading(false); }
+    } finally { setPending(null); }
   };
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card} className="animate-fade-in">
+    <main style={styles.page}>
+      <div style={styles.card} className={ui.card}>
         <div style={styles.iconWrap}>
           <Bot size={28} color="var(--color-primary-foreground)" />
         </div>
 
         <h1 style={styles.title}>Zuychin Assistant</h1>
-        <p style={styles.subtitle}>{needsTotp ? "Enter the code from your authenticator app" : "Sign in with a passkey or recovery password"}</p>
+        <p id="login-hint" style={styles.subtitle}>{needsTotp ? "Enter the code from your authenticator app" : "Sign in with a passkey or recovery password"}</p>
 
-        {!needsTotp && <button type="button" onClick={handlePasskey} disabled={loading} style={{ ...styles.button, marginBottom: 12, opacity: loading ? 0.5 : 1 }}>{loading ? <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> : <><KeyRound size={18} /> <span>Sign in with passkey</span></>}</button>}
-        <form onSubmit={needsTotp ? handleTotp : handleSubmit} style={styles.form}>
-          <div style={styles.inputWrap}>
+        {!needsTotp && <button type="button" onClick={handlePasskey} disabled={loading} style={{ ...styles.button, marginBottom: 12, opacity: loading ? 0.5 : 1 }}>{pending === "passkey" ? <Loader2 size={18} aria-hidden style={{ animation: "spin 1s linear infinite" }} /> : <KeyRound size={18} aria-hidden />} <span>{pending === "passkey" ? "Waiting for passkey…" : "Sign in with passkey"}</span></button>}
+        <form onSubmit={needsTotp ? handleTotp : handleSubmit} style={styles.form} aria-busy={loading}>
+          <label htmlFor="login-credential" style={{ fontSize: 14, fontWeight: 600, textAlign: "left" }}>{needsTotp ? "Authenticator code" : "Recovery password"}</label>
+          <div style={styles.inputWrap} className={ui.field}>
             {needsTotp ? <ShieldCheck size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} /> : <Lock size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} />}
             <input
+              key={needsTotp ? "totp" : "password"}
+              id="login-credential"
+              aria-describedby={error ? "login-hint login-error" : "login-hint"}
+              aria-invalid={!!error}
+              disabled={loading}
               type={needsTotp ? "text" : "password"}
               inputMode={needsTotp ? "numeric" : undefined}
               autoComplete={needsTotp ? "one-time-code" : "current-password"}
+              required
+              maxLength={needsTotp ? 6 : undefined}
               value={needsTotp ? totp : password}
               onChange={(e) => needsTotp ? setTotp(e.target.value.replace(/\D/g, "").slice(0, 6)) : setPassword(e.target.value)}
               placeholder={needsTotp ? "123456" : "Password"}
@@ -98,7 +108,7 @@ export default function LoginPage() {
             />
           </div>
 
-          {error && <p style={styles.error}>{error}</p>}
+          {error && <p id="login-error" role="alert" className={ui.error} style={styles.error}>{error}</p>}
 
           <button
             type="submit"
@@ -108,15 +118,16 @@ export default function LoginPage() {
               opacity: needsTotp ? (totp.length !== 6 || loading ? 0.5 : 1) : (!password.trim() || loading ? 0.5 : 1),
             }}
           >
-            {loading ? (
-              <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} />
+            {pending === "password" || pending === "totp" ? (
+              <><Loader2 size={18} aria-hidden style={{ animation: "spin 1s linear infinite" }} /><span>{needsTotp ? "Verifying…" : "Signing in…"}</span></>
             ) : (
-              needsTotp ? "Verify code" : "Enter"
+              needsTotp ? "Verify code" : "Sign in with password"
             )}
           </button>
         </form>
+        {needsTotp && <button type="button" disabled={loading} onClick={() => { setNeedsTotp(false); setTotp(""); setError(""); }} style={{ ...styles.backButton }}>Back to sign-in methods</button>}
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -178,15 +189,17 @@ const styles: Record<string, React.CSSProperties> = {
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 15,
+    minWidth: 0,
+    fontSize: 16,
     fontFamily: "var(--font-family)",
     color: "var(--color-text-primary)",
   },
   error: {
     fontSize: 13,
-    color: "#e53e3e",
+    lineHeight: 1.5,
     textAlign: "center",
   },
+  backButton: { marginTop: 12, minHeight: 44, padding: "8px 12px", border: "none", background: "transparent", color: "var(--color-text-primary)", textDecoration: "underline", textUnderlineOffset: 4, font: "inherit", fontSize: 14, cursor: "pointer" },
   button: {
     width: "100%",
     padding: "12px 0",
@@ -201,6 +214,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    gap: 8,
+    minHeight: 44,
     transition: "opacity 0.15s ease",
   },
 };

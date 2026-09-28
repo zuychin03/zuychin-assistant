@@ -1,15 +1,18 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
 import {
     Archive, ArrowLeft, BookOpen, CheckCircle2, Clock3, Download,
     ExternalLink, FileText, GitBranch, History, Import, Loader2, Merge,
     RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, Wrench, XCircle,
 } from "lucide-react";
 import { MarkdownReader } from "./markdown-reader";
+import { RevisionHistory } from "./revision-history";
 import styles from "./knowledge.module.css";
 import { Dropdown } from "@/components/dropdown";
+import { WorkspaceNavigation } from "@/components/workspace-shell";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import { useDocumentDraft } from "../use-document-draft";
 import { documentDestination, readDocumentPosition, rememberDocumentLocation, rememberDocumentPosition, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
 
@@ -58,6 +61,9 @@ const percent = (value: number) => `${Math.round(value * 100)}%`;
 export default function KnowledgePage() {
     const [tab, setTab] = useState<Tab>("library");
     const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+    const [loadState, setLoadState] = useState<Record<"documents" | "timeline" | "suggestions", "loading" | "ready" | "error">>({ documents: "loading", timeline: "loading", suggestions: "loading" });
+    const documentListRequest = useRef(0);
+    const suggestionListRequest = useRef(0);
     const [detail, setDetail] = useState<DocumentDetail>();
     const [events, setEvents] = useState<KnowledgeEvent[]>([]);
     const [recall, setRecall] = useState<RecallResponse>();
@@ -67,12 +73,16 @@ export default function KnowledgePage() {
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
     const [editing, setEditing] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
     const [documentId, setDocumentId] = useState<string | null>(null);
+    const [documentError, setDocumentError] = useState("");
+    const [documentRetry, setDocumentRetry] = useState(0);
     const [requestedPath, setRequestedPath] = useState<string | null>(null);
     const [urlReady, setUrlReady] = useState(false);
     const [currentUrl, setCurrentUrl] = useState("/knowledge");
     const [returnTo, setReturnTo] = useState<string | null>(null);
     const [sectionId, setSectionId] = useState<string | null>(null);
+    const [chunkId, setChunkId] = useState<string | null>(null);
     const [mobileReader, setMobileReader] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
     const readerRef = useRef<HTMLDivElement>(null);
@@ -89,6 +99,15 @@ export default function KnowledgePage() {
     const [mergeSuggestion, setMergeSuggestion] = useState<Suggestion>();
     const [mergeTarget, setMergeTarget] = useState("");
     const [mergeMarkdown, setMergeMarkdown] = useState("");
+    const [mergeBase, setMergeBase] = useState("");
+    const [mergePending, setMergePending] = useState<"preview" | "apply" | null>(null);
+    const mergePendingRef = useRef(false);
+    const mergeHeadingRef = useRef<HTMLHeadingElement>(null);
+    const mergeReviewRef = useRef<HTMLDivElement>(null);
+    const mergeTriggerRef = useRef<HTMLButtonElement | null>(null);
+    const mergeFocusRequested = useRef(false);
+    const mergeDirty = Boolean(mergeSuggestion) && mergeMarkdown !== mergeBase;
+    useUnsavedChanges(() => mergeDirty || mergePending === "apply" || (draft.dirty && !draft.persisted));
     const fileInput = useRef<HTMLInputElement>(null);
     const obsidianVault = process.env.NEXT_PUBLIC_OBSIDIAN_VAULT_NAME;
 
@@ -103,6 +122,7 @@ export default function KnowledgePage() {
             setDocumentId(params.get("document")); setRequestedPath(params.get("path"));
             setReturnTo(safeReturnTo(params.get("returnTo")));
             setSectionId(params.get("section"));
+            setChunkId(params.get("chunk"));
             setMobileReader(params.get("view") !== "pages" && Boolean(params.get("document") || params.get("path")));
             setUrlReady(true);
         };
@@ -120,12 +140,13 @@ export default function KnowledgePage() {
         const path = detail?.document.id === documentId ? detail.document.path : requestedPath;
         if (path) params.set("path", path);
         if (sectionId) params.set("section", sectionId);
+        if (chunkId) params.set("chunk", chunkId);
         if (documentId && !mobileReader) params.set("view", "pages");
         if (returnTo) params.set("returnTo", returnTo);
         const url = `/knowledge${params.size ? `?${params}` : ""}`;
         window.history.replaceState(window.history.state, "", url);
         rememberDocumentLocation(url); setCurrentUrl(url);
-    }, [urlReady, tab, filter, status, documentId, detail, requestedPath, returnTo, mobileReader, sectionId]);
+    }, [urlReady, tab, filter, status, documentId, detail, requestedPath, returnTo, mobileReader, sectionId, chunkId]);
 
     useEffect(() => {
         if (!requestedPath || documentId) return;
@@ -134,29 +155,63 @@ export default function KnowledgePage() {
     }, [requestedPath, documentId, documents]);
 
     const loadDocuments = useCallback(async () => {
-        const response = await fetch(`/api/knowledge/documents?status=${encodeURIComponent(status)}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Failed to load documents.");
-        setDocuments(payload.documents ?? []);
+        const request = ++documentListRequest.current;
+        setLoadState((current) => ({ ...current, documents: "loading" }));
+        try {
+            const response = await fetch(`/api/knowledge/documents?status=${encodeURIComponent(status)}`);
+            const payload = await response.json();
+            if (request !== documentListRequest.current) return;
+            if (!response.ok) throw new Error(payload.error || "Failed to load documents.");
+            setDocuments(payload.documents ?? []);
+            setLoadState((current) => ({ ...current, documents: "ready" }));
+        } catch (reason) {
+            if (request !== documentListRequest.current) return;
+            setLoadState((current) => ({ ...current, documents: "error" }));
+            throw reason;
+        }
     }, [status]);
 
     const loadEvents = useCallback(async () => {
-        const response = await fetch("/api/knowledge/events");
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Failed to load timeline.");
-        setEvents(payload.events ?? []);
+        setLoadState((current) => ({ ...current, timeline: "loading" }));
+        try {
+            const response = await fetch("/api/knowledge/events");
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || "Failed to load timeline.");
+            setEvents(payload.events ?? []);
+            setLoadState((current) => ({ ...current, timeline: "ready" }));
+        } catch (reason) {
+            setLoadState((current) => ({ ...current, timeline: "error" }));
+            throw reason;
+        }
     }, []);
 
-
     const loadSuggestions = useCallback(async () => {
-        const response = await fetch("/api/knowledge/suggestions");
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Failed to load suggestions.");
-        setSuggestions(payload.suggestions ?? []);
+        const request = ++suggestionListRequest.current;
+        setLoadState((current) => ({ ...current, suggestions: "loading" }));
+        try {
+            const response = await fetch("/api/knowledge/suggestions");
+            const payload = await response.json();
+            if (request !== suggestionListRequest.current) return;
+            if (!response.ok) throw new Error(payload.error || "Failed to load suggestions.");
+            setSuggestions(payload.suggestions ?? []);
+            setLoadState((current) => ({ ...current, suggestions: "ready" }));
+        } catch (reason) {
+            if (request !== suggestionListRequest.current) return;
+            setLoadState((current) => ({ ...current, suggestions: "error" }));
+            throw reason;
+        }
     }, []);
     useEffect(() => { loadDocuments().catch((reason) => setError(String(reason.message ?? reason))); }, [loadDocuments]);
     useEffect(() => { if (tab === "timeline") loadEvents().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadEvents]);
     useEffect(() => { if (tab === "maintenance") loadSuggestions().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadSuggestions]);
+
+    useEffect(() => {
+        const heading = mergeHeadingRef.current;
+        if (tab !== "maintenance" || !mergeFocusRequested.current || !heading) return;
+        mergeFocusRequested.current = false;
+        heading.focus({ preventScroll: true });
+        mergeReviewRef.current?.scrollIntoView({ block: "start" });
+    }, [mergeSuggestion, tab]);
 
     async function fetchDocument(id: string, signal?: AbortSignal): Promise<DocumentDetail> {
         const response = await fetch(`/api/knowledge/documents?id=${encodeURIComponent(id)}`, { signal });
@@ -166,22 +221,31 @@ export default function KnowledgePage() {
     }
 
     useEffect(() => {
-        if (!documentId) { setDetail(undefined); return; }
+        if (!documentId) { setDetail(undefined); setDocumentError(""); setBusy((current) => current === "document" ? "" : current); return; }
         const controller = new AbortController();
-        setBusy("document"); setError(""); setEditing(false);
+        setBusy("document"); setError(""); setDocumentError(""); setEditing(false);
         fetchDocument(documentId, controller.signal).then((payload) => {
             if (!controller.signal.aborted) setDetail(payload);
         }).catch((reason: unknown) => {
-            if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Failed to load document.");
+            if (!controller.signal.aborted) setDocumentError(reason instanceof Error ? reason.message : "Failed to load document.");
         }).finally(() => { if (!controller.signal.aborted) setBusy(""); });
         return () => controller.abort();
-    }, [documentId]);
+    }, [documentId, documentRetry]);
 
     useEffect(() => {
         if (!detail || detail.document.id !== documentId || tab !== "library") return;
         const frame = requestAnimationFrame(() => {
             if (readerRef.current) readerRef.current.scrollTop = readDocumentPosition(`library:${detail.document.path}`);
-            if (sectionId && readerRef.current) {
+            if (chunkId && readerRef.current) {
+                const excerpt = [...readerRef.current.querySelectorAll<HTMLElement>("[data-chunk-id]")]
+                    .find((element) => element.dataset.chunkId === chunkId);
+                if (excerpt) {
+                    const disclosure = excerpt.closest("details");
+                    if (disclosure) disclosure.open = true;
+                    readerRef.current.scrollTop += excerpt.getBoundingClientRect().top - readerRef.current.getBoundingClientRect().top - 16;
+                    excerpt.focus({ preventScroll: true });
+                } else titleRef.current?.focus({ preventScroll: true });
+            } else if (sectionId && readerRef.current) {
                 const heading = [...readerRef.current.querySelectorAll<HTMLElement>("[data-section-id]")]
                     .find((element) => element.dataset.sectionId === sectionId);
                 if (heading) {
@@ -190,12 +254,12 @@ export default function KnowledgePage() {
                 }
             }
             if (window.matchMedia("(max-width: 900px)").matches && mobileReader) {
-                if (!sectionId) titleRef.current?.focus({ preventScroll: true });
+                if (!sectionId && !chunkId) titleRef.current?.focus({ preventScroll: true });
                 readerRef.current?.scrollIntoView({ block: "start" });
             }
         });
         return () => cancelAnimationFrame(frame);
-    }, [detail, documentId, tab, mobileReader, sectionId]);
+    }, [detail, documentId, tab, mobileReader, sectionId, chunkId]);
 
     useEffect(() => {
         if (tab !== "library" || (mobileReader && window.matchMedia("(max-width: 900px)").matches)) return;
@@ -210,7 +274,7 @@ export default function KnowledgePage() {
         const params = new URLSearchParams(window.location.search);
         params.set("document", id); if (item) params.set("path", item.path);
         window.history.pushState(window.history.state, "", `/knowledge?${params}`);
-        setRequestedPath(item?.path ?? null); setDocumentId(id); setMobileReader(true); setSectionId(null);
+        setRequestedPath(item?.path ?? null); setDocumentId(id); setMobileReader(true); setSectionId(null); setChunkId(null);
     }
 
     function backToPages() {
@@ -323,7 +387,9 @@ export default function KnowledgePage() {
             });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || "Maintenance scan failed.");
+            suggestionListRequest.current++;
             setSuggestions(payload.suggestions ?? []);
+            setLoadState((current) => ({ ...current, suggestions: "ready" }));
         } catch (reason) { setError(reason instanceof Error ? reason.message : "Maintenance scan failed."); }
         finally { setBusy(""); }
     }
@@ -337,27 +403,43 @@ export default function KnowledgePage() {
             });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || "Could not dismiss suggestion.");
+            suggestionListRequest.current++;
             setSuggestions((items) => items.filter((item) => item.id !== id));
+            setLoadState((current) => ({ ...current, suggestions: "ready" }));
         } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not dismiss suggestion."); }
         finally { setBusy(""); }
     }
 
     async function prepareMerge(suggestion: Suggestion, targetId = suggestion.document_ids[0]) {
-        setBusy("merge-preview"); setError("");
+        if (mergePendingRef.current || !targetId) return;
+        if (mergeSuggestion?.id === suggestion.id && mergeTarget === targetId) return;
+        if (mergeDirty && !window.confirm("Discard your unsaved merged Markdown and load another target?")) return;
+        mergePendingRef.current = true;
+        setMergePending("preview"); setBusy("merge-preview"); setError("");
         try {
             const response = await fetch(`/api/knowledge/documents?id=${encodeURIComponent(targetId)}`);
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || "Could not load the merge target.");
-            setMergeSuggestion(suggestion); setMergeTarget(targetId); setMergeMarkdown(payload.markdown);
+            mergeFocusRequested.current = mergeSuggestion?.id !== suggestion.id;
+            setMergeSuggestion(suggestion); setMergeTarget(targetId); setMergeMarkdown(payload.markdown); setMergeBase(payload.markdown);
         } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load the merge target."); }
-        finally { setBusy(""); }
+        finally { mergePendingRef.current = false; setMergePending(null); setBusy(""); }
     }
 
+    function closeMerge() {
+        if (mergePendingRef.current) return;
+        if (mergeDirty && !window.confirm("Discard your unsaved merged Markdown and close this review?")) return;
+        setMergeSuggestion(undefined); setMergeTarget(""); setMergeMarkdown(""); setMergeBase("");
+        mergeFocusRequested.current = false;
+        mergeTriggerRef.current?.focus();
+    }
 
     async function applyMerge() {
-        if (!mergeSuggestion || !mergeTarget || !mergeMarkdown.trim()) return;
+        if (mergePendingRef.current || !mergeSuggestion || !mergeTarget || !mergeMarkdown.trim()) return;
         if (!window.confirm("Merge these pages and mark the source pages as superseded?")) return;
-        setBusy("merge-apply"); setError("");
+        mergePendingRef.current = true;
+        setMergePending("apply"); setBusy("merge-apply"); setError("");
+        let applied = false;
         try {
             const response = await fetch("/api/knowledge/suggestions", {
                 method: "POST", headers: { "Content-Type": "application/json" },
@@ -370,10 +452,11 @@ export default function KnowledgePage() {
             });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || "Merge failed.");
-            setMergeSuggestion(undefined); setMergeTarget(""); setMergeMarkdown("");
+            applied = true;
+            setMergeSuggestion(undefined); setMergeTarget(""); setMergeMarkdown(""); setMergeBase("");
             await Promise.all([loadSuggestions(), loadDocuments()]);
-        } catch (reason) { setError(reason instanceof Error ? reason.message : "Merge failed."); }
-        finally { setBusy(""); }
+        } catch (reason) { setError(applied ? "The merge was saved, but refresh failed. Reload the review queue before making another change." : reason instanceof Error ? reason.message : "Merge failed."); }
+        finally { mergePendingRef.current = false; setMergePending(null); setBusy(""); }
     }
 
     async function openSuggestionDocument(id: string) {
@@ -419,14 +502,17 @@ export default function KnowledgePage() {
                 <button onClick={() => fileInput.current?.click()} disabled={!!busy}><Upload size={15} /> Import</button>
                 <Link href={cosmosHref}><GitBranch size={15} /> {detail ? "Explore page" : "Cosmos"}</Link>
                 <input ref={fileInput} type="file" accept=".zip,application/zip" hidden onChange={(event) => {
-                    const file = event.target.files?.[0]; if (file) { setImportFile(file); uploadVault(file, true); }
+                    const file = event.target.files?.[0];
+                    if (file) { setImportFile(file); setImportPlan(undefined); setTab("maintenance"); void uploadVault(file, true); }
+                    event.target.value = "";
                 }} />
             </div>
         </header>
-        <nav className={styles.tabs}>{TABS.map(({ id, label, icon: Icon }) =>
+        <WorkspaceNavigation current="library" />
+        <nav className={styles.tabs} aria-label="Knowledge views">{TABS.map(({ id, label, icon: Icon }) =>
             <button key={id} className={tab === id ? styles.activeTab : ""} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}><Icon size={16} /> {label}</button>,
         )}</nav>
-        {error && <div className={styles.error}><XCircle size={16} /> {error}</div>}
+        {error && <div className={styles.error} role="alert"><XCircle size={16} /> {error}</div>}
 
         {tab === "library" && <section className={styles.library} data-reading={mobileReader}>
             <aside className={styles.sidebar}>
@@ -435,20 +521,21 @@ export default function KnowledgePage() {
                         ariaLabel="Status filter"
                         value={status}
                         onChange={setStatus}
-                        options={["active", "suggested", "archived", "superseded", "deleted", "all"]}
-                        style={{ flex: "0 0 auto", padding: "0 8px", height: 28, fontSize: 12, textTransform: "capitalize" }}
+                        options={["active", "suggested", "archived", "superseded", "deleted", "all"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))}
+                        style={{ flex: "0 0 auto", padding: "0 8px", minHeight: 44, fontSize: 12, textTransform: "capitalize" }}
                     />
                 </div>
-                <small className={styles.count}>{visibleDocuments.length} documents</small>
+                <small className={styles.count} role="status">{loadState.documents === "loading" ? "Loading pages…" : `${visibleDocuments.length} document${visibleDocuments.length === 1 ? "" : "s"}`}</small>
                 <div className={styles.documentList} ref={listRef}
                     onScroll={(event) => rememberDocumentPosition(`list:${status}:${filter}`, event.currentTarget.scrollTop)}>
-                    {!visibleDocuments.length && <div className={styles.emptyList}>
+                    {loadState.documents === "error" && <div className={styles.emptyList}><XCircle size={20} /><strong>Pages could not be loaded</strong><button onClick={() => { setError(""); void loadDocuments().catch((reason) => setError(String(reason.message ?? reason))); }}>Retry pages</button></div>}
+                    {loadState.documents === "ready" && !visibleDocuments.length && <div className={styles.emptyList}>
                         <BookOpen size={20} /><strong>{documents.length ? "No matching pages" : "No indexed pages yet"}</strong>
                         <p>{documents.length ? "Try another filter or status." : "Reconcile the workspace or import an Obsidian vault."}</p>
                         {!documents.length && <button onClick={() => syncVault()} disabled={!!busy}><RefreshCw size={13} /> Reconcile now</button>}
                     </div>}
-                    {visibleDocuments.map((item) =>
-                        <button key={item.id} data-document-id={item.id} className={documentId === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
+                    {loadState.documents !== "loading" && visibleDocuments.map((item) =>
+                        <button key={item.id} data-document-id={item.id} aria-current={documentId === item.id ? "true" : undefined} className={documentId === item.id ? styles.selected : ""} onClick={() => selectDocument(item.id)}>
                             <FileText size={15} /><span><strong>{item.title}</strong><small>{item.path}</small><em>{item.kind} / {item.scope}</em></span>
                         </button>,
                     )}
@@ -457,18 +544,20 @@ export default function KnowledgePage() {
             <div className={styles.detail} ref={readerRef}
                 onScroll={(event) => { if (detail) rememberDocumentPosition(`library:${detail.document.path}`, event.currentTarget.scrollTop); }}>
                 <button className={styles.backToPages} onClick={backToPages}><ArrowLeft size={16} /> Back to pages</button>
-                {busy === "document" && <div className={styles.blank}><Loader2 className={styles.spin} /> Loading page</div>}
-                {!detail && busy !== "document" && <div className={styles.blank}><BookOpen size={30} /><h2>{documents.length ? "Choose a page to read" : "Your knowledge library is empty"}</h2><p>{documents.length ? "Open a page to read its formatted Markdown and inspect its sources." : "Import your Obsidian vault or reconcile the workspace to begin."}</p></div>}
-                {detail && detail.document.id === documentId && <>
+                {busy === "document" && <div className={styles.blank} role="status"><Loader2 className={styles.spin} /> Loading page</div>}
+                {documentError && busy !== "document" && <div className={styles.blank} role="alert"><XCircle size={24} /><h2>Page could not be loaded</h2><p>{documentError}</p><div className={styles.actions}><button onClick={() => setDocumentRetry((value) => value + 1)}>Try again</button></div></div>}
+                {!documentId && !documentError && busy !== "document" && <div className={styles.blank}><BookOpen size={30} /><h2>{loadState.documents === "loading" ? "Loading your library…" : documents.length ? "Choose a page to read" : loadState.documents === "error" ? "Your library is unavailable" : "Your knowledge library is empty"}</h2><p>{loadState.documents === "loading" ? "Your pages will appear here shortly." : documents.length ? "Open a page to read its formatted Markdown and inspect its sources." : loadState.documents === "error" ? "Retry loading your pages from the list." : "Import your Obsidian vault or reconcile the workspace to begin."}</p></div>}
+                {detail && detail.document.id === documentId && busy !== "document" && !documentError && <>
                     <div className={styles.detailHeader}><div><div className={styles.badges}>
                         {[detail.document.status, detail.document.kind, detail.document.trust, detail.document.sensitivity].map((value) => <span key={value}>{value}</span>)}
                     </div><h2 ref={titleRef} tabIndex={-1}>{detail.document.title}</h2><code>{detail.document.path}</code></div>
                     <div className={styles.actions}>
                         {obsidianHref && <a href={obsidianHref}><ExternalLink size={14} /> Obsidian</a>}
-                        <button onClick={() => setEditing((value) => !value)}><FileText size={14} /> {editing ? "Reader" : "Source"}</button>
+                        <button aria-pressed={editing} onClick={() => setEditing((value) => !value)}><FileText size={14} /> {editing ? "Reader" : "Source"}</button>
+                        <button aria-pressed={showHistory} onClick={() => setShowHistory((value) => !value)}><History size={14} /> History</button>
                         {detail.document.status === "active"
-                            ? <button onClick={() => lifecycle("archive")}><Archive size={14} /> Archive</button>
-                            : <button onClick={() => lifecycle("restore")}><RotateCcw size={14} /> Restore</button>}
+                            ? <button disabled={!!busy} onClick={() => lifecycle("archive")}><Archive size={14} /> Archive</button>
+                            : <button disabled={!!busy} onClick={() => lifecycle("restore")}><RotateCcw size={14} /> Restore</button>}
                     </div></div>
                     {draft.dirty && <div className={styles.draftStatus} role="status">
                         <span>{draft.conflict ? "The saved page changed. Copy your draft before discarding it to reopen the current page."
@@ -479,6 +568,12 @@ export default function KnowledgePage() {
                             if (window.confirm("Discard this document draft? The saved page will stay unchanged.") && !draft.discard()) setError("Could not clear the stored draft. Keep this tab open and try again.");
                         }}>Discard draft</button>
                     </div>}
+                    {showHistory && <RevisionHistory key={detail.document.id} documentId={detail.document.id} draftDirty={draft.dirty} onRestored={async () => {
+                        const id = detail.document.id;
+                        const refreshed = await fetchDocument(id);
+                        if (activeId.current === id) setDetail(refreshed);
+                        await loadDocuments();
+                    }} />}
                     {editing ? <div className={styles.editor}><textarea aria-label="Document Markdown" value={markdown} onChange={(event) => draft.change(event.target.value)} /><div>
                         <button className={styles.primary} onClick={() => lifecycle("correct")} disabled={!!busy || !draft.dirty || draft.conflict || !markdown.trim()}><CheckCircle2 size={15} /> {busy === "correct" ? "Saving…" : "Save correction"}</button>
                         <button onClick={() => lifecycle("promote")} disabled={!!busy}><Sparkles size={15} /> Promote</button>
@@ -486,9 +581,9 @@ export default function KnowledgePage() {
                     </div></div> : <div className={styles.markdown}>
                         <MarkdownReader markdown={detail.markdown} onVaultLink={openVaultReference} />
                     </div>}
-                    <div className={styles.metrics}><div><strong>{detail.chunks.length}</strong><span>chunks</span></div><div><strong>{detail.links.length}</strong><span>links</span></div><div><strong>{detail.document.scope}</strong><span>scope</span></div><div><strong>{new Date(detail.document.updated_at).toLocaleDateString()}</strong><span>indexed</span></div></div>
+                    <div className={styles.metrics}><div><strong>{detail.chunks.length}</strong><span>{detail.chunks.length === 1 ? "chunk" : "chunks"}</span></div><div><strong>{detail.links.length}</strong><span>{detail.links.length === 1 ? "link" : "links"}</span></div><div><strong>{detail.document.scope}</strong><span>scope</span></div><div><strong>{new Date(detail.document.updated_at).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}</strong><span>indexed</span></div></div>
                     <details className={styles.chunks}><summary>Indexed chunks</summary>{detail.chunks.map((chunk) =>
-                        <div key={chunk.id}><strong>{chunk.heading || "Document"}</strong><small>{chunk.token_count} tokens</small><p>{chunk.content}</p></div>,
+                        <div key={chunk.id} data-chunk-id={chunk.id} tabIndex={-1}><strong>{chunk.heading || "Document"}</strong><small>{chunk.token_count} tokens</small><p>{chunk.content}</p></div>,
                     )}</details>
                 </>}
             </div>
@@ -496,7 +591,7 @@ export default function KnowledgePage() {
 
         {tab === "recall" && <section className={styles.panel}>
             <div className={styles.intro}><span>Knowledge recall</span><h2>Ask your knowledge</h2><p>Get a readable answer grounded in your indexed Markdown, with sources you can inspect.</p></div>
-            <form className={styles.recallForm} onSubmit={runRecall}><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What does my knowledge base say about..." /><button className={styles.primary} disabled={busy === "recall"}>{busy === "recall" && <Loader2 className={styles.spin} size={14} />} Ask</button></form>
+            <form className={styles.recallForm} onSubmit={runRecall}><Search size={18} /><input aria-label="Ask your knowledge" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What does my knowledge base say about..." /><button className={styles.primary} disabled={!!busy || !query.trim()}>{busy === "recall" && <Loader2 className={styles.spin} size={14} />} Ask</button></form>
             {recall && <div className={styles.recallResults}>
                 <section className={styles.answerCard} data-supported={recall.grounded.supported}>
                     <header className={styles.answerHeader}>
@@ -521,24 +616,38 @@ export default function KnowledgePage() {
 
         {tab === "timeline" && <section className={styles.panel}>
             <div className={styles.intro}><span>Audit trail</span><h2>Knowledge timeline</h2><p>Corrections, promotions, merges, archives, imports, and indexing.</p></div>
-            <div className={styles.timeline}>{events.map((event) => <article key={event.id}><Clock3 size={15} /><div><strong>{event.action}</strong><p>{String(event.detail.path ?? event.document_id ?? "Knowledge record")}</p><small>{event.actor} / {new Date(event.occurred_at).toLocaleString()}</small></div></article>)}</div>
+            <div className={styles.timeline}>
+                {loadState.timeline === "loading" && <p role="status">Loading knowledge timeline…</p>}
+                {loadState.timeline === "error" && <button onClick={() => { setError(""); void loadEvents().catch((reason) => setError(String(reason.message ?? reason))); }}>Retry timeline</button>}
+                {loadState.timeline === "ready" && !events.length && <p>No knowledge activity yet. Your page changes will appear here.</p>}
+                {events.map((event) => <article key={event.id}><Clock3 size={15} /><div><strong>{event.action}</strong><p>{String(event.detail.path ?? event.document_id ?? "Knowledge record")}</p><small>{event.actor} / {new Date(event.occurred_at).toLocaleString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></div></article>)}</div>
         </section>}
 
         {tab === "maintenance" && <section className={styles.panel}>
             <div className={styles.intro}><span>Portability and health</span><h2>Vault maintenance</h2><p>Rebuild indexes safely and keep stable identity in Markdown.</p></div>
+            {busy === "inspect-import" && <p role="status">Inspecting the ZIP before import…</p>}
+            {importPlan && <div className={styles.importPlan}><strong>{importPlan.dryRun ? "Import preview" : "Import complete"}</strong>
+                <p>{importPlan.changed} changes / {importPlan.created} new / {importPlan.updated} updated / {importPlan.unchanged} unchanged.</p>
+                {!!importPlan.missingStableIds.length && <p>{importPlan.missingStableIds.length} files need stable IDs.</p>}
+                {importPlan.dryRun && importFile && <button className={styles.primary} disabled={!!busy} onClick={() => uploadVault(importFile, false)}><Upload size={15} /> Apply import</button>}
+                {importPlan.commit && <code>{importPlan.commit}</code>}
+            </div>}
             <div className={styles.maintenance}>
                 <article><Wrench /><h3>Governed curator</h3><p>Find duplicates, contradictions, stale episodes, broken links, orphans, and consolidation opportunities. Every result requires review.</p><button className={styles.primary} onClick={scanMaintenance} disabled={!!busy}>{busy === "maintenance" && <Loader2 className={styles.spin} size={15} />} Scan knowledge</button></article>
-                <article><RefreshCw /><h3>Complete reconciliation</h3><p>Hash every Markdown file and infer deletions only after a complete scan.</p><button onClick={() => syncVault()}>Run reconciliation</button></article>
-                <article><ShieldCheck /><h3>Stable identities</h3><p>Add missing <code>zuychin_id</code> properties in one Git commit.</p><button onClick={() => syncVault(true)}>Add missing IDs</button></article>
+                <article><RefreshCw /><h3>Complete reconciliation</h3><p>Hash every Markdown file and infer deletions only after a complete scan.</p><button disabled={!!busy} onClick={() => syncVault()}>Run reconciliation</button></article>
+                <article><ShieldCheck /><h3>Stable identities</h3><p>Add missing <code>zuychin_id</code> properties in one Git commit.</p><button disabled={!!busy} onClick={() => syncVault(true)}>Add missing IDs</button></article>
                 <article><Download /><h3>Obsidian export</h3><p>Download Markdown, attachments, settings, and checksums without conversion.</p><a href="/api/knowledge/export">Download ZIP</a></article>
-                <article><Import /><h3>Obsidian import</h3><p>Inspect first, then accept the dry-run plan before overwriting files.</p><button onClick={() => fileInput.current?.click()}>Choose ZIP</button></article>
+                <article><Import /><h3>Obsidian import</h3><p>Inspect first, then accept the dry-run plan before overwriting files.</p><button disabled={!!busy} onClick={() => fileInput.current?.click()}>Choose ZIP</button></article>
             </div>
             <div className={styles.suggestionHeader}>
                 <div><span className={styles.eyebrow}>Review queue</span><h3>{suggestions.length} open suggestions</h3></div>
                 <small>Assistant findings are advisory and never change the vault automatically.</small>
             </div>
             <div className={styles.suggestionList}>
-                {!suggestions.length && <div className={styles.emptySuggestions}><CheckCircle2 /><strong>No open findings</strong><p>Run a scan to refresh the queue.</p></div>}
+                {loadState.suggestions === "loading" && <p role="status">Loading review queue…</p>}
+                {mergePending === "preview" && !mergeSuggestion && <p role="status">Loading the merge review…</p>}
+                {loadState.suggestions === "error" && <button onClick={() => { setError(""); void loadSuggestions().catch((reason) => setError(String(reason.message ?? reason))); }}>Retry review queue</button>}
+                {loadState.suggestions === "ready" && !suggestions.length && <div className={styles.emptySuggestions}><CheckCircle2 /><strong>No open findings</strong><p>Run a scan to refresh the queue.</p></div>}
                 {suggestions.map((suggestion) => <article key={suggestion.id} data-severity={suggestion.severity}>
                     <header><div><span>{suggestion.kind.replace("_", " ")}</span><h3>{suggestion.title}</h3></div><strong>{percent(suggestion.confidence)}</strong></header>
                     <p>{suggestion.detail}</p>
@@ -550,34 +659,32 @@ export default function KnowledgePage() {
                     <footer>
                         <button onClick={() => openSuggestionDocument(suggestion.document_ids[0])}><FileText size={14} /> Open</button>
                         {["duplicate", "merge"].includes(suggestion.kind) && suggestion.document_ids.length > 1 &&
-                            <button className={styles.primary} onClick={() => prepareMerge(suggestion)}><Merge size={14} /> Review merge</button>}
-                        <button className={styles.danger} onClick={() => dismissSuggestion(suggestion.id)} disabled={busy === suggestion.id}><Trash2 size={14} /> Dismiss</button>
+                            <button className={styles.primary} disabled={!!busy || !!mergePending} onClick={(event) => { mergeTriggerRef.current = event.currentTarget; void prepareMerge(suggestion); }}><Merge size={14} /> Review merge</button>}
+                        <button className={styles.danger} onClick={() => dismissSuggestion(suggestion.id)} disabled={!!busy || !!mergePending}><Trash2 size={14} /> Dismiss</button>
                     </footer>
                 </article>)}
             </div>
 
-            {mergeSuggestion && <div className={styles.mergeReview}>
-                <header><div><span className={styles.eyebrow}>Human-approved consolidation</span><h3>Review merged Markdown</h3></div><button onClick={() => setMergeSuggestion(undefined)}><XCircle size={14} /> Close</button></header>
+            {mergeSuggestion && <div ref={mergeReviewRef} className={styles.mergeReview}>
+                <header><div><span className={styles.eyebrow}>Human-approved consolidation</span><h3 ref={mergeHeadingRef} tabIndex={-1}>Review merged Markdown</h3></div><button disabled={!!mergePending} onClick={closeMerge}><XCircle size={14} /> Close</button></header>
                 <label>Canonical page<Dropdown
                     ariaLabel="Canonical page"
+                    disabled={!!mergePending}
                     value={mergeTarget}
                     onChange={(id) => prepareMerge(mergeSuggestion, id)}
                     options={mergeSuggestion.document_ids.map((id) => ({
                         value: id, label: documents.find((item) => item.id === id)?.path ?? id,
                     }))}
-                    style={{ height: 36, padding: "0 9px" }}
+                    style={{ minHeight: 44, padding: "0 9px", flex: "0 1 auto" }}
                 /></label>
-                <textarea value={mergeMarkdown} onChange={(event) => setMergeMarkdown(event.target.value)} />
+                <textarea aria-label="Merged document Markdown" readOnly={!!mergePending} value={mergeMarkdown} onChange={(event) => setMergeMarkdown(event.target.value)} />
+                {mergePending && <p role="status">{mergePending === "apply" ? "Saving the reviewed merge…" : "Loading the selected target…"}</p>}
+                {mergeDirty && !mergePending && <p role="status">Unsaved merged Markdown. Review or copy your changes before leaving.</p>}
                 <p>Only the canonical page receives this content. Source pages remain in Git and are marked superseded.</p>
-                <button className={styles.primary} onClick={applyMerge} disabled={!!busy}><Merge size={15} /> Apply reviewed merge</button>
+                <button className={styles.primary} onClick={applyMerge} disabled={!!busy || !!mergePending || !mergeMarkdown.trim()}><Merge size={15} /> Apply reviewed merge</button>
             </div>}
 
-            {importPlan && <div className={styles.importPlan}><strong>{importPlan.dryRun ? "Import preview" : "Import complete"}</strong>
-                <p>{importPlan.changed} changes / {importPlan.created} new / {importPlan.updated} updated / {importPlan.unchanged} unchanged.</p>
-                {!!importPlan.missingStableIds.length && <p>{importPlan.missingStableIds.length} files need stable IDs.</p>}
-                {importPlan.dryRun && importFile && <button className={styles.primary} onClick={() => uploadVault(importFile, false)}><Upload size={15} /> Apply import</button>}
-                {importPlan.commit && <code>{importPlan.commit}</code>}
-            </div>}
+
         </section>}
     </main>;
 }

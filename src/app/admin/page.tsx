@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
+import ui from "./admin.module.css";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
@@ -9,6 +11,8 @@ import SecurityPanel from "./security-panel";
 import AgentsPanel from "./agents-panel";
 import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import NotificationsPanel from "./notifications-panel";
+import ModelHealthPanel from "./model-health-panel";
+import { clearOfflinePrivateData } from "@/lib/offline/storage";
 import { Masonry } from "./masonry";
 import {
     Activity, Bot, Brain, CheckCircle2, Clock, Database, FileText,
@@ -67,11 +71,20 @@ interface VaultHealth {
 }
 
 export default function DashboardPage() {
+    const [loadError, setLoadError] = useState("");
     const [stats, setStats] = useState<BotStats | null>(null);
     const [providers, setProviders] = useState<ProviderInfo[]>([]);
     const [vaultHealth, setVaultHealth] = useState<VaultHealth | null>(null);
     const [systemPrompt, setSystemPrompt] = useState("");
+    const [savedPrompt, setSavedPrompt] = useState("");
+    const promptLoaded = useRef(false);
+    const [memoriesDirty, setMemoriesDirty] = useState(false);
+    const [skillsDirty, setSkillsDirty] = useState(false);
+    const hasUnsavedChanges = memoriesDirty || skillsDirty || systemPrompt !== savedPrompt;
+    useUnsavedChanges(() => hasUnsavedChanges);
     const [saving, setSaving] = useState(false);
+    const [loggingOut, setLoggingOut] = useState(false);
+    const [logoutError, setLogoutError] = useState("");
     const [message, setMessage] = useState("");
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -93,9 +106,17 @@ export default function DashboardPage() {
                 fetch("/api/vault/health").catch(() => null),
             ]);
 
+            if (!statusRes.ok) throw new Error();
             const statusData = await statusRes.json();
+            if (!statusData.stats) throw new Error();
+            setLoadError("");
             setStats(statusData);
-            setSystemPrompt((current) => current || statusData.profile?.systemPrompt || "");
+            if (!promptLoaded.current) {
+                promptLoaded.current = true;
+                const initialPrompt = statusData.profile?.systemPrompt || "";
+                setSystemPrompt(initialPrompt);
+                setSavedPrompt(initialPrompt);
+            }
 
             if (providersRes.ok) {
                 const providerData = (await providersRes.json()) as ProvidersPayload;
@@ -107,7 +128,7 @@ export default function DashboardPage() {
                 setVaultHealth(health);
             }
         } catch {
-            setMessage("Failed to load stats.");
+            setLoadError("Could not refresh dashboard status. Use Refresh to retry. Previously loaded data is shown where available.");
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -118,8 +139,25 @@ export default function DashboardPage() {
         fetchStats();
     }, [fetchStats]);
 
+    useEffect(() => {
+        if (loading) return;
+        const revealFragment = () => {
+            const id = window.location.hash.slice(1);
+            if (!["model-health", "security", "agents"].includes(id)) return;
+            const section = document.getElementById(id);
+            if (!section) return;
+            section.setAttribute("tabindex", "-1");
+            section.focus({ preventScroll: true });
+            section.scrollIntoView({ block: "start", behavior: "auto" });
+        };
+        revealFragment();
+        window.addEventListener("hashchange", revealFragment);
+        return () => window.removeEventListener("hashchange", revealFragment);
+    }, [loading]);
+
     const handleSavePrompt = async () => {
-        if (!systemPrompt.trim()) return;
+        if (!systemPrompt.trim() || saving) return;
+        const submittedPrompt = systemPrompt;
         setSaving(true);
         setMessage("");
 
@@ -127,11 +165,12 @@ export default function DashboardPage() {
             const res = await fetch("/api/admin/personality", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ systemPrompt }),
+                body: JSON.stringify({ systemPrompt: submittedPrompt }),
             });
             const data = await res.json();
 
             if (res.ok) {
+                setSavedPrompt(submittedPrompt);
                 setMessage("Personality updated.");
                 fetchStats();
             } else {
@@ -145,8 +184,17 @@ export default function DashboardPage() {
     };
 
     const handleLogout = async () => {
-        await fetch("/api/auth", { method: "DELETE" }).catch(() => undefined);
-        window.location.assign("/login");
+        if (loggingOut) return;
+        setLoggingOut(true); setLogoutError("");
+        try {
+            await clearOfflinePrivateData();
+            const response = await fetch("/api/auth", { method: "DELETE" });
+            if (!response.ok) throw new Error("Sign-out was not confirmed. Please try again.");
+            window.location.assign("/login");
+        } catch (error) {
+            setLogoutError(error instanceof Error ? error.message : "Could not clear offline data and sign out. Please try again.");
+            setLoggingOut(false);
+        }
     };
 
     const formatUptime = (seconds: number) => {
@@ -157,7 +205,7 @@ export default function DashboardPage() {
 
     const formatDate = (dateStr: string | null) => {
         if (!dateStr) return "No activity yet";
-        return new Date(dateStr).toLocaleString();
+        return new Date(dateStr).toLocaleString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
     };
 
     const availableProviders = providers.filter((p) => p.available);
@@ -168,7 +216,7 @@ export default function DashboardPage() {
 
     if (loading) {
         return (
-            <div style={styles.shell}>
+            <div style={styles.shell} className={ui.dashboard}>
                 <div style={styles.loadingCard}>
                     <RefreshCw size={22} className="animate-spin" />
                     <span>Loading admin dashboard...</span>
@@ -178,7 +226,7 @@ export default function DashboardPage() {
     }
 
     return (
-        <div style={styles.shell}>
+        <div style={styles.shell} className={ui.dashboard}>
             <div style={styles.ambientOne} />
             <div style={styles.ambientTwo} />
 
@@ -198,12 +246,14 @@ export default function DashboardPage() {
                         <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} />
                         Refresh
                     </button>
-                    <button style={styles.refreshButton} onClick={() => void handleLogout()}>
+                    <button style={styles.refreshButton} onClick={() => void handleLogout()} disabled={loggingOut}>
                         <LogOut size={14} />
-                        Log out
+                        {loggingOut ? "Signing out…" : "Log out"}
                     </button>
                 </div>
             </header>
+            {loadError && <p role="alert" style={{ padding: 16, lineHeight: 1.5 }}>{loadError}</p>}
+            {logoutError && <p role="alert" style={{ padding: 16, color: "var(--color-text-primary)" }}>{logoutError}</p>}
 
             <section style={{ ...styles.hero, ...(isNarrow ? styles.heroNarrow : {}) }}>
                 <div style={styles.heroMain}>
@@ -219,6 +269,10 @@ export default function DashboardPage() {
                 <div style={{ ...styles.quickActions, ...(isNarrow ? { justifyContent: "flex-start" } : {}) }}>
                     <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
                     <Link href="/knowledge" style={styles.quickLink}><Brain size={15} /> Knowledge</Link>
+                    <Link href="/tasks" style={styles.quickLink}><Clock size={15} /> Scheduled tasks</Link>
+                    <Link href="/research" style={styles.quickLink}><FileText size={15} /> Research</Link>
+                    <Link href="/study" style={styles.quickLink}><Brain size={15} /> Study</Link>
+                    <Link href="/capture" style={styles.quickLink}><Save size={15} /> Capture & offline</Link>
                     <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
                     <a href="#security" style={styles.quickLink}><ShieldCheck size={15} /> Security</a>
                     <a href="/api/vault/health" style={styles.quickLink}><ShieldCheck size={15} /> Vault health</a>
@@ -234,6 +288,10 @@ export default function DashboardPage() {
                 <MetricCard icon={<GitBranch size={18} />} label="Vault Pages" value={stats?.stats.totalVaultPages ?? 0} note={vaultHealth?.ok ? "Vault connected" : "Check vault setup"} />
                 <MetricCard icon={<CheckCircle2 size={18} />} label="Pending Notes" value={stats?.stats.pendingTodos ?? 0} note={`${stats?.stats.totalTodos ?? 0} total checklist items`} />
             </div>
+
+            <section style={{ ...styles.panel, marginBottom: 16 }} id="model-health">
+                <ModelHealthPanel />
+            </section>
 
             <Masonry minColumnWidth={300} gap={16}>
                 <section style={styles.panel}>
@@ -273,7 +331,7 @@ export default function DashboardPage() {
                     <div style={styles.integrationGrid}>
                         {Object.entries(stats?.integrations ?? {}).map(([name, enabled]) => (
                             <div key={name} style={styles.integrationItem}>
-                                <span style={{ ...styles.dot, background: enabled ? "#31d07f" : "#5f6368" }} />
+                                <span style={{ ...styles.dot, background: enabled ? "var(--admin-success)" : "#5f6368" }} />
                                 <span style={styles.integrationName}>{name}</span>
                                 <span style={enabled ? styles.integrationOn : styles.integrationOff}>{enabled ? "on" : "off"}</span>
                             </div>
@@ -338,11 +396,11 @@ export default function DashboardPage() {
                 </section>
 
                 <section style={styles.panel}>
-                    <MemoriesPanel />
+                    <MemoriesPanel onDirtyChange={setMemoriesDirty} />
                 </section>
 
                 <section style={styles.panel}>
-                    <SkillsPanel />
+                    <SkillsPanel onDirtyChange={setSkillsDirty} />
                 </section>
             </Masonry>
 
@@ -352,6 +410,8 @@ export default function DashboardPage() {
                     <span style={styles.charCount}>{systemPrompt.length}/5000</span>
                 </div>
                 <textarea
+                    aria-label="Assistant personality system prompt"
+                    maxLength={5000}
                     style={styles.textarea}
                     value={systemPrompt}
                     onChange={(e) => setSystemPrompt(e.target.value)}
@@ -365,12 +425,12 @@ export default function DashboardPage() {
                             opacity: saving ? 0.6 : 1,
                         }}
                         onClick={handleSavePrompt}
-                        disabled={saving}
+                        disabled={saving || !systemPrompt.trim()}
                     >
                         {saving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
                         {saving ? "Saving..." : "Save Personality"}
                     </button>
-                    {message && <span style={styles.message}>{message}</span>}
+                    {message && <span role="status" style={styles.message}>{message}</span>}
                 </div>
             </section>
         </div>
@@ -434,7 +494,7 @@ const styles: Record<string, React.CSSProperties> = {
         padding: "36px 24px 56px",
         fontFamily: "var(--font-family)",
         color: "var(--color-text-primary)",
-        background: "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 30%), radial-gradient(circle at 95% 20%, color-mix(in srgb, #7aa2ff 13%, transparent), transparent 28%), var(--color-background)",
+        background: "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 30%), radial-gradient(circle at 95% 20%, color-mix(in srgb, var(--admin-info) 13%, transparent), transparent 28%), var(--color-background)",
     },
     ambientOne: {
         position: "fixed",
@@ -454,7 +514,7 @@ const styles: Record<string, React.CSSProperties> = {
         right: -160,
         top: 80,
         borderRadius: "50%",
-        background: "color-mix(in srgb, #7aa2ff 14%, transparent)",
+        background: "color-mix(in srgb, var(--admin-info) 14%, transparent)",
         filter: "blur(95px)",
         pointerEvents: "none",
     },
@@ -507,13 +567,13 @@ const styles: Record<string, React.CSSProperties> = {
         fontSize: 12.5,
         fontWeight: 750,
     },
-    statusGood: { color: "#31d07f", background: "color-mix(in srgb, #31d07f 13%, transparent)", border: "1px solid color-mix(in srgb, #31d07f 28%, transparent)" },
-    statusBad: { color: "#ff6b5a", background: "color-mix(in srgb, #ff6b5a 12%, transparent)", border: "1px solid color-mix(in srgb, #ff6b5a 28%, transparent)" },
+    statusGood: { color: "var(--admin-success)", background: "color-mix(in srgb, var(--admin-success) 13%, transparent)", border: "1px solid color-mix(in srgb, var(--admin-success) 28%, transparent)" },
+    statusBad: { color: "var(--admin-danger)", background: "color-mix(in srgb, var(--admin-danger) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--admin-danger) 28%, transparent)" },
     hero: {
         position: "relative",
         zIndex: 1,
         display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) auto",
+        gridTemplateColumns: "minmax(240px, .8fr) minmax(0, 1.2fr)",
         gap: 18,
         alignItems: "center",
         padding: 20,
@@ -659,7 +719,7 @@ const styles: Record<string, React.CSSProperties> = {
         fontWeight: 750,
         whiteSpace: "nowrap",
     },
-    pillGood: { color: "#31d07f", background: "color-mix(in srgb, #31d07f 12%, transparent)" },
+    pillGood: { color: "var(--admin-success)", background: "color-mix(in srgb, var(--admin-success) 12%, transparent)" },
     pillMuted: { color: "var(--color-text-muted)", background: "color-mix(in srgb, var(--color-background) 55%, transparent)" },
     integrationGrid: {
         display: "grid",
@@ -678,7 +738,7 @@ const styles: Record<string, React.CSSProperties> = {
     },
     dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
     integrationName: { flex: 1, fontSize: 12.5, textTransform: "capitalize" },
-    integrationOn: { color: "#31d07f", fontSize: 11.5, fontWeight: 750 },
+    integrationOn: { color: "var(--admin-success)", fontSize: 11.5, fontWeight: 750 },
     integrationOff: { color: "var(--color-text-muted)", fontSize: 11.5, fontWeight: 750 },
     vaultBox: {
         padding: 12,
@@ -699,7 +759,7 @@ const styles: Record<string, React.CSSProperties> = {
     channelName: { fontSize: 12.5, fontWeight: 750, textTransform: "capitalize" },
     channelCount: { fontSize: 12, color: "var(--color-text-muted)" },
     barTrack: { height: 8, borderRadius: 999, background: "color-mix(in srgb, var(--color-background) 70%, transparent)", overflow: "hidden" },
-    barFill: { height: "100%", borderRadius: 999, background: "linear-gradient(90deg, var(--color-secondary), #7aa2ff)" },
+    barFill: { height: "100%", borderRadius: 999, background: "linear-gradient(90deg, var(--color-secondary), var(--admin-info))" },
     emptyText: { color: "var(--color-text-muted)", fontSize: 13, padding: 12 },
     capabilityList: { display: "flex", flexDirection: "column", gap: 12 },
     capabilityRow: { display: "grid", gridTemplateColumns: "74px 1fr", gap: 10, alignItems: "start" },

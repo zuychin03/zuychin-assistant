@@ -1,5 +1,20 @@
-// Push-only updates can activate immediately because no page assets are cached.
-self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
+const OFFLINE_CACHE = "zuychin-offline-shell-v2";
+const OFFLINE_ASSETS = ["/offline.html", "/offline-reader.js", "/offline-reader.css"];
+self.addEventListener("install", (event) => event.waitUntil(
+    caches.open(OFFLINE_CACHE).then(cache => cache.addAll(OFFLINE_ASSETS)).then(() => self.skipWaiting())
+));
+self.addEventListener("activate", (event) => event.waitUntil(
+    caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith("zuychin-offline-shell-") && key !== OFFLINE_CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())
+));
+self.addEventListener("fetch", (event) => {
+    const url = new URL(event.request.url);
+    if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
+    if (OFFLINE_ASSETS.includes(url.pathname)) {
+        event.respondWith(fetch(event.request).catch(() => caches.match(url.pathname)));
+    } else if (event.request.mode === "navigate" && url.pathname === "/capture") {
+        event.respondWith(fetch(event.request).catch(() => caches.match("/offline.html")));
+    }
+});
 
 self.addEventListener("push", (event) => {
     let data = {};

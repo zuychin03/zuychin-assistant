@@ -1,8 +1,9 @@
 import { MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
-import { ThinkingLevel, type GoogleGenAI } from "@google/genai";
+import { ThinkingLevel } from "@google/genai";
 import { READ_ONLY_TOOLS, type GeminiToolDeclarations } from "@/lib/ai/mcp-service";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
+import { observeGeminiClient, withModelPurpose, type ModelCallPurpose, type ObservedGeminiClient } from "@/lib/ai/model-observations";
 
 export interface LoopUsage {
     promptTokens: number;
@@ -17,6 +18,8 @@ export interface LoopUsage {
 export type LoopStopReason = "complete" | "budget_exhausted";
 
 export interface GeminiLoopOpts {
+    providerId?: string;
+    purpose?: ModelCallPurpose;
     model?: string;
     /** Key of the provider the model came from; absent means the default. */
     apiKey?: string;
@@ -59,7 +62,7 @@ function summarizeText(contents: any[]): string {
 // context grows past the threshold. contents is [task, (model, fnResponse)*],
 // so cutting a multiple of 2 from the end keeps functionCall/functionResponse
 // pairs intact - never separate them or the API rejects the transcript.
-async function compactContents(client: GoogleGenAI, contents: any[], model: string): Promise<any[]> {
+async function compactContents(client: ObservedGeminiClient, contents: any[], model: string, signal?: AbortSignal): Promise<any[]> {
     const keepTail = AGENT_CONFIG.compactionKeepPairs * 2;
     if (contents.length < keepTail + 3) return contents;
 
@@ -68,7 +71,7 @@ async function compactContents(client: GoogleGenAI, contents: any[], model: stri
     const tail = contents.slice(contents.length - keepTail);
 
     const prompt = `Condense this agent work log into the key findings, decisions, tool results worth remembering, and remaining open items. Be thorough on facts, terse on narration.\n\n${summarizeText(middle).slice(0, 400_000)}`;
-    const summaryConfig = { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+    const summaryConfig = { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }, ...(signal ? { abortSignal: signal } : {}) };
 
     let condensed: string;
     try {
@@ -102,6 +105,7 @@ async function compactContents(client: GoogleGenAI, contents: any[], model: stri
             })).trim();
         }
     } catch (e) {
+        if (signal?.aborted) throw e;
         console.warn("[AgentLoop] Compaction summary failed, truncating instead:", e);
         condensed = "";
     }
@@ -131,7 +135,7 @@ export async function runGeminiLoop(
     opts: GeminiLoopOpts,
 ): Promise<{ text: string; usage: LoopUsage; stopReason: LoopStopReason }> {
     const model = opts.model ?? MODEL;
-    const client = geminiClient(opts.apiKey);
+    const client = observeGeminiClient(geminiClient(opts.apiKey), { providerId: opts.providerId ?? "gemini", purpose: opts.purpose ?? "chat" });
     let contents: any[] = [
         { role: "user", parts: [{ text: `${opts.systemPrompt}\n\n## Task\n${opts.userMessage}` }] },
     ];
@@ -196,7 +200,7 @@ export async function runGeminiLoop(
             lastPromptTokens > AGENT_CONFIG.compactionTokenThreshold ||
             JSON.stringify(contents).length > AGENT_CONFIG.compactionCharFallback
         ) {
-            contents = await compactContents(client, contents, model);
+            contents = await withModelPurpose("compaction", () => compactContents(client, contents, model, opts.signal));
             lastPromptTokens = 0;
         }
 
@@ -240,7 +244,7 @@ export async function runGeminiLoop(
                     { role: "model", parts: [{ text: soFar }] },
                     { role: "user", parts: [{ text: CONTINUE_PROMPT }] },
                 ];
-                const r = await client.models.generateContent({ model, contents: resumed, config: toolFreeConfig });
+                const r = await withModelPurpose("continuation", () => client.models.generateContent({ model, contents: resumed, config: toolFreeConfig }));
                 trackUsage(r);
                 return { text: r.text ?? "", truncated: cutShortAtMaxTokens(r.candidates?.[0]) };
             },

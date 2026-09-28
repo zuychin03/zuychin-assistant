@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { submitRunRequest } from "../src/app/tasks/run-request";
+
+const entries = new Map<string, string>();
+const storage = { getItem: (key: string) => entries.get(key) || null, setItem: (key: string, value: string) => { entries.set(key, value); }, removeItem: (key: string) => { entries.delete(key); } };
+const sent: { id: string; requestId: string }[] = [];
+const sender = (status: number, data: Record<string, unknown>) => async (body: { id: string; requestId: string }) => { sent.push(body); return { response: { ok: status >= 200 && status < 300, status }, data }; };
+await assert.rejects(submitRunRequest("task-a", storage, sender(503, { error: "Lost response" })), /Lost response/);
+const retained = entries.get("zuychin-task-run:task-a");
+assert.ok(retained);
+assert.equal(sent[0].requestId, retained);
+const reused = await submitRunRequest("task-a", storage, sender(200, { runId: "run-a", status: "reused" }));
+assert.deepEqual(reused, { runId: "run-a", status: "reused" });
+assert.equal(sent[1].requestId, retained);
+assert.equal(entries.has("zuychin-task-run:task-a"), false);
+assert.equal((await submitRunRequest("task-b", storage, sender(202, { runId: "run-b", status: "accepted" }))).status, "accepted");
+assert.equal((await submitRunRequest("task-b", storage, sender(409, { runId: "run-b", status: "active" }))).status, "active");
+assert.equal((await submitRunRequest("task-b", storage, sender(409, { runId: "run-b", status: "reused" }))).status, "reused");
+await assert.rejects(submitRunRequest("task-c", storage, sender(200, { status: "accepted" })), /not confirmed/);
+assert.ok(entries.has("zuychin-task-run:task-c"));
+await assert.rejects(submitRunRequest("task-d", storage, async () => { throw new Error("Network unavailable"); }), /Network unavailable/);
+assert.ok(entries.has("zuychin-task-run:task-d"));
+let contacted = false;
+await assert.rejects(submitRunRequest("task-e", { ...storage, setItem: () => { throw new Error("Blocked"); } }, async () => { contacted = true; return { response: { ok: true, status: 202 }, data: {} }; }), /session storage/);
+assert.equal(contacted, false);
+assert.equal((await submitRunRequest("task-f", { ...storage, removeItem: () => { throw new Error("Blocked"); } }, sender(202, { runId: "run-f", status: "accepted" }))).runId, "run-f");
+assert.ok(entries.has("zuychin-task-run:task-f"));
+console.log("Task run request: 17 assertions passed.");

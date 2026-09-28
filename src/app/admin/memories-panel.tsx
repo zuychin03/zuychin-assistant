@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Brain, Check, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { PROMOTE_EVIDENCE_COUNT } from "@/lib/types";
 import { Dropdown } from "@/components/dropdown";
+import { ConfirmModal } from "../home/controls";
 
 interface MemoryFact {
     id: string;
@@ -19,75 +20,89 @@ interface MemoryFact {
 const CATEGORIES = ["identity", "preference", "relationship", "project", "routine", "fact", "other"];
 
 async function loadMemories(): Promise<MemoryFact[]> {
-    try {
-        const res = await fetch("/api/admin/memories");
-        if (!res.ok) return [];
-        const data = await res.json();
-        return data.memories ?? [];
-    } catch {
-        return [];
-    }
+    const res = await fetch("/api/admin/memories");
+    if (!res.ok) throw new Error("Could not load memories. Please retry.");
+    const data = await res.json();
+    return data.memories ?? [];
 }
 
-export default function MemoriesPanel() {
+export default function MemoriesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
     const [memories, setMemories] = useState<MemoryFact[]>([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editText, setEditText] = useState("");
+    const [editOriginal, setEditOriginal] = useState("");
     const [newFact, setNewFact] = useState("");
     const [newCategory, setNewCategory] = useState("fact");
     const [adding, setAdding] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [forgetting, setForgetting] = useState<MemoryFact | null>(null);
 
     useEffect(() => {
         let cancelled = false;
         loadMemories().then((data) => {
             if (cancelled) return;
             setMemories(data);
-            setLoading(false);
-        });
+            setError("");
+        }).catch(() => { if (!cancelled) setError("Could not load memories. Use Refresh to retry."); })
+            .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
     }, []);
 
-    const refresh = () => {
+    const editDirty = editingId !== null && editText !== editOriginal;
+    useEffect(() => { onDirtyChange?.(editDirty || newFact.trim().length > 0); }, [editDirty, newFact, onDirtyChange]);
+    const discardEdit = () => !editDirty || window.confirm("Discard your unsaved memory edit?");
+    const refresh = (afterAdd = false) => {
+        if (!afterAdd && (loading || busy || adding || !discardEdit())) return;
+        if (!afterAdd) setEditingId(null);
         setLoading(true);
         loadMemories().then((data) => {
             setMemories(data);
-            setLoading(false);
-        });
+            setError("");
+        }).catch(() => setError("Could not load memories. Use Refresh to retry."))
+            .finally(() => setLoading(false));
     };
 
     const saveEdit = async (id: string) => {
         const fact = editText.trim();
-        if (!fact) return;
-        setEditingId(null);
-        setMemories((m) => m.map((f) => (f.id === id ? { ...f, fact } : f)));
-        await fetch("/api/admin/memories", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, fact }),
-        }).catch(() => { });
+        if (!fact || loading || busy || adding) return;
+        setBusy(true); setError("");
+        try {
+            const response = await fetch("/api/admin/memories", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, fact }) });
+            if (!response.ok) throw new Error();
+            setMemories((items) => items.map((item) => item.id === id ? { ...item, fact } : item));
+            setEditingId(null);
+        } catch { setError("Could not save this fact. Your edit is still here; please retry."); }
+        finally { setBusy(false); }
     };
 
     const remove = async (id: string) => {
-        setMemories((m) => m.filter((f) => f.id !== id));
-        await fetch(`/api/admin/memories?id=${id}`, { method: "DELETE" }).catch(() => { });
+        if (loading || busy || adding) return;
+        setBusy(true); setError("");
+        try {
+            const response = await fetch("/api/admin/memories?id=" + encodeURIComponent(id), { method: "DELETE" });
+            if (!response.ok) throw new Error();
+            setMemories((items) => items.filter((item) => item.id !== id));
+            if (editingId === id) setEditingId(null);
+        } catch { setError("Could not forget this fact. Please retry."); }
+        finally { setBusy(false); setForgetting(null); }
     };
 
     const add = async () => {
         const fact = newFact.trim();
-        if (!fact || adding) return;
-        setAdding(true);
+        if (!fact || loading || adding || busy) return;
+        setAdding(true); setError("");
         try {
             const res = await fetch("/api/admin/memories", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ fact, category: newCategory }),
             });
-            if (res.ok) {
-                setNewFact("");
-                refresh();
-            }
-        } catch { }
+            if (!res.ok) throw new Error();
+            setNewFact("");
+            refresh(true);
+        } catch { setError("Could not add this fact. Your text is still here; please retry."); }
         setAdding(false);
     };
 
@@ -99,7 +114,7 @@ export default function MemoriesPanel() {
                     <h2 style={panelStyles.title}>Long-Term Memory</h2>
                     <p style={panelStyles.description}>Extracted facts the assistant remembers across conversations</p>
                 </div>
-                <button style={panelStyles.iconBtn} onClick={refresh} title="Refresh memories">
+                <button style={panelStyles.iconBtn} onClick={() => refresh()} disabled={loading || busy || adding} title="Refresh memories">
                     <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
@@ -107,43 +122,50 @@ export default function MemoriesPanel() {
             <div style={panelStyles.addRow}>
                 <input
                     style={panelStyles.addInput}
+                    disabled={loading || adding || busy}
                     value={newFact}
                     onChange={(e) => setNewFact(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+                    aria-label="New memory fact"
                     placeholder="Add a fact to remember…"
                 />
                 <Dropdown
                     ariaLabel="Category"
                     style={panelStyles.categorySelect}
+                    disabled={loading || adding || busy}
                     value={newCategory}
                     onChange={setNewCategory}
                     options={CATEGORIES as readonly string[]}
                 />
-                <button style={panelStyles.iconBtn} onClick={add} disabled={adding} title="Save fact">
+                <button style={panelStyles.iconBtn} onClick={add} disabled={loading || adding || busy || !newFact.trim()} title="Save fact">
                     <Plus size={14} />
                 </button>
             </div>
 
+            {error && <p role="alert" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>{error}</p>}
+            {loading && <p role="status" style={panelStyles.muted}>Loading memories…</p>}
             <div style={panelStyles.list}>
                 {memories.map((m) => (
                     <div key={m.id} style={panelStyles.row}>
                         {editingId === m.id ? (
                             <div style={panelStyles.editWrap}>
                                 <textarea
+                                    aria-label="Edit memory fact"
                                     style={panelStyles.editArea}
+                                    disabled={loading || busy || adding}
                                     value={editText}
                                     onChange={(e) => setEditText(e.target.value)}
                                     rows={2}
                                     autoFocus
                                 />
                                 <div style={panelStyles.editActions}>
-                                    <button style={panelStyles.iconBtn} onClick={() => saveEdit(m.id)} title="Save"><Check size={13} /></button>
-                                    <button style={panelStyles.iconBtn} onClick={() => setEditingId(null)} title="Cancel"><X size={13} /></button>
+                                    <button style={panelStyles.iconBtn} onClick={() => saveEdit(m.id)} disabled={loading || busy || adding || !editText.trim()} title="Save"><Check size={13} /></button>
+                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) setEditingId(null); }} disabled={loading || busy || adding} title="Cancel"><X size={13} /></button>
                                 </div>
                             </div>
                         ) : (
                             <>
-                                <div style={{ ...panelStyles.factText, ...(m.status === "candidate" ? { opacity: 0.6 } : {}) }}>{m.fact}</div>
+                                <div style={panelStyles.factText}>{m.fact}</div>
                                 <div style={panelStyles.rowFooter}>
                                     <span style={panelStyles.categoryChip}>{m.category}</span>
                                     {m.status === "candidate" && (
@@ -152,13 +174,13 @@ export default function MemoriesPanel() {
                                         </span>
                                     )}
                                     <span style={panelStyles.rowMeta}>
-                                        {m.projectId ? "project · " : ""}{new Date(m.updatedAt).toLocaleDateString()}
+                                        {m.projectId ? "project · " : ""}{new Date(m.updatedAt).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}
                                     </span>
                                     <span style={{ flex: 1 }} />
-                                    <button style={panelStyles.iconBtn} onClick={() => { setEditingId(m.id); setEditText(m.fact); }} title="Edit fact">
+                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) { setEditingId(m.id); setEditText(m.fact); setEditOriginal(m.fact); } }} disabled={loading || busy || adding} title="Edit fact">
                                         <Pencil size={12} />
                                     </button>
-                                    <button style={panelStyles.iconBtn} onClick={() => remove(m.id)} title="Forget fact">
+                                    <button style={panelStyles.iconBtn} onClick={() => setForgetting(m)} disabled={loading || busy || adding} title="Forget fact">
                                         <Trash2 size={12} />
                                     </button>
                                 </div>
@@ -166,8 +188,11 @@ export default function MemoriesPanel() {
                         )}
                     </div>
                 ))}
-                {!loading && memories.length === 0 && <div style={panelStyles.muted}>Nothing remembered yet - facts appear here as you chat.</div>}
+                {!loading && !error && memories.length === 0 && <div style={panelStyles.muted}>Nothing remembered yet - facts appear here as you chat.</div>}
             </div>
+            {forgetting && <ConfirmModal title="Forget this fact?" body={`“${forgetting.fact}” will be removed from long-term memory. This cannot be undone.${editingId === forgetting.id && editDirty ? " Its unsaved edit will also be discarded." : ""}`}
+                confirmLabel="Forget fact" busyText={busy ? "Forgetting fact…" : undefined}
+                onConfirm={() => void remove(forgetting.id)} onCancel={() => setForgetting(null)} />}
         </div>
     );
 }
@@ -191,8 +216,8 @@ const panelStyles: Record<string, React.CSSProperties> = {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 26,
-        height: 26,
+        width: 32,
+        height: 32,
         borderRadius: 9,
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
         background: "transparent",
@@ -200,9 +225,9 @@ const panelStyles: Record<string, React.CSSProperties> = {
         cursor: "pointer",
         flexShrink: 0,
     },
-    addRow: { display: "flex", gap: 6, marginBottom: 12 },
+    addRow: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 },
     addInput: {
-        flex: 1,
+        flex: "1 1 180px",
         minWidth: 0,
         padding: "7px 10px",
         borderRadius: 12,
@@ -213,6 +238,7 @@ const panelStyles: Record<string, React.CSSProperties> = {
         outline: "none",
     },
     categorySelect: {
+        flex: "0 1 140px",
         padding: "7px 8px",
         borderRadius: 12,
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
@@ -228,8 +254,8 @@ const panelStyles: Record<string, React.CSSProperties> = {
         background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
     },
-    factText: { fontSize: 12.5, lineHeight: 1.45 },
-    rowFooter: { display: "flex", alignItems: "center", gap: 7, marginTop: 6 },
+    factText: { overflowWrap: "anywhere", fontSize: 12.5, lineHeight: 1.45 },
+    rowFooter: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: 6 },
     categoryChip: {
         padding: "2px 7px",
         borderRadius: 999,

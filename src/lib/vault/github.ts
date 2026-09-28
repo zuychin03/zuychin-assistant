@@ -102,17 +102,21 @@ function fromBase64(content: string): string {
     return Buffer.from(content.replace(/\n/g, ""), "base64").toString("utf-8");
 }
 
-export async function getFile(cfg: VaultConfig, path: string, ref = cfg.branch): Promise<VaultFile | null> {
+export async function getFile(cfg: VaultConfig, path: string, ref = cfg.branch, signal?: AbortSignal, requireContent = false): Promise<VaultFile | null> {
     const res = await githubFetch(
         cfg,
         repoPath(cfg, `/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`),
+        signal ? { signal } : undefined,
     );
     if (res.status === 404) return null;
     if (!res.ok) {
         const detail = await res.text().catch(() => "");
         throw new Error(`GitHub ${res.status} reading ${path}: ${detail.slice(0, 300)}`);
     }
-    const data = (await res.json()) as { content?: string; sha: string; type: string };
+    const data = (await res.json()) as { content?: string; sha: string; type: string; encoding?: string };
+    if (requireContent && (data.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string")) {
+        throw new Error("This revision content is unavailable for a safe preview.");
+    }
     return { path, text: fromBase64(data.content ?? ""), sha: data.sha };
 }
 export async function getBinaryFile(
@@ -200,12 +204,32 @@ export async function listAllFiles(cfg: VaultConfig): Promise<VaultEntry[]> {
     }));
 }
 
-export async function getBranchHead(cfg: VaultConfig): Promise<string> {
+export async function getBranchHead(cfg: VaultConfig, signal?: AbortSignal): Promise<string> {
     const ref = await githubJson<{ object: { sha: string } }>(
         cfg,
         repoPath(cfg, `/git/ref/heads/${encodeURIComponent(cfg.branch)}`),
+        signal ? { signal } : undefined,
     );
     return ref.object.sha;
+}
+
+export async function listVaultFileRevisions(cfg: VaultConfig, path: string, head: string, page = 1) {
+    const query = new URLSearchParams({ path, sha: head, per_page: "20", page: String(page) });
+    const rows = await githubJson<{ sha: string; commit: { message: string; author?: { name?: string; date?: string }; committer?: { date?: string } } }[]>(
+        cfg, repoPath(cfg, `/commits?${query}`), { signal: AbortSignal.timeout(15_000) },
+    );
+    return { revisions: rows.map((row) => ({ commitSha: row.sha, path,
+        message: row.commit.message.split("\n")[0].slice(0, 200), author: row.commit.author?.name ?? "Unknown author",
+        committedAt: row.commit.committer?.date ?? row.commit.author?.date ?? "" })), hasMore: rows.length === 20 };
+}
+
+export async function isVaultCommitAncestor(cfg: VaultConfig, commit: string, head: string): Promise<boolean> {
+    if (commit === head) return true;
+    const response = await githubFetch(cfg, repoPath(cfg, `/compare/${encodeURIComponent(commit)}...${encodeURIComponent(head)}?per_page=1`), { signal: AbortSignal.timeout(15_000) });
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error("Could not verify the vault revision history.");
+    const result = await response.json() as { status?: string };
+    return result.status === "ahead" || result.status === "identical";
 }
 
 

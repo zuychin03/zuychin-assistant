@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
 import {
     Activity, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Cpu, GitBranch,
     Gavel, Maximize2, MessageSquare, Minimize2, Play, Plug, RefreshCw, ShieldCheck, Square,
@@ -18,6 +18,7 @@ import { SeatKeysPanel } from "./seat-keys-panel";
 import { IntegrationPanel } from "./integration-panel";
 import { Dropdown } from "@/components/dropdown";
 import { isLoopbackUrl, publicBaseUrl } from "@/lib/public-url";
+import ui from "./council.module.css";
 
 // Live view over a council, plus control of the local ACP host when one is
 // reachable. The Zuychin half stays read-only by construction: watching a
@@ -94,15 +95,15 @@ function elapsed(iso: string): string {
 }
 
 const INTENT_TONE: Record<string, string> = {
-    challenge: "#ff8f6b",
-    ask: "#ffd166",
-    answer: "#31d07f",
-    concede: "#31d07f",
-    propose: "#7aa2ff",
-    refine: "#7aa2ff",
-    pass: "#5f6368",
-    moderate: "#c792ea",
-    verdict: "#31d07f",
+    challenge: "var(--council-warning)",
+    ask: "var(--council-caution)",
+    answer: "var(--council-good)",
+    concede: "var(--council-good)",
+    propose: "var(--council-info)",
+    refine: "var(--council-info)",
+    pass: "var(--color-text-muted)",
+    moderate: "var(--council-secondary)",
+    verdict: "var(--council-good)",
 };
 
 export default function CouncilPage() {
@@ -113,10 +114,15 @@ export default function CouncilPage() {
     const [loading, setLoading] = useState(true);
     const [live, setLive] = useState(true);
     const [error, setError] = useState("");
+    const [detailError, setDetailError] = useState("");
+    const selectedRef = useRef({ code: selected });
+    if (selectedRef.current.code !== selected) selectedRef.current = { code: selected };
+    const detailInFlight = useRef<{ code: string | null } | null>(null);
     // The rail needs ~240px beside a readable transcript; below this the split
     // is stacked instead of squeezed.
     const [isNarrow, setIsNarrow] = useState(false);
     const [monitor, setMonitor] = useState(false);
+    const monitorRef = useRef<HTMLDialogElement>(null);
     const transcriptEnd = useRef<HTMLDivElement | null>(null);
     const lastSeqRef = useRef(0);
 
@@ -220,18 +226,18 @@ export default function CouncilPage() {
         return () => window.removeEventListener("resize", check);
     }, []);
 
-    // The overlay covers the page, so the page behind it must not scroll under
-    // the feed, and Esc has to be an exit or there is no way back on a TV.
     useEffect(() => {
         if (!monitor) return;
-        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMonitor(false); };
-        const previous = document.body.style.overflow;
+        const dialog = monitorRef.current;
+        const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const previousOverflow = document.body.style.overflow;
         document.body.style.overflow = "hidden";
-        window.addEventListener("keydown", onKey);
+        dialog?.showModal();
         transcriptEnd.current?.scrollIntoView({ block: "end" });
         return () => {
-            document.body.style.overflow = previous;
-            window.removeEventListener("keydown", onKey);
+            dialog?.close();
+            document.body.style.overflow = previousOverflow;
+            previousFocus?.focus({ preventScroll: true });
         };
     }, [monitor]);
 
@@ -252,13 +258,21 @@ export default function CouncilPage() {
     }, []);
 
     const fetchDetail = useCallback(async (code: string) => {
+        const selection = selectedRef.current;
+        if (selection.code !== code || detailInFlight.current === selection) return;
+        detailInFlight.current = selection;
         try {
             const res = await fetch(`/api/council/${encodeURIComponent(code)}`);
-            if (!res.ok) return;
-            setDetail(await res.json());
-            setError("");
-        } catch {
-            setError("Could not load that council.");
+            const payload = await res.json();
+            if (!res.ok) throw new Error(payload.error || "Could not load that council.");
+            if (selectedRef.current !== selection) return;
+            setDetail(payload);
+            setDetailError("");
+        } catch (reason) {
+            if (selectedRef.current !== selection) return;
+            setDetailError(reason instanceof Error ? reason.message : "Could not load that council.");
+        } finally {
+            if (detailInFlight.current === selection) detailInFlight.current = null;
         }
     }, []);
 
@@ -291,7 +305,7 @@ export default function CouncilPage() {
         const last = detail?.messages.at(-1)?.seq ?? 0;
         if (last > lastSeqRef.current) {
             lastSeqRef.current = last;
-            transcriptEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+            transcriptEnd.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "end" });
         }
     }, [detail]);
 
@@ -310,7 +324,7 @@ export default function CouncilPage() {
     const remoteBriefShown = remoteAgentSetup("https://<your-host>/api/mcp/mcp");
 
     return (
-        <div style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
+        <div className={ui.council} style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
             <div style={styles.ambientOne} />
             <div style={styles.ambientTwo} />
 
@@ -319,8 +333,7 @@ export default function CouncilPage() {
                     <div style={styles.kicker}>zuychin-council</div>
                     <h1 style={{ ...styles.title, ...(isNarrow ? styles.titleNarrow : {}) }}>Council</h1>
                     <p style={styles.subtitle}>
-                        Live debates between your coding agents. This view is read-only - it never
-                        marks anyone present and never changes whose turn it is.
+                        Follow debates between your coding agents. Viewing a council does not mark an agent present or advance its turn.
                     </p>
                 </div>
                 <div style={styles.headerActions}>
@@ -331,11 +344,13 @@ export default function CouncilPage() {
                     <button
                         type="button"
                         onClick={() => setLive((v) => !v)}
+                        aria-pressed={live}
                         style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
                     >
                         <RefreshCw size={15} style={live ? styles.spin : undefined} />
                         {live ? "Live" : "Paused"}
                     </button>
+                    {s && detail && <a href="#council-transcript" style={styles.quickLink} aria-label={`View transcript for ${s.code}`}><ChevronDown size={15} /> View transcript</a>}
                 </div>
             </header>
 
@@ -378,7 +393,7 @@ export default function CouncilPage() {
                     )}
                 </div>
 
-                {hostError && <div style={styles.errorBox}>{hostError}</div>}
+                {hostError && <div style={styles.errorBox} role="alert">{hostError}</div>}
 
                 {hostState === "absent" && (
                     <div style={styles.emptyText}>
@@ -396,6 +411,7 @@ export default function CouncilPage() {
                     <div style={styles.pairRow}>
                         <span style={styles.emptyText}>Enter the pairing code the host printed:</span>
                         <input
+                            aria-label="Host pairing code"
                             value={pairCode}
                             onChange={(e) => setPairCode(e.target.value.toUpperCase())}
                             placeholder="ABCD2345"
@@ -444,8 +460,8 @@ export default function CouncilPage() {
                                         <span style={{
                                             ...styles.dot,
                                             background: a.state === "failed" || a.state === "exited"
-                                                ? "#ff8f6b"
-                                                : a.state === "busy" ? "#ffd166" : "#31d07f",
+                                                ? "var(--council-warning)"
+                                                : a.state === "busy" ? "var(--council-caution)" : "var(--council-good)",
                                         }} />
                                         <span style={styles.rosterName}>{a.name}</span>
                                         <span style={{ ...styles.smallPill, ...(a.mode === "acp" ? styles.pillGood : styles.pillMuted) }}>{a.mode}</span>
@@ -457,7 +473,7 @@ export default function CouncilPage() {
                                             {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
                                         </span>
                                         <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>
-                                        {a.warn && <span style={{ ...styles.workDetail, color: "#ffd166" }}>! {a.warn}</span>}
+                                        {a.warn && <span style={{ ...styles.workDetail, color: "var(--council-caution)" }}>! {a.warn}</span>}
                                     </div>
                                 ))}
                             </div>
@@ -487,12 +503,14 @@ export default function CouncilPage() {
                             <div style={styles.conveneForm}>
                                 <div style={styles.obligationsTitle}>Convene</div>
                                 <input
+                                    aria-label="Council topic"
                                     value={form.topic}
                                     onChange={(e) => setForm({ ...form, topic: e.target.value })}
                                     placeholder="One decidable question"
                                     style={styles.input}
                                 />
                                 <textarea
+                                    aria-label="Council brief"
                                     value={form.brief}
                                     onChange={(e) => setForm({ ...form, brief: e.target.value })}
                                     placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
@@ -500,12 +518,14 @@ export default function CouncilPage() {
                                 />
                                 <div style={styles.conveneRow}>
                                     <input
+                                        aria-label="Council agent names"
                                         value={form.agents}
                                         onChange={(e) => setForm({ ...form, agents: e.target.value })}
                                         placeholder="claude-a, codex-1, cursor-1"
                                         style={styles.input}
                                     />
                                     <input
+                                        aria-label="Council closer"
                                         value={form.closer}
                                         onChange={(e) => setForm({ ...form, closer: e.target.value })}
                                         placeholder="closer (defaults to the first)"
@@ -549,7 +569,7 @@ export default function CouncilPage() {
                                         if (!instance) return null;
                                         const selection = agentSelections[name] ?? {};
                                         return (
-                                            <div key={name} style={styles.modelRow}>
+                                            <div key={name} className={ui.modelRow} style={styles.modelRow}>
                                                 <span style={styles.modelAgent}>{name}</span>
                                                 <Dropdown
                                                     ariaLabel={`Model for ${name}`}
@@ -648,11 +668,13 @@ export default function CouncilPage() {
                 )}
             </section>
 
+            {error && <div style={styles.errorBox} role="alert">{error} <button type="button" style={styles.quickLink} onClick={() => void fetchList()}>Retry councils</button></div>}
+
             {loading && (
-                <div style={styles.loadingCard}><Clock size={16} /> Loading councils…</div>
+                <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading councils…</div>
             )}
 
-            {!loading && open.length === 0 && recent.length === 0 && (
+            {!loading && !error && open.length === 0 && recent.length === 0 && (
                 <section style={styles.panel}>
                     <PanelHeader title="No councils yet" description="Nothing has been convened" icon={<Users size={16} />} />
                     <div style={styles.emptyText}>
@@ -677,7 +699,8 @@ export default function CouncilPage() {
                                 <div key={c.code}>
                                     <button
                                         type="button"
-                                        onClick={() => { setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
+                                        aria-pressed={selected === c.code}
+                                        onClick={() => { if (selected === c.code) return; setDetailError(""); setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
                                         style={{
                                             ...styles.railItem,
                                             ...(selected === c.code ? styles.railItemActive : {}),
@@ -734,7 +757,8 @@ export default function CouncilPage() {
                                 <button
                                     key={c.code}
                                     type="button"
-                                    onClick={() => { setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
+                                    aria-pressed={selected === c.code}
+                                        onClick={() => { if (selected === c.code) return; setDetailError(""); setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
                                     style={{ ...styles.railItem, ...(selected === c.code ? styles.railItemActive : {}) }}
                                 >
                                     <div style={styles.railTop}>
@@ -749,8 +773,8 @@ export default function CouncilPage() {
                     </div>
 
                     <div style={styles.main}>
-                        {error && <div style={styles.errorBox}>{error}</div>}
-                        {!detail && <div style={styles.loadingCard}><Clock size={16} /> Loading transcript…</div>}
+                        {detailError && <div style={styles.errorBox} role="alert">{detailError} <button type="button" style={styles.quickLink} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
+                        {!detail && !detailError && <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading transcript…</div>}
 
                         {s && detail && (
                             <>
@@ -779,7 +803,7 @@ export default function CouncilPage() {
                                         />
                                     )}
                                     {isRunning && (
-                                        <SeatKeysPanel
+                                        <SeatKeysPanel key={s.code}
                                             code={s.code}
                                             agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
                                         />
@@ -790,7 +814,7 @@ export default function CouncilPage() {
                                             const isFloor = s.floorHolder === p.name;
                                             return (
                                                 <div key={p.name} style={styles.rosterRow}>
-                                                    <span style={{ ...styles.dot, background: p.status === "left" ? "#5f6368" : stale ? "#ff8f6b" : "#31d07f" }} />
+                                                    <span style={{ ...styles.dot, background: p.status === "left" ? "var(--color-text-muted)" : stale ? "var(--council-warning)" : "var(--council-good)" }} />
                                                     <span style={styles.rosterName}>
                                                         {p.name}
                                                         {p.name === s.closerName && <span style={styles.tag}>closer</span>}
@@ -869,7 +893,7 @@ export default function CouncilPage() {
                                                 </div>
                                             ))}
                                         </div>
-                                        <IntegrationPanel
+                                        <IntegrationPanel key={s.code}
                                             code={s.code}
                                             campaign={detail.campaign}
                                             agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
@@ -881,6 +905,7 @@ export default function CouncilPage() {
                                 <section style={styles.panel}>
                                     <div style={styles.panelHeadRow}>
                                         <PanelHeader
+                                            headingId="council-transcript"
                                             title="Transcript"
                                             description={isRunning ? `live · quiet ${ago(s.lastMessageAt)}` : "final"}
                                             icon={<MessageSquare size={16} />}
@@ -907,7 +932,7 @@ export default function CouncilPage() {
             )}
 
             {monitor && (
-                <div style={styles.monitorOverlay} role="dialog" aria-label="Council monitor">
+                <dialog ref={monitorRef} className={ui.monitor} style={styles.monitorOverlay} aria-label="Council monitor" onCancel={(event) => { event.preventDefault(); setMonitor(false); }}>
                     <div style={styles.monitorBar}>
                         <div style={{ minWidth: 0 }}>
                             <div style={styles.monitorTitle}>{s ? `${s.code} · ${s.topic}` : "Council monitor"}</div>
@@ -925,8 +950,8 @@ export default function CouncilPage() {
                                     <span style={{
                                         ...styles.dot,
                                         background: p.status === "left"
-                                            ? "#5f6368"
-                                            : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "#ff8f6b" : "#31d07f",
+                                            ? "var(--color-text-muted)"
+                                            : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "var(--council-warning)" : "var(--council-good)",
                                     }} />
                                     {p.name}
                                     {s?.floorHolder === p.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>floor</span>}
@@ -935,6 +960,7 @@ export default function CouncilPage() {
                             <button
                                 type="button"
                                 onClick={() => setLive((v) => !v)}
+                                aria-pressed={live}
                                 style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
                             >
                                 <RefreshCw size={15} style={live ? styles.spin : undefined} />
@@ -952,7 +978,8 @@ export default function CouncilPage() {
                     </div>
 
                     <div style={styles.monitorFeed}>
-                        {!detail && <div style={styles.loadingCard}><Clock size={16} /> Loading transcript…</div>}
+                        {detailError && <div style={styles.errorBox} role="alert">{detailError} <button type="button" style={styles.quickLink} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
+                        {!detail && !detailError && <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading transcript…</div>}
                         {detail && (
                             <div style={styles.monitorInner}>
                                 {detail.messages.map((m) => <MessageRow key={m.seq} m={m} />)}
@@ -961,7 +988,7 @@ export default function CouncilPage() {
                             </div>
                         )}
                     </div>
-                </div>
+                </dialog>
             )}
         </div>
     );
@@ -992,16 +1019,17 @@ function MessageRow({ m }: { m: Message }) {
     );
 }
 
-function PanelHeader({ title, description, icon }: {
+function PanelHeader({ title, description, icon, headingId }: {
     title: string;
     description: string;
     icon: React.ReactNode;
+    headingId?: string;
 }) {
     return (
         <div style={styles.panelHeader}>
             <div style={styles.panelIcon}>{icon}</div>
-            <div>
-                <h2 style={styles.sectionTitle}>{title}</h2>
+            <div style={{ minWidth: 0 }}>
+                <h2 id={headingId} tabIndex={headingId ? -1 : undefined} style={{ ...styles.sectionTitle, scrollMarginTop: 16 }}>{title}</h2>
                 <p style={styles.sectionDescription}>{description}</p>
             </div>
         </div>
@@ -1018,7 +1046,7 @@ const styles: Record<string, React.CSSProperties> = {
         padding: "36px 24px 56px",
         fontFamily: "var(--font-family)",
         color: "var(--color-text-primary)",
-        background: "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 30%), radial-gradient(circle at 95% 20%, color-mix(in srgb, #7aa2ff 13%, transparent), transparent 28%), var(--color-background)",
+        background: "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 30%), radial-gradient(circle at 95% 20%, color-mix(in srgb, var(--council-info) 13%, transparent), transparent 28%), var(--color-background)",
     },
     ambientOne: {
         position: "fixed", width: 520, height: 520, top: -180, left: -160, borderRadius: "50%",
@@ -1027,7 +1055,7 @@ const styles: Record<string, React.CSSProperties> = {
     },
     ambientTwo: {
         position: "fixed", width: 460, height: 460, right: -160, top: 80, borderRadius: "50%",
-        background: "color-mix(in srgb, #7aa2ff 14%, transparent)",
+        background: "color-mix(in srgb, var(--council-info) 14%, transparent)",
         filter: "blur(95px)", pointerEvents: "none",
     },
     header: {
@@ -1056,11 +1084,11 @@ const styles: Record<string, React.CSSProperties> = {
         borderColor: "color-mix(in srgb, var(--color-border) 62%, transparent)",
         fontSize: 12.5, fontWeight: 650, cursor: "pointer", fontFamily: "inherit",
     },
-    liveOn: { color: "#31d07f", borderColor: "color-mix(in srgb, #31d07f 45%, transparent)" },
+    liveOn: { color: "var(--council-good)", borderColor: "color-mix(in srgb, var(--council-good) 45%, transparent)" },
     spin: { animation: "spin 2s linear infinite" },
     headerActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
     hostChipOff: { color: "var(--color-text-muted)", opacity: 0.75 },
-    dangerLink: { color: "#ff8f6b", borderColor: "color-mix(in srgb, #ff8f6b 40%, transparent)" },
+    dangerLink: { color: "var(--council-warning)", borderColor: "color-mix(in srgb, var(--council-warning) 40%, transparent)" },
     code: {
         fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5,
         padding: "2px 6px", borderRadius: 5,
@@ -1088,8 +1116,8 @@ const styles: Record<string, React.CSSProperties> = {
     modelAgent: { fontSize: 12, fontWeight: 700, color: "var(--color-text-muted)" },
     permissionQueue: {
         display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, padding: 12,
-        borderRadius: 10, border: "1px solid color-mix(in srgb, #ff8f6b 40%, transparent)",
-        background: "color-mix(in srgb, #ff8f6b 8%, transparent)",
+        borderRadius: 10, border: "1px solid color-mix(in srgb, var(--council-warning) 40%, transparent)",
+        background: "color-mix(in srgb, var(--council-warning) 8%, transparent)",
     },
     permissionRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
     permissionTitle: { fontSize: 12.5, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" },
@@ -1142,7 +1170,7 @@ const styles: Record<string, React.CSSProperties> = {
     // Fixed rather than the Fullscreen API: it needs no user-gesture permission,
     // survives a re-render, and Esc still exits.
     monitorOverlay: {
-        position: "fixed", inset: 0, zIndex: 60, display: "flex", flexDirection: "column",
+        position: "fixed", inset: 0, width: "100vw", height: "100dvh", maxWidth: "none", maxHeight: "none", margin: 0, padding: 0, border: 0, zIndex: 60, display: "flex", flexDirection: "column",
         background: "var(--color-background)", fontFamily: "var(--font-family)",
         color: "var(--color-text-primary)",
     },
@@ -1179,8 +1207,8 @@ const styles: Record<string, React.CSSProperties> = {
     sectionDescription: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
     emptyText: { color: "var(--color-text-muted)", fontSize: 13, padding: 12, lineHeight: 1.5 },
     errorBox: {
-        padding: 12, borderRadius: 14, marginBottom: 12, fontSize: 13, color: "#ff8f6b",
-        background: "color-mix(in srgb, #ff8f6b 10%, transparent)",
+        padding: 12, borderRadius: 14, marginBottom: 12, fontSize: 13, color: "var(--council-warning)",
+        background: "color-mix(in srgb, var(--council-warning) 10%, transparent)",
     },
     railItem: {
         display: "block", width: "100%", textAlign: "left", marginBottom: 8, padding: "10px 12px",
@@ -1206,14 +1234,14 @@ const styles: Record<string, React.CSSProperties> = {
     railCode: { fontSize: 12.5, fontWeight: 800, letterSpacing: "-0.01em" },
     railTopic: { marginTop: 4, fontSize: 12.5, lineHeight: 1.4, color: "var(--color-text-primary)" },
     railMeta: { marginTop: 4, fontSize: 11, color: "var(--color-text-muted)" },
-    railWaiting: { marginTop: 3, fontSize: 11, fontWeight: 700, color: "#ffd166" },
+    railWaiting: { marginTop: 3, fontSize: 11, fontWeight: 700, color: "var(--council-caution)" },
     smallPill: {
         display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 7px", borderRadius: 999,
         fontSize: 11, fontWeight: 750, whiteSpace: "nowrap",
     },
-    pillGood: { color: "#31d07f", background: "color-mix(in srgb, #31d07f 12%, transparent)" },
+    pillGood: { color: "var(--council-good)", background: "color-mix(in srgb, var(--council-good) 12%, transparent)" },
     pillMuted: { color: "var(--color-text-muted)", background: "color-mix(in srgb, var(--color-background) 55%, transparent)" },
-    pillWarn: { color: "#ff8f6b", background: "color-mix(in srgb, #ff8f6b 14%, transparent)" },
+    pillWarn: { color: "var(--council-warning)", background: "color-mix(in srgb, var(--council-warning) 14%, transparent)" },
     brief: {
         padding: 12, borderRadius: 14, fontSize: 12.5, lineHeight: 1.55,
         color: "var(--color-text-muted)",
@@ -1233,10 +1261,10 @@ const styles: Record<string, React.CSSProperties> = {
         textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)",
         background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
     },
-    tagFloor: { color: "#31d07f", background: "color-mix(in srgb, #31d07f 14%, transparent)" },
+    tagFloor: { color: "var(--council-good)", background: "color-mix(in srgb, var(--council-good) 14%, transparent)" },
     obligations: {
         marginTop: 12, padding: 10, borderRadius: 14,
-        background: "color-mix(in srgb, #ff8f6b 8%, transparent)",
+        background: "color-mix(in srgb, var(--council-warning) 8%, transparent)",
     },
     obligationsTitle: {
         fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.8,
@@ -1247,7 +1275,7 @@ const styles: Record<string, React.CSSProperties> = {
     openQ: { marginTop: 12 },
     filedRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" },
     filedPath: { fontSize: 11.5, color: "var(--color-text-muted)" },
-    untrusted: { color: "#ffd166" },
+    untrusted: { color: "var(--council-caution)" },
     transcript: { display: "flex", flexDirection: "column", gap: 14, maxHeight: "62vh", overflowY: "auto" },
     msg: { paddingBottom: 12, borderBottom: "1px solid color-mix(in srgb, var(--color-border) 35%, transparent)" },
     msgHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 },
@@ -1265,6 +1293,6 @@ const styles: Record<string, React.CSSProperties> = {
     msgModerator: {
         padding: 10, borderRadius: 12, fontStyle: "italic",
         color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, #c792ea 8%, transparent)",
+        background: "color-mix(in srgb, var(--council-secondary) 8%, transparent)",
     },
 };

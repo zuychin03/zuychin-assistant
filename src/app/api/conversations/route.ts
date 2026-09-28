@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listConversations, createConversation, deleteConversation, getConversationMessages } from "@/lib/db";
 import { setConversationProject } from "@/lib/projects";
+import { requireChatAuth } from "@/lib/auth/guard";
+import { branchUserId } from "@/lib/conversations/branch-api";
 
 export async function GET(req: NextRequest) {
     try {
@@ -22,12 +24,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+    const denied = await requireChatAuth(req);
+    if (denied) return denied;
     try {
         // Body is optional; callers without one create an ungrouped chat.
         const body = await req.json().catch(() => ({}));
         const projectId = typeof body?.projectId === "string" ? body.projectId : undefined;
 
-        const conversation = await createConversation({ projectId });
+        const conversation = await createConversation({ projectId, userProfileId: await branchUserId() });
         return NextResponse.json(conversation);
     } catch (error: unknown) {
         console.error("[Conversations API Error]", error);

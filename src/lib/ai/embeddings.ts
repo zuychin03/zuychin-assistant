@@ -4,6 +4,8 @@ import {
     type ResolvedEmbedding,
 } from "@/lib/ai/providers";
 import { cachedEmbeddingOverride } from "@/lib/ai/embedding-override";
+import { beginModelObservation, observeGeminiClient, withModelPurpose } from "@/lib/ai/model-observations";
+import { requestUsage } from "@/lib/ai/stream-usage";
 
 export type { ResolvedEmbedding };
 
@@ -37,7 +39,7 @@ export async function embedText(
         throw new Error(`Missing API key (${ref.provider.apiKeyEnv}) for ${ref.provider.label}.`);
     }
     if (ref.provider.kind === "gemini") {
-        const result = await geminiClient(apiKey).models.embedContent({
+        const result = await observeGeminiClient(geminiClient(apiKey), { providerId: ref.provider.id, purpose: "embedding" }).models.embedContent({
             model: ref.model.id,
             contents: text,
             config: { outputDimensionality: ref.model.dimension, abortSignal: requestSignal },
@@ -52,22 +54,30 @@ export async function embedText(
     };
     if (ref.provider.id === "nvidia-nim") body.input_type = inputType;
 
-    const res = await fetch(`${ref.provider.baseUrl}/embeddings`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            ...(ref.provider.extraHeaders ?? {}),
-        },
-        body: JSON.stringify(body),
-        signal: requestSignal,
-    });
+    const observation = withModelPurpose("embedding", () => beginModelObservation({ providerId: ref.provider.id, modelId: ref.model.id, purpose: "embedding" }));
+    try {
+        const res = await fetch(`${ref.provider.baseUrl}/embeddings`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+                ...(ref.provider.extraHeaders ?? {}),
+            },
+            body: JSON.stringify(body),
+            signal: requestSignal,
+        });
 
-    if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`Embedding request failed (${ref.provider.label} ${res.status}): ${detail.slice(0, 300)}`);
+        if (!res.ok) {
+            const detail = await res.text().catch(() => "");
+            throw Object.assign(new Error(`Embedding request failed (${ref.provider.label} ${res.status}): ${detail.slice(0, 300)}`), { status: res.status });
+        }
+
+        const json = (await res.json()) as { data?: { embedding?: number[] }[]; usage?: unknown };
+        const vector = validatedVector(ref, json.data?.[0]?.embedding);
+        observation.finish({ usage: requestUsage(json.usage, true) });
+        return vector;
+    } catch (error) {
+        observation.finish({ error, ...(signal?.aborted ? { status: "aborted" as const } : requestSignal.aborted ? { status: "transient" as const } : {}) });
+        throw error;
     }
-
-    const json = (await res.json()) as { data?: { embedding?: number[] }[] };
-    return validatedVector(ref, json.data?.[0]?.embedding);
 }

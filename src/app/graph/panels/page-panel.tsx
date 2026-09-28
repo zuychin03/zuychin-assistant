@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
-import Link from "next/link";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -29,6 +29,13 @@ const STATUS_COLORS: Record<string, string> = {
     archived: "#6a7086",
     deleted: "#ff5470",
 };
+
+function formatUpdatedDate(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleDateString("en-AU", {
+        day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC",
+    });
+}
 
 export interface PageSuggestion {
     target: string;
@@ -133,13 +140,13 @@ export default function PagePanel(props: {
     }, [node.id, markdown, loading, editMode, focusedSection]);
 
     return (
-        <section style={styles.panel}>
+        <section style={styles.panel} aria-busy={!!busy}>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <h2 style={styles.pagePanelTitle}>{node.title}</h2>
                     <div style={styles.pagePath}>{node.id}</div>
                 </div>
-                <button style={styles.iconBtn} onClick={onClose} aria-label="Close page" title="Close (Esc)">
+                <button style={styles.iconBtn} onClick={onClose} disabled={!!busy} aria-label="Close page" title="Close (Esc)">
                     <X size={13} />
                 </button>
             </div>
@@ -159,25 +166,27 @@ export default function PagePanel(props: {
                 <span><strong>{node.words.toLocaleString()}</strong> words</span>
                 <span><strong>{node.links}</strong> connections</span>
                 <span title="PageRank relative to the most central page"><strong>{Math.round(node.centrality * 100)}%</strong> centrality</span>
-                {node.updated && <span>Updated {node.updated}</span>}
+                {node.updated && <span>Updated {formatUpdatedDate(node.updated)}</span>}
             </div>
 
             <div style={styles.actionRow}>
                 {!editMode && (
-                    <button style={styles.action} onClick={onEdit} disabled={loading || markdown === null}>
+                    <button style={styles.action} onClick={onEdit} disabled={!!busy || loading || markdown === null}>
                         <Pencil size={12} /> {draftDirty ? "Resume editing" : "Edit"}
                     </button>
                 )}
                 {editMode && (
                     <>
-                        <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onSave} disabled={busy === "save" || !draftDirty || draftConflict || !editText.trim()}>
+                        <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onSave} disabled={!!busy || !draftDirty || draftConflict || !editText.trim()}>
                             {busy === "save" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Save
                         </button>
-                        <button style={styles.action} onClick={onCancelEdit}>Reader</button>
+                        <button style={styles.action} onClick={onCancelEdit} disabled={!!busy}>Reader</button>
                     </>
                 )}
-                <Link href={libraryHref} style={{ ...styles.action, textDecoration: "none" }}>Open in Library</Link>
-                <button style={styles.action} onClick={onLocal} title="Isolate this system">
+                <Link href={libraryHref} style={{ ...styles.action, textDecoration: "none" }}
+                    aria-disabled={!!busy} tabIndex={busy ? -1 : undefined}
+                    onClick={(event) => { if (busy) event.preventDefault(); }}>Open in Library</Link>
+                <button style={styles.action} onClick={onLocal} disabled={!!busy} title="Isolate this system">
                     <Crosshair size={12} /> System
                 </button>
                 <button style={styles.action} onClick={onRouteFrom} title="Route from this page">
@@ -188,13 +197,13 @@ export default function PagePanel(props: {
                 </button>
                 {confirming === "delete" ? (
                     <>
-                        <button style={{ ...styles.action, ...styles.actionDanger }} onClick={onDelete} disabled={busy === "delete"}>
+                        <button style={{ ...styles.action, ...styles.actionDanger }} onClick={onDelete} disabled={!!busy}>
                             {busy === "delete" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Confirm delete
                         </button>
-                        <button style={styles.action} onClick={() => onConfirm(null)}>Keep</button>
+                        <button style={styles.action} onClick={() => onConfirm(null)} disabled={!!busy}>Keep</button>
                     </>
                 ) : (
-                    <button style={{ ...styles.action, ...styles.actionDanger }} onClick={() => onConfirm("delete")}>
+                    <button style={{ ...styles.action, ...styles.actionDanger }} onClick={() => onConfirm("delete")} disabled={!!busy}>
                         <Trash2 size={12} /> Delete
                     </button>
                 )}
@@ -205,7 +214,7 @@ export default function PagePanel(props: {
                     : draftPersisted ? "Unsaved changes · Draft saved on this device" : "Unsaved changes · Keep this tab open; draft recovery is unavailable"}</span>
                 <div style={styles.actionRow}>
                     {draftConflict && <button style={styles.action} onClick={onCopyDraft}>Copy draft</button>}
-                    <button style={styles.action} onClick={onDiscardDraft} disabled={busy === "save"}>Discard draft</button>
+                    <button style={styles.action} onClick={onDiscardDraft} disabled={!!busy}>Discard draft</button>
                 </div>
             </div>}
 
@@ -222,6 +231,7 @@ export default function PagePanel(props: {
                     style={styles.editArea}
                     spellCheck={false}
                     aria-label="Page markdown"
+                    readOnly={!!busy}
                 />
             )}
 
@@ -283,6 +293,7 @@ export default function PagePanel(props: {
                                 <div key={suggestion.target} style={{ ...styles.listRow, cursor: "default" }}>
                                     <input
                                         type="checkbox"
+                                        disabled={!!busy}
                                         checked={checked}
                                         onChange={() => onToggleSuggestion(suggestion.target)}
                                         aria-label={`Select ${titleOf(suggestion.target)}`}
@@ -291,6 +302,7 @@ export default function PagePanel(props: {
                                     <button
                                         style={{ ...styles.resultRow, padding: 0, flex: 1 }}
                                         onClick={() => onFocus(suggestion.target)}
+                                        disabled={!!busy}
                                     >
                                         <span style={styles.resultTitle}>{titleOf(suggestion.target)}</span>
                                     </button>
@@ -300,7 +312,7 @@ export default function PagePanel(props: {
                                         onClick={() => onAcceptSuggestion(suggestion.target)}
                                         title="Link these pages"
                                         aria-label={`Link ${titleOf(suggestion.target)}`}
-                                        disabled={busy === "link"}
+                                        disabled={!!busy}
                                     >
                                         <Link2 size={13} />
                                     </button>
@@ -313,7 +325,7 @@ export default function PagePanel(props: {
                             <button
                                 style={{ ...styles.action, ...styles.actionPrimary }}
                                 onClick={onLinkSelected}
-                                disabled={busy === "link"}
+                                disabled={!!busy}
                             >
                                 {busy === "link" ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                                 Link selected ({selectedSuggestions.size})
@@ -332,6 +344,7 @@ export default function PagePanel(props: {
                     placeholder="Find a page to link..."
                     style={styles.searchInput}
                     aria-label="Link target"
+                    disabled={!!busy}
                 />
             </div>
             {linkTargets.length > 0 && !linkTargetId && (
@@ -341,6 +354,7 @@ export default function PagePanel(props: {
                             key={target.id}
                             style={styles.resultRow}
                             onClick={() => { onLinkTarget(target.id); onLinkQuery(target.title); }}
+                            disabled={!!busy}
                         >
                             <span style={styles.resultTitle}>{target.title}</span>
                             <span style={styles.resultScore}>{target.category}</span>
@@ -357,18 +371,19 @@ export default function PagePanel(props: {
                             placeholder="Relationship label (default: related)"
                             style={styles.searchInput}
                             aria-label="Relationship label"
+                            disabled={!!busy}
                         />
                     </div>
                     <div style={styles.actionRow}>
                         <button
                             style={{ ...styles.action, ...styles.actionPrimary }}
                             onClick={onCreateLink}
-                            disabled={busy === "link"}
+                            disabled={!!busy}
                         >
                             {busy === "link" ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
                             Link to {humanizePath(linkTargetId)}
                         </button>
-                        <button style={styles.action} onClick={() => { onLinkTarget(null); onLinkQuery(""); }}>Cancel</button>
+                        <button style={styles.action} onClick={() => { onLinkTarget(null); onLinkQuery(""); }} disabled={!!busy}>Cancel</button>
                     </div>
                 </>
             )}
@@ -399,7 +414,7 @@ export function LinkPanel({ source, target, kind, similarity, titleOf, busy, con
                     : "Removing this strips the wikilink from both pages"
             }
             aside={
-                <button style={styles.iconBtn} onClick={onClose} aria-label="Close connection" title="Close (Esc)">
+                <button style={styles.iconBtn} onClick={onClose} disabled={!!busy} aria-label="Close connection" title="Close (Esc)">
                     <X size={13} />
                 </button>
             }
@@ -417,18 +432,18 @@ export function LinkPanel({ source, target, kind, similarity, titleOf, busy, con
 
             <div style={styles.actionRow}>
                 {kind === "suggestion" ? (
-                    <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onAccept} disabled={busy === "link"}>
+                    <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={onAccept} disabled={!!busy}>
                         {busy === "link" ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />} Make it real
                     </button>
                 ) : confirming === "unlink" ? (
                     <>
-                        <button style={{ ...styles.action, ...styles.actionDanger }} onClick={onUnlink} disabled={busy === "unlink"}>
+                        <button style={{ ...styles.action, ...styles.actionDanger }} onClick={onUnlink} disabled={!!busy}>
                             {busy === "unlink" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Confirm unlink
                         </button>
-                        <button style={styles.action} onClick={() => onConfirm(null)}>Keep</button>
+                        <button style={styles.action} onClick={() => onConfirm(null)} disabled={!!busy}>Keep</button>
                     </>
                 ) : (
-                    <button style={{ ...styles.action, ...styles.actionDanger }} onClick={() => onConfirm("unlink")}>
+                    <button style={{ ...styles.action, ...styles.actionDanger }} onClick={() => onConfirm("unlink")} disabled={!!busy}>
                         <Trash2 size={12} /> Remove connection
                     </button>
                 )}

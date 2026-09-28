@@ -128,7 +128,8 @@ export async function setConversationProject(
  * composition. Null when the conversation is ungrouped or missing.
  */
 export async function getConversationProject(
-    conversationId: string
+    conversationId: string,
+    strict = false,
 ): Promise<{ id: string; name: string; instructions: string } | null> {
     const { data, error } = await supabase
         .from("conversations")
@@ -137,9 +138,13 @@ export async function getConversationProject(
         .single();
 
     if (error) {
+        if (strict) throw new Error("Conversation project is unavailable.");
         console.warn("[Projects] Failed to resolve conversation project:", error.message);
         return null;
     }
     const project = data?.projects as unknown as { id: string; name: string; instructions: string } | null;
+    if (strict && data?.project_id && (!project?.id || project.id !== data.project_id)) {
+        throw new Error("Conversation project is unavailable.");
+    }
     return project ? { id: project.id, name: project.name, instructions: project.instructions } : null;
 }

@@ -8,6 +8,7 @@
 /* Monochromatic design system / theme variables */
 
 :root {
+  color-scheme: light;
   --color-primary: #000000;
   --color-primary-foreground: #ffffff;
   --color-secondary: #333333;
@@ -17,7 +18,10 @@
   --color-text-primary: #000000;
   --color-text-muted: #636366;
   --color-border: #d1d1d6;
-  --color-success: #34c759;
+  --color-success: #187a36;
+  --color-warning: #946200;
+  --color-danger: #c22935;
+  --color-danger-foreground: #ffffff;
   --color-code-bg: rgba(0, 0, 0, 0.06);
 
   --font-family: var(--font-geist), system-ui, -apple-system, sans-serif;
@@ -33,6 +37,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --color-primary: #ffffff;
   --color-primary-foreground: #0f172a;
   --color-secondary: #94a3b8;
@@ -42,7 +47,10 @@
   --color-text-primary: #f8fafc;
   --color-text-muted: #94a3b8;
   --color-border: #334155;
-  --color-success: #10b981;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #fb7185;
+  --color-danger-foreground: #0f172a;
   --color-code-bg: rgba(0, 0, 0, 0.25);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
@@ -377,4 +385,26 @@ input[type="range"] {
   border: none;
   border-top: 1px solid var(--color-border);
   margin: 12px 0;
+}
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-primary) !important;
+  outline-offset: 3px;
+}
+
+:root :is(textarea, input:not([type="button"], [type="checkbox"], [type="color"], [type="file"], [type="image"], [type="radio"], [type="range"], [type="reset"], [type="submit"])):focus {
+  outline: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; transition: none; }
+  .animate-fade-in, .animate-fade-in-scale, .animate-slide-left, .animate-slide-right,
+  .animate-float, .animate-overlay-in, .animate-pulse-soft,
+  .animate-bounce-dot, .animate-bounce-dot-2, .animate-bounce-dot-3 { animation: none; }
+}
+
+input, textarea { caret-color: var(--color-text-primary); }
+input::placeholder, textarea::placeholder { color: var(--color-text-muted); opacity: 1; }
+::selection { background: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }

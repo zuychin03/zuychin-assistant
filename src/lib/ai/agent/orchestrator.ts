@@ -1,6 +1,8 @@
+import { assertFreeModel, resolveFreeChat, freeToolRefusal } from "@/lib/ai/model-policy";
 import { MODEL } from "@/lib/gemini";
 import { runGeminiLoop } from "@/lib/ai/agent/gemini-loop";
 import { runWorker } from "@/lib/ai/agent/worker";
+import { addTokenCounts } from "@/lib/ai/stream-usage";
 import { AGENT_TOOLS } from "@/lib/ai/agent/tools";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
@@ -81,11 +83,13 @@ export async function runAgent(opts: {
 }): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[]; councilProposal?: CouncilProposal }> {
     const { rag, message, conversationId, userProfileId, resumePrefix, signal } = opts;
 
-    const isGemini = rag.chat.provider.kind === "gemini";
-    const model = isGemini ? rag.chat.model.id : MODEL;
+    const lead = rag.freeOnly ? resolveFreeChat(rag.chat, true) : rag.chat;
+    if (rag.freeOnly) assertFreeModel(lead);
+    const isGemini = lead.provider.kind === "gemini";
+    const model = isGemini ? lead.model.id : MODEL;
     // Only honour the chosen provider's key when its model is the one running;
     // the MODEL fallback belongs to the default project.
-    const geminiApiKey = isGemini ? getProviderApiKey(rag.chat.provider) : undefined;
+    const geminiApiKey = isGemini ? getProviderApiKey(lead.provider) : undefined;
     const created = await createAgentRun({
         message, conversationId, userProfileId, model, resumeRunId: opts.resumeRunId,
     });
@@ -98,6 +102,7 @@ export async function runAgent(opts: {
     const artifacts: ArtifactDescriptor[] = [];
     let councilProposal: CouncilProposal | undefined;
     const toolCtx: ToolContext = {
+        freeOnly: rag.freeOnly,
         conversationId,
         userProfileId,
         onArtifact: (a) => {
@@ -109,7 +114,7 @@ export async function runAgent(opts: {
 
     let steps: PlanStep[] = [];
     let subagentsSpawned = 0;
-    let workerTokens = 0;
+    let workerTokens: number | null = 0;
     let subagentTimeouts = 0;
 
     async function runSubagents(args: Record<string, unknown>): Promise<string> {
@@ -131,15 +136,15 @@ export async function runAgent(opts: {
                 onEvent?.({ type: "subagent", objective, model: modelHint ?? "auto", phase: "start" });
                 const { value: res, timedOut } = await withDeadline(
                     (workerSignal) => runWorker({
-                        objective, modelHint, needsTools, complexity, paidOnly: rag.paidOnly,
+                        objective, modelHint, needsTools, complexity, paidOnly: rag.paidOnly, freeOnly: rag.freeOnly,
                         contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx, signal: workerSignal,
                     }),
                     AGENT_CONFIG.workerTimeoutMs,
                     signal,
-                    { model: modelHint ?? "auto", output: "(stopped at its deadline; no result)", tokens: 0 },
+                    { model: modelHint ?? "auto", output: "(stopped at its deadline; no result)", tokens: null },
                 );
                 if (timedOut) subagentTimeouts++;
-                workerTokens += res.tokens;
+                workerTokens = addTokenCounts(workerTokens, res.tokens);
                 onEvent?.({ type: "subagent", objective, model: res.model, phase: "done" });
                 return `### Worker result - ${objective}\n(model: ${res.model})\n${res.output}`;
             })
@@ -176,6 +181,8 @@ export async function runAgent(opts: {
                 ? `Draft skill saved. It will become usable once the user approves it in the admin panel - mention this in your final reply.`
                 : `Could not save the skill: ${result.reason}`;
         }
+        const refusal = freeToolRefusal(name, rag.freeOnly);
+        if (refusal) return refusal;
         onEvent?.({ type: "tool", name, phase: "start" });
         // Mutations go through the journal so a resumption cannot repeat one.
         const result = isJournalled(name)
@@ -192,6 +199,8 @@ export async function runAgent(opts: {
     const skillIndex = await buildSkillIndexAsync();
     try {
         const { text: reply, usage, stopReason } = await runGeminiLoop({
+            providerId: isGemini ? lead.provider.id : "gemini",
+            purpose: "orchestration",
             model,
             apiKey: geminiApiKey,
             systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,

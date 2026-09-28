@@ -3,6 +3,7 @@ import type {
 } from "@/lib/vault/graph-types";
 import { shortestPath, type Adjacency } from "@/lib/vault/graph-analysis";
 import { CATEGORIES, trustBucket, type Lens, type TrustBucket } from "./palette";
+import type { LabelBox } from "./label-layout";
 
 export type { GraphCluster, GraphEdge, GraphNode, HealthSummary, LinkSuggestion, NodeHealth };
 export { shortestPath };
@@ -84,6 +85,7 @@ export interface CosmosView {
     systemFocus: string | null;
     /** Screen bands covered by the side rails; labels there would sit under a panel. */
     labelSafeArea: { left: number; right: number };
+    labelObstacles: LabelBox[];
 }
 
 /**
@@ -109,6 +111,7 @@ export function createView(): CosmosView {
         labelsOn: true,
         systemFocus: null,
         labelSafeArea: { left: 0, right: 0 },
+        labelObstacles: [],
     };
 }
 

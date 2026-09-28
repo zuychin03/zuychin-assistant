@@ -45,8 +45,9 @@ export function MarkdownReader({ markdown, variant = "document", onVaultLink }: 
         table: ({ children }) => <div className={styles.tableScroll}><table>{children}</table></div>,
         a: ({ href = "", children }) => {
             if (href.startsWith("vault://")) {
+                if (!onVaultLink) return <span>{children}</span>;
                 const reference = vaultReference(href);
-                return <button type="button" className={styles.vaultLink} onClick={() => onVaultLink?.(reference)}>
+                return <button type="button" className={styles.vaultLink} onClick={() => onVaultLink(reference)}>
                     <FileText size={13} aria-hidden="true" />{children}
                 </button>;
             }

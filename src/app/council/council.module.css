@@ -1,0 +1,31 @@
+.council {
+    --council-good: #14783b;
+    --council-error: #b4232c;
+    --council-warning: #a24917;
+    --council-caution: #80600a;
+    --council-info: #2854ad;
+    --council-secondary: #8046a4;
+    overflow-wrap: anywhere;
+}
+:global([data-theme="dark"]) .council {
+    --council-good: #31d07f;
+    --council-error: #ff9ca3;
+    --council-warning: #ff8f6b;
+    --council-caution: #ffd166;
+    --council-info: #7aa2ff;
+    --council-secondary: #c792ea;
+}
+.council :is(button, a, input, textarea):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.council button:disabled { cursor: not-allowed; opacity: .55; }
+.council svg { flex-shrink: 0; }
+.council :is(input, textarea)::placeholder { color: var(--color-text-muted); opacity: 1; }
+.monitor { overflow-wrap: anywhere; }
+.monitor::backdrop { background: var(--color-background); }
+@media (max-width: 600px) {
+    .council :is(button, a) { min-height: 44px; }
+    .council :is(input, textarea) { font-size: 16px !important; }
+    .modelRow { grid-template-columns: minmax(0, 1fr) !important; padding-block: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .council *, .council *::before, .council *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

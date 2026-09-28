@@ -30,6 +30,7 @@ const PROFILE = {
 interface Call { url: URL; method: string; headers: Headers; body: string }
 const calls: Call[] = [];
 const unexpected: string[] = [];
+const taskFixtures = new Map<string, ScheduledTask>();
 let answerGemini: (model: string, body: string, stream: boolean) => unknown = () => text("Fixture reply");
 
 function text(value: string) {
@@ -51,8 +52,15 @@ function completionStream(content: string): Response {
     );
 }
 
-function supabaseResponse(url: URL, method: string, headers: Headers): Response {
+function supabaseResponse(url: URL, method: string, headers: Headers, body: string): Response {
     if (method === "HEAD") return new Response(null, { status: 200, headers: { "Content-Range": "*/0" } });
+    if (["assistant_start_task_run", "assistant_claim_task_delivery", "assistant_finish_task_run"].some(name => url.pathname.endsWith(`/rpc/${name}`))) return Response.json(true);
+    if (url.pathname.endsWith("/rpc/assistant_context_snapshot")) return Response.json({ messages: [], revision: "fixture-empty", summary: null, project_id: null });
+    if (url.pathname.endsWith("/rpc/assistant_claim_task_run")) {
+        const value = taskFixtures.get(JSON.parse(body).p_task_id)!;
+        return Response.json({ status: "accepted", run: { id: `claimed-${value.id}`, task_id: value.id, user_profile_id: PROFILE.id, task_title: value.title, trigger: "manual", status: "running", started_at: new Date().toISOString(), finished_at: null, detail: null,
+            task_snapshot: { id: value.id, title: value.title, instruction: value.instruction, schedule_type: value.scheduleType, cron: value.cron, run_at: value.runAt, timezone: value.timezone, channel: value.channel, conversation_id: value.conversationId, agent_mode: value.agentMode, enabled: value.enabled, next_run_at: value.nextRunAt, last_run_at: value.lastRunAt, last_status: value.lastStatus, last_result: value.lastResult, created_at: value.createdAt, user_profile_id: PROFILE.id } } });
+    }
     if (!(headers.get("Accept") ?? "").includes("vnd.pgrst.object+json")) return Response.json([]);
     const table = url.pathname.replace(/^\/rest\/v1\//, "");
     if (table === "user_profiles") return Response.json(PROFILE);
@@ -69,7 +77,7 @@ globalThis.fetch = async (input, init) => {
     const body = typeof init?.body === "string" ? init.body : "";
     calls.push({ url, method, headers, body });
 
-    if (url.hostname === "scheduled-task-tests.supabase.co") return supabaseResponse(url, method, headers);
+    if (url.hostname === "scheduled-task-tests.supabase.co") return supabaseResponse(url, method, headers, body);
     if (url.hostname === "generativelanguage.googleapis.com") {
         const [model, verb] = (url.pathname.split("/models/")[1] ?? "").split(":");
         const stream = verb === "streamGenerateContent";
@@ -110,7 +118,7 @@ async function settle(): Promise<void> {
 }
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
-    return {
+    const value: ScheduledTask = {
         id: "task-1",
         title: "Stretch reminder",
         instruction: "Remind me to stretch and drink water",
@@ -127,8 +135,11 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
         lastStatus: null,
         lastResult: null,
         createdAt: new Date().toISOString(),
+        userProfileId: PROFILE.id,
         ...overrides,
     };
+    taskFixtures.set(value.id, value);
+    return value;
 }
 
 const memoryExtraction = (body: string) => body.includes("You maintain a long-term memory");
@@ -220,8 +231,9 @@ try {
         const sent = calls.filter((call) => call.url.hostname === "api.telegram.org");
         assert.equal(sent.length, 1);
         assert.match(JSON.parse(sent[0].body).text, /Paid Gemini reply/);
-        const recorded = calls.find((call) => call.method === "PATCH" && call.url.pathname === "/rest/v1/scheduled_tasks");
-        assert.equal(JSON.parse(recorded?.body ?? "{}").last_status, "ok");
+        const recorded = calls.find((call) => call.url.pathname.endsWith("/rpc/assistant_finish_task_run"));
+        assert.equal(JSON.parse(recorded?.body ?? "{}").p_status, "ok");
+        assert.equal(calls.some(call => call.method === "PATCH" && call.url.pathname === "/rest/v1/scheduled_tasks"), false);
     });
 
     await check("an agent-mode task keeps the lead and its workers on the paid key", async () => {

@@ -24,6 +24,11 @@
   justify-content: center;
 }
 
+.modelDialog .control {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .modelDialog::backdrop {
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(3px);

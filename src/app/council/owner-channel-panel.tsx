@@ -136,10 +136,10 @@ export function OwnerChannelPanel({ code, paused, onStateChange }: {
                 <div ref={endRef} />
             </div>
 
-            {error && <div style={styles.error}>{error}</div>}
+            {error && <div style={styles.error} role="alert">{error}</div>}
 
             <div style={styles.composer}>
-                <textarea
+                <textarea aria-label="Private message to Zuychin"
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => {
@@ -152,7 +152,7 @@ export function OwnerChannelPanel({ code, paused, onStateChange }: {
                     rows={2}
                     style={styles.input}
                 />
-                <button type="button" onClick={send} disabled={busy || !text.trim()} style={styles.send}>
+                <button type="button" aria-label="Send private message" onClick={send} disabled={busy || !text.trim()} style={styles.send}>
                     <Send size={14} />
                 </button>
             </div>
@@ -180,9 +180,9 @@ const styles: Record<string, React.CSSProperties> = {
         borderColor: "color-mix(in srgb, var(--color-text-muted) 35%, transparent)",
         background: "transparent", color: "var(--color-text-primary)",
     },
-    resumeAction: { color: "#31d07f", borderColor: "color-mix(in srgb, #31d07f 45%, transparent)" },
+    resumeAction: { color: "var(--council-good)", borderColor: "color-mix(in srgb, var(--council-good) 45%, transparent)" },
     note: { fontSize: 11.5, color: "var(--color-text-muted)", lineHeight: 1.5 },
-    pausedNote: { color: "#e0a33e" },
+    pausedNote: { color: "var(--council-caution)" },
     thread: {
         display: "flex", flexDirection: "column", gap: 8,
         maxHeight: 300, overflowY: "auto", paddingRight: 4,
@@ -202,7 +202,7 @@ const styles: Record<string, React.CSSProperties> = {
         display: "flex", alignItems: "center", gap: 5, marginTop: 5,
         fontSize: 11, color: "var(--color-text-muted)",
     },
-    error: { fontSize: 12, color: "#e5484d" },
+    error: { fontSize: 12, color: "var(--council-error)" },
     composer: { display: "flex", gap: 8, alignItems: "flex-end" },
     input: {
         flex: 1, resize: "none", padding: "8px 10px", borderRadius: 10, fontSize: 13,

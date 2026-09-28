@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, FileText, RefreshCw, Workflow } from "lucide-react";
 
 interface PlanStep {
@@ -14,7 +14,7 @@ interface RunSummary {
     message: string;
     model: string | null;
     plan: PlanStep[];
-    usage: { totalTokens?: number; llmCalls?: number; workerTokens?: number };
+    usage: { totalTokens?: number; llmCalls?: number; workerTokens?: number | null };
     startedAt: string;
     finishedAt: string | null;
 }
@@ -37,21 +37,17 @@ interface RunDetail extends RunSummary {
 }
 
 const STATUS_COLORS: Record<RunSummary["status"], string> = {
-    running: "#7aa2ff",
-    done: "#31d07f",
-    error: "#ff6b5a",
-    timeout: "#e8b34b",
+    running: "var(--admin-info)",
+    done: "var(--admin-success)",
+    error: "var(--admin-danger)",
+    timeout: "var(--admin-warning)",
 };
 
 async function loadRuns(): Promise<RunSummary[]> {
-    try {
-        const res = await fetch("/api/admin/runs");
-        if (!res.ok) return [];
-        const data = await res.json();
-        return data.runs ?? [];
-    } catch {
-        return [];
-    }
+    const res = await fetch("/api/admin/runs");
+    if (!res.ok) throw new Error("Could not load runs. Please retry.");
+    const data = await res.json();
+    return data.runs ?? [];
 }
 
 function formatDuration(start: string, end: string | null): string {
@@ -61,7 +57,7 @@ function formatDuration(start: string, end: string | null): string {
 }
 
 function formatTokens(n?: number): string {
-    if (!n) return "–";
+    if (n == null || !Number.isFinite(n)) return "Not measured";
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
 }
 
@@ -93,42 +89,60 @@ function buildTimeline(events: RunEvent[]): { label: string; duration?: string }
 export default function RunsPanel() {
     const [runs, setRuns] = useState<RunSummary[]>([]);
     const [details, setDetails] = useState<Record<string, RunDetail>>({});
+    const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
     const [expanded, setExpanded] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+    const detailVersion = useRef(0);
+    const expandedRef = useRef<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
         loadRuns().then((data) => {
             if (cancelled) return;
             setRuns(data);
-            setLoading(false);
-        });
+            setError("");
+        }).catch(() => { if (!cancelled) setError("Could not load runs. Use Refresh to retry."); })
+            .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
     }, []);
 
     const refresh = () => {
+        detailVersion.current += 1;
         setLoading(true);
         loadRuns().then((data) => {
             setRuns(data);
-            setLoading(false);
-        });
+            setError("");
+            setDetails({});
+            setDetailErrors({});
+            const current = expandedRef.current;
+            if (current && data.some(run => run.id === current)) void loadDetail(current);
+        }).catch(() => {
+            setError("Could not load runs. Use Refresh to retry.");
+            const current = expandedRef.current;
+            if (current && !details[current]) setDetailErrors(errors => ({ ...errors, [current]: "Could not refresh run details." }));
+        })
+            .finally(() => setLoading(false));
     };
 
-    const toggle = async (id: string) => {
-        if (expanded === id) {
-            setExpanded(null);
-            return;
-        }
+    const loadDetail = async (id: string) => {
+        const version = detailVersion.current;
+        setDetailErrors((errors) => ({ ...errors, [id]: "" }));
+        try {
+            const response = await fetch("/api/admin/runs?id=" + encodeURIComponent(id));
+            if (!response.ok) throw new Error();
+            const data = await response.json();
+            if (!data.run) throw new Error();
+            if (version !== detailVersion.current) return;
+            setDetails((items) => ({ ...items, [id]: data.run }));
+        } catch { if (version === detailVersion.current) setDetailErrors((errors) => ({ ...errors, [id]: "Could not load run details." })); }
+    };
+    const toggle = (id: string) => {
+        if (loading) return;
+        if (expanded === id) { expandedRef.current = null; setExpanded(null); return; }
+        expandedRef.current = id;
         setExpanded(id);
-        if (!details[id]) {
-            try {
-                const res = await fetch(`/api/admin/runs?id=${id}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    setDetails((d) => ({ ...d, [id]: data.run }));
-                }
-            } catch { }
-        }
+        if (!details[id]) void loadDetail(id);
     };
 
     return (
@@ -139,17 +153,19 @@ export default function RunsPanel() {
                     <h2 style={panelStyles.title}>Agent Runs</h2>
                     <p style={panelStyles.description}>Recent agent executions with steps, tools and token usage</p>
                 </div>
-                <button style={panelStyles.refreshBtn} onClick={refresh} title="Refresh runs">
+                <button style={panelStyles.refreshBtn} onClick={refresh} disabled={loading} title="Refresh runs">
                     <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
+            {error && <p role="alert" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>{error}</p>}
+            {loading && <p role="status" style={panelStyles.muted}>Loading runs…</p>}
             <div style={panelStyles.list}>
                 {runs.map((run) => {
                     const isOpen = expanded === run.id;
                     const detail = details[run.id];
                     return (
                         <div key={run.id} style={panelStyles.row}>
-                            <button style={panelStyles.rowHead} onClick={() => toggle(run.id)}>
+                            <button style={panelStyles.rowHead} aria-expanded={isOpen} aria-controls={"run-" + run.id} onClick={() => toggle(run.id)} disabled={loading}>
                                 <span style={{ ...panelStyles.dot, background: STATUS_COLORS[run.status] }} />
                                 <span style={panelStyles.rowMessage}>{run.message}</span>
                                 {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -159,7 +175,7 @@ export default function RunsPanel() {
                                 {run.model ? ` · ${run.model}` : ""}
                             </div>
                             {isOpen && (
-                                <div style={panelStyles.detail}>
+                                <div id={"run-" + run.id} style={panelStyles.detail}>
                                     {run.plan.length > 0 && (
                                         <div style={panelStyles.detailBlock}>
                                             {run.plan.map((s, i) => (
@@ -187,14 +203,14 @@ export default function RunsPanel() {
                                             {detail.error && <div style={panelStyles.errorText}>{detail.error}</div>}
                                         </>
                                     ) : (
-                                        <div style={panelStyles.muted}>Loading…</div>
+                                        <div style={panelStyles.muted}>{detailErrors[run.id] ? <><p role="alert">{detailErrors[run.id]}</p><button type="button" onClick={() => void loadDetail(run.id)}>Retry details</button></> : <span role="status">Loading details…</span>}</div>
                                     )}
                                 </div>
                             )}
                         </div>
                     );
                 })}
-                {!loading && runs.length === 0 && <div style={panelStyles.muted}>No agent runs yet.</div>}
+                {!loading && !error && runs.length === 0 && <div style={panelStyles.muted}>No agent runs yet.</div>}
             </div>
         </div>
     );
@@ -219,8 +235,8 @@ const panelStyles: Record<string, React.CSSProperties> = {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 28,
-        height: 28,
+        width: 32,
+        height: 32,
         borderRadius: 10,
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
         background: "transparent",
@@ -259,7 +275,7 @@ const panelStyles: Record<string, React.CSSProperties> = {
         whiteSpace: "nowrap",
         minWidth: 0,
     },
-    rowMeta: { marginTop: 4, marginLeft: 16, fontSize: 11.5, color: "var(--color-text-muted)" },
+    rowMeta: { overflowWrap: "anywhere", marginTop: 4, marginLeft: 16, fontSize: 11.5, color: "var(--color-text-muted)" },
     detail: { marginTop: 10, display: "flex", flexDirection: "column", gap: 10 },
     detailBlock: {
         padding: "9px 10px",
@@ -274,6 +290,6 @@ const panelStyles: Record<string, React.CSSProperties> = {
     timelineLine: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 },
     timelineLabel: { color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 },
     timelineDuration: { color: "var(--color-text-muted)", flexShrink: 0, fontVariantNumeric: "tabular-nums" },
-    errorText: { fontSize: 12, color: "#ff6b5a", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+    errorText: { fontSize: 12, color: "var(--admin-danger)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
     muted: { color: "var(--color-text-muted)", fontSize: 12.5, padding: 4 },
 };

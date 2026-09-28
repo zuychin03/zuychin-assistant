@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { computeNextRun, type ScheduleFields } from "@/lib/tasks/schedule";
 import { APP_TIMEZONE } from "@/lib/datetime";
@@ -21,6 +22,8 @@ export interface ScheduledTask {
     lastStatus: "ok" | "error" | null;
     lastResult: string | null;
     createdAt: string;
+    userProfileId?: string | null;
+    claimedRunId?: string;
 }
 
 interface TaskRow {
@@ -40,9 +43,10 @@ interface TaskRow {
     last_status: "ok" | "error" | null;
     last_result: string | null;
     created_at: string;
+    user_profile_id?: string | null;
 }
 
-function mapRow(row: TaskRow): ScheduledTask {
+export function mapScheduledTask(row: TaskRow): ScheduledTask {
     return {
         id: row.id,
         title: row.title,
@@ -60,6 +64,7 @@ function mapRow(row: TaskRow): ScheduledTask {
         lastStatus: row.last_status,
         lastResult: row.last_result,
         createdAt: row.created_at,
+        userProfileId: row.user_profile_id ?? null,
     };
 }
 
@@ -77,6 +82,7 @@ export async function createScheduledTask(params: {
     channel?: TaskChannel;
     conversationId?: string;
     agentMode?: boolean;
+    enabled?: boolean;
     userProfileId?: string;
 }): Promise<ScheduledTask> {
     const timezone = params.timezone || APP_TIMEZONE;
@@ -99,6 +105,7 @@ export async function createScheduledTask(params: {
             channel: params.channel ?? "telegram",
             conversation_id: params.conversationId ?? null,
             agent_mode: params.agentMode ?? false,
+            enabled: params.enabled ?? true,
             next_run_at: nextRunAt,
             user_profile_id: params.userProfileId ?? null,
         })
@@ -109,7 +116,7 @@ export async function createScheduledTask(params: {
         console.error("[Tasks] Failed to create task:", error.message);
         throw new Error("Failed to create the scheduled task.");
     }
-    return mapRow(data);
+    return mapScheduledTask(data);
 }
 
 export async function listScheduledTasks(limit: number = 50): Promise<ScheduledTask[]> {
@@ -123,7 +130,7 @@ export async function listScheduledTasks(limit: number = 50): Promise<ScheduledT
         console.error("[Tasks] Failed to list tasks:", error.message);
         return [];
     }
-    return (data ?? []).map(mapRow);
+    return (data ?? []).map(mapScheduledTask);
 }
 
 export async function getScheduledTask(id: string): Promise<ScheduledTask | null> {
@@ -134,7 +141,7 @@ export async function getScheduledTask(id: string): Promise<ScheduledTask | null
         .single();
 
     if (error || !data) return null;
-    return mapRow(data);
+    return mapScheduledTask(data);
 }
 
 export async function updateScheduledTask(
@@ -174,25 +181,17 @@ export async function updateScheduledTask(
         console.error("[Tasks] Failed to update task:", error.message);
         return null;
     }
-    return mapRow(data);
+    return mapScheduledTask(data);
 }
 
 export async function deleteScheduledTask(id: string): Promise<boolean> {
-    const { error } = await supabase.from("scheduled_tasks").delete().eq("id", id);
-    if (error) {
-        console.error("[Tasks] Failed to delete task:", error.message);
-        return false;
-    }
-    return true;
+    const existing = await getScheduledTask(id);
+    if (!existing?.userProfileId) return false;
+    const { data, error } = await supabase.rpc("assistant_delete_task", { p_id: id, p_user_id: existing.userProfileId });
+    return !error && data === true;
 }
 
-/**
- * Claim due tasks for this dispatcher invocation. The claim bumps next_run_at
- * (and disables fired one-offs) BEFORE the task runs, guarded by
- * `eq(next_run_at, <read value>)` so an overlapping invocation claims nothing:
- * a crashed run skips one occurrence rather than double-firing.
- * Agent-mode tasks count triple toward the limit (they dominate wall time).
- */
+// Each schedule advances in the same transaction that records its run.
 export async function claimDueTasks(limit: number = 3): Promise<ScheduledTask[]> {
     const nowIso = new Date().toISOString();
     const { data, error } = await supabase
@@ -213,23 +212,16 @@ export async function claimDueTasks(limit: number = 3): Promise<ScheduledTask[]>
     let budget = limit;
     for (const row of data ?? []) {
         if (budget <= 0) break;
-        const task = mapRow(row);
+        const task = mapScheduledTask(row);
         const cost = task.agentMode ? 3 : 1;
         if (cost > budget && claimed.length > 0) continue;
 
         const next = task.scheduleType === "recurring" ? computeNextRun(scheduleFields(task)) : null;
-        const { data: updated, error: claimError } = await supabase
-            .from("scheduled_tasks")
-            .update({
-                next_run_at: next,
-                enabled: task.scheduleType === "once" ? false : task.enabled,
-            })
-            .eq("id", task.id)
-            .eq("next_run_at", task.nextRunAt)
-            .select("id");
-
-        if (claimError || !updated || updated.length === 0) continue; // claimed elsewhere
-        claimed.push(task);
+        if (!task.userProfileId || !task.nextRunAt) continue;
+        const { claimTaskRun } = await import("@/lib/tasks/run-store");
+        const claim = await claimTaskRun(task.id, randomUUID(), "schedule", task.userProfileId, { dueAt: task.nextRunAt, nextRunAt: next });
+        if (!claim || claim.status !== "accepted") continue;
+        claimed.push({ ...claim.task, claimedRunId: claim.run.id });
         budget -= cost;
     }
     return claimed;

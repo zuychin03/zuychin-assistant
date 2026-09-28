@@ -44,7 +44,6 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     height: "100dvh",
     overflow: "hidden",
-    transition: "width 0.25s cubic-bezier(0.23, 1, 0.32, 1), min-width 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
 
   notesPanel: {
@@ -72,7 +71,6 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     height: "100dvh",
     overflow: "hidden",
-    transition: "width 0.25s cubic-bezier(0.23, 1, 0.32, 1), min-width 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
   },
   notesList: {
     flex: 1,
@@ -115,6 +113,7 @@ export const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     color: "var(--color-text-muted)",
     lineHeight: 1.35,
+    overflowWrap: "anywhere",
   },
   noteDue: {
     fontSize: 11,
@@ -236,6 +235,7 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     height: "100dvh",
     flex: 1,
+    minWidth: 0,
     background: "transparent",
     width: "100%",
     position: "relative",
@@ -246,6 +246,7 @@ export const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     height: "100dvh",
     flex: 1,
+    minWidth: 0,
     background: "transparent",
     width: "100%",
     position: "relative",
@@ -325,7 +326,7 @@ export const styles: Record<string, CSSProperties> = {
   },
 
   logoMarkMobile: {
-    width: 35,
+    width: 28,
     height: 27,
     flexShrink: 0,
     backgroundColor: "var(--color-text-primary)",
@@ -346,9 +347,9 @@ export const styles: Record<string, CSSProperties> = {
   },
   brandTextMobile: {
     display: "flex",
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: 6,
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 2,
     minWidth: 0,
   },
   iconBtn: {
@@ -378,7 +379,7 @@ export const styles: Record<string, CSSProperties> = {
   },
 
   subtitleMobile: {
-    fontSize: 17,
+    fontSize: 12,
     fontWeight: 500,
     color: "var(--color-text-muted)",
     letterSpacing: "-0.2px",
@@ -417,11 +418,11 @@ export const styles: Record<string, CSSProperties> = {
     background: "color-mix(in srgb, var(--color-primary) 11%, var(--color-background))",
   },
   modelSettingsPopover: {
-    position: "absolute",
-    top: "calc(100% + 8px)",
-    right: 0,
-    zIndex: 45,
-    width: "min(320px, calc(100vw - 24px))",
+    position: "fixed",
+    zIndex: 900,
+    visibility: "hidden",
+    boxSizing: "border-box",
+    width: "min(360px, calc(100vw - 24px))",
     padding: "13px 14px",
     display: "flex",
     flexDirection: "column",
@@ -565,18 +566,25 @@ export const styles: Record<string, CSSProperties> = {
   },
   todayItem: {
     display: "flex",
+    flexWrap: "wrap",
     gap: 7,
     alignItems: "baseline",
     fontSize: 13,
     color: "var(--color-text-primary)",
     lineHeight: 1.5,
   },
+  todayItemTitle: {
+    flex: "1 1 160px",
+    minWidth: 0,
+    overflowWrap: "anywhere",
+  },
   todayItemMeta: {
     marginLeft: "auto",
     paddingLeft: 8,
     fontSize: 11.5,
     color: "var(--color-text-muted)",
-    whiteSpace: "nowrap",
+    maxWidth: "100%",
+    overflowWrap: "anywhere",
   },
   hintKbd: {
     padding: "1px 6px",
@@ -767,10 +775,13 @@ export const styles: Record<string, CSSProperties> = {
     cursor: "pointer",
     padding: 4,
     display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 44,
+    minHeight: 44,
     alignSelf: "flex-end",
     marginBottom: 4,
     color: "var(--color-text-muted)",
-    opacity: 0.45,
     flexShrink: 0,
   },
 
@@ -815,10 +826,11 @@ export const styles: Record<string, CSSProperties> = {
   },
   textarea: {
     flex: 1,
+    minWidth: 0,
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 15,
+    fontSize: 16,
     fontFamily: "var(--font-family)",
     color: "var(--color-text-primary)",
     resize: "none",
@@ -850,8 +862,9 @@ export const styles: Record<string, CSSProperties> = {
 
   scrollDownBtn: {
     position: "absolute",
-    left: "50%",
-    transform: "translateX(-50%)",
+    left: 0,
+    right: 0,
+    margin: "0 auto",
     bottom: 96,
     zIndex: 9,
     width: 36,
@@ -1041,44 +1054,6 @@ export const styles: Record<string, CSSProperties> = {
     color: "var(--color-text-muted)",
     flexShrink: 0,
   },
-  settingsToggleRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    gap: 24,
-    marginTop: 12,
-  },
-  agentSwitchWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    flexShrink: 0,
-  },
-  switchTrack: {
-    position: "relative",
-    width: 40,
-    height: 24,
-    padding: 2,
-    borderRadius: 999,
-    border: "none",
-    background: "var(--color-border)",
-    cursor: "pointer",
-    flexShrink: 0,
-    transition: "background 0.2s ease",
-  },
-  switchTrackOn: {
-    background: "var(--color-text-primary)",
-  },
-  switchKnob: {
-    display: "block",
-    width: 20,
-    height: 20,
-    borderRadius: "50%",
-    background: "var(--color-background)",
-    boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
-    transition: "transform 0.2s ease",
-  },
-
   proposalCard: {
     display: "flex",
     flexDirection: "column",

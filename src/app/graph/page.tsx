@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
 import {
     ArrowLeft, ChevronDown, ChevronUp, Clock, Crosshair, Layers, Loader2, Minus, Pause, Play, Plus, RefreshCw, Route,
     SlidersHorizontal, Type, X,
@@ -59,11 +59,13 @@ export default function GraphPage() {
     const [ready, setReady] = useState(false);
 
     const [railOpen, setRailOpen] = useState(true);
+    const [controlsRequested, setControlsRequested] = useState(false);
     const [orbitsPaused, setOrbitsPaused] = useState(false);
     const controlsBeforeSystem = useRef(true);
     const [viewport, setViewport] = useState({ width: 1440, height: 900 });
     // The top bar wraps on narrow panes, so the rails cannot use a fixed offset.
     const topBarRef = useRef<HTMLDivElement>(null);
+    const viewControlsRef = useRef<HTMLDivElement>(null);
     const bannerRef = useRef<HTMLDivElement>(null);
     const [contentTop, setContentTop] = useState(68);
     const [bannerHeight, setBannerHeight] = useState(0);
@@ -94,6 +96,7 @@ export default function GraphPage() {
     const [timeActive, setTimeActive] = useState(false);
     const [timeValue, setTimeValue] = useState(Date.now());
     const [timePlaying, setTimePlaying] = useState(false);
+    const [timelineHeight, setTimelineHeight] = useState(0);
 
     const [selected, setSelected] = useState<Selection>(null);
     const selectedRef = useRef(selected);
@@ -108,6 +111,7 @@ export default function GraphPage() {
     const editTextRef = useRef(editText);
     editTextRef.current = editText;
     const [busy, setBusy] = useState<string | null>(null);
+    const mutationLock = useRef(false);
     const [confirming, setConfirming] = useState<string | null>(null);
 
     const [suggestions, setSuggestions] = useState<PageSuggestion[]>([]);
@@ -238,6 +242,7 @@ export default function GraphPage() {
         setRouteTo(to);
         const node = params.get("node");
         setSelected(node ? { type: "node", id: node } : null);
+        setControlsRequested(false);
         setLocalRoot(null);
 
         // The system root is recorded separately from the open page, because the two
@@ -307,6 +312,8 @@ export default function GraphPage() {
     // ---- Selection ----
 
     const openNode = useCallback((id: string) => {
+        if (mutationLock.current) return;
+        setControlsRequested(false);
         setSelected({ type: "node", id });
         setFocusedSection(null);
         setDock("half");
@@ -318,6 +325,13 @@ export default function GraphPage() {
         setSuggestions([]);
         setSelectedSuggestions(new Set());
     }, []);
+
+    const closeSelection = useCallback(() => {
+        if (mutationLock.current) return;
+        setSelected(null);
+        setConfirming(null);
+        if (!localRoot) cosmosRef.current?.releaseFocus();
+    }, [localRoot]);
 
     // Selection drives the fetch, so a deep-linked ?node= loads exactly like a click.
     useEffect(() => {
@@ -380,6 +394,7 @@ export default function GraphPage() {
     }, [selected]);
 
     const focusNode = useCallback((id: string) => {
+        if (mutationLock.current) return;
         const node = nodeById.get(id);
         if (!node) return;
         cameraRevision.current++;
@@ -402,6 +417,7 @@ export default function GraphPage() {
     }, [openNode, nodeById, visibleIds, localRoot, localDepth, adjacency]);
 
     const enterSystem = useCallback((id: string) => {
+        if (mutationLock.current) return;
         cameraRevision.current++;
         pendingFocus.current = null;
         systemFrameRequest.current = id;
@@ -428,12 +444,14 @@ export default function GraphPage() {
     }, []);
 
     const readSection = useCallback((pageId: string, sectionId: string, title: string) => {
+        if (mutationLock.current && selectedId !== pageId) return;
         cameraRevision.current++;
         systemFrameRequest.current = null;
         pendingFocus.current = null;
         if (systemFrameTimer.current !== null) window.clearTimeout(systemFrameTimer.current);
         systemFrameTimer.current = null;
         if (selectedId !== pageId) openNode(pageId);
+        setControlsRequested(false);
         setFocusedSection({ id: sectionId, title });
         if (window.innerWidth < MOBILE_BREAKPOINT) setDock("tall");
     }, [selectedId, openNode]);
@@ -467,6 +485,7 @@ export default function GraphPage() {
 
     handlersRef.current = {
         onNodeClick: (node) => {
+            if (mutationLock.current) return;
             cameraRevision.current++;
             systemFrameRequest.current = null;
             pendingFocus.current = null;
@@ -497,18 +516,19 @@ export default function GraphPage() {
             cosmosRef.current?.restyle();
         },
         onLinkClick: (link) => {
+            if (mutationLock.current) return;
+            setControlsRequested(false);
             const { s, t } = endpoints(link);
             setConfirming(null);
             setSelected({ type: "link", link: { source: s, target: t, kind: link.kind, similarity: link.similarity } });
         },
         onBackgroundClick: () => {
-            if (editMode) return;
+            if (editMode || mutationLock.current) return;
             setContextMenu(null);
             setConfirming(null);
             // Guarded: a background click with nothing open must not move the camera.
             if (!selected) return;
-            setSelected(null);
-            if (!localRoot) cosmosRef.current?.releaseFocus();
+            closeSelection();
         },
         onSectionClick: (sectionId, title) => {
             if (!localRoot || !visibleIds.has(localRoot)) return;
@@ -736,7 +756,8 @@ export default function GraphPage() {
     }, []);
 
     const savePage = async () => {
-        if (selected?.type !== "node") return;
+        if (selected?.type !== "node" || mutationLock.current) return;
+        mutationLock.current = true;
         const id = selected.id;
         const markdown = editText;
         const base = draft.base;
@@ -781,12 +802,14 @@ export default function GraphPage() {
             showToast(committed ? "Page saved, but reload failed. Your local draft is kept; reopen the page before saving again."
                 : caught instanceof Error ? caught.message : "Save failed. Your draft is kept.");
         } finally {
+            mutationLock.current = false;
             setBusy(null);
         }
     };
 
     const deletePage = async () => {
-        if (selected?.type !== "node") return;
+        if (selected?.type !== "node" || mutationLock.current) return;
+        mutationLock.current = true;
         const id = selected.id;
         setBusy("delete");
         try {
@@ -814,13 +837,15 @@ export default function GraphPage() {
         } catch (caught) {
             showToast(caught instanceof Error ? caught.message : "Delete failed.");
         } finally {
+            mutationLock.current = false;
             setBusy(null);
             setConfirming(null);
         }
     };
 
     const deleteLink = async () => {
-        if (selected?.type !== "link") return;
+        if (selected?.type !== "link" || mutationLock.current) return;
+        mutationLock.current = true;
         const { source, target } = selected.link;
         setBusy("unlink");
         try {
@@ -843,6 +868,7 @@ export default function GraphPage() {
         } catch (caught) {
             showToast(caught instanceof Error ? caught.message : "Unlink failed.");
         } finally {
+            mutationLock.current = false;
             setBusy(null);
             setConfirming(null);
         }
@@ -866,6 +892,8 @@ export default function GraphPage() {
     }, [patch]);
 
     const linkOne = async (source: string, target: string, label: string) => {
+        if (mutationLock.current) return;
+        mutationLock.current = true;
         setBusy("link");
         try {
             await createLink(source, target, label);
@@ -884,38 +912,50 @@ export default function GraphPage() {
         } catch (caught) {
             showToast(caught instanceof Error ? caught.message : "Link failed.");
         } finally {
+            mutationLock.current = false;
             setBusy(null);
         }
     };
 
     const linkSelectedSuggestions = async () => {
-        if (selected?.type !== "node" || selectedSuggestions.size === 0) return;
+        if (selected?.type !== "node" || selectedSuggestions.size === 0 || mutationLock.current) return;
+        mutationLock.current = true;
         const targets = [...selectedSuggestions];
         setBusy("link");
-        let linked = 0;
-        // Sequential on purpose: each link is its own vault commit, and the vault
-        // lock would serialise these anyway.
-        for (const target of targets) {
-            try {
-                await createLink(selected.id, target, "related");
-                linked++;
-            } catch (caught) {
-                showToast(caught instanceof Error ? caught.message : "One link failed.");
+        const linked = new Set<string>();
+        let failure: string | null = null;
+        try {
+            // Each link is a separate vault commit.
+            for (const target of targets) {
+                try {
+                    await createLink(selected.id, target, "related");
+                    linked.add(target);
+                } catch (caught) {
+                    failure ??= caught instanceof Error ? caught.message : "Link request failed.";
+                }
             }
+            setSuggestions((current) => current.filter((item) => !linked.has(item.target)));
+            setSelectedSuggestions((current) => new Set([...current].filter((target) => !linked.has(target))));
+            const result = linked.size === 0 ? "No pages linked."
+                : `Linked ${linked.size} of ${targets.length} page${targets.length === 1 ? "" : "s"}.`;
+            const failed = targets.length - linked.size;
+            showToast(failed > 0
+                ? `${result} ${failed} link${failed === 1 ? " failed and remains" : "s failed and remain"} selected for retry. ${failure}`
+                : result);
+            void fetchGraph("rebuild");
+        } finally {
+            mutationLock.current = false;
+            setBusy(null);
         }
-        setSuggestions((current) => current.filter((item) => !selectedSuggestions.has(item.target)));
-        setSelectedSuggestions(new Set());
-        setBusy(null);
-        showToast(`Linked ${linked} of ${targets.length} page${targets.length === 1 ? "" : "s"}.`);
-        void fetchGraph("rebuild");
     };
 
     // ---- Keyboard ----
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
             const target = event.target as HTMLElement | null;
-            const typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+            const typing = target?.closest('input, textarea, select, button, a, [role="combobox"], [contenteditable="true"]');
 
             if (event.key === "/" && !typing) {
                 event.preventDefault();
@@ -923,12 +963,10 @@ export default function GraphPage() {
                 return;
             }
             if (event.key === "Escape") {
-                if (editMode) return;
+                if (editMode || mutationLock.current) return;
                 if (contextMenu) { setContextMenu(null); return; }
                 if (selected) {
-                    setSelected(null);
-                    setConfirming(null);
-                    if (!localRoot) cosmosRef.current?.releaseFocus();
+                    closeSelection();
                     return;
                 }
                 if (routeFrom || routeTo) { setRouteFrom(null); setRouteTo(null); return; }
@@ -955,7 +993,7 @@ export default function GraphPage() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [editMode, selected, routeFrom, routeTo, localRoot, timeActive, contextMenu, exitSystem, fitView]);
+    }, [editMode, selected, routeFrom, routeTo, localRoot, timeActive, contextMenu, exitSystem, fitView, closeSelection]);
 
     // ---- Derived panel inputs ----
 
@@ -976,13 +1014,18 @@ export default function GraphPage() {
     const mobile = viewport.width < MOBILE_BREAKPOINT;
     const railTop = contentTop + bannerHeight;
     // On a phone the controls move into the dock, so the left rail never renders there.
-    const leftRailVisible = !mobile && railOpen && !(viewport.width < 1080 && rightPanelOpen);
-    // Selection wins the dock: it is what the user just asked for. Controls take it only
-    // when nothing is open, so the region always has one obvious occupant.
+    const leftRailVisible = !mobile && railOpen && (!(viewport.width < 1080 && rightPanelOpen) || controlsRequested);
+    const rightRailVisible = !mobile && rightPanelOpen && !(viewport.width < 1080 && leftRailVisible);
+    // Explicitly opening controls preserves the current page selection.
     const dockContent: "page" | "controls" | null = !mobile
         ? null
-        : rightPanelOpen ? "page" : railOpen ? "controls" : null;
-    const dockHeight = dockContent ? Math.round(viewport.height * DOCK_SHARE[dock]) : 0;
+        : controlsRequested && railOpen ? "controls" : rightPanelOpen ? "page" : railOpen ? "controls" : null;
+    const timelineSpace = timeActive ? timelineHeight + 16 : 0;
+    const dockLimit = Math.max(0, viewport.height - contentTop - timelineSpace - 16);
+    const dockHeight = dockContent ? Math.min(Math.round(viewport.height * DOCK_SHARE[dock]), dockLimit) : 0;
+    const timelineBottom = dockHeight + 16;
+    const viewControlsBottom = timelineBottom + (timeActive ? timelineHeight + 8 : 0);
+    const viewControlsVisible = ready && (!mobile || viewport.height - viewControlsBottom - contentTop - bannerHeight > 200);
 
     useEffect(() => {
         const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -1025,7 +1068,22 @@ export default function GraphPage() {
 
     useEffect(() => {
         viewRef.current.labelSafeArea = { left: 0, right: 0 };
-    }, [leftRailVisible, rightPanelOpen, viewport.width, mobile]);
+        const canvas = containerRef.current;
+        if (!canvas) return;
+        const controls = [topBarRef.current, bannerRef.current, viewControlsRef.current].filter((element): element is HTMLDivElement => !!element);
+        const measure = () => {
+            const origin = canvas.getBoundingClientRect();
+            viewRef.current.labelObstacles = controls.map(element => {
+                const rect = element.getBoundingClientRect();
+                return { x1: rect.left - origin.left - 6, y1: rect.top - origin.top - 6, x2: rect.right - origin.left + 6, y2: rect.bottom - origin.top + 6 };
+            });
+        };
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(canvas);
+        for (const element of controls) observer.observe(element);
+        return () => observer.disconnect();
+    }, [leftRailVisible, rightRailVisible, viewport.width, viewport.height, mobile, ready, viewControlsVisible, viewControlsBottom, contentTop, bannerHeight, dockContent]);
 
     const controlPanels = (
         <>
@@ -1127,15 +1185,12 @@ export default function GraphPage() {
                 onFocusSection={(id, title) => readSection(selected.id, id, title)}
                 onClearSection={() => setFocusedSection(null)}
                 titleOf={titleOf}
-                onClose={() => {
-                    setSelected(null);
-                    setConfirming(null);
-                    if (!localRoot) cosmosRef.current?.releaseFocus();
-                }}
+                onClose={closeSelection}
                 onEdit={() => setEditMode(true)}
                 onCancelEdit={() => setEditMode(false)}
                 onEditText={draft.change}
                 onDiscardDraft={() => {
+                    if (mutationLock.current) return;
                     if (window.confirm("Discard this document draft? The saved page will stay unchanged.") && !draft.discard()) showToast("Could not clear the stored draft. Keep this tab open and try again.");
                 }}
                 onCopyDraft={() => { void navigator.clipboard.writeText(editText).catch(() => showToast("Could not copy the draft. Select and copy its text in the editor.")); }}
@@ -1177,7 +1232,7 @@ export default function GraphPage() {
                 onConfirm={setConfirming}
                 onUnlink={() => void deleteLink()}
                 onAccept={() => void linkOne(selected.link.source, selected.link.target, "related")}
-                onClose={() => { setSelected(null); setConfirming(null); }}
+                onClose={closeSelection}
             />
         )}
         </>
@@ -1188,13 +1243,13 @@ export default function GraphPage() {
             <style>{COSMOS_CSS}</style>
             <div style={styles.nebulaOne} />
             <div style={styles.nebulaTwo} />
-            <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight,
+            <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight + timelineSpace,
                 top: mobile ? contentTop + (!dockContent && localRoot ? bannerHeight : 0) : 0,
                 left: leftRailVisible ? 316 : 0,
-                right: !mobile && rightPanelOpen ? 404 : 0 }} />
-            {ready && (!mobile || viewport.height - dockHeight - contentTop - bannerHeight > 200) && (
-                <div role="group" aria-label="View controls" style={{ position: "absolute", zIndex: 4,
-                    right: !mobile && rightPanelOpen ? 420 : 16, bottom: dockHeight + 16,
+                right: rightRailVisible ? 404 : 0 }} />
+            {viewControlsVisible && (
+                <div ref={viewControlsRef} role="group" aria-label="View controls" style={{ position: "absolute", zIndex: 4,
+                    right: rightRailVisible ? 420 : 16, bottom: viewControlsBottom,
                     display: "flex", gap: 4, padding: 4, borderRadius: 12,
                     background: COSMOS.panelSolid, border: `1px solid ${COSMOS.border}` }}>
                     <button style={styles.iconBtn} onClick={() => zoomView(1 / 0.7)} aria-label="Zoom out" title="Zoom out"><Minus size={15} /></button>
@@ -1205,7 +1260,7 @@ export default function GraphPage() {
             )}
 
             <div
-                style={mobile ? { ...styles.topBar, flexWrap: "nowrap" as const } : styles.topBar}
+                style={mobile ? { ...styles.topBar, ...(viewport.width < 400 ? { left: 8, right: 8, columnGap: 6 } : {}), flexWrap: viewport.width < 400 ? "wrap" as const : "nowrap" as const } : styles.topBar}
                 ref={topBarRef}
             >
                 <div style={styles.topBarGroup}>
@@ -1238,6 +1293,7 @@ export default function GraphPage() {
                         onClick={() => setLabelsOn((on) => !on)}
                         style={{ ...styles.iconBtn, ...(labelsOn ? styles.iconBtnActive : {}) }}
                         aria-label="Toggle labels"
+                        aria-pressed={labelsOn}
                         title="Labels (l)"
                     >
                         <Type size={14} />
@@ -1246,6 +1302,7 @@ export default function GraphPage() {
                         onClick={() => { setTimeActive((on) => !on); setTimeValue(timeBounds.end); setTimePlaying(false); }}
                         style={{ ...styles.iconBtn, ...(timeActive ? styles.iconBtnActive : {}) }}
                         aria-label="Toggle time travel"
+                        aria-pressed={timeActive}
                         title="Time travel"
                     >
                         <Clock size={14} />
@@ -1260,9 +1317,14 @@ export default function GraphPage() {
                         <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} />
                     </button>
                     <button
-                        onClick={() => setRailOpen((open) => !open)}
-                        style={{ ...styles.iconBtn, ...(railOpen ? styles.iconBtnActive : {}) }}
+                        onClick={() => {
+                            const open = mobile ? dockContent !== "controls" : !leftRailVisible;
+                            setControlsRequested(open);
+                            setRailOpen(open);
+                        }}
+                        style={{ ...styles.iconBtn, ...((mobile ? dockContent === "controls" : leftRailVisible) ? styles.iconBtnActive : {}) }}
                         aria-label="Toggle controls"
+                        aria-expanded={mobile ? dockContent === "controls" : leftRailVisible}
                         title="Controls"
                     >
                         <SlidersHorizontal size={14} />
@@ -1301,7 +1363,7 @@ export default function GraphPage() {
                 </div>
             )}
 
-            {!mobile && (
+            {rightRailVisible && (
                 <div style={{ ...styles.rightRail, top: railTop }} className="cosmos-rail">
                     {selectionPanels}
                 </div>
@@ -1350,14 +1412,14 @@ export default function GraphPage() {
                         )}
                         <button
                             style={styles.mobileGrip}
+                            disabled={dockContent === "page" && !!busy}
                             onClick={() => {
                                 if (dockContent === "controls") {
+                                    setControlsRequested(false);
                                     setRailOpen(false);
                                     return;
                                 }
-                                setSelected(null);
-                                setConfirming(null);
-                                if (!localRoot) cosmosRef.current?.releaseFocus();
+                                closeSelection();
                             }}
                             aria-label="Close"
                         >
@@ -1376,6 +1438,8 @@ export default function GraphPage() {
                     end={timeBounds.end}
                     value={timeValue}
                     playing={timePlaying}
+                    bottom={timelineBottom}
+                    onHeightChange={setTimelineHeight}
                     onChange={setTimeValue}
                     onPlaying={setTimePlaying}
                     onExit={() => { setTimeActive(false); setTimePlaying(false); }}
@@ -1406,7 +1470,7 @@ export default function GraphPage() {
                 <div style={{
                     ...styles.overlay, bottom: dockHeight, top: railTop,
                     left: leftRailVisible ? 316 : 0,
-                    right: !mobile && rightPanelOpen ? Math.min(380, viewport.width - 32) + 24 : 0,
+                    right: rightRailVisible ? Math.min(380, viewport.width - 32) + 24 : 0,
                     zIndex: 3, background: "transparent", pointerEvents: "none",
                 }}>
                     <div style={{ display: "grid", gap: 12, justifyItems: "center", textAlign: "center", padding: 20, pointerEvents: "auto" }}>
@@ -1436,22 +1500,22 @@ export default function GraphPage() {
             )}
 
             {loading && (
-                <div style={styles.overlay}>
+                <div style={{ ...styles.overlay, top: contentTop }} role="status">
                     <Loader2 size={22} className="animate-spin" />
                     <span>Charting the vault...</span>
                 </div>
             )}
 
             {error && !loading && (
-                <div style={styles.overlay}>
-                    <span style={{ color: COSMOS.danger, maxWidth: 420, textAlign: "center", lineHeight: 1.5 }}>{error}</span>
+                <div style={{ ...styles.overlay, top: contentTop }} role="alert">
+                    <span style={{ color: COSMOS.danger, maxWidth: "min(420px, calc(100vw - 32px))", overflowWrap: "anywhere", textAlign: "center", lineHeight: 1.5 }}>{error}</span>
                     <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={() => void fetchGraph("initial")}>
                         Try again
                     </button>
                 </div>
             )}
 
-            {toast && <div style={styles.toast} className="animate-fade-in-scale">{toast}</div>}
+            {toast && <div role="status" style={{ ...styles.toast, bottom: Math.max(96, dockHeight + 16) }} className="animate-fade-in-scale">{toast}</div>}
         </div>
     );
 }

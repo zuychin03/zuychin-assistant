@@ -3,7 +3,8 @@ const DISCORD_API = "https://discord.com/api/v10";
 
 export async function sendDiscordMessage(
     channelId: string,
-    text: string
+    text: string,
+    signal?: AbortSignal
 ): Promise<boolean> {
     if (!DISCORD_BOT_TOKEN) {
         console.warn("[Discord] DISCORD_BOT_TOKEN not set, cannot send.");
@@ -14,7 +15,9 @@ export async function sendDiscordMessage(
         const chunks = text.length > 2000 ? splitMessage(text, 2000) : [text];
 
         for (const chunk of chunks) {
+            signal?.throwIfAborted();
             const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+                signal,
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

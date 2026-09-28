@@ -1,5 +1,13 @@
 import { ai, TTS_MODEL } from "@/lib/gemini";
 import { stripMarkdown } from "@/lib/speech";
+import { observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
+import { persistModelObservations } from "@/lib/ai/model-health";
+
+export async function observeSpeech<T>(userProfileId: string | undefined, run: () => Promise<T>): Promise<T> {
+    const calls: ModelCallObservation[] = [];
+    try { return await withModelObservationCollector(calls, () => { configureModelDataPolicy(false); return run(); }, [], ["personal"]); }
+    finally { await persistModelObservations(calls, { userProfileId }); }
+}
 
 export type VoicePrefs = {
     replyWithVoice: "off" | "onVoiceInput" | "always";
@@ -66,18 +74,19 @@ function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample =
 export async function* synthesizeSpeechStream(
     text: string,
     voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
-    maxChars: number = LEAD_TTS_CHARS
+    maxChars: number = LEAD_TTS_CHARS,
+    signal?: AbortSignal,
 ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const spoken = clampForSpeech(stripMarkdown(text), maxChars);
     if (!spoken) throw new Error("Nothing to speak.");
 
-    const stream = await ai.models.generateContentStream({
+    const stream = await observeGeminiClient(ai, { providerId: "gemini", purpose: "speech" }).models.generateContentStream({
         model: TTS_MODEL,
         contents: [{ role: "user", parts: [{ text: spoken }] }],
         config: {
             responseModalities: ["AUDIO"],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
-            abortSignal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+            abortSignal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TTS_TIMEOUT_MS)]) : AbortSignal.timeout(TTS_TIMEOUT_MS),
         },
     });
 
@@ -96,11 +105,12 @@ export async function* synthesizeSpeechStream(
 // the same text, so this path stays on it.
 export async function synthesizeSpeech(
     text: string,
-    voiceName: string = DEFAULT_VOICE_PREFS.voiceName
+    voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
+    signal?: AbortSignal,
 ): Promise<{ buffer: Buffer; mimeType: "audio/wav" }> {
     const parts: Buffer[] = [];
     let rate = 24000;
-    for await (const { pcm, sampleRate } of synthesizeSpeechStream(text, voiceName)) {
+    for await (const { pcm, sampleRate } of synthesizeSpeechStream(text, voiceName, LEAD_TTS_CHARS, signal)) {
         parts.push(pcm);
         rate = sampleRate;
     }

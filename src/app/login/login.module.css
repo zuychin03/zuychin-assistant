@@ -1,0 +1,32 @@
+.card {
+  text-align: center;
+}
+
+.card button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
+}
+
+.field input:focus-visible {
+  outline: none !important;
+}
+
+.card button:disabled {
+  cursor: not-allowed;
+}
+
+.error {
+  color: #b42318;
+  overflow-wrap: anywhere;
+}
+
+:global([data-theme="dark"]) .error {
+  color: #ff9c91;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card svg {
+    animation: none !important;
+  }
+}

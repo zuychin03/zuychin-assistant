@@ -3801,3 +3801,932 @@ security definer
 as $$
   update agent_claim_attempts set succeeded = p_succeeded where id = p_attempt_id;
 $$;
+
+-- V6 assistant features
+
+-- v6-capture-inbox.sql
+create table if not exists public.capture_inbox (
+    profile_id uuid not null references public.user_profiles(id) on delete cascade,
+    id uuid not null,
+    source jsonb not null check (jsonb_typeof(source) = 'object' and octet_length(source::text) <= 3000000),
+    source_hash text not null check (source_hash ~ '^[a-f0-9]{64}$'),
+    receipt jsonb check (receipt is null or jsonb_typeof(receipt) = 'object'),
+    ingest_claim jsonb check (ingest_claim is null or jsonb_typeof(ingest_claim) = 'object'),
+    created_at timestamptz not null default now(),
+    primary key (profile_id, id)
+);
+create index if not exists capture_inbox_profile_created on public.capture_inbox(profile_id, created_at desc);
+alter table public.capture_inbox enable row level security;
+revoke all on public.capture_inbox from public, anon, authenticated;
+grant select, insert, update, delete on public.capture_inbox to service_role;
+alter table public.capture_inbox add column if not exists ingest_claim jsonb;
+create or replace function public.assistant_capture_claim(p_profile_id uuid, p_id uuid, p_claim jsonb)
+returns jsonb language plpgsql security invoker set search_path = public as $$
+declare saved jsonb;
+begin
+    if jsonb_typeof(p_claim) <> 'object' or coalesce(p_claim->>'path', '') = ''
+        or coalesce(p_claim->>'contentHash', '') !~ '^[a-f0-9]{64}$' then
+        raise exception 'Invalid capture claim';
+    end if;
+    select ingest_claim into saved from public.capture_inbox where profile_id = p_profile_id and id = p_id for update;
+    if not found then raise exception 'Capture not found'; end if;
+    if saved is null then
+        update public.capture_inbox set ingest_claim = p_claim where profile_id = p_profile_id and id = p_id;
+        saved := p_claim;
+    end if;
+    return saved;
+end;
+$$;
+revoke all on function public.assistant_capture_claim(uuid, uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.assistant_capture_claim(uuid, uuid, jsonb) to service_role;
+
+-- v6-conversation-branches.sql
+-- Apply manually after the base setup. Branches never copy summaries or executable actions.
+begin;
+create table if not exists public.assistant_conversation_branches (
+  conversation_id uuid primary key references public.conversations(id) on delete cascade,
+  user_profile_id uuid not null references public.user_profiles(id) on delete cascade,
+  request_id uuid unique not null,
+  root_conversation_id uuid not null,
+  parent_conversation_id uuid not null,
+  parent_message_id uuid not null,
+  parent_message_created_at timestamptz not null,
+  parent_title text not null,
+  requested_title text,
+  copied_count integer not null check (copied_count > 0),
+  created_at timestamptz not null default now()
+);
+create table if not exists public.assistant_branch_messages (
+  message_id uuid primary key references public.messages(id) on delete cascade,
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  source_conversation_id uuid not null,
+  source_message_id uuid not null,
+  source_created_at timestamptz not null,
+  ordinal integer not null,
+  unique(conversation_id, ordinal)
+);
+create index if not exists assistant_branch_root on public.assistant_conversation_branches(root_conversation_id, created_at);
+alter table public.assistant_conversation_branches enable row level security;
+alter table public.assistant_branch_messages enable row level security;
+revoke all on public.assistant_conversation_branches, public.assistant_branch_messages from public, anon, authenticated;
+grant all on public.assistant_conversation_branches, public.assistant_branch_messages to service_role;
+
+create or replace function public.assistant_branch_metadata(p_metadata jsonb, p_conversation uuid, p_message uuid)
+returns jsonb language sql immutable set search_path = public, pg_temp as $$
+  select jsonb_strip_nulls(jsonb_build_object(
+    'branchOrigin', jsonb_build_object('conversationId', p_conversation, 'messageId', p_message, 'copied', true),
+    'knowledgeOnly', case when p_metadata->'knowledgeOnly' = 'true'::jsonb then true end,
+    'replyTo', case when p_metadata->'replyTo'->>'role' in ('user', 'assistant')
+      and jsonb_typeof(p_metadata->'replyTo'->'content') = 'string'
+      then jsonb_build_object('role', p_metadata->'replyTo'->>'role', 'content', p_metadata->'replyTo'->>'content') end,
+    'historicalModels', (select jsonb_agg(distinct jsonb_build_object('providerId', observation->>'providerId', 'modelId', observation->>'modelId'))
+      from (
+        select value observation from jsonb_array_elements(case when jsonb_typeof(p_metadata->'replyTrace'->'calls') = 'array'
+          then p_metadata->'replyTrace'->'calls' else '[]'::jsonb end)
+          where value->>'purpose' in ('chat', 'worker', 'orchestration') and value->>'status' = 'success'
+        union all
+        select value observation from jsonb_array_elements(case when jsonb_typeof(p_metadata->'historicalModels') = 'array'
+          then p_metadata->'historicalModels' else '[]'::jsonb end)
+      ) identities where jsonb_typeof(observation->'providerId') = 'string' and jsonb_typeof(observation->'modelId') = 'string')
+  ));
+$$;
+
+create or replace function public.assistant_branch_lineage_immutable()
+returns trigger language plpgsql set search_path = public, pg_temp as $$
+begin
+  raise exception 'Conversation branch lineage is immutable' using errcode = '22023';
+end;
+$$;
+drop trigger if exists assistant_branch_lineage_update on public.assistant_conversation_branches;
+create trigger assistant_branch_lineage_update before update on public.assistant_conversation_branches
+for each row execute function public.assistant_branch_lineage_immutable();
+drop trigger if exists assistant_branch_message_lineage_update on public.assistant_branch_messages;
+create trigger assistant_branch_message_lineage_update before update on public.assistant_branch_messages
+for each row execute function public.assistant_branch_lineage_immutable();
+
+create or replace function public.assistant_branch_conversation_json(p_id uuid)
+returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select to_jsonb(c) || jsonb_build_object('parent_conversation_id', b.parent_conversation_id,
+    'parent_message_id', b.parent_message_id, 'copied_count', coalesce(b.copied_count, 0))
+  from public.conversations c left join public.assistant_conversation_branches b on b.conversation_id = c.id where c.id = p_id;
+$$;
+
+create or replace function public.assistant_fork_conversation(p_conversation_id uuid, p_message_id uuid, p_request_id uuid, p_user_id uuid, p_title text default null)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  parent public.conversations%rowtype;
+  existing public.assistant_conversation_branches%rowtype;
+  boundary public.messages%rowtype;
+  branch_id uuid := gen_random_uuid();
+  root_id uuid;
+  copied_id uuid;
+  records jsonb;
+  source jsonb;
+  ordinal integer := 0;
+begin
+  if p_user_id is null or p_request_id is null or (p_title is not null and (length(trim(p_title)) = 0 or length(trim(p_title)) > 120)) then
+    raise exception 'Invalid fork request' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_request_id::text, 0));
+  select * into existing from public.assistant_conversation_branches where request_id = p_request_id;
+  if found then
+    if existing.user_profile_id <> p_user_id or existing.parent_conversation_id <> p_conversation_id
+      or existing.parent_message_id <> p_message_id or existing.requested_title is distinct from p_title then
+      raise exception 'Fork request conflicts with an earlier request' using errcode = '22023';
+    end if;
+    return public.assistant_branch_conversation_json(existing.conversation_id);
+  end if;
+  select * into parent from public.conversations where id = p_conversation_id and user_profile_id = p_user_id for update;
+  if not found then raise exception 'Conversation unavailable' using errcode = '42501'; end if;
+  select * into boundary from public.messages where id = p_message_id and conversation_id = parent.id and user_profile_id = p_user_id for share;
+  if not found then raise exception 'Message unavailable' using errcode = 'P0002'; end if;
+  select jsonb_agg(to_jsonb(m) order by m.created_at, m.id) into records from (
+    select * from public.messages where conversation_id = parent.id and (created_at, id) <= (boundary.created_at, boundary.id)
+    order by created_at, id limit 20001
+  ) m;
+  if jsonb_array_length(records) > 20000 then raise exception 'Branch is too large' using errcode = '54000'; end if;
+  if exists (select 1 from jsonb_array_elements(records) m where (m->>'user_profile_id')::uuid is distinct from p_user_id or m->>'channel' is distinct from boundary.channel) then
+    raise exception 'Mixed owner or channel prefix cannot be branched' using errcode = '42501';
+  end if;
+  select root_conversation_id into root_id from public.assistant_conversation_branches where conversation_id = parent.id;
+  root_id := coalesce(root_id, parent.id);
+  insert into public.conversations(id, user_profile_id, project_id, title)
+    values (branch_id, parent.user_profile_id, parent.project_id, coalesce(trim(p_title), left(coalesce(parent.title, 'Conversation'), 110) || ' (branch)'));
+  insert into public.assistant_conversation_branches(conversation_id, user_profile_id, request_id, root_conversation_id, parent_conversation_id,
+    parent_message_id, parent_message_created_at, parent_title, requested_title, copied_count)
+    values (branch_id, p_user_id, p_request_id, root_id, parent.id, boundary.id, boundary.created_at, coalesce(parent.title, 'Conversation'), p_title, jsonb_array_length(records));
+  for source in select value from jsonb_array_elements(records) loop
+    ordinal := ordinal + 1;
+    -- Preserve the source order even when timestamps are equal.
+    copied_id := (substr(replace(branch_id::text, '-', ''), 1, 24) || lpad(to_hex(ordinal), 8, '0'))::uuid;
+    insert into public.messages(id, conversation_id, user_profile_id, role, content, channel, image_url, metadata, created_at)
+      values (copied_id, branch_id, parent.user_profile_id, source->>'role', source->>'content', source->>'channel', source->>'image_url',
+        public.assistant_branch_metadata(source->'metadata', parent.id, (source->>'id')::uuid), (source->>'created_at')::timestamptz);
+    insert into public.assistant_branch_messages(message_id, conversation_id, source_conversation_id, source_message_id, source_created_at, ordinal)
+      values (copied_id, branch_id, parent.id, (source->>'id')::uuid, (source->>'created_at')::timestamptz, ordinal);
+  end loop;
+  return public.assistant_branch_conversation_json(branch_id);
+end;
+$$;
+
+create or replace function public.assistant_related_conversations(p_conversation_id uuid, p_user_id uuid)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  with current_conversation as (
+    select c.id, coalesce(b.root_conversation_id, c.id) root_id from public.conversations c
+    left join public.assistant_conversation_branches b on b.conversation_id = c.id where c.id = p_conversation_id and c.user_profile_id = p_user_id
+  ) select jsonb_build_object('current', public.assistant_branch_conversation_json(current_conversation.id),
+    'related', coalesce((select jsonb_agg(public.assistant_branch_conversation_json(c.id) order by c.created_at, c.id)
+      from public.conversations c left join public.assistant_conversation_branches b on b.conversation_id = c.id
+      where c.user_profile_id = p_user_id and c.id <> current_conversation.id
+        and (c.id = current_conversation.root_id or b.root_conversation_id = current_conversation.root_id)), '[]'::jsonb)) from current_conversation;
+$$;
+
+create or replace function public.assistant_compare_conversations(p_left uuid, p_right uuid, p_user_id uuid)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  with allowed as (
+    select c.id, coalesce(b.root_conversation_id, c.id) root_id from public.conversations c
+      left join public.assistant_conversation_branches b on b.conversation_id = c.id
+      where c.id in (p_left, p_right) and c.user_profile_id = p_user_id
+  ), sides as (
+    select a.id, jsonb_build_object('conversation', public.assistant_branch_conversation_json(a.id),
+      'messages', coalesce((select jsonb_agg(to_jsonb(m) order by m.created_at, m.id) from (
+        select id, role, content, channel, image_url, metadata, created_at from public.messages where conversation_id = a.id and user_profile_id = p_user_id
+          order by created_at, id limit 20001
+      ) m), '[]'::jsonb)) data from allowed a
+  ) select jsonb_build_object('left', (select data from sides where id = p_left), 'right', (select data from sides where id = p_right))
+    where p_left <> p_right and (select count(*) from allowed) = 2 and (select count(distinct root_id) from allowed) = 1;
+$$;
+
+revoke all on function public.assistant_branch_metadata(jsonb, uuid, uuid) from public, anon, authenticated;
+revoke all on function public.assistant_branch_lineage_immutable() from public, anon, authenticated;
+revoke all on function public.assistant_branch_conversation_json(uuid) from public, anon, authenticated;
+revoke all on function public.assistant_fork_conversation(uuid, uuid, uuid, uuid, text) from public, anon, authenticated;
+revoke all on function public.assistant_related_conversations(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.assistant_compare_conversations(uuid, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.assistant_fork_conversation(uuid, uuid, uuid, uuid, text) to service_role;
+grant execute on function public.assistant_related_conversations(uuid, uuid) to service_role;
+grant execute on function public.assistant_compare_conversations(uuid, uuid, uuid) to service_role;
+commit;
+
+-- v6-conversation-context.sql
+-- Assistant history only. Apply manually before enabling durable summary reuse.
+begin;
+
+create table if not exists public.assistant_context_revisions (
+  conversation_id uuid primary key references public.conversations(id) on delete cascade,
+  revision bigint not null default 0
+);
+create table if not exists public.assistant_conversation_summaries (
+  scope_key text primary key,
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  generation bigint not null,
+  summary jsonb not null,
+  updated_at timestamptz not null default now()
+);
+alter table public.assistant_context_revisions enable row level security;
+alter table public.assistant_conversation_summaries enable row level security;
+revoke all on public.assistant_context_revisions, public.assistant_conversation_summaries from public, anon, authenticated;
+grant all on public.assistant_context_revisions, public.assistant_conversation_summaries to service_role;
+insert into public.assistant_context_revisions (conversation_id)
+select id from public.conversations on conflict do nothing;
+
+create or replace function public.assistant_context_touch()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  old_id uuid;
+  new_id uuid;
+  target_id uuid;
+begin
+  if tg_table_name = 'conversations' then
+    if tg_op = 'UPDATE' and old.project_id is not distinct from new.project_id then return new; end if;
+    new_id := new.id;
+  else
+    if tg_op = 'UPDATE' and
+      row(old.id, old.role, old.content, old.channel, old.user_profile_id, old.conversation_id, old.created_at, old.image_url, old.metadata->'replyTo')
+      is not distinct from
+      row(new.id, new.role, new.content, new.channel, new.user_profile_id, new.conversation_id, new.created_at, new.image_url, new.metadata->'replyTo')
+      then return new;
+    end if;
+    if tg_op <> 'INSERT' then old_id := old.conversation_id; end if;
+    if tg_op <> 'DELETE' then new_id := new.conversation_id; end if;
+  end if;
+  for target_id in select distinct x from unnest(array[old_id, new_id]) x where x is not null order by x loop
+    insert into public.assistant_context_revisions (conversation_id, revision)
+      select id, 1 from public.conversations where id = target_id
+      on conflict (conversation_id) do update set revision = assistant_context_revisions.revision + 1;
+  end loop;
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+drop trigger if exists assistant_context_messages_changed on public.messages;
+create trigger assistant_context_messages_changed before insert or update or delete on public.messages
+for each row execute function public.assistant_context_touch();
+drop trigger if exists assistant_context_conversation_changed on public.conversations;
+create trigger assistant_context_conversation_changed after insert or update of project_id on public.conversations
+for each row execute function public.assistant_context_touch();
+
+create or replace function public.assistant_context_snapshot(p_conversation_id uuid, p_channel text, p_user_id uuid, p_scope text)
+returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'revision', coalesce(r.revision, 0)::text,
+    'project_id', c.project_id,
+    'summary', case when s.summary is null then null else s.summary || jsonb_build_object('generation', s.generation) end,
+    'messages', coalesce((select jsonb_agg(to_jsonb(m) order by m.created_at, m.id) from (
+      select id, role, content, channel, created_at, image_url, metadata from public.messages
+      where conversation_id = c.id and channel = p_channel and user_profile_id is not distinct from p_user_id
+      order by created_at, id limit 20001
+    ) m), '[]'::jsonb)
+  ) from public.conversations c
+  left join public.assistant_context_revisions r on r.conversation_id = c.id
+  left join public.assistant_conversation_summaries s on s.scope_key = p_scope and s.conversation_id = c.id
+  where c.id = p_conversation_id and c.user_profile_id is not distinct from p_user_id;
+$$;
+
+create or replace function public.assistant_context_save(p_conversation_id uuid, p_scope text, p_revision bigint, p_generation bigint, p_summary jsonb)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  current_revision bigint;
+  saved_rows integer;
+begin
+  select revision into current_revision from public.assistant_context_revisions
+    where conversation_id = p_conversation_id for update;
+  if current_revision is null or current_revision <> p_revision then return false; end if;
+  if p_generation is null or p_generation < 0 or p_summary->>'scope' is distinct from p_scope
+    or p_summary->>'version' is distinct from '1'
+    or (p_summary->>'generation')::bigint is distinct from p_generation + 1 then return false; end if;
+  if p_generation = 0 then
+    insert into public.assistant_conversation_summaries (scope_key, conversation_id, generation, summary)
+      values (p_scope, p_conversation_id, 1, p_summary) on conflict do nothing;
+  else
+    update public.assistant_conversation_summaries set generation = p_generation + 1, summary = p_summary, updated_at = now()
+      where scope_key = p_scope and conversation_id = p_conversation_id and generation = p_generation;
+  end if;
+  get diagnostics saved_rows = row_count;
+  return saved_rows = 1;
+end;
+$$;
+
+revoke all on function public.assistant_context_touch() from public, anon, authenticated;
+revoke all on function public.assistant_context_snapshot(uuid, text, uuid, text) from public, anon, authenticated;
+revoke all on function public.assistant_context_save(uuid, text, bigint, bigint, jsonb) from public, anon, authenticated;
+grant execute on function public.assistant_context_snapshot(uuid, text, uuid, text) to service_role;
+grant execute on function public.assistant_context_save(uuid, text, bigint, bigint, jsonb) to service_role;
+commit;
+
+-- v6-model-health.sql
+-- Passive assistant telemetry only. Apply manually; no provider probes run here.
+begin;
+
+create table if not exists public.model_call_observations (
+  id uuid primary key,
+  execution_scope text not null default 'assistant' check (execution_scope = 'assistant'),
+  provider_id text not null check (provider_id ~ '^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,199}$'),
+  model_id text not null check (model_id ~ '^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,199}$'),
+  purpose text not null check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech')),
+  started_at timestamptz not null check (isfinite(started_at)),
+  duration_ms double precision not null check (duration_ms >= 0 and duration_ms <= 86400000),
+  first_answer_ms double precision check (first_answer_ms >= 0 and first_answer_ms <= duration_ms),
+  status text not null check (status in ('success', 'auth', 'rate_limit', 'transient', 'unavailable', 'retired', 'aborted', 'unknown')),
+  error_class text check (error_class in ('http', 'abort', 'timeout', 'transport', 'unknown')),
+  http_status integer check (http_status between 100 and 599),
+  prompt_tokens bigint check (prompt_tokens between 0 and 9007199254740991),
+  output_tokens bigint check (output_tokens between 0 and 9007199254740991),
+  total_tokens bigint check (total_tokens between 0 and 9007199254740991),
+  cached_input_tokens bigint check (cached_input_tokens between 0 and 9007199254740991 and (prompt_tokens is null or cached_input_tokens <= prompt_tokens)),
+  usage_completeness text not null check (usage_completeness in ('complete', 'partial', 'unavailable')),
+  streaming_observed boolean not null default false,
+  tools_observed boolean not null default false,
+  vision_observed boolean not null default false,
+  grounding_observed boolean not null default false,
+  conversation_id uuid references public.conversations(id) on delete set null,
+  message_id uuid references public.messages(id) on delete set null,
+  user_profile_id uuid references public.user_profiles(id) on delete set null,
+  recorded_at timestamptz not null default now(),
+  check (usage_completeness <> 'complete' or (prompt_tokens is not null and output_tokens is not null and total_tokens is not null)),
+  check (status <> 'retired' or http_status is not distinct from 410)
+);
+
+alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
+alter table public.model_call_observations add constraint model_call_observations_purpose_check
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech'));
+
+create index if not exists idx_model_observations_latest
+  on public.model_call_observations (provider_id, model_id, started_at desc, id desc);
+create index if not exists idx_model_observations_last_success
+  on public.model_call_observations (provider_id, model_id, started_at desc) where status = 'success';
+create index if not exists idx_model_observations_conversation
+  on public.model_call_observations (conversation_id) where conversation_id is not null;
+create index if not exists idx_model_observations_message
+  on public.model_call_observations (message_id) where message_id is not null;
+create index if not exists idx_model_observations_profile
+  on public.model_call_observations (user_profile_id) where user_profile_id is not null;
+
+alter table public.model_call_observations enable row level security;
+revoke all on public.model_call_observations from public, anon, authenticated;
+grant select, insert on public.model_call_observations to service_role;
+drop policy if exists model_observations_service_access on public.model_call_observations;
+create policy model_observations_service_access on public.model_call_observations
+  for all to service_role using (true) with check (true);
+
+create or replace function public.assistant_model_health()
+returns table (
+  provider_id text, model_id text, total_calls bigint, successful_calls bigint, failed_calls bigint, aborted_calls bigint, unknown_calls bigint,
+  latest_at timestamptz, latest_status text, latest_error_class text, latest_http_status integer,
+  latest_duration_ms double precision, latest_first_answer_ms double precision,
+  last_success_at timestamptz, median_success_duration_ms double precision, median_first_answer_ms double precision,
+  first_observed_at timestamptz, streaming_observed_at timestamptz, tools_observed_at timestamptz,
+  vision_observed_at timestamptz, grounding_observed_at timestamptz, purposes text[]
+)
+language sql stable security invoker set search_path = pg_catalog, public as $$
+  with scoped as (
+    select * from public.model_call_observations where execution_scope = 'assistant'
+  ), latest as (
+    select distinct on (o.provider_id, o.model_id)
+      o.provider_id, o.model_id, o.started_at, o.status, o.error_class, o.http_status, o.duration_ms, o.first_answer_ms
+    from scoped o order by o.provider_id, o.model_id, o.started_at desc, o.id desc
+  ), summary as (
+    select o.provider_id, o.model_id, count(*) as total_calls,
+      count(*) filter (where o.status = 'success') as successful_calls,
+      count(*) filter (where o.status not in ('success', 'aborted', 'unknown')) as failed_calls,
+      count(*) filter (where o.status = 'aborted') as aborted_calls,
+      count(*) filter (where o.status = 'unknown') as unknown_calls,
+      max(o.started_at) filter (where o.status = 'success') as last_success_at,
+      percentile_cont(0.5) within group (order by o.duration_ms) filter (where o.status = 'success') as median_success_duration_ms,
+      percentile_cont(0.5) within group (order by o.first_answer_ms) filter (where o.status = 'success' and o.first_answer_ms is not null) as median_first_answer_ms,
+      min(o.started_at) as first_observed_at,
+      max(o.started_at) filter (where o.streaming_observed) as streaming_observed_at,
+      max(o.started_at) filter (where o.tools_observed) as tools_observed_at,
+      max(o.started_at) filter (where o.vision_observed) as vision_observed_at,
+      max(o.started_at) filter (where o.grounding_observed) as grounding_observed_at,
+      array_agg(distinct o.purpose order by o.purpose) as purposes
+    from scoped o group by o.provider_id, o.model_id
+  )
+  select s.provider_id, s.model_id, s.total_calls, s.successful_calls, s.failed_calls, s.aborted_calls, s.unknown_calls,
+    l.started_at, l.status, l.error_class, l.http_status, l.duration_ms, l.first_answer_ms,
+    s.last_success_at, s.median_success_duration_ms, s.median_first_answer_ms, s.first_observed_at,
+    s.streaming_observed_at, s.tools_observed_at, s.vision_observed_at, s.grounding_observed_at, s.purposes
+  from summary s join latest l on l.provider_id = s.provider_id and l.model_id = s.model_id;
+$$;
+
+revoke all on function public.assistant_model_health() from public, anon, authenticated;
+grant execute on function public.assistant_model_health() to service_role;
+
+commit;
+
+-- v6-reply-trace.sql
+create or replace function public.assistant_reply_trace_save(
+    p_message_id uuid,
+    p_expected_trace jsonb,
+    p_trace jsonb
+) returns boolean
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+    if p_trace is null or jsonb_typeof(p_trace) <> 'object' then
+        raise exception 'A reply trace object is required' using errcode = '22023';
+    end if;
+    update public.messages
+    set metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('replyTrace', p_trace)
+    where id = p_message_id and role = 'assistant'
+      and metadata->'replyTrace' is not distinct from p_expected_trace;
+    return found;
+end;
+$$;
+
+revoke all on function public.assistant_reply_trace_save(uuid, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.assistant_reply_trace_save(uuid, jsonb, jsonb) to service_role;
+
+-- v6-research-workbench.sql
+begin;
+create table if not exists public.research_questions (
+  id uuid primary key,
+  user_profile_id uuid not null references public.user_profiles(id) on delete cascade,
+  project_id uuid not null references public.projects(id) on delete cascade,
+  title text not null check (length(title) between 1 and 160),
+  question text not null check (length(question) between 1 and 8000),
+  status text not null default 'active' check (status in ('active','archived')),
+  version integer not null default 1,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table if not exists public.research_sources (
+  id uuid primary key,
+  user_profile_id uuid not null references public.user_profiles(id) on delete cascade,
+  question_id uuid not null references public.research_questions(id) on delete cascade,
+  document_id text not null, path text not null, commit_sha text not null check (commit_sha ~ '^[a-f0-9]{40}$'),
+  content_hash text not null check (content_hash ~ '^[a-f0-9]{64}$'),
+  title text not null check (length(title) between 1 and 160), version integer not null default 1,
+  removed_at timestamptz, created_at timestamptz not null default now(),
+  unique(question_id, document_id, commit_sha)
+);
+create table if not exists public.research_entries (
+  id uuid primary key,
+  user_profile_id uuid not null references public.user_profiles(id) on delete cascade,
+  question_id uuid not null references public.research_questions(id) on delete cascade,
+  source_id uuid references public.research_sources(id),
+  kind text not null check (kind in ('annotation','claim','interpretation','method','finding','limitation')),
+  text text not null check (length(text) between 1 and 20000),
+  evidence jsonb,
+  version integer not null default 1, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  check ((kind = 'interpretation' and evidence is null) or (kind <> 'interpretation' and evidence is not null and source_id is not null))
+);
+create index if not exists research_questions_project on public.research_questions(user_profile_id, project_id, updated_at desc);
+create index if not exists research_sources_question on public.research_sources(question_id, created_at);
+create index if not exists research_entries_question on public.research_entries(question_id, created_at);
+alter table public.research_questions enable row level security;
+alter table public.research_sources enable row level security;
+alter table public.research_entries enable row level security;
+revoke all on public.research_questions, public.research_sources, public.research_entries from public, anon, authenticated;
+grant all on public.research_questions, public.research_sources, public.research_entries to service_role;
+
+create or replace function public.assistant_research_mutate(p_user_id uuid, p_action text, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  item_id uuid := (p_payload->>'id')::uuid;
+  target_question_id uuid := (p_payload->>'questionId')::uuid;
+  expected_version integer := (p_payload->>'version')::integer;
+  q public.research_questions%rowtype;
+  s public.research_sources%rowtype;
+  e public.research_entries%rowtype;
+  d public.knowledge_documents%rowtype;
+  citation jsonb := nullif(p_payload->'evidence', 'null'::jsonb);
+begin
+  if p_user_id is null or item_id is null then raise exception 'Invalid research identity' using errcode = '22023'; end if;
+  if p_action in ('create_question','update_question') then
+    perform 1 from public.projects where id = (p_payload->>'projectId')::uuid and user_profile_id = p_user_id for share;
+    if not found then raise exception 'Project unavailable' using errcode = '42501'; end if;
+    if p_action = 'create_question' then
+      perform pg_advisory_xact_lock(hashtextextended('research-questions:' || p_user_id::text, 0));
+      if not exists (select 1 from public.research_questions where id=item_id)
+        and (select count(*) from public.research_questions where user_profile_id=p_user_id) >= 500 then
+        return jsonb_build_object('capacity','questions');
+      end if;
+      insert into public.research_questions(id,user_profile_id,project_id,title,question,status)
+      values (item_id,p_user_id,(p_payload->>'projectId')::uuid,p_payload->>'title',p_payload->>'question',coalesce(p_payload->>'status','active')) on conflict do nothing;
+      select * into q from public.research_questions where id = item_id and user_profile_id = p_user_id;
+      if not found then raise exception 'Research identity unavailable' using errcode = '42501'; end if;
+      if q.project_id <> (p_payload->>'projectId')::uuid or q.title <> p_payload->>'title' or q.question <> p_payload->>'question' then
+        return jsonb_build_object('conflict',true,'current',to_jsonb(q));
+      end if;
+      return to_jsonb(q);
+    end if;
+    select * into q from public.research_questions where id = item_id and user_profile_id = p_user_id for update;
+    if not found then raise exception 'Question unavailable' using errcode = '42501'; end if;
+    if q.version is distinct from expected_version then return jsonb_build_object('conflict',true,'current',to_jsonb(q)); end if;
+    if q.project_id <> (p_payload->>'projectId')::uuid then raise exception 'Project is immutable' using errcode = '22023'; end if;
+    update public.research_questions set title=p_payload->>'title',question=p_payload->>'question',status=p_payload->>'status',version=version+1,updated_at=now()
+      where id=item_id returning * into q;
+    return to_jsonb(q);
+  end if;
+  select * into q from public.research_questions where id=target_question_id and user_profile_id=p_user_id for update;
+  if not found then raise exception 'Question unavailable' using errcode = '42501'; end if;
+  perform 1 from public.projects where id=q.project_id and user_profile_id=p_user_id for share;
+  if not found then raise exception 'Project unavailable' using errcode = '42501'; end if;
+  if q.status <> 'active' then raise exception 'Question is archived' using errcode = '22023'; end if;
+  if p_action = 'add_source' then
+    select * into d from public.knowledge_documents where id=p_payload->>'documentId' for share;
+    if not found or d.status <> 'active' or (d.user_profile_id is not null and d.user_profile_id <> p_user_id)
+      or (d.project_id=q.project_id or (d.project_id is null and d.scope in ('user','repository'))) is not true then
+      raise exception 'Library source unavailable in project' using errcode = '42501';
+    end if;
+    if not exists (select 1 from public.research_sources where id=item_id)
+      and not exists (select 1 from public.research_sources where question_id=q.id and document_id=d.id and commit_sha=p_payload->>'commitSha')
+      and (select count(*) from public.research_sources where question_id=q.id) >= 500 then
+      return jsonb_build_object('capacity','sources');
+    end if;
+    insert into public.research_sources(id,user_profile_id,question_id,document_id,path,commit_sha,content_hash,title)
+      values (item_id,p_user_id,q.id,d.id,p_payload->>'path',p_payload->>'commitSha',p_payload->>'contentHash',p_payload->>'title') on conflict do nothing;
+    select * into s from public.research_sources where question_id=q.id and document_id=d.id and commit_sha=p_payload->>'commitSha' and user_profile_id=p_user_id;
+    if not found then raise exception 'Source identity conflict' using errcode = '22023'; end if;
+    if s.content_hash <> p_payload->>'contentHash' or s.path <> p_payload->>'path' then raise exception 'Source snapshot changed' using errcode = '22023'; end if;
+    if s.removed_at is not null then
+      update public.research_sources set removed_at=null,version=version+1 where id=s.id returning * into s;
+    end if;
+    return to_jsonb(s);
+  end if;
+  if p_action = 'edit_source' then
+    select * into s from public.research_sources where id=item_id and question_id=q.id and user_profile_id=p_user_id for update;
+    if not found then raise exception 'Source unavailable' using errcode = '42501'; end if;
+    if s.version is distinct from expected_version then return jsonb_build_object('conflict',true,'current',to_jsonb(s)); end if;
+    update public.research_sources set title=coalesce(p_payload->>'title',title),
+      removed_at=case when p_payload->>'remove'='true' then now() else removed_at end,version=version+1 where id=item_id returning * into s;
+    return to_jsonb(s);
+  end if;
+  if p_action in ('update_entry','delete_entry') then
+    select * into e from public.research_entries where id=item_id and question_id=q.id and user_profile_id=p_user_id for update;
+    if not found then raise exception 'Note unavailable' using errcode = '42501'; end if;
+    if e.version is distinct from expected_version then return jsonb_build_object('conflict',true,'current',to_jsonb(e)); end if;
+    if p_action='delete_entry' then delete from public.research_entries where id=item_id; return jsonb_build_object('id',item_id,'deleted',true); end if;
+  end if;
+  if p_action not in ('create_entry','update_entry') then raise exception 'Unknown research action' using errcode = '22023'; end if;
+  if p_payload->>'sourceId' is not null then
+    select * into s from public.research_sources where id=(p_payload->>'sourceId')::uuid and question_id=q.id and user_profile_id=p_user_id for share;
+    if not found or (s.removed_at is not null and (p_action='create_entry' or e.source_id is distinct from s.id)) then raise exception 'Source unavailable' using errcode = '42501'; end if;
+    select * into d from public.knowledge_documents where id=s.document_id for share;
+    if not found or d.status <> 'active' or (d.user_profile_id is not null and d.user_profile_id <> p_user_id)
+      or (d.project_id=q.project_id or (d.project_id is null and d.scope in ('user','repository'))) is not true then raise exception 'Source scope changed' using errcode = '42501'; end if;
+  end if;
+  if p_payload->>'kind' <> 'interpretation' then
+    if s.id is null or citation is null or citation->>'version' is distinct from '1'
+      or citation->>'documentId' is distinct from s.document_id or citation->>'path' is distinct from s.path
+      or citation->>'commitSha' is distinct from s.commit_sha or citation->>'contentHash' is distinct from s.content_hash then
+      raise exception 'Evidence does not match selected source' using errcode = '22023';
+    end if;
+  elsif citation is not null then raise exception 'Interpretations must not impersonate quoted evidence' using errcode = '22023'; end if;
+  if p_action='create_entry' then
+    if not exists (select 1 from public.research_entries where id=item_id)
+      and (select count(*) from public.research_entries where question_id=q.id) >= 2000 then
+      return jsonb_build_object('capacity','entries');
+    end if;
+    insert into public.research_entries(id,user_profile_id,question_id,source_id,kind,text,evidence)
+      values (item_id,p_user_id,q.id,(p_payload->>'sourceId')::uuid,p_payload->>'kind',p_payload->>'text',citation) on conflict do nothing;
+    select * into e from public.research_entries where id=item_id and question_id=q.id and user_profile_id=p_user_id;
+    if not found then raise exception 'Note identity conflict' using errcode = '42501'; end if;
+    if e.source_id is distinct from (p_payload->>'sourceId')::uuid or e.kind <> p_payload->>'kind'
+      or e.text <> p_payload->>'text' or e.evidence is distinct from citation then return jsonb_build_object('conflict',true,'current',to_jsonb(e)); end if;
+  else
+    update public.research_entries set source_id=(p_payload->>'sourceId')::uuid,kind=p_payload->>'kind',text=p_payload->>'text',evidence=citation,
+      version=version+1,updated_at=now() where id=item_id returning * into e;
+  end if;
+  return to_jsonb(e);
+end;
+$$;
+revoke all on function public.assistant_research_mutate(uuid,text,jsonb) from public, anon, authenticated;
+grant execute on function public.assistant_research_mutate(uuid,text,jsonb) to service_role;
+commit;
+
+-- v6-scheduled-actions.sql
+-- Assistant scheduled runs and owner-reviewed actions.
+begin;
+create table if not exists public.assistant_task_runs (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null,
+  user_profile_id uuid not null references public.user_profiles(id),
+  request_id uuid not null unique,
+  task_title text not null,
+  task_snapshot jsonb not null,
+  trigger text not null check (trigger in ('schedule','manual')),
+  status text not null default 'running' check (status in ('running','ok','error','interrupted')),
+  started_at timestamptz not null default now(),
+  execution_started_at timestamptz,
+  expires_at timestamptz not null default now() + interval '10 minutes',
+  finished_at timestamptz,
+  detail text
+);
+create unique index if not exists assistant_task_single_run on public.assistant_task_runs(task_id) where status = 'running';
+create index if not exists assistant_task_run_owner on public.assistant_task_runs(user_profile_id, started_at desc);
+alter table public.assistant_task_runs add column if not exists delivery_started_at timestamptz;
+alter table public.scheduled_tasks add column if not exists latest_run_id uuid;
+create table if not exists public.assistant_action_approvals (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null,
+  run_id uuid not null references public.assistant_task_runs(id),
+  user_profile_id uuid not null references public.user_profiles(id),
+  task_title text not null,
+  tool text not null check (tool ~ '^[a-z][a-z0-9_]{0,79}$' and tool not like 'council_%'),
+  args jsonb not null check (jsonb_typeof(args) = 'object' and octet_length(args::text) <= 200000),
+  args_hash text not null check (args_hash ~ '^[a-f0-9]{64}$'),
+  instruction text not null,
+  source_context text not null default '',
+  status text not null default 'pending' check (status in ('pending','executing','succeeded','rejected','expired','outcome_unknown')),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '24 hours',
+  decided_at timestamptz,
+  execution_token uuid,
+  receipt text,
+  unique(run_id, tool, args_hash)
+);
+create index if not exists assistant_approval_owner on public.assistant_action_approvals(user_profile_id, created_at desc);
+alter table public.assistant_task_runs enable row level security;
+alter table public.assistant_action_approvals enable row level security;
+revoke all on public.assistant_task_runs, public.assistant_action_approvals from public, anon, authenticated;
+grant select, insert, update on public.assistant_task_runs, public.assistant_action_approvals to service_role;
+
+create or replace function public.assistant_claim_task_run(p_task_id uuid, p_request_id uuid, p_trigger text, p_user_id uuid, p_due_at timestamptz default null, p_next_at timestamptz default null)
+returns jsonb language plpgsql security definer set search_path = pg_catalog, public as $$
+declare t public.scheduled_tasks; r public.assistant_task_runs;
+begin
+  if p_trigger not in ('manual','schedule') then raise exception 'Invalid trigger'; end if;
+  select * into t from public.scheduled_tasks where id = p_task_id and user_profile_id = p_user_id for update;
+  if not found then return jsonb_build_object('error','Task or owner unavailable'); end if;
+  select * into r from public.assistant_task_runs where request_id = p_request_id;
+  if found then
+    if r.task_id <> p_task_id or r.user_profile_id <> p_user_id then return jsonb_build_object('error','Request identity conflict'); end if;
+    return jsonb_build_object('status','reused','run',to_jsonb(r));
+  end if;
+  update public.assistant_task_runs set status='interrupted', finished_at=now(), detail='The runner stopped without a confirmed result.'
+    where task_id=p_task_id and status='running' and expires_at <= now();
+  select * into r from public.assistant_task_runs where task_id=p_task_id and status='running';
+  if found then return jsonb_build_object('status','active','run',to_jsonb(r)); end if;
+  if p_trigger = 'schedule' then
+    if not t.enabled or t.next_run_at is distinct from p_due_at or t.next_run_at > now() or t.next_run_at is null then
+      return jsonb_build_object('status','not_due');
+    end if;
+    update public.scheduled_tasks set next_run_at=p_next_at, enabled=case when schedule_type='once' then false else enabled end where id=t.id;
+  end if;
+  insert into public.assistant_task_runs(task_id,user_profile_id,request_id,task_title,task_snapshot,trigger)
+    values(t.id,p_user_id,p_request_id,t.title,to_jsonb(t),p_trigger) returning * into r;
+  update public.scheduled_tasks set latest_run_id=r.id where id=t.id;
+  return jsonb_build_object('status','accepted','run',to_jsonb(r));
+end;
+$$;
+
+create or replace function public.assistant_start_task_run(p_run_id uuid)
+returns boolean language plpgsql security definer set search_path = pg_catalog, public as $$
+begin
+  update public.assistant_task_runs set execution_started_at=now()
+    where id=p_run_id and status='running' and execution_started_at is null and expires_at > now();
+  return found;
+end;
+$$;
+
+create or replace function public.assistant_propose_action(p_run_id uuid,p_tool text,p_args jsonb,p_hash text,p_sources text)
+returns jsonb language plpgsql security definer set search_path = pg_catalog, public as $$
+declare r public.assistant_task_runs; a public.assistant_action_approvals;
+begin
+  select * into r from public.assistant_task_runs where id=p_run_id and status='running' and expires_at > now() for share;
+  if not found then raise exception 'Active scheduled run unavailable'; end if;
+  insert into public.assistant_action_approvals(task_id,run_id,user_profile_id,task_title,tool,args,args_hash,instruction,source_context)
+    values(r.task_id,r.id,r.user_profile_id,r.task_title,p_tool,p_args,p_hash,left(r.task_snapshot->>'instruction',20000),left(p_sources,16000))
+    on conflict(run_id,tool,args_hash) do nothing;
+  select * into a from public.assistant_action_approvals where run_id=r.id and tool=p_tool and args_hash=p_hash;
+  if a.args <> p_args then raise exception 'Action identity conflict'; end if;
+  return to_jsonb(a);
+end;
+$$;
+
+create or replace function public.assistant_claim_task_delivery(p_run_id uuid)
+returns boolean language plpgsql security definer set search_path = pg_catalog, public as $$
+declare task uuid;
+begin
+  select task_id into task from public.assistant_task_runs where id=p_run_id;
+  perform 1 from public.scheduled_tasks where id=task and latest_run_id=p_run_id for update;
+  if not found then return false; end if;
+  update public.assistant_task_runs set delivery_started_at=now()
+    where id=p_run_id and status='running' and execution_started_at is not null and expires_at>now() and delivery_started_at is null;
+  return found;
+end;
+$$;
+
+create or replace function public.assistant_finish_task_run(p_run_id uuid,p_status text,p_detail text)
+returns boolean language plpgsql security definer set search_path = pg_catalog, public as $$
+declare task uuid;
+begin
+  if p_status not in ('ok','error') then raise exception 'Invalid run result'; end if;
+  select task_id into task from public.assistant_task_runs where id=p_run_id;
+  perform 1 from public.scheduled_tasks where id=task and latest_run_id=p_run_id for update;
+  if not found then return false; end if;
+  update public.assistant_task_runs set status=p_status,detail=left(p_detail,12000),finished_at=now()
+    where id=p_run_id and status='running' and expires_at>now();
+  if not found then return false; end if;
+  update public.scheduled_tasks set last_run_at=now(),last_status=p_status,last_result=left(p_detail,500) where id=task and latest_run_id=p_run_id;
+  return true;
+end;
+$$;
+revoke all on function public.assistant_claim_task_delivery(uuid), public.assistant_finish_task_run(uuid,text,text) from public,anon,authenticated;
+grant execute on function public.assistant_claim_task_delivery(uuid), public.assistant_finish_task_run(uuid,text,text) to service_role;
+
+create or replace function public.assistant_decide_action(p_id uuid,p_user_id uuid,p_decision text)
+returns jsonb language plpgsql security definer set search_path = pg_catalog, public as $$
+declare a public.assistant_action_approvals; task_owner uuid;
+begin
+  if p_decision not in ('approve','reject') then raise exception 'Invalid decision'; end if;
+  select task_id into task_owner from public.assistant_action_approvals where id=p_id and user_profile_id=p_user_id;
+  if task_owner is null then return null; end if;
+  perform 1 from public.scheduled_tasks where id=task_owner and user_profile_id=p_user_id for update;
+  if not found then return null; end if;
+  select * into a from public.assistant_action_approvals where id=p_id and user_profile_id=p_user_id for update;
+  if not found then return null; end if;
+  if a.status='pending' and a.expires_at <= now() then
+    update public.assistant_action_approvals set status='expired' where id=a.id returning * into a;
+  end if;
+  if a.status <> 'pending' then return jsonb_build_object('claimed',false,'approval',to_jsonb(a)); end if;
+  update public.assistant_action_approvals set status=case when p_decision='approve' then 'executing' else 'rejected' end,
+    decided_at=now(), execution_token=case when p_decision='approve' then gen_random_uuid() else null end
+    where id=a.id returning * into a;
+  return jsonb_build_object('claimed',true,'approval',to_jsonb(a));
+end;
+$$;
+
+create or replace function public.assistant_finish_action(p_id uuid,p_token uuid,p_status text,p_receipt text)
+returns boolean language plpgsql security definer set search_path = pg_catalog, public as $$
+begin
+  if p_status not in ('succeeded','outcome_unknown') then raise exception 'Invalid receipt state'; end if;
+  update public.assistant_action_approvals set status=p_status,receipt=left(p_receipt,12000)
+    where id=p_id and execution_token=p_token and status='executing';
+  return found;
+end;
+$$;
+
+create or replace function public.assistant_delete_task(p_id uuid,p_user_id uuid)
+returns boolean language plpgsql security definer set search_path = pg_catalog, public as $$
+begin
+  perform 1 from public.scheduled_tasks where id=p_id and user_profile_id=p_user_id for update;
+  if not found then return false; end if;
+  if exists(select 1 from public.assistant_task_runs where task_id=p_id and status='running' and expires_at > now())
+    or exists(select 1 from public.assistant_action_approvals where task_id=p_id and status='executing')
+    then return false; end if;
+  update public.assistant_action_approvals set status='rejected',decided_at=now(),receipt='Task deleted by its owner.'
+    where task_id=p_id and status='pending';
+  delete from public.scheduled_tasks where id=p_id and user_profile_id=p_user_id;
+  return found;
+end;
+$$;
+
+create or replace function public.assistant_action_immutable()
+returns trigger language plpgsql set search_path = pg_catalog, public as $$
+begin
+  if row(old.id,old.task_id,old.run_id,old.user_profile_id,old.task_title,old.tool,old.args,old.args_hash,old.instruction,old.source_context,old.created_at,old.expires_at)
+    is distinct from row(new.id,new.task_id,new.run_id,new.user_profile_id,new.task_title,new.tool,new.args,new.args_hash,new.instruction,new.source_context,new.created_at,new.expires_at)
+    then raise exception 'Approval payload is immutable'; end if;
+  if old.status <> new.status and not (
+    (old.status='pending' and new.status in ('executing','rejected','expired'))
+    or (old.status='executing' and new.status in ('succeeded','outcome_unknown'))
+  ) then raise exception 'Invalid approval transition'; end if;
+  return new;
+end;
+$$;
+drop trigger if exists assistant_action_payload_immutable on public.assistant_action_approvals;
+create trigger assistant_action_payload_immutable before update on public.assistant_action_approvals
+  for each row execute function public.assistant_action_immutable();
+revoke all on function public.assistant_action_immutable(), public.assistant_delete_task(uuid,uuid) from public,anon,authenticated;
+grant execute on function public.assistant_delete_task(uuid,uuid) to service_role;
+
+revoke all on function public.assistant_claim_task_run(uuid,uuid,text,uuid,timestamptz,timestamptz), public.assistant_start_task_run(uuid),
+ public.assistant_propose_action(uuid,text,jsonb,text,text), public.assistant_decide_action(uuid,uuid,text),
+ public.assistant_finish_action(uuid,uuid,text,text) from public,anon,authenticated;
+grant execute on function public.assistant_claim_task_run(uuid,uuid,text,uuid,timestamptz,timestamptz), public.assistant_start_task_run(uuid),
+ public.assistant_propose_action(uuid,text,jsonb,text,text), public.assistant_decide_action(uuid,uuid,text),
+ public.assistant_finish_action(uuid,uuid,text,text) to service_role;
+commit;
+
+-- v6-study.sql
+-- Source-linked study cards and atomic review history.
+begin;
+create table if not exists public.study_settings (
+ user_profile_id uuid primary key references public.user_profiles(id),
+ daily_limit integer not null default 20 check(daily_limit between 1 and 200),
+ timezone text not null default 'Australia/Sydney',
+ version integer not null default 1 check(version > 0)
+);
+create table if not exists public.study_cards (
+ id uuid primary key, user_profile_id uuid not null references public.user_profiles(id),
+ deck text not null check(length(deck) between 1 and 120),
+ kind text not null check(kind in ('recall','exercise','explain')),
+ prompt text not null check(length(prompt) between 1 and 20000),
+ answer text not null check(length(answer) between 1 and 20000),
+ evidence jsonb not null check(jsonb_typeof(evidence)='object' and evidence->>'version'='1' and length(evidence->>'quote') between 1 and 20000),
+ schedule jsonb not null check(jsonb_typeof(schedule)='object'),
+ due_at timestamptz not null, active boolean not null default true,
+ version integer not null default 1 check(version > 0),
+ request_hash text not null check(request_hash ~ '^[a-f0-9]{64}$'),
+ created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists study_cards_due on public.study_cards(user_profile_id,active,due_at);
+create table if not exists public.study_reviews (
+ id uuid primary key, card_id uuid not null references public.study_cards(id),
+ user_profile_id uuid not null references public.user_profiles(id),
+ request_hash text not null check(request_hash ~ '^[a-f0-9]{64}$'),
+ rating integer not null check(rating between 1 and 4),
+ response text not null check(length(response) between 1 and 20000),
+ reflection text not null default '' check(length(reflection)<=20000),
+ reviewed_at timestamptz not null default now(),
+ prompt text not null, answer text not null, evidence jsonb not null,
+ card_version integer not null, schedule_before jsonb not null, schedule_after jsonb not null, review_log jsonb not null
+);
+create index if not exists study_reviews_daily on public.study_reviews(user_profile_id,reviewed_at desc);
+alter table public.study_settings enable row level security;
+alter table public.study_cards enable row level security;
+alter table public.study_reviews enable row level security;
+revoke all on public.study_settings,public.study_cards,public.study_reviews from public,anon,authenticated;
+grant select,insert,update on public.study_settings,public.study_cards to service_role;
+grant select,insert on public.study_reviews to service_role;
+
+create or replace function public.assistant_study_report(p_user_id uuid)
+returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
+declare s public.study_settings; today date; used integer;
+begin
+ insert into public.study_settings(user_profile_id) values(p_user_id) on conflict do nothing;
+ select * into s from public.study_settings where user_profile_id=p_user_id;
+ today := (now() at time zone s.timezone)::date;
+ select count(*) into used from public.study_reviews where user_profile_id=p_user_id
+   and reviewed_at >= (today::timestamp at time zone s.timezone) and reviewed_at < ((today+1)::timestamp at time zone s.timezone);
+ return jsonb_build_object('settings',to_jsonb(s),'reviewed_today',used,'day',today,'generated_at',now(),
+   'cards',coalesce((select jsonb_agg(c order by c.due_at,c.id) from (select * from public.study_cards where user_profile_id=p_user_id order by due_at,id limit 501) c),'[]'::jsonb),
+   'reviews',coalesce((select jsonb_agg(r order by r.reviewed_at desc,r.id) from (select * from public.study_reviews where user_profile_id=p_user_id order by reviewed_at desc,id limit 200) r),'[]'::jsonb));
+end; $$;
+
+create or replace function public.assistant_study_save(p_user_id uuid,p_action text,p_body jsonb)
+returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
+declare c public.study_cards; s public.study_settings; target uuid;
+begin
+ if p_action='settings' then
+   insert into public.study_settings(user_profile_id) values(p_user_id) on conflict do nothing;
+   select * into s from public.study_settings where user_profile_id=p_user_id for update;
+   if s.version <> (p_body->>'version')::integer then return jsonb_build_object('error','conflict'); end if;
+   if not exists(select 1 from pg_timezone_names where name=p_body->>'timezone') then raise exception 'Invalid timezone'; end if;
+   update public.study_settings set daily_limit=(p_body->>'dailyLimit')::integer,timezone=p_body->>'timezone',version=version+1 where user_profile_id=p_user_id returning * into s;
+   return jsonb_build_object('settings',to_jsonb(s));
+ end if;
+ if p_action not in ('create','edit') then raise exception 'Invalid operation'; end if;
+ target := (p_body->>'id')::uuid;
+ if p_action='create' then
+   insert into public.study_settings(user_profile_id) values(p_user_id) on conflict do nothing;
+   perform 1 from public.study_settings where user_profile_id=p_user_id for update;
+   if not exists(select 1 from public.study_cards where id=target)
+     and (select count(*) from public.study_cards where user_profile_id=p_user_id)>=500 then return jsonb_build_object('error','capacity'); end if;
+   insert into public.study_cards(id,user_profile_id,deck,kind,prompt,answer,evidence,schedule,due_at,request_hash)
+   values(target,p_user_id,p_body->>'deck',p_body->>'kind',p_body->>'prompt',p_body->>'answer',p_body->'evidence',p_body->'schedule',(p_body->'schedule'->>'due')::timestamptz,p_body->>'requestHash') on conflict do nothing;
+   select * into c from public.study_cards where id=target and user_profile_id=p_user_id for update;
+   if not found or c.request_hash <> p_body->>'requestHash' then return jsonb_build_object('error','conflict'); end if;
+ else
+   select * into c from public.study_cards where id=target and user_profile_id=p_user_id for update;
+   if not found then return jsonb_build_object('error','missing'); end if;
+   if c.version <> (p_body->>'version')::integer then return jsonb_build_object('error','conflict'); end if;
+   update public.study_cards set deck=p_body->>'deck',prompt=p_body->>'prompt',answer=p_body->>'answer',active=(p_body->>'active')::boolean,version=version+1,updated_at=now() where id=target returning * into c;
+ end if;
+ return jsonb_build_object('card',to_jsonb(c));
+end; $$;
+
+create or replace function public.assistant_study_review(p_user_id uuid,p_body jsonb)
+returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
+declare s public.study_settings; c public.study_cards; r public.study_reviews; today date; used integer;
+begin
+ insert into public.study_settings(user_profile_id) values(p_user_id) on conflict do nothing;
+ select * into s from public.study_settings where user_profile_id=p_user_id for update;
+ select * into r from public.study_reviews where id=(p_body->>'id')::uuid;
+ if found then
+   if r.user_profile_id<>p_user_id or r.card_id<>(p_body->>'cardId')::uuid or r.request_hash<>p_body->>'requestHash' then return jsonb_build_object('error','conflict'); end if;
+   return jsonb_build_object('review',to_jsonb(r),'reused',true);
+ end if;
+ select * into c from public.study_cards where id=(p_body->>'cardId')::uuid and user_profile_id=p_user_id for update;
+ if not found then return jsonb_build_object('error','missing'); end if;
+ if c.version<>(p_body->>'version')::integer then return jsonb_build_object('error','conflict'); end if;
+ if not c.active or c.due_at>now() then return jsonb_build_object('error','not_due'); end if;
+ today := (now() at time zone s.timezone)::date;
+ select count(*) into used from public.study_reviews where user_profile_id=p_user_id
+   and reviewed_at >= (today::timestamp at time zone s.timezone) and reviewed_at < ((today+1)::timestamp at time zone s.timezone);
+ if used>=s.daily_limit then return jsonb_build_object('error','daily_limit'); end if;
+ if (p_body->'schedule'->>'due')::timestamptz <= now() then raise exception 'Invalid next review'; end if;
+ insert into public.study_reviews(id,card_id,user_profile_id,request_hash,rating,response,reflection,prompt,answer,evidence,card_version,schedule_before,schedule_after,review_log)
+ values((p_body->>'id')::uuid,c.id,p_user_id,p_body->>'requestHash',(p_body->>'rating')::integer,p_body->>'response',coalesce(p_body->>'reflection',''),c.prompt,c.answer,c.evidence,c.version,c.schedule,p_body->'schedule',p_body->'log') returning * into r;
+ update public.study_cards set schedule=p_body->'schedule',due_at=(p_body->'schedule'->>'due')::timestamptz,version=version+1,updated_at=now() where id=c.id;
+ return jsonb_build_object('review',to_jsonb(r),'reused',false);
+end; $$;
+
+create or replace function public.assistant_study_immutable()
+returns trigger language plpgsql set search_path=pg_catalog,public as $$
+begin
+ if tg_table_name='study_reviews' then raise exception 'Study review history is immutable'; end if;
+ if row(old.id,old.user_profile_id,old.kind,old.evidence,old.request_hash,old.created_at) is distinct from row(new.id,new.user_profile_id,new.kind,new.evidence,new.request_hash,new.created_at) then raise exception 'Study source evidence is immutable'; end if;
+ return new;
+end; $$;
+drop trigger if exists study_card_source_immutable on public.study_cards;
+create trigger study_card_source_immutable before update on public.study_cards for each row execute function public.assistant_study_immutable();
+drop trigger if exists study_review_immutable on public.study_reviews;
+create trigger study_review_immutable before update or delete on public.study_reviews for each row execute function public.assistant_study_immutable();
+revoke all on function public.assistant_study_report(uuid),public.assistant_study_save(uuid,text,jsonb),public.assistant_study_review(uuid,jsonb),public.assistant_study_immutable() from public,anon,authenticated;
+grant execute on function public.assistant_study_report(uuid),public.assistant_study_save(uuid,text,jsonb),public.assistant_study_review(uuid,jsonb) to service_role;
+commit;

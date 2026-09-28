@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { OfflinePrivacyBoundary } from "@/lib/offline/privacy-boundary";
 
 const geist = Geist({
   variable: "--font-geist",
@@ -36,6 +37,7 @@ export default function RootLayout({
         />
       </head>
       <body className="antialiased" suppressHydrationWarning>
+        <OfflinePrivacyBoundary />
         {children}
       </body>
     </html>

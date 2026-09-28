@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { ForceGraph3DInstance } from "3d-force-graph";
 import type { CosmosView, GLink, GNode } from "./model";
 import { COSMOS, LABEL_VISIBILITY_FLOOR, lensOpacity } from "./palette";
+import { placeLabel } from "./label-layout";
 
 // Labels live in an HTML layer rather than as three.js sprites: one SpriteText per
 // node means one canvas texture per node, and text in the DOM also gets real
@@ -35,6 +36,12 @@ export function createLabelLayer(options: {
     const pool: HTMLDivElement[] = [];
     // Sorted once per data change; re-sorting every frame would be wasted work.
     let ordered: GNode[] = [];
+    let byId = new Map<string, GNode>();
+    const textWidths = new Map<string, number>();
+    const textMeasure = document.createElement("canvas").getContext("2d");
+    const fontFamily = getComputedStyle(layer).fontFamily;
+    const clearTextWidths = () => textWidths.clear();
+    document.fonts.addEventListener("loadingdone", clearTextWidths);
     let frame = 0;
     let lastPaint = 0;
 
@@ -47,7 +54,7 @@ export function createLabelLayer(options: {
             element = document.createElement("div");
             element.style.cssText =
                 "position:absolute;transform:translate(-50%,0);white-space:nowrap;" +
-                "max-width:190px;overflow:hidden;text-overflow:ellipsis;" +
+                "overflow:hidden;text-overflow:ellipsis;line-height:1.35;" +
                 "text-shadow:0 1px 6px rgba(0,0,0,0.9);will-change:transform,opacity;";
             layer.appendChild(element);
             pool[index] = element;
@@ -73,7 +80,8 @@ export function createLabelLayer(options: {
         }
 
         const safe = view.labelSafeArea;
-        const placed: { x1: number; y1: number; x2: number; y2: number }[] = [];
+        const bounds = { x1: safe.left + 8, y1: 8, x2: width - safe.right - 8, y2: height - 8 };
+        const placed = [...view.labelObstacles];
         let used = 0;
         let budget = LABEL_BUDGET;
 
@@ -91,7 +99,7 @@ export function createLabelLayer(options: {
 
             const screen = graph.graph2ScreenCoords(node.x, node.y ?? 0, node.z ?? 0);
             if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return false;
-            if (screen.x < -120 || screen.x > width + 120 || screen.y < -60 || screen.y > height + 60) return false;
+            if (screen.x < 0 || screen.x > width || screen.y < 0 || screen.y > height) return false;
 
             const distance = toNode.length();
             const fade = distance <= FADE_START
@@ -103,34 +111,19 @@ export function createLabelLayer(options: {
             if (screen.x < safe.left || screen.x > width - safe.right) return false;
 
             const size = 11 + Math.round(node.centrality * 3);
+            const weight = forced || node.centrality > 0.5 ? "650" : "500";
             const offset = 10 + Math.cbrt(1 + node.links) * 3.4;
-            // Approximate the box rather than measuring: a getBoundingClientRect per
-            // label per frame would force layout 45 times a frame.
-            const boxWidth = Math.min(190, node.title.length * size * 0.54);
-            const top = screen.y + offset;
-            // Labels are centre-aligned, so a star clear of a rail can still have half
-            // its text under one. Slide the text back into view rather than dropping it.
-            let centre = screen.x;
-            let x1 = centre - boxWidth / 2;
-            let x2 = centre + boxWidth / 2;
-            if (x1 < safe.left) {
-                const shift = safe.left - x1;
-                centre += shift;
-                x1 += shift;
-                x2 += shift;
+            const font = `${weight} ${size}px ${fontFamily}`;
+            const measureKey = `${font}:${node.title}`;
+            let measuredWidth = textWidths.get(measureKey);
+            if (measuredWidth === undefined) {
+                if (textMeasure) textMeasure.font = font;
+                measuredWidth = Math.ceil(textMeasure?.measureText(node.title).width ?? node.title.length * size * 0.6);
+                textWidths.set(measureKey, measuredWidth);
             }
-            if (x2 > width - safe.right) {
-                const shift = x2 - (width - safe.right);
-                centre -= shift;
-                x1 -= shift;
-                x2 -= shift;
-            }
-            if (x1 < safe.left) return false;
-
-            const box = { x1, y1: top, x2, y2: top + size * 1.35 };
-            for (const other of placed) {
-                if (box.x1 < other.x2 && box.x2 > other.x1 && box.y1 < other.y2 && box.y2 > other.y1) return false;
-            }
+            const boxWidth = Math.min(190, measuredWidth, bounds.x2 - bounds.x1);
+            const box = placeLabel(screen, boxWidth, size * 1.35, offset, bounds, placed);
+            if (!box) return false;
             placed.push(box);
 
             // A background system's name must fade with its star, or the labels are the
@@ -139,9 +132,10 @@ export function createLabelLayer(options: {
 
             const element = take(used++);
             element.textContent = node.title;
-            element.style.transform = `translate(-50%,0) translate(${centre}px,${top}px)`;
+            element.style.transform = `translate(${box.x1}px,${box.y1}px)`;
+            element.style.width = `${boxWidth}px`;
             element.style.fontSize = `${size}px`;
-            element.style.fontWeight = forced || node.centrality > 0.5 ? "650" : "500";
+            element.style.fontWeight = weight;
             element.style.color = forced && !backgrounded ? COSMOS.text : COSMOS.muted;
             const base = forced ? 1 : fade * 0.9;
             element.style.opacity = String(backgrounded ? base * 0.45 : base);
@@ -151,8 +145,9 @@ export function createLabelLayer(options: {
 
         // Forced labels claim their space first so a hovered or routed page never
         // loses a collision to an incidental neighbour.
-        for (const node of ordered) {
-            if (must.has(node.id)) place(node, true);
+        for (const id of must) {
+            const node = byId.get(id);
+            if (node) place(node, true);
         }
         for (const node of ordered) {
             if (budget <= 0) break;
@@ -180,6 +175,8 @@ export function createLabelLayer(options: {
     return {
         setNodes(nodes) {
             ordered = [...nodes].sort((a, b) => b.centrality - a.centrality || b.links - a.links);
+            byId = new Map(nodes.map(node => [node.id, node]));
+            textWidths.clear();
         },
         start() {
             if (!frame) frame = requestAnimationFrame(tick);
@@ -191,6 +188,7 @@ export function createLabelLayer(options: {
         dispose() {
             if (frame) cancelAnimationFrame(frame);
             frame = 0;
+            document.fonts.removeEventListener("loadingdone", clearTextWidths);
             layer.remove();
             pool.length = 0;
         },

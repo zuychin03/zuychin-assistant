@@ -1,9 +1,21 @@
 .scope :is(button, input, textarea, [role="button"]):focus-visible,
-.focus:focus-visible {
+.focus:focus-visible,
+.menu button:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
-.scope button:disabled {
+.scope button:disabled,
+.menu button:disabled {
   opacity: 0.55;
+}
+
+.menu button:not(:disabled):hover {
+  background: var(--color-surface) !important;
+}
+
+@media (pointer: coarse) {
+  .scope button {
+    min-height: 44px;
+  }
 }

@@ -12,19 +12,22 @@ const TTL_MS = 60_000;
 
 let cached: string | null = null;
 let loadedAt = 0;
+let lastReadSucceeded = false;
 
 export function cachedEmbeddingOverride(): string | null {
     return cached;
 }
 
-/** TTL-cached read of the override; never throws (falls back to env/default). */
-export async function refreshEmbeddingOverride(signal?: AbortSignal): Promise<void> {
-    if (loadedAt && Date.now() - loadedAt < TTL_MS) return;
+/** Strict callers require a confirmed partition; ordinary callers retain fallback behaviour. */
+export async function refreshEmbeddingOverride(signal?: AbortSignal, strict = false): Promise<void> {
+    if (loadedAt && Date.now() - loadedAt < TTL_MS && (!strict || lastReadSucceeded)) return;
     try {
         const state = await getCronState<{ model?: string }>(STATE_KEY, signal);
         cached = state?.model ?? null;
+        lastReadSucceeded = true;
     } catch {
-        // Pre-DDL or transient failure: keep the last known value.
+        lastReadSucceeded = false;
+        if (strict) throw new Error("Knowledge embedding partition is unavailable.");
     }
     loadedAt = Date.now();
 }
@@ -32,5 +35,6 @@ export async function refreshEmbeddingOverride(signal?: AbortSignal): Promise<vo
 export async function setEmbeddingOverride(model: string, signal?: AbortSignal): Promise<void> {
     await setCronState(STATE_KEY, { model }, signal);
     cached = model;
+    lastReadSucceeded = true;
     loadedAt = Date.now();
 }

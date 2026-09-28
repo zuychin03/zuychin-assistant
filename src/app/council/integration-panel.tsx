@@ -2,13 +2,8 @@
 
 import { useState } from "react";
 import { GitMerge, ShieldCheck } from "lucide-react";
+import { Dropdown } from "@/components/dropdown";
 
-// The last step of a code council. Every task passing on its own says nothing
-// about whether they work together, so the host assembles them on a clean
-// branch cut from base and runs the project's own checks there.
-//
-// Nominating an integrator delegates that ASSEMBLY, not the decision to ship:
-// the integration branch is never the base branch, and merging it stays manual.
 
 interface Campaign {
     status: string;
@@ -21,11 +16,11 @@ interface Campaign {
 }
 
 const TONE: Record<string, string> = {
-    verified: "#31d07f",
-    running: "#e0a33e",
-    pending: "#e0a33e",
-    conflict: "#e5484d",
-    failed: "#e5484d",
+    verified: "var(--council-good)",
+    running: "var(--council-caution)",
+    pending: "var(--council-caution)",
+    conflict: "var(--council-error)",
+    failed: "var(--council-error)",
 };
 
 export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
@@ -99,24 +94,22 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
 
             {campaign.status === "complete" && (
                 <div style={styles.row}>
-                    <input
+                    <Dropdown
                         value={agent}
-                        onChange={(e) => setAgent(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void nominate(); } }}
+                        onChange={setAgent}
+                        options={agentNames}
+                        ariaLabel="Integration agent"
                         placeholder="Delegate the assembly to…"
-                        list={`integrators-${code}`}
+                        disabled={busy || agentNames.length === 0}
                         style={styles.input}
                     />
-                    <datalist id={`integrators-${code}`}>
-                        {agentNames.map((n) => <option key={n} value={n} />)}
-                    </datalist>
-                    <button type="button" onClick={nominate} disabled={busy || !agent.trim()} style={styles.button}>
-                        Delegate
+                    <button type="button" onClick={nominate} disabled={busy || !agentNames.includes(agent)} style={styles.button}>
+                        {busy ? "Delegating…" : "Delegate"}
                     </button>
                 </div>
             )}
 
-            {error && <div style={styles.error}>{error}</div>}
+            {error && <div role="alert" style={styles.error}>{error}</div>}
         </div>
     );
 }
@@ -150,19 +143,19 @@ const styles: Record<string, React.CSSProperties> = {
         display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
         fontSize: 11.5, color: "var(--color-text-muted)",
     },
-    row: { display: "flex", gap: 8 },
+    row: { display: "flex", gap: 8, flexWrap: "wrap" },
     input: {
-        flex: 1, padding: "6px 10px", borderRadius: 9, fontSize: 12.5,
+        flex: "1 1 180px", minWidth: 0, padding: "6px 10px", borderRadius: 9, fontSize: 13,
         fontFamily: "var(--font-family)",
         borderWidth: 1, borderStyle: "solid",
         borderColor: "color-mix(in srgb, var(--color-text-muted) 30%, transparent)",
         background: "var(--color-background)", color: "var(--color-text-primary)",
     },
     button: {
-        padding: "6px 13px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer",
+        minHeight: 40, padding: "6px 13px", borderRadius: "var(--radius-sm)", fontSize: 12, fontWeight: 600, cursor: "pointer",
         borderWidth: 1, borderStyle: "solid",
         borderColor: "color-mix(in srgb, var(--color-text-muted) 35%, transparent)",
         background: "transparent", color: "var(--color-text-primary)",
     },
-    error: { fontSize: 12, color: "#e5484d" },
+    error: { fontSize: 12, color: "var(--council-error)" },
 };

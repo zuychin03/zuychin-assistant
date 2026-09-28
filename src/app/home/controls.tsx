@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect, useId } from "react";
+import { useState, useRef, useEffect, useId, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
+import { observeAnchoredMenu } from "@/components/anchored-menu";
 import { Check, ChevronDown, Search, X } from "lucide-react";
 import { styles } from "./styles";
 import { filterModelGroups, nextModelOption, type ModelPickerGroup } from "./model-picker";
@@ -20,6 +22,7 @@ export interface ModelMeta {
 export interface ProviderModel {
   id: string;
   label: string;
+  free?: boolean;
   dimension?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
@@ -57,12 +60,15 @@ export function SelectMenu({
   searchable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const [menuOwner, setMenuOwner] = useState("");
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState(value);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const filteredGroups = filterModelGroups(groups, query);
   const options = filteredGroups.flatMap((group) => group.options);
@@ -70,12 +76,21 @@ export function SelectMenu({
   const activeOption = options[activeIndex];
   const optionId = (index: number) => `${listId}-option-${index}`;
 
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return;
+    return observeAnchoredMenu(triggerRef.current, menuRef.current, {
+      align: align === "right" ? "end" : "start", maxHeight: 420, minWidth: 240, gap: 6, preferAbove: dropUp,
+    });
+  }, [open, align, dropUp]);
+
   const closeMenu = (restoreFocus = false) => {
     setOpen(false);
     if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
 
   const openMenu = (edge?: "first" | "last") => {
+    setPortalTarget(triggerRef.current?.closest("dialog") ?? document.body);
+    setMenuOwner(triggerRef.current?.closest("[data-menu-owner]")?.getAttribute("data-menu-owner") ?? "");
     setQuery("");
     const allOptions = groups.flatMap((group) => group.options);
     setActiveValue(edge === "last" ? allOptions.at(-1)?.value ?? ""
@@ -94,6 +109,8 @@ export function SelectMenu({
       event.preventDefault();
       event.stopPropagation();
       closeMenu(true);
+    } else if (event.key === "Tab") {
+      closeMenu(true);
     } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && !event.shiftKey) {
       event.preventDefault();
       const next = nextModelOption(activeIndex, options.length, event.key);
@@ -108,7 +125,7 @@ export function SelectMenu({
     if (!open) return;
     (searchable ? searchRef.current : listRef.current)?.focus({ preventScroll: true });
     const onDoc = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (ref.current && !ref.current.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) {
         setOpen(false);
         const focusTarget = e.target instanceof Element && e.target.closest("button, a[href], input, select, textarea, [tabindex], [contenteditable=true]");
         if (!focusTarget) triggerRef.current?.focus({ preventScroll: true });
@@ -127,8 +144,9 @@ export function SelectMenu({
   return (
     <div
       ref={ref}
+      aria-owns={open ? `${listId}-popup` : undefined}
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) closeMenu();
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !menuRef.current?.contains(event.relatedTarget as Node | null)) closeMenu();
       }}
       style={{ ...dropdown.wrap, ...(compact ? { flex: 1, maxWidth: "none" } : {}), ...(wide ? { maxWidth: "none" } : {}), ...(integrated ? dropdown.wrapIntegrated : {}) }}
     >
@@ -157,13 +175,12 @@ export function SelectMenu({
           style={{ flexShrink: 0, opacity: 0.5, transform: (dropUp ? !open : open) ? "rotate(180deg)" : "none", transition: "transform .18s ease" }}
         />
       </button>
-      {open && (
+      {open && portalTarget && createPortal(
         <div
-          style={{
-            ...dropdown.menu,
-            ...(align === "right" ? { right: 0 } : { left: 0 }),
-            ...(dropUp ? { top: "auto", bottom: "calc(100% + 6px)" } : {}),
-          }}
+          ref={menuRef}
+          id={`${listId}-popup`}
+          data-model-options={menuOwner}
+          style={dropdown.menu}
           className="animate-fade-in-scale"
         >
           {searchable && (
@@ -215,7 +232,7 @@ export function SelectMenu({
                       role="option"
                       tabIndex={-1}
                       aria-selected={option.value === value}
-                      onPointerDown={(event) => event.preventDefault()}
+                      onPointerDown={(event) => { if (event.pointerType !== "touch") event.preventDefault(); }}
                       onPointerMove={() => setActiveValue(option.value)}
                       onClick={() => selectOption(option.value)}
                       style={{ ...dropdown.item, ...(option.value === value ? dropdown.itemActive : {}), ...(index === activeIndex ? dropdown.itemFocused : {}) }}
@@ -234,7 +251,7 @@ export function SelectMenu({
             </p>
           )}
           {!searchable && !options.length && <p style={dropdown.resultStatus}>No models available.</p>}
-        </div>
+        </div>, portalTarget,
       )}
     </div>
   );
@@ -264,6 +281,8 @@ export function ParamRow({
             type="button"
             onClick={() => onChange(active ? null : def)}
             style={{ ...paramRow.toggle, ...(active ? paramRow.toggleOn : {}) }}
+            aria-label={`${label}: ${active ? "use automatic value" : "set custom value"}`}
+            aria-pressed={active}
           >
             {active ? "Custom" : "Auto"}
           </button>
@@ -271,6 +290,7 @@ export function ParamRow({
       </div>
       <input
         type="range"
+        aria-label={label}
         min={min}
         max={max}
         step={step}
@@ -292,6 +312,24 @@ const STRENGTH_COLORS: Record<string, string> = {
   "Visual documents": "#f97316",
 };
 const strengthColor = (s: string) => STRENGTH_COLORS[s] ?? "#94a3b8";
+
+function containDialogFocus(event: React.KeyboardEvent<HTMLDialogElement>) {
+  if (event.key !== "Tab" || event.defaultPrevented) return;
+  const dialog = event.currentTarget;
+  const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex], [contenteditable="true"]'))
+    .filter((element) => element.tabIndex >= 0 && !element.closest("[inert]") && element.getClientRects().length > 0);
+  const first = controls[0], last = controls.at(-1);
+  if (!first) {
+    event.preventDefault();
+    dialog.focus({ preventScroll: true });
+  } else if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+    event.preventDefault();
+    last?.focus({ preventScroll: true });
+  } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
+}
 
 export function ModelInfoModal({
   model, providerLabel, onClose,
@@ -337,6 +375,7 @@ export function ModelInfoModal({
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
       aria-modal="true"
+      onKeyDown={containDialogFocus}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
@@ -407,14 +446,15 @@ export function ModelInfoModal({
 }
 
 export function ConfirmModal({
-  title, body, confirmLabel, busyText, onConfirm, onCancel,
+  title, body, confirmLabel, busyText, error, onConfirm, onCancel,
 }: {
   title: string;
   body: string;
   confirmLabel: string;
   /** When set, the modal is locked into a progress view (no buttons, no dismiss). */
   busyText?: string;
-  onConfirm: () => void;
+  error?: string;
+  onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -449,10 +489,11 @@ export function ConfirmModal({
     dismissedRef.current = true;
     onCancel();
   };
-  const confirm = () => {
+  const confirm = async () => {
     if (busyText || confirmingRef.current || dismissedRef.current) return;
     confirmingRef.current = true;
-    onConfirm();
+    try { await onConfirm(); }
+    finally { confirmingRef.current = false; }
   };
 
   return (
@@ -463,6 +504,7 @@ export function ConfirmModal({
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
       aria-modal="true"
+      onKeyDown={containDialogFocus}
       aria-busy={!!busyText}
       onCancel={(event) => { event.preventDefault(); cancel(); }}
       onClick={(event) => { if (event.target === event.currentTarget) cancel(); }}
@@ -477,6 +519,7 @@ export function ConfirmModal({
           )}
         </div>
         <p id={descriptionId} style={modal.desc}>{body}</p>
+        {error && <p role="alert" style={{ ...modal.desc, color: "var(--color-danger)", opacity: 1, overflowWrap: "anywhere" }}>{error}</p>}
         {busyText ? (
           <p role="status" style={{ ...modal.desc, color: "var(--color-primary)", fontWeight: 600 }}>{busyText}</p>
         ) : (
@@ -492,6 +535,7 @@ export function ConfirmModal({
 
 const confirmRow: React.CSSProperties = {
   display: "flex",
+  flexWrap: "wrap",
   justifyContent: "flex-end",
   gap: 10,
   marginTop: 16,
@@ -513,8 +557,8 @@ const confirmCancelBtn: React.CSSProperties = {
 const confirmDangerBtn: React.CSSProperties = {
   ...confirmBtnBase,
   border: "none",
-  background: "#ef4444",
-  color: "#fff",
+  background: "var(--color-danger)",
+  color: "var(--color-danger-foreground)",
 };
 
 const dropdown: Record<string, React.CSSProperties> = {
@@ -533,6 +577,7 @@ const dropdown: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 6,
     minWidth: 0,
+    minHeight: 44,
     maxWidth: "100%",
     padding: "7px 10px",
     background: "var(--color-surface)",
@@ -552,7 +597,8 @@ const dropdown: Record<string, React.CSSProperties> = {
     borderRadius: 9,
   },
   triggerOpen: {
-    border: "1px solid var(--color-primary)",
+    outline: "2px solid var(--color-primary)",
+    outlineOffset: -2,
   },
   triggerIcon: {
     display: "flex",
@@ -568,21 +614,19 @@ const dropdown: Record<string, React.CSSProperties> = {
     textAlign: "left",
   },
   menu: {
-    position: "absolute",
-    top: "calc(100% + 6px)",
-    zIndex: 50,
-    width: "100%",
-    minWidth: 240,
-    maxWidth: "calc(100vw - 20px)",
-    maxHeight: "min(420px, 65dvh)",
+    position: "fixed",
+    zIndex: 1000,
+    width: "max-content",
+    boxSizing: "border-box",
+    visibility: "hidden",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
     background: "var(--color-background)",
     border: "1px solid var(--color-border)",
-    borderRadius: 12,
+    borderRadius: "var(--radius-md)",
     padding: 6,
-    boxShadow: "0 12px 32px rgba(0,0,0,0.16)",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
   },
   searchWrap: {
     display: "flex",

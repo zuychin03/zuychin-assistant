@@ -1,0 +1,29 @@
+import assert from "node:assert/strict";
+import { createJevDecisionClient, parseJevAnswers, type JevRequest } from "../src/lib/ai/jev-decisions.ts";
+
+const request: JevRequest = { state: "Synthetic fixture state", questions: {
+    route: { type: "choice", instructions: "Choose a route", criteria: { chat: "Simple answer", agent: "Multiple steps" } },
+    retain: { type: "boolean", instructions: "Contains a stable fact?" },
+    priority: { type: "score", instructions: "Rate urgency", criteria: ["Low", "Medium", "High"] },
+} };
+const response = () => ({ answers: { route: { type: "choice", choice: "agent", probabilities: { chat: 0.1, agent: 0.9 } }, retain: { type: "boolean", probability: 0.05 }, priority: { type: "score", score: 1.85, probabilities: { "0": 0.05, "1": 0.05, "2": 0.9 } } }, providerMetadata: { typesafe: { confidence: { route: 0.8, priority: 0.8 } } } });
+let passed = 0;
+async function check(name: string, run: () => unknown) { await run(); passed++; console.log(`PASS ${name}`); }
+await check("default client is disabled without inspecting or transmitting state", async () => { const cyclic = {} as { self?: unknown }; cyclic.self = cyclic; assert.deepEqual((await createJevDecisionClient().evaluate({ ...request, state: cyclic })).reason, "disabled"); });
+await check("strict parser preserves all typed probabilities", () => { const result = parseJevAnswers(request, response()); assert.equal(result.route.type, "choice"); assert.equal(result.priority.type, "score"); assert.equal(result.retain.type, "boolean"); });
+await check("fixture client sends bounded standard evaluation envelope and returns confident decisions", async () => { let calls = 0; const client = createJevDecisionClient({ mode: "fixture", transport: async (body) => { calls++; assert.equal(body.model, "typesafe-ai/jev"); assert.deepEqual(body.questions, request.questions); return response(); } }); assert.equal((await client.evaluate(request)).status, "accepted"); assert.equal(calls, 1); });
+await check("low probability requires existing fallback", async () => { const data = response(); data.answers.retain.probability = 0.5; const result = await createJevDecisionClient({ mode: "fixture", transport: async () => data }).evaluate(request); assert.equal(result.reason, "uncertain"); });
+await check("missing confidence cannot be treated as certain", async () => { const result = await createJevDecisionClient({ mode: "fixture", transport: async () => ({ answers: response().answers }) }).evaluate(request); assert.equal(result.reason, "uncertain"); });
+await check("unknown answer IDs reject whole result", () => { assert.throws(() => parseJevAnswers(request, { ...response(), answers: { ...response().answers, injected: { type: "boolean", probability: 1 } } })); });
+await check("missing answer IDs reject whole result", () => { const data = response(); delete (data.answers as Partial<typeof data.answers>).retain; assert.throws(() => parseJevAnswers(request, data)); });
+await check("out of range and nonnumeric probabilities reject", () => { for (const probability of [NaN, Infinity, -1, 1.1, "0.9", null]) { assert.throws(() => parseJevAnswers(request, { answers: { ...response().answers, retain: { type: "boolean", probability } } })); } });
+await check("extra or missing outcome probabilities reject", () => { for (const probabilities of [{ chat: 0.1 }, { chat: 0.1, agent: 0.8, other: 0.1 }]) assert.throws(() => parseJevAnswers(request, { answers: { ...response().answers, route: { type: "choice", choice: "agent", probabilities } } })); });
+await check("non-normalised distribution and nonmaximal choice reject", () => { for (const probabilities of [{ chat: 0.4, agent: 0.4 }, { chat: 0.9, agent: 0.1 }]) assert.throws(() => parseJevAnswers(request, { answers: { ...response().answers, route: { type: "choice", choice: "agent", probabilities } } })); });
+await check("score must match rubric weighted mean", () => { const data = response(); data.answers.priority.score = 1; assert.throws(() => parseJevAnswers(request, data)); });
+await check("type mismatches and extra answer fields reject", () => { assert.throws(() => parseJevAnswers(request, { answers: { ...response().answers, retain: { type: "boolean", probability: 0.9, approve: true } } })); });
+await check("invalid response invokes no auto approval or raw error logging", async () => { const result = await createJevDecisionClient({ mode: "fixture", transport: async () => ({ private: "raw provider body" }) }).evaluate(request); assert.equal(result.reason, "invalid_response"); assert.ok(!JSON.stringify(result).includes("raw provider")); });
+await check("transport failures are safe fallback results", async () => { const result = await createJevDecisionClient({ mode: "fixture", transport: async () => { throw new Error("secret request text"); } }).evaluate(request); assert.equal(result.reason, "unavailable"); assert.ok(!JSON.stringify(result).includes("secret")); });
+await check("deadline bounds even a transport that ignores abort", async () => { const result = await createJevDecisionClient({ mode: "fixture", timeoutMs: 10, transport: async () => new Promise(() => {}) }).evaluate(request); assert.equal(result.reason, "timeout"); });
+await check("invalid input fails before transport", async () => { let called = false; const result = await createJevDecisionClient({ mode: "fixture", transport: async () => { called = true; return response(); } }).evaluate({ ...request, state: "x".repeat(64001) }); assert.equal(result.reason, "invalid_input"); assert.equal(called, false); });
+await check("unsupported outward action fields fail validation", async () => { const result = await createJevDecisionClient({ mode: "fixture", transport: async () => response() }).evaluate({ ...request, approve: true } as JevRequest); assert.equal(result.reason, "invalid_input"); });
+console.log(`Jev decisions: ${passed} fixture-only checks passed.`);

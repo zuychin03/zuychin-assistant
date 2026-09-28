@@ -54,6 +54,7 @@ const ROUTES: Record<NotificationType, Route> = {
 };
 
 export interface NotifyOptions {
+    signal?: AbortSignal;
     // Overrides the resolved Discord channel (e.g. a scheduled task's own target).
     discordChannelId?: string;
     telegramReplyMarkup?: unknown;
@@ -83,12 +84,12 @@ export async function notify(
         const channelId = options.discordChannelId
             ?? discordChannel(route.discord, route.discordFallback !== false);
         if (channelId) {
-            sends.push(sendDiscordMessage(channelId, text).then((ok) => { result.discord = ok; }));
+            sends.push(sendDiscordMessage(channelId, text, options.signal).then((ok) => { result.discord = ok; }));
         }
     }
 
     if (route.telegram && TELEGRAM_CHAT_ID) {
-        const opts = options.telegramReplyMarkup ? { replyMarkup: options.telegramReplyMarkup } : undefined;
+        const opts = { replyMarkup: options.telegramReplyMarkup, signal: options.signal };
         sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, text, opts).then((ok) => { result.telegram = ok; }));
     }
 

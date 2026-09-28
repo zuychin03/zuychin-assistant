@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Pause, Play, X } from "lucide-react";
 import { styles } from "../cosmos/styles";
 import { COSMOS } from "../cosmos/palette";
@@ -9,16 +9,28 @@ import { COSMOS } from "../cosmos/palette";
 const MS_PER_YEAR_OF_HISTORY = 4000;
 const FRAME_MS = 40;
 
-export default function TimelineBar({ start, end, value, playing, onChange, onPlaying, onExit }: {
+export default function TimelineBar({ start, end, value, playing, bottom, onHeightChange, onChange, onPlaying, onExit }: {
     start: number;
     end: number;
     value: number;
     playing: boolean;
+    bottom: number;
+    onHeightChange(height: number): void;
     onChange(next: number): void;
     onPlaying(next: boolean): void;
     onExit(): void;
 }) {
+    const barRef = useRef<HTMLDivElement>(null);
     const timer = useRef<number | null>(null);
+    useLayoutEffect(() => {
+        const bar = barRef.current;
+        if (!bar) return;
+        const measure = () => onHeightChange(bar.offsetHeight);
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(bar);
+        return () => observer.disconnect();
+    }, [onHeightChange]);
     // The sweep advances from wherever the handle currently sits without
     // restarting the interval on every frame it produces.
     const latest = useRef(value);
@@ -46,11 +58,11 @@ export default function TimelineBar({ start, end, value, playing, onChange, onPl
         };
     }, [playing, start, end, onChange, onPlaying]);
 
-    const label = new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const label = new Date(value).toLocaleDateString("en-AU", { year: "numeric", month: "2-digit", day: "2-digit" });
     const atEnd = value >= end - 1000;
 
     return (
-        <div style={styles.timelineWrap} className="animate-fade-in-scale">
+        <div ref={barRef} style={{ ...styles.timelineWrap, bottom: `max(${bottom}px, env(safe-area-inset-bottom, 0px))` }} className="cosmos-timeline animate-fade-in-scale">
             <button
                 style={styles.iconBtn}
                 onClick={() => {
@@ -80,6 +92,7 @@ export default function TimelineBar({ start, end, value, playing, onChange, onPl
                 }}
                 style={{ ...styles.slider, flex: 1 }}
                 aria-label="Vault history position"
+                aria-valuetext={label}
             />
 
             <span style={{ fontSize: 10.5, color: COSMOS.muted, whiteSpace: "nowrap" }}>

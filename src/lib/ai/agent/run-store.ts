@@ -1,12 +1,13 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { AgentEvent, AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
+import { ResumeScopeError, resumeRequestError } from "./resume-scope";
 
 export interface RunUsage {
     promptTokens: number;
     outputTokens: number;
     totalTokens: number;
     llmCalls: number;
-    workerTokens?: number;
+    workerTokens?: number | null;
 }
 
 // status says whether the run threw; stopReason says why it stopped. A run can
@@ -56,12 +57,9 @@ export async function createAgentRun(params: {
     // which cannot be written until the id exists.
     let root: string | null = null;
     if (params.resumeRunId) {
-        const { data: prior } = await supabase
-            .from("agent_runs")
-            .select("root_run_id")
-            .eq("id", params.resumeRunId)
-            .maybeSingle();
-        root = (prior?.root_run_id as string | null) ?? params.resumeRunId;
+        const prior = await getScopedResumeRun(params.resumeRunId, params);
+        root = prior.rootRunId;
+        if (root !== prior.id) await getScopedResumeRun(root, params);
     }
 
     const { data, error } = await supabase
@@ -207,4 +205,20 @@ export async function getAgentRun(id: string): Promise<AgentRunDetail | null> {
         reply: data.reply,
         error: data.error,
     };
+}
+
+export async function getScopedResumeRun(id: string, scope: { conversationId?: string; userProfileId?: string }, signal?: AbortSignal): Promise<AgentRunDetail & { rootRunId: string }> {
+    if (!scope.userProfileId || resumeRequestError({ resumeRunId: id, conversationId: scope.conversationId, channel: "web", agent: true })) throw new ResumeScopeError();
+    signal?.throwIfAborted();
+    const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
+    const { data: conversation, error: conversationError } = await supabase.from("conversations").select("id")
+        .eq("id", scope.conversationId!).eq("user_profile_id", scope.userProfileId).abortSignal(bounded).maybeSingle();
+    signal?.throwIfAborted();
+    if (conversationError || !conversation) throw new ResumeScopeError();
+    const { data, error } = await supabase.from("agent_runs").select("*").eq("id", id)
+        .eq("conversation_id", scope.conversationId!).eq("user_profile_id", scope.userProfileId).abortSignal(bounded).maybeSingle();
+    signal?.throwIfAborted();
+    if (error || !data) throw new ResumeScopeError();
+    return { ...toSummary(data), events: Array.isArray(data.events) ? data.events : [], reply: data.reply,
+        error: data.error, rootRunId: data.root_run_id ?? data.id };
 }

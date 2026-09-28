@@ -1,6 +1,7 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { Type } from "@google/genai";
 import { embedText } from "@/lib/ai/embeddings";
+import { observeGeminiClient } from "@/lib/ai/model-observations";
 import {
     searchMemories, insertMemory, updateMemoryFact, deleteMemory, reinforceMemory,
     memoryEmbeddingRef, type MemoryCategory, type MemoryHit,
@@ -34,7 +35,9 @@ export async function extractMemories(params: {
     userProfileId?: string;
     projectId?: string;
     conversationId?: string;
+    freeOnly?: boolean;
 }): Promise<void> {
+    if (params.freeOnly) return;
     const { userMessage, assistantReply, channel, userProfileId, projectId, conversationId } = params;
     try {
         const trimmed = userMessage.trim();
@@ -100,7 +103,7 @@ async function proposeOperations(
         : "(none)";
 
     try {
-        const res = await ai.models.generateContent({
+        const res = await observeGeminiClient(ai, { providerId: "gemini", purpose: "extraction" }).models.generateContent({
             model: MODEL,
             contents: `You maintain a long-term memory of durable facts about one user, extracted from their conversations with an assistant. Precision matters far more than recall: a wrong or stale fact actively harms the assistant. Returning zero operations is the normal outcome for most exchanges.
 

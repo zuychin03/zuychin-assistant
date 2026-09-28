@@ -1,4 +1,5 @@
 import { ai, MODEL } from "@/lib/gemini";
+import { observeGeminiClient, withModelDataClasses } from "@/lib/ai/model-observations";
 import { Type, ThinkingLevel } from "@google/genai";
 import {
     commitFiles, getFile, listDir, requireVaultConfig,
@@ -91,7 +92,7 @@ ${blocks.join("\n\n")}
 Return JSON {findings: string[]} - each finding one sentence naming the page path(s) involved.`;
 
     try {
-        const resp = await ai.models.generateContent({
+        const resp = await withModelDataClasses(["knowledge"], () => observeGeminiClient(ai, { providerId: "gemini", purpose: "summary" }).models.generateContent({
             model: MODEL,
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
@@ -105,7 +106,7 @@ Return JSON {findings: string[]} - each finding one sentence naming the page pat
                     required: ["findings"],
                 },
             },
-        });
+        }));
         const parsed = JSON.parse(resp.text ?? "{}") as { findings?: string[] };
         return (parsed.findings ?? []).filter((f) => typeof f === "string" && f.trim());
     } catch (error) {
@@ -137,7 +138,7 @@ ${diffs}
 Return JSON {pass: boolean, reason: string} - one short sentence.`;
 
     try {
-        const resp = await ai.models.generateContent({
+        const resp = await withModelDataClasses(["knowledge"], () => observeGeminiClient(ai, { providerId: "gemini", purpose: "summary" }).models.generateContent({
             model: MODEL,
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
@@ -152,7 +153,7 @@ Return JSON {pass: boolean, reason: string} - one short sentence.`;
                     required: ["pass", "reason"],
                 },
             },
-        });
+        }));
         const parsed = JSON.parse(resp.text ?? "{}") as { pass?: boolean; reason?: string };
         return { pass: parsed.pass === true, reason: parsed.reason ?? "Verifier returned no reason." };
     } catch (error) {

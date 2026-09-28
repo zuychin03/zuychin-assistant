@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { BookOpen, Check, ChevronDown, ChevronRight, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { ConfirmModal } from "../home/controls";
 
 interface CustomSkill {
     id: string;
@@ -21,24 +22,24 @@ interface BuiltInSkill {
 }
 
 async function loadSkills(): Promise<{ custom: CustomSkill[]; builtIn: BuiltInSkill[] }> {
-    try {
-        const res = await fetch("/api/admin/skills");
-        if (!res.ok) return { custom: [], builtIn: [] };
-        const data = await res.json();
-        return { custom: data.custom ?? [], builtIn: data.builtIn ?? [] };
-    } catch {
-        return { custom: [], builtIn: [] };
-    }
+    const res = await fetch("/api/admin/skills");
+    if (!res.ok) throw new Error("Could not load skills. Please retry.");
+    const data = await res.json();
+    return { custom: data.custom ?? [], builtIn: data.builtIn ?? [] };
 }
 
-export default function SkillsPanel() {
+export default function SkillsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
     const [custom, setCustom] = useState<CustomSkill[]>([]);
     const [builtIn, setBuiltIn] = useState<BuiltInSkill[]>([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editText, setEditText] = useState("");
+    const [editOriginal, setEditOriginal] = useState("");
     const [showBuiltIn, setShowBuiltIn] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [deleting, setDeleting] = useState<CustomSkill | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -46,45 +47,45 @@ export default function SkillsPanel() {
             if (cancelled) return;
             setCustom(data.custom);
             setBuiltIn(data.builtIn);
-            setLoading(false);
-        });
+            setError("");
+        }).catch(() => { if (!cancelled) setError("Could not load skills. Use Refresh to retry."); })
+            .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
     }, []);
 
+    const editDirty = editingId !== null && editText !== editOriginal;
+    useEffect(() => { onDirtyChange?.(editDirty); }, [editDirty, onDirtyChange]);
+    const discardEdit = () => !editDirty || window.confirm("Discard your unsaved skill edit?");
     const refresh = () => {
+        if (loading || busy || !discardEdit()) return;
+        setEditingId(null);
         setLoading(true);
         loadSkills().then((data) => {
             setCustom(data.custom);
             setBuiltIn(data.builtIn);
-            setLoading(false);
-        });
+            setError("");
+        }).catch(() => setError("Could not load skills. Use Refresh to retry."))
+            .finally(() => setLoading(false));
     };
 
-    const approve = async (id: string) => {
-        setCustom((s) => s.map((c) => (c.id === id ? { ...c, status: "active" } : c)));
-        await fetch("/api/admin/skills", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, action: "approve" }),
-        }).catch(() => { });
+    const mutate = async (id: string, change: { action: "approve" } | { instructions: string } | null) => {
+        if (loading || busy) return;
+        setBusy(true); setError("");
+        try {
+            const response = await fetch(change ? "/api/admin/skills" : "/api/admin/skills?id=" + encodeURIComponent(id), {
+                method: change ? "PUT" : "DELETE",
+                ...(change ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, ...change }) } : {}),
+            });
+            if (!response.ok) throw new Error();
+            setCustom((items) => change ? items.map((item) => item.id === id ? { ...item, ...("action" in change ? { status: "active" as const } : change) } : item) : items.filter((item) => item.id !== id));
+            if (change && "instructions" in change) setEditingId(null);
+            if (!change && editingId === id) setEditingId(null);
+        } catch { setError("Could not update this skill. Your current content is preserved; please retry."); }
+        finally { setBusy(false); setDeleting(null); }
     };
-
-    const saveEdit = async (id: string) => {
-        const instructions = editText.trim();
-        if (!instructions) return;
-        setEditingId(null);
-        setCustom((s) => s.map((c) => (c.id === id ? { ...c, instructions } : c)));
-        await fetch("/api/admin/skills", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, instructions }),
-        }).catch(() => { });
-    };
-
-    const remove = async (id: string) => {
-        setCustom((s) => s.filter((c) => c.id !== id));
-        await fetch(`/api/admin/skills?id=${id}`, { method: "DELETE" }).catch(() => { });
-    };
+    const approve = (id: string) => mutate(id, { action: "approve" });
+    const saveEdit = (id: string) => editText.trim() ? mutate(id, { instructions: editText.trim() }) : undefined;
+    const remove = (id: string) => mutate(id, null);
 
     const drafts = custom.filter((c) => c.status === "draft");
     const active = custom.filter((c) => c.status === "active");
@@ -93,7 +94,7 @@ export default function SkillsPanel() {
         const expanded = expandedId === skill.id;
         return (
             <div key={skill.id} style={panelStyles.row}>
-                <div style={panelStyles.rowHead} onClick={() => setExpandedId(expanded ? null : skill.id)}>
+                <button type="button" aria-expanded={expanded} aria-controls={"skill-" + skill.id} style={panelStyles.rowHead} onClick={() => setExpandedId(expanded ? null : skill.id)}>
                     {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     <span style={panelStyles.skillName}>{skill.name}</span>
                     <span style={panelStyles.slug}>{skill.slug}</span>
@@ -101,22 +102,24 @@ export default function SkillsPanel() {
                     {skill.status === "draft"
                         ? <span style={{ ...panelStyles.statusChip, ...panelStyles.draftChip }}>draft</span>
                         : <span style={{ ...panelStyles.statusChip, ...panelStyles.activeChip }}>active</span>}
-                </div>
+                </button>
                 {expanded && (
-                    <div style={panelStyles.detail}>
+                    <div id={"skill-" + skill.id} style={panelStyles.detail}>
                         <div style={panelStyles.whenToUse}>{skill.whenToUse}</div>
                         {editingId === skill.id ? (
                             <div style={panelStyles.editWrap}>
                                 <textarea
+                                    aria-label="Skill instructions"
                                     style={panelStyles.editArea}
+                                    disabled={loading || busy}
                                     value={editText}
                                     onChange={(e) => setEditText(e.target.value)}
                                     rows={8}
                                     autoFocus
                                 />
                                 <div style={panelStyles.actions}>
-                                    <button style={panelStyles.iconBtn} onClick={() => saveEdit(skill.id)} title="Save"><Check size={13} /></button>
-                                    <button style={panelStyles.iconBtn} onClick={() => setEditingId(null)} title="Cancel"><X size={13} /></button>
+                                    <button style={panelStyles.iconBtn} onClick={() => saveEdit(skill.id)} disabled={loading || busy || !editText.trim()} title="Save"><Check size={13} /></button>
+                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) setEditingId(null); }} disabled={loading || busy} title="Cancel"><X size={13} /></button>
                                 </div>
                             </div>
                         ) : (
@@ -124,14 +127,14 @@ export default function SkillsPanel() {
                                 <pre style={panelStyles.instructions}>{skill.instructions}</pre>
                                 <div style={panelStyles.actions}>
                                     {skill.status === "draft" && (
-                                        <button style={panelStyles.approveBtn} onClick={() => approve(skill.id)}>
+                                        <button style={panelStyles.approveBtn} onClick={() => approve(skill.id)} disabled={loading || busy}>
                                             <Check size={12} /> Approve
                                         </button>
                                     )}
-                                    <button style={panelStyles.iconBtn} onClick={() => { setEditingId(skill.id); setEditText(skill.instructions); }} title="Edit instructions">
+                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) { setEditingId(skill.id); setEditText(skill.instructions); setEditOriginal(skill.instructions); } }} disabled={loading || busy} title="Edit instructions">
                                         <Pencil size={12} />
                                     </button>
-                                    <button style={panelStyles.iconBtn} onClick={() => remove(skill.id)} title="Delete skill">
+                                    <button style={panelStyles.iconBtn} onClick={() => setDeleting(skill)} disabled={loading || busy} title="Delete skill">
                                         <Trash2 size={12} />
                                     </button>
                                 </div>
@@ -151,11 +154,13 @@ export default function SkillsPanel() {
                     <h2 style={panelStyles.title}>Skills</h2>
                     <p style={panelStyles.description}>Playbooks the agent can load; drafts it authored await your approval</p>
                 </div>
-                <button style={panelStyles.iconBtn} onClick={refresh} title="Refresh skills">
+                <button style={panelStyles.iconBtn} onClick={refresh} disabled={loading || busy} title="Refresh skills">
                     <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
 
+            {error && <p role="alert" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>{error}</p>}
+            {loading && <p role="status" style={panelStyles.muted}>Loading skills…</p>}
             <div style={panelStyles.list}>
                 {drafts.length > 0 && <div style={panelStyles.groupLabel}>Drafts pending review</div>}
                 {drafts.map(renderSkill)}
@@ -163,16 +168,16 @@ export default function SkillsPanel() {
                 {active.length > 0 && <div style={panelStyles.groupLabel}>Active custom skills</div>}
                 {active.map(renderSkill)}
 
-                {!loading && custom.length === 0 && (
+                {!loading && !error && custom.length === 0 && (
                     <div style={panelStyles.muted}>No custom skills yet - the agent saves drafts here after novel multi-step tasks.</div>
                 )}
 
-                <button style={panelStyles.builtInToggle} onClick={() => setShowBuiltIn((v) => !v)}>
+                <button style={panelStyles.builtInToggle} aria-expanded={showBuiltIn} onClick={() => setShowBuiltIn((v) => !v)}>
                     {showBuiltIn ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     {builtIn.length} built-in skills
                 </button>
                 {showBuiltIn && builtIn.map((s) => (
-                    <div key={s.id} style={{ ...panelStyles.row, opacity: 0.6 }}>
+                    <div key={s.id} style={panelStyles.row}>
                         <div style={panelStyles.rowHead}>
                             <span style={panelStyles.skillName}>{s.name}</span>
                             <span style={panelStyles.slug}>{s.id}</span>
@@ -180,6 +185,9 @@ export default function SkillsPanel() {
                     </div>
                 ))}
             </div>
+            {deleting && <ConfirmModal title="Delete this skill?" body={`“${deleting.name}” and its instructions will be permanently deleted.${editingId === deleting.id && editDirty ? " Its unsaved edit will also be discarded." : ""}`}
+                confirmLabel="Delete skill" busyText={busy ? "Deleting skill…" : undefined}
+                onConfirm={() => void remove(deleting.id)} onCancel={() => setDeleting(null)} />}
         </div>
     );
 }
@@ -203,8 +211,8 @@ const panelStyles: Record<string, React.CSSProperties> = {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 26,
-        height: 26,
+        width: 32,
+        height: 32,
         borderRadius: 9,
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
         background: "transparent",
@@ -227,9 +235,9 @@ const panelStyles: Record<string, React.CSSProperties> = {
         background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
     },
-    rowHead: { display: "flex", alignItems: "center", gap: 7, cursor: "pointer", minWidth: 0 },
+    rowHead: { width: "100%", border: 0, padding: 0, background: "transparent", color: "inherit", textAlign: "left", font: "inherit", flexWrap: "wrap", display: "flex", alignItems: "center", gap: 7, cursor: "pointer", minWidth: 0 },
     skillName: { fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-    slug: { fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace", whiteSpace: "nowrap" },
+    slug: { fontSize: 11, color: "var(--color-text-muted)", fontFamily: "monospace", overflowWrap: "anywhere", minWidth: 0 },
     statusChip: {
         padding: "2px 7px",
         borderRadius: 999,
@@ -238,8 +246,8 @@ const panelStyles: Record<string, React.CSSProperties> = {
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
         flexShrink: 0,
     },
-    draftChip: { color: "#e8b33d", background: "color-mix(in srgb, #e8b33d 12%, transparent)" },
-    activeChip: { color: "#31d07f", background: "color-mix(in srgb, #31d07f 12%, transparent)" },
+    draftChip: { color: "var(--admin-warning)", background: "color-mix(in srgb, var(--admin-warning) 12%, transparent)" },
+    activeChip: { color: "var(--admin-success)", background: "color-mix(in srgb, var(--admin-success) 12%, transparent)" },
     detail: { marginTop: 8, display: "flex", flexDirection: "column", gap: 7 },
     whenToUse: { fontSize: 12, color: "var(--color-text-muted)", fontStyle: "italic" },
     instructions: {
@@ -249,6 +257,7 @@ const panelStyles: Record<string, React.CSSProperties> = {
         fontSize: 11.5,
         lineHeight: 1.5,
         whiteSpace: "pre-wrap",
+        overflowWrap: "anywhere",
         fontFamily: "inherit",
         background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
@@ -262,9 +271,9 @@ const panelStyles: Record<string, React.CSSProperties> = {
         gap: 5,
         padding: "5px 11px",
         borderRadius: 9,
-        border: "1px solid color-mix(in srgb, #31d07f 45%, transparent)",
-        background: "color-mix(in srgb, #31d07f 12%, transparent)",
-        color: "#31d07f",
+        border: "1px solid color-mix(in srgb, var(--admin-success) 45%, transparent)",
+        background: "color-mix(in srgb, var(--admin-success) 12%, transparent)",
+        color: "var(--admin-success)",
         fontSize: 11.5,
         fontWeight: 750,
         cursor: "pointer",

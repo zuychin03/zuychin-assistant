@@ -211,6 +211,7 @@ export async function recallKnowledge(params: {
     queryEmbedding?: number[];
     matchCount?: number;
     projectId?: string;
+    strict?: boolean;
 }): Promise<KnowledgeRecallHit[] | null> {
     const embedding = params.queryEmbedding ?? await embedText(params.embRef, params.query, "query");
     const { data, error } = await supabase.rpc("hybrid_recall_knowledge_chunks", {
@@ -221,6 +222,7 @@ export async function recallKnowledge(params: {
         filter_project: params.projectId ?? null,
     });
     if (error) {
+        if (params.strict) throw new Error("Knowledge retrieval unavailable.");
         if (schemaUnavailable(error.message)) return null;
         console.error("[Knowledge] Recall failed:", error.message);
         return [];

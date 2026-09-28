@@ -1,0 +1,48 @@
+.page { overflow-wrap: anywhere; max-width: 1200px; margin: 0 auto; padding: 24px clamp(18px, 3vw, 42px) 64px; color: var(--color-text-primary); display: grid; gap: 20px; }
+.page h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 17px; line-height: 1.3; font-weight: 620; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.page h2 svg { flex: none; color: var(--color-text-muted); }
+.page p { font-size: 13px; line-height: 1.6; max-width: 74ch; margin: 8px 0 16px; color: var(--color-text-muted); }
+.page a { color: var(--color-text-primary); overflow-wrap: anywhere; text-underline-offset: 3px; }
+.columns { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
+.captureFields { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(0, 1fr); gap: 12px; }
+.section { border: 1px solid var(--color-border); border-radius: 12px; padding: 20px; min-width: 0; background: var(--color-background); }
+.page label { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
+.page input, .page select, .page textarea { width: 100%; min-width: 0; border: 1px solid var(--color-border); border-radius: 8px; padding: 9px 10px; background: color-mix(in srgb, var(--color-surface) 48%, var(--color-background)); color: var(--color-text-primary); font: 13px/1.4 var(--font-family); caret-color: var(--color-primary); }
+.page textarea { resize: vertical; min-height: 100px; font-weight: 400; line-height: 1.6; }
+.page .dropdown { min-height: 44px; font-weight: 400; }
+.captureFields input { min-height: 44px; }
+.page button, .page .linkButton { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--color-border); border-radius: 8px; background: color-mix(in srgb, var(--color-background) 86%, var(--color-surface)); color: var(--color-text-primary); min-height: 36px; padding: 8px 12px; font: 600 12px/1.3 var(--font-family); cursor: pointer; text-decoration: none; }
+.page button:hover:not(:disabled), .page .linkButton:hover { border-color: var(--color-text-muted); background: var(--color-surface); }
+.page .primary, .page .primary:hover { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-primary-foreground); }
+.page button:disabled { opacity: .55; cursor: not-allowed; }
+.page :is(button,input,select,textarea,a,[tabindex]):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.heading h2 { margin: 0; min-width: 0; }
+.list { list-style: none; padding: 3px; margin: 0; max-height: 440px; overflow: auto; scrollbar-color: var(--color-border) transparent; scrollbar-width: thin; }
+.list li { min-width: 0; padding: 12px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.list li + li { border-top: 1px solid var(--color-border); }
+.list li > div, .list li > button:first-child { flex: 1 1 180px; min-width: 0; }
+.list li > button:first-child { display: block; text-align: left; background: transparent; border-color: transparent; padding: 9px 10px; }
+.list li > button:first-child:is(:hover,[aria-pressed="true"]) { background: var(--color-surface); border-color: var(--color-border); }
+.list strong, .list span { display: block; overflow-wrap: anywhere; }
+.list strong { font-size: 13px; line-height: 1.4; font-weight: 600; }
+.list span { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.list a { font-size: 12px; }
+.preview { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.preview pre, .reading { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.65 var(--font-mono); padding: 16px; border: 1px solid var(--color-border); border-radius: 8px; background: color-mix(in srgb, var(--color-surface) 48%, var(--color-background)); max-height: 520px; overflow: auto; margin: 12px 0 16px; scrollbar-color: var(--color-border) transparent; scrollbar-width: thin; }
+.page .check { flex-direction: row; align-items: center; font-weight: 400; }
+.check input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--color-primary); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.page .error, .page .notice { padding: 12px 14px; margin: 0; border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text-primary); background: var(--color-surface); max-width: none; }
+@media(max-width: 760px) {
+    .columns { grid-template-columns: minmax(0, 1fr); }
+    .section { padding: 16px; }
+    .page { gap: 16px; }
+    .list li > div { flex-basis: 100%; }
+    .list { max-height: none; }
+    .page .check { min-height: 44px; }
+    .page button, .page .linkButton, .page input:not([type="checkbox"]), .page select { min-height: 44px; }
+    .page input:not([type="checkbox"]), .page select, .page textarea { font-size: 16px; }
+    .page .dropdown { font-size: 16px !important; }
+}
+@media(max-width: 420px) { .captureFields { grid-template-columns: minmax(0, 1fr); gap: 0; } }

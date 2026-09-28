@@ -291,20 +291,7 @@ export async function updateSystemPrompt(
     }
 }
 
-export async function updateProfilePreferences(
-    profileId: string,
-    preferences: Record<string, unknown>
-) {
-    const { error } = await supabase
-        .from("user_profiles")
-        .update({ preferences })
-        .eq("id", profileId);
-
-    if (error) {
-        console.error("[DB] Failed to update preferences:", error.message);
-        throw new Error("Failed to update preferences.");
-    }
-}
+export { patchProfilePreferences, updateProfilePreferences, ProfilePreferencesError } from "@/lib/profile-preferences";
 
 export async function createConversation(params: {
     title?: string;

@@ -29,8 +29,9 @@ export const COSMOS_CSS = `
 .cosmos-root button:focus-visible,.cosmos-root a:focus-visible,.cosmos-root input:focus-visible,.cosmos-root textarea:focus-visible,.graph-markdown [tabindex]:focus-visible{outline:2px solid #a4ccff!important;outline-offset:3px}
 .cosmos-root button:disabled{opacity:.45;cursor:default}
 @media(hover:hover){.cosmos-root button:enabled:hover{filter:brightness(1.16)}}
-@media(max-width:759px){.cosmos-root button,.cosmos-root a{min-height:40px}.graph-markdown{max-height:55dvh!important;font-size:14px!important}}
-@media(prefers-reduced-motion:reduce){.cosmos-root *{transition:none!important;scroll-behavior:auto!important}}
+@media(max-width:759px),(pointer:coarse),(max-width:1000px) and (max-height:480px){.cosmos-root{--cosmos-icon-size:44px}.cosmos-root button,.cosmos-root a{min-height:44px}}
+@media(max-width:759px){.graph-markdown{max-height:55dvh!important;font-size:14px!important}.cosmos-root input:not([type="range"]),.cosmos-root textarea{font-size:16px!important}.cosmos-timeline{display:grid!important;grid-template-columns:44px minmax(0,1fr) auto 44px;gap:8px!important;padding:8px 10px!important}.cosmos-timeline input{grid-row:2;grid-column:1 / -1;min-width:0}.cosmos-timeline button:last-child{grid-row:1;grid-column:4}.cosmos-timeline>span{grid-row:1;grid-column:3}}
+@media(prefers-reduced-motion:reduce){.cosmos-root *{transition:none!important;scroll-behavior:auto!important;animation:none!important}}
 `;
 
 const card: CSSProperties = {
@@ -104,8 +105,7 @@ export const styles: Record<string, CSSProperties> = {
         zIndex: 10,
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        // Wraps rather than pushing the controls off-screen on a narrow pane.
+        columnGap: 10,
         flexWrap: "wrap",
         rowGap: 8,
         pointerEvents: "none",
@@ -122,8 +122,8 @@ export const styles: Record<string, CSSProperties> = {
     topBarSpacer: { flex: 1, minWidth: 0 },
     backBtn: {
         ...controlBase,
-        width: 30,
-        height: 30,
+        width: "var(--cosmos-icon-size, 30px)",
+        height: "var(--cosmos-icon-size, 30px)",
         display: "grid",
         placeItems: "center",
         color: COSMOS.muted,
@@ -150,8 +150,8 @@ export const styles: Record<string, CSSProperties> = {
     },
     iconBtn: {
         ...controlBase,
-        width: 30,
-        height: 30,
+        width: "var(--cosmos-icon-size, 30px)",
+        height: "var(--cosmos-icon-size, 30px)",
         display: "grid",
         placeItems: "center",
         color: COSMOS.muted,
@@ -265,8 +265,8 @@ export const styles: Record<string, CSSProperties> = {
     },
     mobileGrip: {
         ...controlBase,
-        width: 34,
-        height: 28,
+        width: "var(--cosmos-icon-size, 34px)",
+        height: "var(--cosmos-icon-size, 28px)",
         display: "grid",
         placeItems: "center",
         color: COSMOS.muted,
@@ -475,7 +475,7 @@ export const styles: Record<string, CSSProperties> = {
     listRowMeta: { fontSize: 10.5, color: COSMOS.muted, flexShrink: 0, fontVariantNumeric: "tabular-nums" },
     listStack: { display: "flex", flexDirection: "column", gap: 4 },
 
-    pagePanelTitle: { margin: 0, fontSize: 15, fontWeight: 750, letterSpacing: "-0.02em", lineHeight: 1.25 },
+    pagePanelTitle: { margin: 0, fontSize: 15, fontWeight: 750, letterSpacing: "-0.02em", lineHeight: 1.25, overflowWrap: "anywhere" },
     pagePath: {
         fontSize: 10.5,
         color: COSMOS.muted,
@@ -562,26 +562,29 @@ export const styles: Record<string, CSSProperties> = {
 
     timelineWrap: {
         position: "absolute",
-        left: "50%",
-        bottom: 18,
-        transform: "translateX(-50%)",
+        left: 20,
+        right: 20,
+        bottom: "max(18px, env(safe-area-inset-bottom, 0px))",
+        margin: "0 auto",
         zIndex: 10,
-        width: "min(760px, calc(100vw - 40px))",
+        maxWidth: 760,
         padding: "11px 15px",
         display: "flex",
         alignItems: "center",
         gap: 12,
         ...card,
     },
-    timelineMeta: { display: "flex", flexDirection: "column", gap: 1, minWidth: 108, flexShrink: 0 },
+    timelineMeta: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0, flexShrink: 0 },
     timelineDate: { fontSize: 12.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
     timelineNote: { fontSize: 9.5, color: COSMOS.muted },
 
     toast: {
         position: "absolute",
-        left: "50%",
+        left: 20,
+        right: 20,
+        width: "max-content",
+        margin: "0 auto",
         bottom: 96,
-        transform: "translateX(-50%)",
         zIndex: 20,
         padding: "9px 15px",
         borderRadius: 999,
@@ -617,10 +620,11 @@ export const styles: Record<string, CSSProperties> = {
     },
     overlay: {
         position: "absolute",
-        inset: 0,
+        top: 0, right: 0, bottom: 0, left: 0,
         zIndex: 30,
         display: "grid",
         placeItems: "center",
+        alignContent: "center",
         background: "rgba(5,6,10,0.72)",
         color: COSMOS.muted,
         fontSize: 13,

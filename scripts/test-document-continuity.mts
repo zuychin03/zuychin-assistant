@@ -83,4 +83,14 @@ check("opening a different Cosmos page cannot retain a stale Library identity", 
     assert.equal(url.searchParams.get("status"), "all");
     assert.equal(url.searchParams.get("filter"), "RAG");
 });
+for (const path of ["wiki/sources/a.md", "wiki/sources/b.md"]) {
+    check("document and Cosmos section destinations discard remembered evidence chunks", () => {
+        const previous = "/knowledge?document=doc-a&path=wiki%2Fsources%2Fa.md&chunk=old-evidence";
+        for (const section of [undefined, "evidence-2"]) {
+            const url = new URL(libraryDocumentDestination(path, previous, section), "https://local.invalid");
+            assert.equal(url.searchParams.has("chunk"), false);
+            assert.equal(url.searchParams.get("section"), section ?? null);
+        }
+    });
+}
 console.log(`Document continuity: ${cases} cases passed; fixture data only.`);

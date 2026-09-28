@@ -11,6 +11,8 @@ import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
 import type { ToolContext } from "@/lib/ai/mcp-service";
 import type { FileAttachment } from "@/lib/types";
+import { aggregateUsage, requestUsage, type CompatUsage } from "@/lib/ai/stream-usage";
+import { beginModelObservation, type ModelCallPurpose } from "@/lib/ai/model-observations";
 
 interface ToolCall {
     id?: string;
@@ -30,7 +32,8 @@ type TruncationCause = "timeout" | "stream_error" | "length";
 
 interface ChatCompletion {
     choices?: { message: ChatChoiceMessage; finish_reason?: string }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    usage?: unknown;
+    streamFinished?: boolean;
     error?: { message?: string };
     /** Set when the stream ended before the model finished; content is partial. */
     truncated?: TruncationCause;
@@ -92,14 +95,17 @@ function dropDanglingThink(text: string): string {
 }
 
 interface RequestOpts {
+    purpose?: ModelCallPurpose;
     thinking: boolean;
     genParams: GenParams;
     signal?: AbortSignal;
     /** Emits text deltas as they arrive; the reply is still assembled whole. */
     onToken?: (text: string) => void;
+    onRequestUsage?: (usage: CompatUsage) => void;
 }
 
-export async function openaiCompatChat(params: {
+interface CompatChatParams {
+    purpose?: ModelCallPurpose;
     provider: ProviderConfig;
     model: ChatModel;
     systemText: string;
@@ -114,21 +120,25 @@ export async function openaiCompatChat(params: {
     ctx?: ToolContext;
     /** Restricts both the declarations and the dispatch. Absent means everything. */
     allowTools?: ReadonlySet<string>;
-    onUsage?: (u: { promptTokens: number; outputTokens: number; totalTokens: number }) => void;
+    onUsage?: (usage: CompatUsage) => void;
     signal?: AbortSignal;
     onToken?: (text: string, reset?: boolean) => void;
-}): Promise<string> {
+}
+
+export async function openaiCompatChat(params: CompatChatParams): Promise<string> {
+    const requests: CompatUsage[] = [];
+    try {
+        return await runCompatChat(params, (usage) => requests.push(usage));
+    } finally {
+        params.onUsage?.(aggregateUsage(requests));
+    }
+}
+
+async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: CompatUsage) => void): Promise<string> {
     const { provider, model, systemText, userText, imageBase64, imageMimeType, file, embRef, ctx, allowTools } = params;
     if (model.apiFormat === "responses") {
         throw new Error(`${model.label} requires the Responses API, which is not supported by this chat adapter.`);
     }
-
-    const usage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 };
-    const trackUsage = (d: ChatCompletion) => {
-        usage.promptTokens += d.usage?.prompt_tokens ?? 0;
-        usage.outputTokens += d.usage?.completion_tokens ?? 0;
-        usage.totalTokens += d.usage?.total_tokens ?? 0;
-    };
 
     const apiKey = getProviderApiKey(provider);
     if (!apiKey) {
@@ -136,9 +146,11 @@ export async function openaiCompatChat(params: {
     }
 
     const opts: RequestOpts = {
+        purpose: params.purpose,
         thinking: !!params.thinking && model.supportsThinking,
         genParams: params.genParams ?? {},
         signal: params.signal,
+        onRequestUsage,
     };
 
     // Each model turn gets a fresh sink whose first delta resets the client's
@@ -204,6 +216,7 @@ export async function openaiCompatChat(params: {
         opts.onToken = nextTurnSink();
         data = await postChat(provider, apiKey, model.id, messages, tools, opts, forceSearch);
     } catch (err) {
+        if (params.signal?.aborted) throw err;
         if (tools || opts.thinking) {
             console.warn(`[${provider.id}] request failed, retrying without tools/reasoning:`, err);
             data = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
@@ -211,7 +224,6 @@ export async function openaiCompatChat(params: {
             throw err;
         }
     }
-    trackUsage(data);
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const msg = data.choices?.[0]?.message;
@@ -241,7 +253,6 @@ export async function openaiCompatChat(params: {
 
         opts.onToken = nextTurnSink();
         data = await postChat(provider, apiKey, model.id, messages, tools, opts);
-        trackUsage(data);
     }
 
     // Resumes an answer the provider cut off. Continuations run tool-free and
@@ -270,14 +281,15 @@ export async function openaiCompatChat(params: {
             try {
                 next = await postChat(provider, apiKey, model.id, resumed, undefined, {
                     ...opts,
+                    purpose: "continuation",
                     thinking: false,
                     onToken: text ? appendSink() : nextTurnSink(),
                 });
             } catch (err) {
+                if (params.signal?.aborted) throw err;
                 console.error(`[${provider.id}] continuation ${attempt + 1} failed:`, err);
                 break;
             }
-            trackUsage(next);
 
             const piece = next.truncated ? segmentPartial(next) : segmentContent(next);
             if (!piece.text) break;
@@ -301,16 +313,15 @@ export async function openaiCompatChat(params: {
     if (!reply && !data.truncated) {
         try {
             const plain = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
-            trackUsage(plain);
             reply = extractContent(plain);
         } catch (err) {
+            if (params.signal?.aborted) throw err;
             console.error(`[${provider.id}] retry after empty answer failed:`, err);
         }
     }
 
     if (!reply) reply = extractReasoning(data);
 
-    params.onUsage?.(usage);
     return reply || "(The model returned an empty response.)";
 }
 
@@ -359,6 +370,7 @@ async function postChat(
     opts: RequestOpts,
     toolChoice: ToolChoice = "auto"
 ): Promise<ChatCompletion> {
+    opts.signal?.throwIfAborted();
     const { thinking, genParams } = opts;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -400,6 +412,9 @@ async function postChat(
         if (thinking) body.reasoning_effort = "high";
     }
 
+    let latestUsage: unknown;
+    let streamFinished = false;
+    const observation = beginModelObservation({ providerId: provider.id, modelId: model, purpose: opts.purpose ?? "chat" });
     const timeoutMs = requestTimeoutMs(provider.id);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -421,20 +436,39 @@ async function postChat(
 
         if (!res.ok) {
             const detail = await res.text().catch(() => "");
-            throw new Error(`${provider.label} ${res.status}: ${detail.slice(0, 400)}`);
+            throw Object.assign(new Error(`${provider.label} ${res.status}: ${detail.slice(0, 400)}`), { status: res.status });
         }
         if (!res.body) {
             throw new Error(`${provider.label}: empty stream body.`);
         }
 
-        return await accumulateStream(res.body, provider.label, opts.onToken, () => !!opts.signal?.aborted);
+        let answerText = "";
+        let awaitingAnswer = true;
+        const result = await accumulateStream(res.body, provider.label, (text) => {
+            if (awaitingAnswer) {
+                answerText += text;
+                const visible = dropDanglingThink(stripThinkKeepSpace(answerText)).trim();
+                if (visible && !["<think", "<thinking", "<thought", "<reason", "<reasoning"].some((tag) => tag.startsWith(visible.toLowerCase()))) {
+                    observation.firstAnswer();
+                    awaitingAnswer = false;
+                    answerText = "";
+                }
+            }
+            opts.onToken?.(text);
+        }, () => !!opts.signal?.aborted, (usage) => { latestUsage = usage; }, () => observation.capability("streaming"));
+        streamFinished = !!result.streamFinished;
+        if (result.choices?.[0]?.message.tool_calls?.length) observation.capability("tools");
+        observation.finish({ usage: requestUsage(latestUsage, streamFinished), status: streamFinished ? "success" : result.truncated === "timeout" ? "transient" : "unknown" });
+        return result;
     } catch (err) {
+        observation.finish({ error: err, ...(opts.signal?.aborted ? { status: "aborted" as const } : controller.signal.aborted ? { status: "transient" as const } : {}) });
         if (err instanceof Error && err.name === "AbortError") {
             if (opts.signal?.aborted) throw err;
             throw new Error(`${provider.label}: request timed out after ${timeoutMs / 1000}s.`);
         }
         throw err;
     } finally {
+        opts.onRequestUsage?.(requestUsage(latestUsage, streamFinished));
         clearTimeout(timeout);
         opts.signal?.removeEventListener("abort", onCallerAbort);
     }
@@ -444,7 +478,9 @@ async function accumulateStream(
     stream: ReadableStream<Uint8Array>,
     providerLabel: string,
     onToken?: (text: string) => void,
-    callerAborted?: () => boolean
+    callerAborted?: () => boolean,
+    onUsage?: (usage: unknown) => void,
+    onFrame?: () => void,
 ): Promise<ChatCompletion> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -453,19 +489,28 @@ async function accumulateStream(
     let content = "";
     let reasoning = "";
     let finishReason: string | undefined;
+    let doneReceived = false;
     const toolCalls = new Map<number, { id?: string; name: string; args: string }>();
 
     const handleData = (payload: string) => {
-        if (payload === "[DONE]") return;
+        if (payload === "[DONE]") {
+            onFrame?.();
+            doneReceived = true;
+            return;
+        }
         let json: {
             error?: { message?: string };
+            usage?: unknown;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             choices?: { delta?: any; finish_reason?: string }[];
         };
         try { json = JSON.parse(payload); } catch { return; }
+        onFrame?.();
         if (json.error) {
             throw new Error(`${providerLabel}: ${json.error.message ?? "stream error"}`);
         }
+
+        if (json.usage !== undefined && json.usage !== null) onUsage?.(json.usage);
 
         const choice = json.choices?.[0];
         const delta = choice?.delta;
@@ -522,6 +567,7 @@ async function accumulateStream(
         .map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.args } }));
 
     return {
+        streamFinished: (doneReceived || !!finishReason) && truncated !== "timeout" && truncated !== "stream_error",
         choices: [{
             message: {
                 role: "assistant",

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Copy, Plus, RefreshCw, Trash2, Users } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
+import { ConfirmModal } from "../home/controls";
 
 // Every agent installation and the credentials it holds. The panel never shows
 // a durable key: adding an agent produces a short-lived claim inside a brief,
@@ -32,6 +33,8 @@ interface AgentClient {
     lastSeenAt: string | null;
     keys: AgentKey[];
 }
+
+type Revocation = { kind: "agent"; id: string; name: string } | { kind: "key"; id: string; name: string; credential: string };
 
 const KIND_OPTIONS = [
     { value: "remote_agent", label: "Remote agent" },
@@ -70,18 +73,23 @@ export default function AgentsPanel() {
     const [access, setAccess] = useState<AccessLevel>("notes");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
-    const [brief, setBrief] = useState<{ name: string; text: string; expiresAt: string } | null>(null);
+    const [brief, setBrief] = useState<{ clientId: string; name: string; text: string; expiresAt: string } | null>(null);
     const [copied, setCopied] = useState(false);
+    const [revocation, setRevocation] = useState<Revocation | null>(null);
+    const [revokeError, setRevokeError] = useState("");
+    const revocationLock = useRef(false);
 
-    const load = async () => {
+    const load = async (clearError = true) => {
         setLoading(true);
         try {
             const res = await fetch("/api/agents");
+            if (!res.ok) throw new Error();
             if (res.ok) {
                 const data = await res.json() as { clients?: AgentClient[] };
                 setClients(data.clients ?? []);
+                if (clearError) setError("");
             }
-        } catch { /* supplementary panel; a failed read must not break the page */ }
+        } catch { setError("Could not load agents. Use Refresh to retry."); }
         setLoading(false);
     };
 
@@ -104,8 +112,8 @@ export default function AgentsPanel() {
                 return;
             }
             await mintClaim(client.id, displayName);
-            setName("");
-            await load();
+            setName(current => current === displayName || current.trim() === displayName ? "" : current);
+            await load(false);
         } catch {
             setError("Could not add that agent.");
         } finally {
@@ -124,7 +132,7 @@ export default function AgentsPanel() {
             setError(data.error ?? "Could not mint a claim.");
             return;
         }
-        setBrief({ name: displayName, text: data.brief, expiresAt: data.expiresAt ?? "" });
+        setBrief({ clientId, name: displayName, text: data.brief, expiresAt: data.expiresAt ?? "" });
     };
 
     const reissue = async (client: AgentClient) => {
@@ -133,30 +141,27 @@ export default function AgentsPanel() {
         setError("");
         try {
             await mintClaim(client.id, client.displayName);
-        } finally {
+        } catch { setError("Could not issue a fresh claim. Please retry."); } finally {
             setBusy(false);
         }
     };
 
-    const revokeClient = async (id: string) => {
-        if (busy) return;
-        setBusy(true);
+    const revoke = async () => {
+        if (!revocation || busy || revocationLock.current) return;
+        revocationLock.current = true;
+        setBusy(true); setRevokeError(""); setError("");
         try {
-            await fetch(`/api/agents?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-            setBrief(null);
-            await load();
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const revokeKey = async (keyId: string) => {
-        if (busy) return;
-        setBusy(true);
-        try {
-            await fetch(`/api/agents/keys?keyId=${encodeURIComponent(keyId)}`, { method: "DELETE" });
-            await load();
-        } finally {
+            const path = revocation.kind === "agent" ? `/api/agents?id=${encodeURIComponent(revocation.id)}` : `/api/agents/keys?keyId=${encodeURIComponent(revocation.id)}`;
+            const response = await fetch(path, { method: "DELETE" });
+            if (!response.ok) throw new Error();
+            if (revocation.kind === "agent") {
+                setBrief(current => current?.clientId === revocation.id ? null : current);
+                setClients(current => current.filter(client => client.id !== revocation.id));
+            } else setClients(current => current.map(client => ({ ...client, keys: client.keys.filter(key => key.id !== revocation.id) })));
+            await load(false);
+            setRevocation(null);
+        } catch { setRevokeError("Revocation was not confirmed. Please retry."); } finally {
+            revocationLock.current = false;
             setBusy(false);
         }
     };
@@ -169,7 +174,7 @@ export default function AgentsPanel() {
                     <h2 style={styles.title}>Agents</h2>
                     <p style={styles.description}>Per-agent credentials, their access level and last use</p>
                 </div>
-                <button style={styles.iconBtn} onClick={load} title="Refresh agents">
+                <button style={styles.iconBtn} onClick={() => void load()} disabled={loading || busy} title="Refresh agents">
                     <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
@@ -177,21 +182,23 @@ export default function AgentsPanel() {
             <div style={styles.addRow}>
                 <input
                     style={styles.addInput}
+                    disabled={busy}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") void add(); }}
+                    aria-label="Agent name"
                     placeholder="Agent name, such as codex-laptop"
                 />
-                <Dropdown ariaLabel="Kind" style={styles.select} value={kind}
+                <Dropdown ariaLabel="Kind" style={styles.select} value={kind} disabled={busy}
                     onChange={(v) => setKind(v as ClientKind)} options={KIND_OPTIONS} />
-                <Dropdown ariaLabel="Access level" style={styles.select} value={access}
+                <Dropdown ariaLabel="Access level" style={styles.select} value={access} disabled={busy}
                     onChange={(v) => setAccess(v as AccessLevel)} options={ACCESS_OPTIONS} />
                 <button style={styles.iconBtn} onClick={add} disabled={busy || !name.trim()} title="Add agent">
                     <Plus size={14} />
                 </button>
             </div>
 
-            {error && <div style={styles.error}>{error}</div>}
+            {error && <div role="alert" style={styles.error}>{error}</div>}
 
             {brief && (
                 <div style={styles.briefBox}>
@@ -206,7 +213,7 @@ export default function AgentsPanel() {
                             void navigator.clipboard.writeText(brief.text).then(() => {
                                 setCopied(true);
                                 setTimeout(() => setCopied(false), 2000);
-                            });
+                            }).catch(() => setError("Could not copy the setup brief. Check clipboard access and retry."));
                         }}
                     >
                         {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy brief"}
@@ -214,8 +221,9 @@ export default function AgentsPanel() {
                 </div>
             )}
 
+            {loading && <p role="status" style={styles.muted}>Loading agents…</p>}
             <div style={styles.list}>
-                {clients.length === 0 && !loading && (
+                {clients.length === 0 && !loading && !error && (
                     <div style={styles.muted}>No agents yet. Add one to issue it a credential of its own.</div>
                 )}
                 {clients.map((c) => (
@@ -228,7 +236,8 @@ export default function AgentsPanel() {
                                 title="Issue a fresh claim">
                                 <RefreshCw size={12} />
                             </button>
-                            <button style={styles.dangerBtn} onClick={() => revokeClient(c.id)} disabled={busy}
+                            <button style={styles.dangerBtn} onClick={() => { setRevokeError(""); setRevocation({ kind: "agent", id: c.id, name: c.displayName }); }} disabled={busy}
+                                aria-label={`Revoke agent ${c.displayName} and all its credentials`}
                                 title="Revoke this agent and every key it holds">
                                 <Trash2 size={12} />
                             </button>
@@ -245,9 +254,10 @@ export default function AgentsPanel() {
                                 </span>
                                 <span style={styles.rowMeta}>{ago(k.lastUsedAt)}</span>
                                 <span style={styles.rowMeta}>
-                                    {k.expiresAt ? `expires ${new Date(k.expiresAt).toLocaleDateString()}` : "no expiry"}
+                                    {k.expiresAt ? `expires ${new Date(k.expiresAt).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}` : "no expiry"}
                                 </span>
-                                <button style={styles.dangerBtn} onClick={() => revokeKey(k.id)} disabled={busy}
+                                <button style={styles.dangerBtn} onClick={() => { setRevokeError(""); setRevocation({ kind: "key", id: k.id, name: c.displayName, credential: k.purpose === "council_seat" ? `seat key for ${k.seatName ?? "this council"}` : `${ACCESS_LABELS[k.accessLevel ?? "read"]} credential` }); }} disabled={busy}
+                                    aria-label={`Revoke credential for ${c.displayName}`}
                                     title="Revoke this credential">
                                     <Trash2 size={11} />
                                 </button>
@@ -256,6 +266,11 @@ export default function AgentsPanel() {
                     </div>
                 ))}
             </div>
+            {revocation && <ConfirmModal title={revocation.kind === "agent" ? "Revoke this agent?" : "Revoke this credential?"}
+                body={revocation.kind === "agent" ? `“${revocation.name}” and every credential it holds will be revoked. Connected agents using them will lose access. This cannot be undone.` : `The ${revocation.credential} for “${revocation.name}” will stop working immediately. Its other credentials will stay active. This cannot be undone.`}
+                confirmLabel={revocation.kind === "agent" ? "Revoke agent and keys" : "Revoke credential"}
+                busyText={busy ? "Revoking access…" : undefined} error={revokeError}
+                onConfirm={revoke} onCancel={() => { if (!revocationLock.current) { setRevocation(null); setRevokeError(""); } }} />}
         </div>
     );
 }
@@ -271,15 +286,15 @@ const styles: Record<string, React.CSSProperties> = {
     title: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
     description: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
     iconBtn: {
-        display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26,
+        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32,
         borderRadius: 9, cursor: "pointer", flexShrink: 0, background: "transparent",
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
         color: "var(--color-text-muted)",
     },
     dangerBtn: {
-        display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26,
+        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32,
         borderRadius: 9, cursor: "pointer", flexShrink: 0, background: "transparent",
-        border: "1px solid color-mix(in srgb, #e5484d 40%, transparent)", color: "#e5484d",
+        border: "1px solid color-mix(in srgb, var(--admin-danger) 40%, transparent)", color: "var(--admin-danger)",
     },
     addRow: { display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" },
     addInput: {
@@ -293,11 +308,11 @@ const styles: Record<string, React.CSSProperties> = {
         border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
         background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
     },
-    error: { fontSize: 12, color: "#e5484d", marginBottom: 10 },
+    error: { fontSize: 12, color: "var(--admin-danger)", marginBottom: 10 },
     briefBox: {
         display: "flex", flexDirection: "column", gap: 8, padding: 11, borderRadius: 14, marginBottom: 12,
-        border: "1px solid color-mix(in srgb, #31d07f 45%, transparent)",
-        background: "color-mix(in srgb, #31d07f 8%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--admin-success) 45%, transparent)",
+        background: "color-mix(in srgb, var(--admin-success) 8%, transparent)",
     },
     briefHead: { fontSize: 12, lineHeight: 1.5, color: "var(--color-text-primary)" },
     copyBtn: {
@@ -312,12 +327,12 @@ const styles: Record<string, React.CSSProperties> = {
         background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
     },
-    rowHead: { display: "flex", alignItems: "center", gap: 7 },
-    rowName: { fontSize: 12.5, fontWeight: 700, color: "var(--color-text-primary)" },
+    rowHead: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7 },
+    rowName: { overflowWrap: "anywhere", minWidth: 0, fontSize: 12.5, fontWeight: 700, color: "var(--color-text-primary)" },
     rowMeta: { flex: 1, fontSize: 11, color: "var(--color-text-muted)" },
-    keyRow: { display: "flex", alignItems: "center", gap: 7, paddingLeft: 4 },
+    keyRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, paddingLeft: 4 },
     chip: {
-        padding: "2px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 750, flexShrink: 0,
+        padding: "2px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 750, maxWidth: "100%", overflowWrap: "anywhere",
         color: "var(--color-text-muted)",
         background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",

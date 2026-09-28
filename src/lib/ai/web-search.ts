@@ -1,4 +1,5 @@
 import { ai, MODEL } from "@/lib/gemini";
+import { beginExternalServiceObservation, observeGeminiClient } from "@/lib/ai/model-observations";
 
 export type SearchDepth = "quick" | "thorough";
 
@@ -48,6 +49,7 @@ interface TavilyResponse {
 // null means this pool is unusable and the caller should try the next one.
 async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDepth): Promise<string | null> {
     const cfg = DEPTH_CONFIG[depth];
+    const observation = beginExternalServiceObservation({ providerId: "tavily", operation: "web_search" });
 
     try {
         const res = await fetch("https://api.tavily.com/search", {
@@ -66,6 +68,7 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
         });
 
         if (!res.ok) {
+            observation.finish({ error: { status: res.status }, ...(res.status === 432 || res.status === 402 ? { status: "rate_limit" as const } : {}) });
             const detail = await res.text().catch(() => "");
             if (res.status === 432 || res.status === 402) {
                 pool.blockedUntil = Date.now() + QUOTA_COOLDOWN_MS;
@@ -77,6 +80,7 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
         }
 
         const data = (await res.json()) as TavilyResponse;
+        observation.finish();
         const results = data.results ?? [];
 
         if (!data.answer && results.length === 0) {
@@ -96,6 +100,7 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
 
         return lines.join("\n");
     } catch (err) {
+        observation.finish({ error: err });
         console.error(`[WebSearch] Tavily ${pool.role} pool failed:`, err);
         return null;
     }
@@ -112,7 +117,7 @@ export async function webSearch(query: string, depth: SearchDepth = "quick"): Pr
 
 export async function geminiWebSearch(query: string): Promise<string> {
     try {
-        const response = await ai.models.generateContent({
+        const response = await observeGeminiClient(ai, { providerId: "gemini", purpose: "search" }).models.generateContent({
             model: MODEL,
             contents: [{ role: "user", parts: [{ text: `Search the web and answer with concrete, current facts and figures: ${query}` }] }],
             config: { tools: [{ googleSearch: {} }] },

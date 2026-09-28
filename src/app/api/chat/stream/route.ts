@@ -1,11 +1,13 @@
 import { NextRequest } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
+import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 import { broadcastPush } from "@/lib/messaging/push-service";
+import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
 
 export const maxDuration = 300;
 
@@ -27,6 +29,11 @@ export async function POST(req: NextRequest) {
         return oneShot({ type: "error", message: "Invalid request body." }, 400);
     }
 
+    if (body.freeOnly !== undefined && typeof body.freeOnly !== "boolean") return oneShot({ type: "error", message: "Free only must be a boolean." }, 400);
+    const knowledgeError = knowledgeOnlyRequestError(body);
+    if (knowledgeError) return oneShot({ type: "error", message: knowledgeError }, 400);
+    const resumeError = resumeRequestError(body);
+    if (resumeError) return oneShot({ type: "error", message: resumeError }, 400);
     const message = body.message;
     if (!message || typeof message !== "string") {
         return oneShot({ type: "error", message: "Message is required." }, 400);
@@ -53,6 +60,7 @@ export async function POST(req: NextRequest) {
     const ac = new AbortController();
     const onClientAbort = () => ac.abort();
     req.signal.addEventListener("abort", onClientAbort);
+    if (req.signal.aborted) ac.abort();
 
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -71,7 +79,7 @@ export async function POST(req: NextRequest) {
             }, 15000);
 
             try {
-                const { reply, messageId, artifacts, councilProposal } = await ragChat({
+                const { reply, messageId, userMessageId, artifacts, councilProposal, replyTrace } = await ragChat({
                     message: message.trim(),
                     channel,
                     imageBase64: body.imageBase64 as string | undefined,
@@ -80,6 +88,8 @@ export async function POST(req: NextRequest) {
                     thinking: !!body.thinking,
                     search: !!body.search,
                     agent: !!body.agent,
+                    freeOnly: body.freeOnly === true,
+                    knowledgeOnly: body.knowledgeOnly === true,
                     resumeRunId: body.resumeRunId as string | undefined,
                     replyTo,
                     provider: body.provider as string | undefined,
@@ -88,7 +98,7 @@ export async function POST(req: NextRequest) {
                     genParams: sanitizeGenParams(body.genParams),
                     signal: ac.signal,
                 }, send);
-                send({ type: "done", reply, messageId, artifacts, councilProposal });
+                send({ type: "done", reply, messageId, userMessageId, artifacts, councilProposal, replyTrace });
                 if (sawAgentRun && reply) {
                     const convId = body.conversationId as string | undefined;
                     await broadcastPush({

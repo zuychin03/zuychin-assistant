@@ -1,4 +1,5 @@
 import { ai, MODEL } from "@/lib/gemini";
+import { observeGeminiClient, withModelDataClasses } from "@/lib/ai/model-observations";
 import { Type, ThinkingLevel } from "@google/genai";
 import {
     commitFiles, getBranchHead, getFile, requireVaultConfig, VaultConflictError,
@@ -102,7 +103,7 @@ Return JSON:
 - summary: one line (< 140 chars) for the index catalogue.
 - links: the confirmed candidates only, as {path (exactly as listed), label (the relationship)}.`;
 
-    const resp = await ai.models.generateContent({
+    const resp = await withModelDataClasses(["knowledge"], () => observeGeminiClient(ai, { providerId: "gemini", purpose: "extraction" }).models.generateContent({
         model: MODEL,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
@@ -128,7 +129,7 @@ Return JSON:
                 required: ["markdown", "summary", "links"],
             },
         },
-    });
+    }));
 
     const parsed = JSON.parse(resp.text ?? "{}") as Partial<AuthoredPage>;
     if (!parsed.markdown || !parsed.summary) {
@@ -170,7 +171,7 @@ Files in this commit: ${params.touchedPaths.join(", ")}
 
 Return JSON {pass: boolean, reason: string} - reason is one short sentence.`;
 
-    const resp = await ai.models.generateContent({
+    const resp = await withModelDataClasses(["knowledge"], () => observeGeminiClient(ai, { providerId: "gemini", purpose: "extraction" }).models.generateContent({
         model: MODEL,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
@@ -185,7 +186,7 @@ Return JSON {pass: boolean, reason: string} - reason is one short sentence.`;
                 required: ["pass", "reason"],
             },
         },
-    });
+    }));
     const parsed = JSON.parse(resp.text ?? "{}") as { pass?: boolean; reason?: string };
     return { pass: parsed.pass === true, reason: parsed.reason ?? "Verifier returned no reason." };
 }

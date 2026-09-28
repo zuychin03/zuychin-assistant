@@ -1,5 +1,6 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { Type, ThinkingLevel } from "@google/genai";
+import { observeGeminiClient } from "@/lib/ai/model-observations";
 
 export interface RouteDecision {
     mode: "chat" | "agent";
@@ -26,7 +27,7 @@ ${context}User message:
 Respond ONLY with JSON: {"mode":"agent"} or {"mode":"chat"}.`;
 }
 
-export async function classifyIntent(message: string, lastAssistant?: string): Promise<RouteDecision> {
+export async function classifyIntent(message: string, lastAssistant?: string, freeOnly = false): Promise<RouteDecision> {
     const text = message.trim();
 
     const isShort = text.length < 16 || /^(yes|no|yep|nope|ok|okay)\b[.!]*$/i.test(text);
@@ -35,8 +36,9 @@ export async function classifyIntent(message: string, lastAssistant?: string): P
     if (TRIVIAL.test(text)) return { mode: "chat" };
     if (isShort && !isContinuation) return { mode: "chat" };
 
+    if (freeOnly) return { mode: AGENT_HINT.test(text) || (isContinuation && AGENT_HINT.test(lastAssistant!)) ? "agent" : "chat" };
     try {
-        const resp = await ai.models.generateContent({
+        const resp = await observeGeminiClient(ai, { providerId: "gemini", purpose: "routing" }).models.generateContent({
             model: MODEL,
             contents: [{ role: "user", parts: [{ text: routerPrompt(text, isContinuation ? lastAssistant : undefined) }] }],
             config: {

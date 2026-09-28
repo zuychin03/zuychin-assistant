@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
+import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { getArtifact } from "@/lib/artifacts/store";
 import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
+import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
 
 const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 
@@ -16,6 +18,11 @@ export async function POST(req: NextRequest) {
     if (denied) return denied;
     try {
         const body = await req.json();
+        if (body.freeOnly !== undefined && typeof body.freeOnly !== "boolean") return NextResponse.json({ error: "Free only must be a boolean." }, { status: 400 });
+        const knowledgeError = knowledgeOnlyRequestError(body);
+        if (knowledgeError) return NextResponse.json({ error: knowledgeError }, { status: 400 });
+        const resumeError = resumeRequestError(body);
+        if (resumeError) return NextResponse.json({ error: resumeError }, { status: 400 });
         const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, agent = false, provider, model, embeddingModel, genParams } = body;
 
         if (!message || typeof message !== "string") {
@@ -56,7 +63,7 @@ export async function POST(req: NextRequest) {
             validatedFile = file;
         }
 
-        const { reply, messageId, artifacts } = await ragChat({
+        const { reply, messageId, userMessageId, artifacts, replyTrace } = await ragChat({
             message: message.trim(),
             channel,
             imageBase64,
@@ -65,10 +72,14 @@ export async function POST(req: NextRequest) {
             thinking,
             search,
             agent,
+            resumeRunId: body.resumeRunId,
+            freeOnly: body.freeOnly === true,
+            knowledgeOnly: body.knowledgeOnly,
             provider,
             model,
             embeddingModel,
             genParams: sanitizeGenParams(genParams),
+            signal: req.signal,
         });
 
         const artifactsWithData = await Promise.all(
@@ -83,7 +94,7 @@ export async function POST(req: NextRequest) {
             })
         );
 
-        return NextResponse.json({ reply, messageId, artifacts: artifactsWithData });
+        return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: artifactsWithData });
     } catch (error: unknown) {
         console.error("[Chat API Error]", error);
 
@@ -92,7 +103,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json(
             { error: errorMessage },
-            { status: 500 }
+            { status: error instanceof ResumeScopeError ? 404 : 500 }
         );
     }
 }

@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { clearStudyPending, readStudyPending, writeStudyPending } from "../src/lib/study/pending-review.ts";
+
+const values = new Map<string, string>();
+const storage: Storage = { get length() { return values.size; }, key: index => [...values.keys()][index] ?? null, clear: () => values.clear(), getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } };
+const request = { id: "11111111-1111-4111-8111-111111111111", cardId: "22222222-2222-4222-8222-222222222222", version: 1, rating: 2 as const, response: "Private answer", reflection: "Private reflection" };
+writeStudyPending(storage, "owner-a", request);
+assert.deepEqual(readStudyPending(storage, "owner-a"), request);
+assert.equal(readStudyPending(storage, "owner-b"), null);
+assert.equal(storage.getItem("zuychin-study-pending-review:owner-a"), null);
+assert.throws(() => writeStudyPending(storage, "", request), /authenticated/);
+storage.setItem("zuychin-study-pending-review", JSON.stringify(request));
+readStudyPending(storage, "owner-a");
+assert.equal(storage.getItem("zuychin-study-pending-review"), null);
+storage.setItem("zuychin-study-pending-review:owner-b", JSON.stringify({ version: 1, profileId: "owner-a", request }));
+assert.throws(() => readStudyPending(storage, "owner-b"), /verified/);
+assert.equal(storage.getItem("zuychin-study-pending-review:owner-b"), null);
+storage.setItem("other-setting", "keep");
+clearStudyPending(storage);
+assert.equal(readStudyPending(storage, "owner-a"), null);
+assert.equal(storage.getItem("other-setting"), "keep");
+console.log("Study pending review: 9 privacy and retry assertions passed.");

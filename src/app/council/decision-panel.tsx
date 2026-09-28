@@ -40,7 +40,7 @@ export function DecisionPanel({ code, verdict, openQuestions, standbyExpiresAt, 
     }
 
     const filesItself = standbyExpiresAt
-        ? `Files itself ${new Date(standbyExpiresAt).toLocaleString()} if you do not rule.`
+        ? `Files itself ${new Date(standbyExpiresAt).toLocaleString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })} if you do not rule.`
         : "";
 
     return (
@@ -62,7 +62,7 @@ export function DecisionPanel({ code, verdict, openQuestions, standbyExpiresAt, 
                 </ul>
             )}
 
-            <textarea
+            <textarea aria-label="Decision or follow-up instructions"
                 value={directive}
                 onChange={(e) => setDirective(e.target.value)}
                 placeholder="If you send it back: what should they do differently?"
@@ -70,7 +70,7 @@ export function DecisionPanel({ code, verdict, openQuestions, standbyExpiresAt, 
                 style={styles.input}
             />
 
-            {error && <div style={styles.error}>{error}</div>}
+            {error && <div style={styles.error} role="alert">{error}</div>}
 
             <div style={styles.actions}>
                 <button type="button" onClick={() => decide("accept")} disabled={busy !== null} style={{ ...styles.button, ...styles.accept }}>
@@ -88,8 +88,8 @@ const styles: Record<string, React.CSSProperties> = {
     wrap: {
         display: "flex", flexDirection: "column", gap: 10, padding: 14, borderRadius: 14,
         borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, #e0a33e 45%, transparent)",
-        background: "color-mix(in srgb, #e0a33e 8%, var(--color-surface))",
+        borderColor: "color-mix(in srgb, var(--council-caution) 45%, transparent)",
+        background: "color-mix(in srgb, var(--council-caution) 8%, var(--color-surface))",
     },
     head: {
         display: "flex", alignItems: "center", gap: 7,
@@ -114,7 +114,7 @@ const styles: Record<string, React.CSSProperties> = {
         borderColor: "color-mix(in srgb, var(--color-text-muted) 30%, transparent)",
         background: "var(--color-background)", color: "var(--color-text-primary)",
     },
-    error: { fontSize: 12, color: "#e5484d" },
+    error: { fontSize: 12, color: "var(--council-error)" },
     actions: { display: "flex", gap: 8 },
     button: {
         display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px",
@@ -124,8 +124,8 @@ const styles: Record<string, React.CSSProperties> = {
         background: "transparent", color: "var(--color-text-primary)",
     },
     accept: {
-        color: "#31d07f",
-        borderColor: "color-mix(in srgb, #31d07f 50%, transparent)",
-        background: "color-mix(in srgb, #31d07f 12%, transparent)",
+        color: "var(--council-good)",
+        borderColor: "color-mix(in srgb, var(--council-good) 50%, transparent)",
+        background: "color-mix(in srgb, var(--council-good) 12%, transparent)",
     },
 };

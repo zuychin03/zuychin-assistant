@@ -1,0 +1,36 @@
+.history { max-width: 960px; margin: 0 0 24px; padding: 20px 0; border-bottom: 1px solid var(--color-border); color: var(--color-text-primary); }
+.history h3 { font-size: 16px; font-weight: 620; letter-spacing: -.02em; margin: 0; }
+.history h4 { font-size: 14px; font-weight: 650; margin: 0 0 8px; }
+.heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; }
+.heading > span { color: var(--color-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.history p { margin: 8px 0 16px; max-width: 72ch; color: var(--color-text-muted); font-size: 13px; line-height: 1.6; }
+.history button { min-height: 34px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: color-mix(in srgb, var(--color-background) 86%, var(--color-surface)); color: var(--color-text-primary); font: 600 12px/1.3 var(--font-family); cursor: pointer; }
+.history button:hover { border-color: var(--color-text-muted); background: var(--color-surface); }
+.history button:disabled { cursor: not-allowed; opacity: .55; }
+.history button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.history button[aria-pressed="true"] { border-color: var(--color-border); background: var(--color-surface); }
+.revisions { padding: 0; list-style: none; margin: 12px 0 16px; max-height: 280px; overflow: auto; scrollbar-color: var(--color-border) transparent; scrollbar-width: thin; }
+.revisions li + li { margin-top: 4px; }
+.revisions button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; width: 100%; padding: 10px 12px; text-align: left; background: transparent; border-color: transparent; }
+.revisions strong { overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.revisions span { grid-row: 2; color: var(--color-text-muted); font-size: 12px; font-weight: 400; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.revisions code { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--color-text-muted); font: 11px var(--font-mono); }
+.comparison { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--color-border); }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--color-border); }
+.tabs button { border-color: transparent; background: transparent; }
+.diff, .source { max-height: 480px; overflow: auto; margin: 0 0 16px; border: 1px solid var(--color-border); border-radius: 8px; scrollbar-color: var(--color-border) transparent; scrollbar-width: thin; }
+.diff > div { padding: 12px 14px; }
+.diff span { display: block; margin-bottom: 6px; font: 600 12px var(--font-family); }
+.diff pre, .source { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.65 var(--font-mono); }
+.diff pre { margin: 0; }
+.source { padding: 14px; background: color-mix(in srgb, var(--color-surface) 48%, var(--color-background)); }
+.added { background: color-mix(in srgb, var(--color-primary) 11%, transparent); color: var(--color-text-primary); }
+.removed { background: color-mix(in srgb, var(--color-text-muted) 12%, transparent); color: var(--color-text-primary); }
+.removed pre { text-decoration: line-through; }
+.equal { color: var(--color-text-muted); }
+.history .error { padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); color: var(--color-text-primary); }
+.restoreActions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 4px; }
+.restoreActions p { flex: 1 1 260px; margin: 0; }
+.history .restore, .history .restore:hover { border-color: var(--color-primary); background: var(--color-primary); color: var(--color-primary-foreground); }
+@media (max-width: 600px) { .revisions button { gap: 4px 8px; padding: 10px 8px; } .revisions span { grid-column: 1 / 3; } .revisions code { grid-row: 1; } .tabs button { flex: 1 1 auto; } }
+@media (max-width: 760px) { .history button { min-height: 44px; } }

@@ -46,6 +46,7 @@ export function libraryDocumentDestination(path: string, previous: string, secti
     url.searchParams.set("path", path);
     url.searchParams.delete("tab");
     url.searchParams.delete("view");
+    url.searchParams.delete("chunk");
     if (section) url.searchParams.set("section", section);
     else url.searchParams.delete("section");
     return url.pathname + url.search;

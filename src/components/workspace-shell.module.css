@@ -1,0 +1,50 @@
+.shell {
+    min-height: 100dvh;
+    background: radial-gradient(ellipse at 12% -8%, color-mix(in srgb, var(--color-primary) 6%, transparent), transparent 42%), var(--color-background);
+    color: var(--color-text-primary);
+    font-family: var(--font-family);
+}
+.header {
+    min-height: 82px;
+    padding: 15px clamp(18px, 3vw, 42px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px 24px;
+    border-bottom: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-background) 88%, transparent);
+}
+.titleGroup { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.titleGroup h1 { font-size: clamp(22px, 2.4vw, 27px); font-weight: 620; letter-spacing: -.035em; line-height: 1.15; }
+.titleGroup p { max-width: 70ch; margin-top: 5px; font-size: 12px; color: var(--color-text-muted); line-height: 1.5; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.actions :is(button, a) {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: 34px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-background) 86%, var(--color-surface));
+    color: var(--color-text-primary); font: 600 12px var(--font-family); text-decoration: none; cursor: pointer;
+}
+.iconButton, .actions .iconButton { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; }
+.actions :is(button, a):hover:not(:disabled), .iconButton:hover { background: var(--color-surface); color: var(--color-text-primary); }
+.actions button:disabled { opacity: .5; cursor: wait; }
+.navigation { display: flex; align-items: stretch; gap: 4px; min-height: 48px; overflow-x: auto; padding: 0 clamp(18px, 3vw, 42px); border-bottom: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-background) 94%, transparent); scrollbar-width: none; }
+.navigation a { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 7px; min-height: 48px; padding: 0 13px; border-bottom: 2px solid transparent; color: var(--color-text-muted); font-size: 12px; font-weight: 550; white-space: nowrap; text-decoration: none; }
+.navigation a:hover { color: var(--color-text-primary); background: color-mix(in srgb, var(--color-surface) 60%, transparent); }
+.navigation a[aria-current="page"] { color: var(--color-text-primary); border-bottom-color: var(--color-primary); font-weight: 650; }
+.content { min-width: 0; outline: none; }
+.shell ::selection { background: color-mix(in srgb, var(--color-primary) 20%, transparent); }
+.shell :is(a, button, input, textarea, select, summary):focus-visible, .navigation a:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.navigation a:focus-visible { outline-offset: -4px; }
+.skip { position: absolute; left: 18px; top: 8px; z-index: 20; transform: translateY(-150%); padding: 10px 14px; border-radius: var(--radius-sm); background: var(--color-primary); color: var(--color-primary-foreground); font-size: 13px; }
+.skip:focus { transform: translateY(0); }
+@media (max-width: 720px) {
+    .header { align-items: flex-start; flex-wrap: wrap; gap: 12px; padding-block: 16px; }
+    .titleGroup { flex: 1 1 240px; }
+    .actions { margin-left: 54px; }
+    .actions :is(button, a), .iconButton, .actions .iconButton { min-height: 44px; }
+    .iconButton, .actions .iconButton { width: 44px; }
+    .navigation { padding-inline: 10px; }
+    .navigation a { padding-inline: 12px; }
+}
+
+.navigation::-webkit-scrollbar { display: none; }

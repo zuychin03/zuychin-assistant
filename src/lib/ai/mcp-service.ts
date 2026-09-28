@@ -1,3 +1,6 @@
+import { gateUnattendedTool, recordUnattendedSource } from "@/lib/tasks/unattended-policy";
+import { proposeAction } from "@/lib/tasks/run-store";
+import { assertFreeModel, freeToolRefusal } from "@/lib/ai/model-policy";
 import { Type } from "@google/genai";
 import {
     listUpcomingEvents, createCalendarEvent, deleteCalendarEvent,
@@ -8,6 +11,9 @@ import {
     formatEmailSummary,
 } from "@/lib/integrations/gmail-service";
 import { ARTIFACT_TOOLS, executeArtifactTool } from "@/lib/ai/tools/artifacts";
+import { supabaseAdmin } from "@/lib/supabase";
+import { createBranchStore } from "@/lib/conversations/branch-store";
+import { isolateBranchRecall } from "@/lib/conversations/branches";
 import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 
 export interface McpToolParam {
@@ -26,6 +32,7 @@ export interface McpTool {
 }
 
 export interface ToolContext {
+    freeOnly?: boolean;
     conversationId?: string;
     userProfileId?: string;
     onArtifact?: (artifact: ArtifactDescriptor) => void;
@@ -603,17 +610,32 @@ import {
 } from "@/lib/tasks/store";
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
+import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
 
 export async function executeTool(
-    toolName: string,
-    args: Record<string, unknown>,
-    embRef?: ResolvedEmbedding,
-    ctx?: ToolContext
+    toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
 ): Promise<string> {
+    const pending = await gateUnattendedTool(toolName, args, proposeAction);
+    if (pending) return pending;
+    const knowledgeTool = ["search_knowledge", "vault_read", "vault_search", "vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
+    const knowledgePayload = ["vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
+    const result = await (knowledgePayload ? withModelDataClasses(["knowledge"], () => dispatchTool(toolName, args, embRef, ctx)) : dispatchTool(toolName, args, embRef, ctx));
+    if (knowledgeTool) addModelDataClasses(["knowledge"]);
+    if (toolName === "search_web") addModelDataClasses(["public_search"]);
+    recordUnattendedSource(toolName, result, args);
+    return result;
+}
+
+async function dispatchTool(
+    toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
+): Promise<string> {
+    const refusal = freeToolRefusal(toolName, ctx?.freeOnly);
+    if (refusal) return refusal;
     // Resolve the default ref only after the runtime partition override is
     // known - a default-param getEmbeddingRef() would run before the await.
-    await refreshEmbeddingOverride();
+    await refreshEmbeddingOverride(undefined, ctx?.freeOnly);
     embRef = embRef ?? getEmbeddingRef();
+    if (ctx?.freeOnly) assertFreeModel(embRef);
 
     const artifactResult = await executeArtifactTool(toolName, args, ctx, embRef);
     if (artifactResult !== null) return artifactResult;
@@ -635,9 +657,9 @@ export async function executeTool(
             return executeCouncilClose(args.sessionCode as string, args.verdict as string | undefined);
 
         case "search_knowledge":
-            return executeSearchKnowledge(args.query as string, embRef);
+            return executeSearchKnowledge(args.query as string, embRef, ctx);
         case "search_history":
-            return executeSearchHistory(args.query as string, embRef);
+            return executeSearchHistory(args.query as string, embRef, ctx);
 
         case "save_note":
             return executeSaveNote(
@@ -647,7 +669,7 @@ export async function executeTool(
             );
 
         case "get_recent_conversations":
-            return executeGetRecentConversations(args.limit as number | undefined);
+            return executeGetRecentConversations(args.limit as number | undefined, ctx);
 
         case "manage_calendar_event":
             return executeManageCalendarEvent(args);
@@ -714,7 +736,14 @@ async function executeGetCurrentTime(timezone?: string): Promise<string> {
     return `Current time (${tz}): ${now}`;
 }
 
-async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding): Promise<string> {
+async function scopeConversationRecall<T extends { metadata?: Record<string, string> }>(results: T[], ctx?: ToolContext): Promise<T[]> {
+    if (!ctx?.conversationId || !results.some((result) => result.metadata?.source === "user_message" || result.metadata?.conversationId)) return results;
+    if (!ctx.userProfileId) throw new Error("Conversation owner is unavailable for history recall.");
+    const branched = await createBranchStore(supabaseAdmin).isBranch(ctx.conversationId, ctx.userProfileId);
+    return isolateBranchRecall(results, ctx.conversationId, branched);
+}
+
+async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding, ctx?: ToolContext): Promise<string> {
     try {
         const embedding = await embedText(embRef, query, "query");
         const results = await hybridSearchKnowledge({
@@ -729,11 +758,12 @@ async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding):
             embeddingModel: embRef.model.id,
         });
 
-        if (results.length === 0) {
+        const scoped = await scopeConversationRecall(results, ctx);
+        if (scoped.length === 0) {
             return "No relevant knowledge found.";
         }
 
-        return results
+        return scoped
             .map((r, i) => `[${i + 1}] ${r.content}`)
             .join("\n");
     } catch (error) {
@@ -742,7 +772,7 @@ async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding):
     }
 }
 
-async function executeSearchHistory(query: string, embRef: ResolvedEmbedding): Promise<string> {
+async function executeSearchHistory(query: string, embRef: ResolvedEmbedding, ctx?: ToolContext): Promise<string> {
     try {
         const embedding = await embedText(embRef, query, "query");
         // The store mixes notes/documents in; overfetch then keep messages only.
@@ -758,7 +788,7 @@ async function executeSearchHistory(query: string, embRef: ResolvedEmbedding): P
             embeddingModel: embRef.model.id,
         });
 
-        const hits = results
+        const hits = (await scopeConversationRecall(results, ctx))
             .filter((r) => r.metadata?.source === "user_message")
             .slice(0, 5);
 
@@ -806,10 +836,13 @@ async function executeSaveNote(
 }
 
 async function executeGetRecentConversations(
-    limit?: number
+    limit?: number, ctx?: ToolContext
 ): Promise<string> {
     try {
-        const messages = await getRecentMessages(limit ?? 10);
+        if (ctx?.conversationId && !ctx.userProfileId) throw new Error("Conversation owner is unavailable for history recall.");
+        const branched = ctx?.conversationId && ctx.userProfileId
+            ? await createBranchStore(supabaseAdmin).isBranch(ctx.conversationId, ctx.userProfileId) : false;
+        const messages = await getRecentMessages(limit ?? 10, undefined, branched ? ctx?.conversationId : undefined);
         if (messages.length === 0) {
             return "No recent conversations found.";
         }

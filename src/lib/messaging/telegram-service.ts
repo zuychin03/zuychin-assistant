@@ -19,7 +19,7 @@ function escapeTelegramPlain(text: string): string {
 export async function sendTelegramMessage(
     chatId: string | number,
     text: string,
-    options?: { replyMarkup?: unknown }
+    options?: { replyMarkup?: unknown; signal?: AbortSignal; allowFormattingFallback?: boolean }
 ): Promise<boolean> {
     if (!TELEGRAM_BOT_TOKEN) {
         console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set, cannot send.");
@@ -31,12 +31,14 @@ export async function sendTelegramMessage(
 
     try {
         for (const [i, chunk] of chunks.entries()) {
+            options?.signal?.throwIfAborted();
             // Inline keyboards belong on the final chunk only.
             const markup = i === chunks.length - 1 && options?.replyMarkup
                 ? { reply_markup: options.replyMarkup }
                 : {};
 
             let res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+                signal: options?.signal,
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -47,9 +49,10 @@ export async function sendTelegramMessage(
                 }),
             });
 
-            if (!res.ok) {
+            if (!res.ok && options?.allowFormattingFallback !== false) {
                 console.warn("[Telegram] MarkdownV2 rejected, falling back to plain text.");
                 res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+                    signal: options?.signal,
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -108,7 +111,8 @@ export async function editTelegramMessageReplyMarkup(
 
 export async function sendTelegramDocument(
     chatId: string | number,
-    doc: { filename: string; mimeType: string; body: Buffer | string; caption?: string }
+    doc: { filename: string; mimeType: string; body: Buffer | string; caption?: string },
+    signal?: AbortSignal
 ): Promise<boolean> {
     if (!TELEGRAM_BOT_TOKEN) {
         console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set, cannot send document.");
@@ -124,7 +128,8 @@ export async function sendTelegramDocument(
         const blob = new Blob([new Uint8Array(bytes)], { type: doc.mimeType || "application/octet-stream" });
         form.append("document", blob, doc.filename);
 
-        const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: "POST", body: form });
+        signal?.throwIfAborted();
+        const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: "POST", body: form, signal });
         if (!res.ok) {
             const err = await res.text();
             console.error("[Telegram] sendDocument failed:", res.status, err);

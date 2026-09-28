@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useId } from "react";
+import { createPortal } from "react-dom";
+import { observeAnchoredMenu } from "@/components/anchored-menu";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import { MessageSquare, Trash2, Folder, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X, LoaderCircle } from "lucide-react";
 import { styles } from "./styles";
 import ui from "./conversation-list.module.css";
@@ -97,9 +100,16 @@ export function ConversationList({
   const [renameDraft, setRenameDraft] = useState("");
   const [instructionsId, setInstructionsId] = useState<string | null>(null);
   const [instructionsDraft, setInstructionsDraft] = useState("");
+  const [instructionsBase, setInstructionsBase] = useState("");
+  const instructionsRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuAnchorRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const pendingRef = useRef<string | null>(null);
+  const instructionsDirty = instructionsId !== null && instructionsDraft !== instructionsBase;
+  useUnsavedChanges(() => instructionsDirty || pendingAction?.startsWith("instructions:") === true);
 
   const perform = async (key: string, action: () => Promise<boolean>, complete: () => void) => {
     if (pendingRef.current) return;
@@ -113,17 +123,47 @@ export function ConversationList({
     }
   };
 
+  useLayoutEffect(() => {
+    if ((!menuFor && !moveFor) || !menuAnchorRef.current || !menuRef.current) return;
+    return observeAnchoredMenu(menuAnchorRef.current, menuRef.current, { align: "end", minWidth: 180, maxHeight: 280 });
+  }, [menuFor, moveFor]);
+
   useEffect(() => {
     if (!menuFor && !moveFor) return;
-    const onDoc = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    const onDoc = (e: Event) => {
+      if (!menuRef.current?.contains(e.target as Node) && !menuAnchorRef.current?.contains(e.target as Node)) {
         setMenuFor(null);
         setMoveFor(null);
       }
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("pointerdown", onDoc);
+    document.addEventListener("focusin", onDoc);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("focusin", onDoc);
+    };
   }, [menuFor, moveFor]);
+
+  const closeMenu = () => {
+    setMenuFor(null);
+    setMoveFor(null);
+    menuAnchorRef.current?.focus({ preventScroll: true });
+  };
+
+  const renderMenu = (label: string, children: React.ReactNode) => createPortal(
+    <div ref={menuRef} id={menuId} className={ui.menu} role="menu" aria-label={label} style={local.menu} onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(); return; }
+      if (event.key === "Tab") { closeMenu(); return; }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[index]?.focus();
+    }}>{children}</div>, document.body,
+  );
 
   const grouped = new Map<string, ConversationItem[]>();
   for (const p of projects) grouped.set(p.id, []);
@@ -144,38 +184,56 @@ export function ConversationList({
     if (id) await perform(`instructions:${id}`, () => onUpdateProject(id, { instructions: instructionsDraft.trim() }), () => setInstructionsId(null));
   };
 
+  function openInstructions(project: ProjectItem) {
+    if (pendingRef.current) return;
+    setMenuFor(null);
+    if (instructionsId === project.id) { instructionsRef.current?.focus(); return; }
+    if (instructionsDirty && !window.confirm("Discard your unsaved project instructions and switch projects?")) {
+      instructionsRef.current?.focus();
+      return;
+    }
+    setInstructionsId(project.id);
+    setInstructionsBase(project.instructions);
+    setInstructionsDraft(project.instructions);
+  }
+
+  function closeInstructions() {
+    if (pendingRef.current) return;
+    if (instructionsDirty && !window.confirm("Discard your unsaved project instructions?")) return;
+    setInstructionsId(null);
+    setInstructionsDraft("");
+    setInstructionsBase("");
+  }
+
   const renderRow = (conv: ConversationItem, indented: boolean) => (
     <div key={conv.id} style={{ position: "relative", ...(indented ? { marginLeft: 14 } : {}) }}>
       <div
-        onClick={() => onSelect(conv.id)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-            e.preventDefault();
-            onSelect(conv.id);
-          }
-        }}
         style={{
           ...styles.conversationItem,
           ...(activeConversationId === conv.id ? styles.conversationItemActive : {}),
         }}
       >
-        <MessageSquare size={14} style={{ flexShrink: 0, marginTop: 2 }} />
-        <div style={styles.conversationInfo}>
-          <span style={styles.conversationTitle}>{conv.title}</span>
-          <span style={styles.conversationTime}>{runningConversationIds.includes(conv.id) ? "Replying…" : formatTime(conv.updatedAt)}</span>
-        </div>
+        <button type="button" onClick={() => onSelect(conv.id)} style={local.rowSelect} aria-current={activeConversationId === conv.id ? "page" : undefined}>
+          <MessageSquare size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span style={styles.conversationInfo}>
+            <span style={styles.conversationTitle}>{conv.title}</span>
+            <span style={styles.conversationTime}>{runningConversationIds.includes(conv.id) ? "Replying…" : formatTime(conv.updatedAt)}</span>
+          </span>
+        </button>
         {projects.length > 0 && (
           <button
             onClick={(e) => {
               e.stopPropagation();
+              menuAnchorRef.current = e.currentTarget;
               setMoveFor(moveFor === conv.id ? null : conv.id);
               setMenuFor(null);
             }}
             style={styles.deleteBtn}
             disabled={!!pendingAction || deletingConversationIds.includes(conv.id)}
-            aria-label="Move to project"
+            aria-label={`Move to project: ${conv.title}`}
+            aria-haspopup="menu"
+            aria-expanded={moveFor === conv.id}
+            aria-controls={moveFor === conv.id ? menuId : undefined}
             title="Move to project"
           >
             <FolderInput size={13} />
@@ -191,11 +249,11 @@ export function ConversationList({
           <Trash2 size={13} />
         </button>
       </div>
-      {moveFor === conv.id && (
-        <div style={local.menu}>
+      {moveFor === conv.id && renderMenu(`Move ${conv.title} to project`, <>
           <button
+            role="menuitem"
             style={local.menuItem}
-            onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, null), () => setMoveFor(null))}
+            onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, null), closeMenu)}
             disabled={!!pendingAction || !conv.projectId}
           >
             Ungrouped
@@ -203,20 +261,20 @@ export function ConversationList({
           {projects.map((p) => (
             <button
               key={p.id}
+              role="menuitem"
               style={local.menuItem}
-              onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, p.id), () => setMoveFor(null))}
+              onClick={() => void perform(`move:${conv.id}`, () => onMoveConversation(conv.id, p.id), closeMenu)}
               disabled={!!pendingAction || conv.projectId === p.id}
             >
               {p.name}
             </button>
           ))}
-        </div>
-      )}
+        </>)}
     </div>
   );
 
   return (
-    <div ref={rootRef} className={ui.scope} aria-busy={!!pendingAction} style={styles.conversationList}>
+    <div ref={rootRef} className={ui.scope} aria-busy={!!pendingAction} aria-owns={menuFor || moveFor ? menuId : undefined} style={styles.conversationList}>
       {projects.map((p) => {
         const convs = grouped.get(p.id) ?? [];
         const isCollapsed = collapsed[p.id] ?? false;
@@ -224,19 +282,13 @@ export function ConversationList({
           <div key={p.id} style={{ position: "relative" }}>
             <div
               style={local.projectHeader}
-              onClick={() => setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }))}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                  e.preventDefault();
-                  setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }));
-                }
-              }}
             >
+              <button type="button" style={{ ...local.rowSelect, gap: 6, ...(renamingId === p.id ? { flex: "0 0 auto" } : {}) }} onClick={() => setCollapsed((prev) => ({ ...prev, [p.id]: !isCollapsed }))} aria-label={`${isCollapsed ? "Expand" : "Collapse"} project: ${p.name}`} aria-expanded={!isCollapsed}>
               {isCollapsed ? <ChevronRight size={13} style={{ flexShrink: 0 }} /> : <ChevronDown size={13} style={{ flexShrink: 0 }} />}
               <Folder size={13} style={{ flexShrink: 0 }} />
-              {renamingId === p.id ? (
+              {renamingId !== p.id && <span style={local.projectName}>{p.name}</span>}
+              </button>
+              {renamingId === p.id && (
                 <input
                   autoFocus
                   aria-label={`Rename project: ${p.name}`}
@@ -251,8 +303,6 @@ export function ConversationList({
                   }}
                   style={{ ...local.input, flex: 1 }}
                 />
-              ) : (
-                <span style={local.projectName}>{p.name}</span>
               )}
               {renamingId === p.id && <>
                 <button style={local.iconBtn} disabled={!!pendingAction || !renameDraft.trim()} onClick={(e) => { e.stopPropagation(); void submitRename(); }} aria-label="Save project name"><Check size={14} /></button>
@@ -272,18 +322,22 @@ export function ConversationList({
                 disabled={!!pendingAction}
                 onClick={(e) => {
                   e.stopPropagation();
+                  menuAnchorRef.current = e.currentTarget;
                   setMenuFor(menuFor === p.id ? null : p.id);
                   setMoveFor(null);
                 }}
-                aria-label="Project options"
+                aria-label={`Project options: ${p.name}`}
+                aria-haspopup="menu"
+                aria-expanded={menuFor === p.id}
+                aria-controls={menuFor === p.id ? menuId : undefined}
               >
                 <MoreHorizontal size={13} />
               </button>
             </div>
 
-            {menuFor === p.id && (
-              <div style={local.menu}>
+            {menuFor === p.id && renderMenu(`Options for ${p.name}`, <>
                 <button
+                  role="menuitem"
                   style={local.menuItem}
                   disabled={!!pendingAction}
                   onClick={() => { setMenuFor(null); setRenamingId(p.id); setRenameDraft(p.name); }}
@@ -291,27 +345,30 @@ export function ConversationList({
                   Rename
                 </button>
                 <button
+                  role="menuitem"
                   style={local.menuItem}
                   disabled={!!pendingAction}
-                  onClick={() => { setMenuFor(null); setInstructionsId(p.id); setInstructionsDraft(p.instructions); }}
+                  onClick={() => openInstructions(p)}
                 >
                   Instructions
                 </button>
                 <button
+                  role="menuitem"
                   style={{ ...local.menuItem, color: "var(--color-danger, #d5484f)" }}
                   disabled={!!pendingAction}
                   onClick={() => {
+                    closeMenu();
                     void perform(`delete-project:${p.id}`, () => onDeleteProject(p.id), () => setMenuFor(null));
                   }}
                 >
                   Delete
                 </button>
-              </div>
-            )}
+              </>)}
 
             {instructionsId === p.id && (
               <div style={local.instructionsBox}>
                 <textarea
+                  ref={instructionsRef}
                   autoFocus
                   aria-label={`Instructions for ${p.name}`}
                   disabled={!!pendingAction}
@@ -322,8 +379,8 @@ export function ConversationList({
                   style={local.textarea}
                 />
                 <div style={local.instructionsActions}>
-                  <button style={local.iconBtn} disabled={!!pendingAction} onClick={submitInstructions} aria-label="Save instructions"><Check size={14} /></button>
-                  <button style={local.iconBtn} disabled={!!pendingAction} onClick={() => setInstructionsId(null)} aria-label="Cancel"><X size={14} /></button>
+                  <button style={{ ...local.iconBtn, ...local.instructionButton }} disabled={!!pendingAction} onClick={submitInstructions} aria-label="Save instructions"><Check size={14} /> Save instructions</button>
+                  <button style={{ ...local.iconBtn, ...local.instructionButton }} disabled={!!pendingAction} onClick={closeInstructions} aria-label="Cancel instructions"><X size={14} /> Cancel</button>
                 </div>
               </div>
             )}
@@ -357,6 +414,22 @@ export function ConversationList({
 }
 
 const local: Record<string, React.CSSProperties> = {
+  rowSelect: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+    minHeight: 36,
+    padding: 0,
+    border: "none",
+    borderRadius: 6,
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    textAlign: "left",
+    cursor: "pointer",
+  },
   newProjectBtn: {
     display: "flex",
     alignItems: "center",
@@ -397,18 +470,17 @@ const local: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   menu: {
-    position: "absolute",
-    right: 8,
-    top: "100%",
-    marginTop: -4,
-    zIndex: 30,
-    minWidth: 130,
-    maxHeight: 220,
+    position: "fixed",
+    zIndex: 1000,
+    visibility: "hidden",
+    width: "max-content",
+    boxSizing: "border-box",
     overflowY: "auto",
-    background: "var(--color-surface)",
+    overscrollBehavior: "contain",
+    background: "var(--color-background)",
     border: "1px solid var(--color-border)",
-    borderRadius: 8,
-    boxShadow: "0 6px 18px rgba(0,0,0,0.14)",
+    borderRadius: "var(--radius-md)",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
     padding: 4,
     display: "flex",
     flexDirection: "column",
@@ -416,12 +488,14 @@ const local: Record<string, React.CSSProperties> = {
   menuItem: {
     display: "block",
     width: "100%",
+    minHeight: 44,
     padding: "7px 10px",
     background: "none",
     border: "none",
     borderRadius: 6,
     cursor: "pointer",
     textAlign: "left",
+    overflowWrap: "anywhere",
     color: "var(--color-text-primary)",
     fontSize: 12.5,
     fontFamily: "var(--font-family)",
@@ -459,9 +533,17 @@ const local: Record<string, React.CSSProperties> = {
   },
   instructionsActions: {
     display: "flex",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: 4,
     marginTop: 2,
+  },
+  instructionButton: {
+    minWidth: 44,
+    minHeight: 44,
+    padding: "6px 10px",
+    gap: 6,
+    fontSize: 13,
   },
   iconBtn: {
     display: "flex",

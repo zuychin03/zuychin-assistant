@@ -44,10 +44,10 @@ Suggested scope:
 
 - Last successful request, response time and capability check results.
 - Separate statuses for authentication failures, rate limits, temporary failures and confirmed retirement.
-- An app-wide Free only setting covering chat, workers and fallbacks.
+- A persisted Free only setting covering interactive chat, workers and fallbacks. Scheduled generation remains paid, as decided on 28/09/2026.
 - Explicit handling when no eligible model is available.
 
-This addresses the recent model availability problems. At the time of this proposal, the worker pipeline still permits a paid Gemini fallback, so the free-only setting must cover execution as well as the model picker.
+This addresses the recent model availability problems. Free only must cover execution as well as the model picker. Both enforcement and passive model-health reporting are implemented in the V6 worktree. Live provider availability is not inferred from fixture results.
 
 ### 4. Capture inbox and offline reading
 
@@ -101,7 +101,7 @@ Suggested scope:
 - **Cache-usage reporting:** capture streamed usage metadata where supported, including input, output and cached input tokens. Measure provider call counts, time to first answer text and total response time. Show unavailable measurements as unknown rather than zero.
 - **A more efficient Gemini generation flow:** avoid routinely generating an initial answer and then replacing it with a second grounded answer when no tool is used. Preserve the required tool and search capabilities, citations, cancellation and continuation behaviour. Stream final answers after tool execution where supported.
 
-Current inefficiencies to address:
+Baseline findings from 23/09/2026, addressed by the local implementation below:
 
 - The context builder fetches up to 20 messages. Above 8 messages, it generates a fresh summary of the older portion and retains the latest 5 verbatim.
 - The ordinary Gemini chat path first makes a non-streaming tool-capable call. If no tool is used, it attempts a second streamed search/maps generation; tool-based answers currently arrive as one completed chunk.
@@ -134,7 +134,7 @@ Suggested scope:
 - Expiry for unanswered requests, with the task result recording what was skipped.
 - Read-only tools continuing without approval.
 
-Scheduled tasks currently run with the full tool set while reading untrusted email and web content, and nobody reviews their actions. The Telegram inline buttons used for initiative feedback provide a starting point.
+At the proposal baseline, scheduled tasks ran with the full tool set while reading untrusted email and web content, without action review. The Telegram inline buttons used for initiative feedback provide a starting point.
 
 ### 10. Scheduled tasks page
 
@@ -146,7 +146,7 @@ Suggested scope:
 - Pause, resume, run now, edit and delete actions.
 - Each task's model route and any recorded errors.
 
-Scheduled tasks can currently be created and managed only through chat. A page becomes more useful as recurring tasks are added, and it gives the approvals in feature 9 and the routing in feature 8 a visible home.
+At the proposal baseline, scheduled tasks were created and managed only through chat. A page becomes more useful as recurring tasks are added, and it gives the approvals in feature 9 and the routing in feature 8 a visible home.
 
 ### 11. Knowledge-only answers
 
@@ -193,13 +193,44 @@ The expected benefits are a faster first reply, fewer Gemini calls per turn and,
 - Apply future routing and approval policies only within assistant calls. Council's moderator and
   owner channel share the existing Gemini client, so do not globally reroute that client.
 - Scheduled-action approval must not grant or replace authority for `council_*` operations.
-- Resolve the Free only interaction with paid scheduled tasks and the allowed data/provider matrix
-  before enforcing those policies. Paid chat routing does not cover embeddings or imply zero retention.
+- Enforce the owner decisions recorded below for interactive Free only. Keep unattended and other data-policy work within its separately approved routes. Paid chat routing does not cover embeddings or imply zero retention.
 - Keep Jev inactive until the owner settles its plan, credits and retention requirements. Do not send
   personal messages to it as part of a test or shadow run before those decisions.
 
-Begin with knowledge-only chat and assistant usage measurement while the policy-dependent work is
-pending. Preserve the broader recommended sequence below as a priority guide, subject to these gates.
+Knowledge-only chat, assistant usage measurement and interactive Free only enforcement form the first implementation batch. Preserve the broader recommended sequence below as a priority guide, subject to these gates.
+
+## Implementation status, 28/09/2026
+
+UI refinement is implemented locally: shared Library-style workspaces, desktop/mobile layouts, three mode switches in Generation settings, guarded drafts and saves, stable Dashboard panels, accessible controls and corrected Cosmos/Council reader behaviour. Two independent assessment passes drove the corrections. See `V6_IMPLEMENTATION_HANDOFF.md` for the UI scope and verification evidence. The work remains uncommitted; Council is still deferred.
+
+Implementation is in the isolated `codex/assistant-v6-foundations` worktree. Council remains deferred. These changes are uncommitted and have not been deployed or applied to the hosted database.
+
+| Feature | Local implementation | Activation or remaining gate |
+| --- | --- | --- |
+| 1. Research workbench | Questions, scoped source revisions, exact passage evidence, annotations, claims, interpretation, comparison and conflict recovery | Apply research migration; verify with the authenticated hosted Library |
+| 2. Active study | Editable source-linked recall, exercise and explanation cards; learner self-assessment; FSRS; mistakes; daily limits; replay-safe reviews | Apply study migration. No automated correctness grading or Jev calls |
+| 3. Model health and Free only | Passive request observations, history and failure classes; persisted interactive policy covering helpers and fallbacks | Apply model-health migration. Live availability remains unverified |
+| 4. Capture and offline | Link, passage and original-PDF inbox; destination preview and durable reservation; explicit device downloads and append-only queued notes | Apply capture migration. PDF text extraction/OCR is not included; reviewed notes are indexed |
+| 5. Knowledge revisions | Immutable revision comparison and evidence; previewed restoration as a new Git commit; stale-head and dirty-draft handling | Uses the configured vault. Real restore/indexing was not exercised |
+| 6. Conversation branches | Atomic selected-message prefix, related navigation and comparison, preserved original, safe retry and strict resume scope | Apply branches migration |
+| 7. Context and streaming | Revision-fenced incremental summaries, stable prompt ordering, direct Gemini streaming, usage/cache measurements and persisted reply trail | Apply context and reply-trace migrations. Actual provider cache hits remain unverified; legacy ownership repair needs a decision |
+| 8. Data handling | Existing-provider class rules, Free only and paid generation rules, per-call recipient trail with unverified retention clearly labelled | Enforceable zero-retention arrangements are not configured or claimed. Scheduled embeddings keep the configured shared partition |
+| 9. Unattended approvals | Immutable proposed action/source context, owner-session approve/reject, expiry, one-use execution and explicit unknown outcomes | Apply scheduled-actions migration. Council actions remain denied; real external delivery was not tested |
+| 10. Scheduled tasks | CRUD, pause/resume/run now, schedule/timezone validation, paid route, run history and approvals | Same migration. Expired runs cannot start delivery or overwrite newer results |
+| 11. Knowledge-only chat | Saved excerpts or explicit abstention; source links; strict project/index scope; queue/retry/cancellation support | Existing knowledge index required |
+| 12. Jev | Disabled client and strict typed parsing with mocked uncertainty/timeout cases | Remains inactive pending owner decisions about credits, plan and retention; no shadow or live calls |
+
+Final local verification: 49 regression suites, in-memory PostgreSQL, full typecheck, source lint, production build and desktop/mobile synthetic browser checks passed. Hosted services and remote CI remain unverified.
+
+See [V6_IMPLEMENTATION_HANDOFF.md](V6_IMPLEMENTATION_HANDOFF.md) for database activation, verification and limits. New interactive pages are `/research`, `/study`, `/capture`, `/tasks` and `/conversations/compare`; Library and Dashboard navigation link to them.
+
+The original reviewed code and scope remain in baseline commit `98cec3982bbb9cbe10319ebf559cd0aecfd2854a`. Preserve the separate uncommitted Council/Tauri changes in the primary checkout. Do not commit, push, apply hosted SQL or activate Jev without the corresponding owner instruction.
+
+Owner decisions for Free only:
+
+- Apply it to interactive chat, including helper calls and fallbacks. Scheduled generation retains its existing paid-only rule.
+- The configured Gemini Free, NVIDIA NIM, OpenRouter, Kilo and OpenCode Zen providers may receive personal and saved-knowledge text for interactive requests. Eligibility and availability still apply.
+- This does not authorise a new provider, a per-request embedding migration, activation of Jev, or changes to Council V4.
 
 ## Recommended delivery sequence
 
@@ -208,7 +239,7 @@ pending. Preserve the broader recommended sequence below as a priority guide, su
 3. **Research workbench:** the strongest larger addition for research and study. Knowledge revision history is a useful supporting feature to consider alongside it.
 4. **Active study mode:** turn collected and reviewed knowledge into sustained practice.
 
-Capture inbox, offline reading and conversation branching remain candidates for subsequent prioritisation. This sequence is a recommendation, not an approved implementation schedule.
+This was the initial priority recommendation. The owner subsequently authorised the whole compatible plan; capture, offline reading and branching are now included in the implementation table above.
 
 Features 8 to 12 were added on 27/09/2026. Features 8 and 9 build on the same model-routing code as Free only mode, so they fit alongside step 1. Feature 10 is small and pairs with feature 9. Feature 11 pairs with the research workbench. Feature 12 begins with step 2, once the Vercel plan and credit questions are settled.
 

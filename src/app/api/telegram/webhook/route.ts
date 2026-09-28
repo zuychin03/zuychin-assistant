@@ -1,9 +1,10 @@
+import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
-import { getVoicePrefs, synthesizeSpeech } from "@/lib/ai/tts";
+import { getVoicePrefs, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
 import { getDefaultProfile } from "@/lib/db";
 import type { FileAttachment } from "@/lib/types";
 
@@ -39,16 +40,17 @@ function getMimeType(filePath: string): string {
 // Best-effort: the text reply is already delivered, so a TTS failure or
 // timeout must never take down the turn. sendVoice/sendAudio both reject WAV;
 // a document attachment still plays inline in Telegram.
-async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean) {
+async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean, freeOnly = false) {
     if (!reply) return;
     try {
         const profile = await getDefaultProfile();
+        if (effectiveFreeOnly(profile, freeOnly)) return;
         const voice = getVoicePrefs(profile?.preferences);
         if (voice.replyWithVoice === "off") return;
         if (voice.replyWithVoice === "onVoiceInput" && !audioTurn) return;
 
         await sendTelegramChatAction(chatId, "upload_document");
-        const { buffer, mimeType } = await synthesizeSpeech(reply, voice.voiceName);
+        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, voice.voiceName));
         const ok = await sendTelegramDocument(chatId, {
             filename: "reply.wav",
             mimeType,
@@ -185,7 +187,7 @@ async function processUpdate(update: Record<string, unknown>) {
     }
 
     console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
-    const { reply, artifacts } = await ragChat({
+    const { reply, artifacts, freeOnly } = await ragChat({
         message: text || (file ? `[Sent ${file.name}]` : ""),
         channel: "telegram",
         file,
@@ -208,7 +210,7 @@ async function processUpdate(update: Record<string, unknown>) {
         console.log(`[Telegram] Document ${stored.name} ${ok ? "sent" : "failed"}.`);
     }
 
-    await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"));
+    await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"), freeOnly);
     console.log(`[Telegram] Reply sent to chat ${chatId}.`);
 }
 

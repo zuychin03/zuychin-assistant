@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
-import Link from "next/link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck } from "lucide-react";
+import { WorkspaceLink as Link } from "@/components/workspace-link";
+import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck, BookOpen, CircleDollarSign } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, modelSearchTerms, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
+import chatModeStyles from "./home/chat-modes.module.css";
+import { GenerationSettings, ModeToggle } from "./home/generation-settings";
 import { chatMarkdownComponents } from "./home/markdown";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
@@ -17,9 +19,15 @@ import remarkGfm from "remark-gfm";
 import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, sameDraft, type ChatDraft, type ChatSession } from "./home/chat-state";
 import { readChatDrafts, writeChatDraft } from "./home/chat-drafts";
 import { safeReturnTo, documentDestination, withReturnTo } from "@/lib/document-navigation";
+import { eligibleChatProviders, resolveChatSelection } from "./home/chat-policy";
+import ReplyTraceDetails from "./home/reply-trace";
+import { BranchNavigation } from "./conversations/branch-navigation";
+import { BranchMessageAction } from "./conversations/branch-message-action";
+import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 interface ChatMessage {
   id: string;
+  persisted?: boolean;
   role: "user" | "assistant";
   content: string;
   fileName?: string;
@@ -29,6 +37,7 @@ interface ChatMessage {
   councilProposal?: CouncilProposal;
   /** Which model produced this reply (only known for messages sent this session). */
   modelLabel?: string;
+  replyTrace?: ReplyTrace;
   /** ISO timestamp shown under assistant replies. */
   at?: string;
   /** Set on interruption notices: lets the user relaunch the agent run with prior progress. */
@@ -61,12 +70,14 @@ interface SpeechRecognitionLike {
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  const dayPart = d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+  const dayPart = d.toLocaleDateString("en-AU", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
   if (!iso.includes("T")) return dayPart;
   return `${dayPart}, ${d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`;
 }
 
 interface OutgoingPayload {
+  knowledgeOnly: boolean;
+  freeOnly: boolean;
   text: string;
   file: { name: string; mimeType: string; base64: string; size: number } | null;
   replyTo: { role: "user" | "assistant"; content: string } | null;
@@ -79,6 +90,9 @@ interface ServerMessage {
   content: string;
   createdAt?: string;
   metadata?: {
+    knowledgeOnly?: boolean;
+    historicalModels?: { providerId: string; modelId: string }[];
+    replyTrace?: ReplyTrace;
     artifacts?: ArtifactDescriptor[];
     replyTo?: { role: "user" | "assistant"; content: string };
     councilProposal?: CouncilProposal;
@@ -88,12 +102,15 @@ interface ServerMessage {
 const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
   msgs.map((m) => ({
     id: m.id,
+    persisted: true,
     role: m.role as "user" | "assistant",
     content: m.content,
     artifacts: m.metadata?.artifacts,
     councilProposal: m.metadata?.councilProposal,
     replyTo: m.metadata?.replyTo,
     at: m.createdAt,
+    modelLabel: m.metadata?.knowledgeOnly ? "Saved sources" : m.metadata?.historicalModels?.map((model) => `${model.providerId} / ${model.modelId}`).join(", "),
+    replyTrace: m.metadata?.replyTrace,
   }));
 
 // Starter suggestions on the empty state. Each fills the input with a command
@@ -215,6 +232,8 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [notesLoaded, setNotesLoaded] = useState(false);
+  const [notesError, setNotesError] = useState("");
   const [cmdIndex, setCmdIndex] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -224,6 +243,12 @@ export default function Home() {
   const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
+  const [knowledgeOnly, setKnowledgeOnly] = useState(false);
+  const [freeOnly, setFreeOnly] = useState(false);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [preferencesSaving, setPreferencesSaving] = useState(false);
+  const [preferencesError, setPreferencesError] = useState<{ message: string; attempted?: boolean } | null>(null);
+  const chatPolicyRef = useRef({ freeOnly: false, ready: false });
   const [actionError, setActionError] = useState<{ message: string; retry?: () => void } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ kind: "chat" | "project"; id: string; title: string; resolve: (ok: boolean) => void } | null>(null);
   const [pendingActions, setPendingActions] = useState<string[]>([]);
@@ -231,11 +256,18 @@ export default function Home() {
   const [returnTo, setReturnTo] = useState<string | null>(null);
   const [documentLinks, setDocumentLinks] = useState({ knowledge: "/knowledge", graph: "/graph" });
   const [isDesktop, setIsDesktop] = useState(false);
+  const [compactHeader, setCompactHeader] = useState(true);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providersLoading, setProvidersLoading] = useState(true);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [providersError, setProvidersError] = useState("");
+  const providerRequest = useRef(0);
 
   const [chatSel, setChatSel] = useState("");
   const [embedSel, setEmbedSel] = useState("");
   const [generationOpen, setGenerationOpen] = useState(false);
+  const generationTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeGeneration = useCallback(() => setGenerationOpen(false), []);
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
@@ -245,6 +277,9 @@ export default function Home() {
   const [convosLoaded, setConvosLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const notesRef = useRef<HTMLElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
@@ -260,12 +295,83 @@ export default function Home() {
   const discardRecordingRef = useRef(false);
   const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
 
+  const loadChatPreferences = useCallback(async () => {
+    chatPolicyRef.current.ready = false;
+    setPreferencesError(null);
+    setPreferencesLoaded(false);
+    try {
+      const data = await requestJson<{ freeOnly: boolean }>("/api/chat/preferences", { cache: "no-store" });
+      if (typeof data.freeOnly !== "boolean") throw new Error("Invalid preference response.");
+      chatPolicyRef.current = { freeOnly: data.freeOnly, ready: true };
+      setFreeOnly(data.freeOnly);
+      setPreferencesLoaded(true);
+    } catch {
+      setPreferencesError({ message: "Could not load Free only. Retry before sending." });
+    }
+  }, []);
+
+  useEffect(() => { void loadChatPreferences(); }, [loadChatPreferences]);
+
+  const saveFreeOnly = async (next: boolean) => {
+    if (preferencesSaving) return;
+    chatPolicyRef.current.ready = false;
+    exitVoiceLoop();
+    setPreferencesSaving(true);
+    setPreferencesError(null);
+    try {
+      const data = await requestJson<{ freeOnly: boolean }>("/api/chat/preferences", {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ freeOnly: next }),
+      });
+      if (typeof data.freeOnly !== "boolean" || data.freeOnly !== next) throw new Error("The preference was not confirmed.");
+      chatPolicyRef.current = { freeOnly: data.freeOnly, ready: true };
+      setFreeOnly(data.freeOnly);
+      setPreferencesLoaded(true);
+    } catch {
+      setPreferencesError({ message: "Could not confirm the change. Your last confirmed setting is shown. Retry before sending.", attempted: next });
+    } finally {
+      setPreferencesSaving(false);
+    }
+  };
+
   useEffect(() => {
     const check = () => setIsDesktop(window.innerWidth >= 768);
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(([entry]) => setCompactHeader(entry.contentRect.width < 1050));
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (isDesktop || (!sidebarOpen && !notesOpen)) return;
+    const panel = sidebarOpen ? sidebarRef.current : notesRef.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panel?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        setSidebarOpen(false);
+        setNotesOpen(false);
+      }
+      if (event.defaultPrevented || event.key !== "Tab" || !panel) return;
+      const controls = Array.from(panel.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]'))
+        .filter((element) => element.getClientRects().length > 0);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [isDesktop, sidebarOpen, notesOpen]);
 
   useEffect(() => {
     const voiceRequest = voiceRequestRef;
@@ -340,7 +446,7 @@ export default function Home() {
   }, []);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   };
 
   useEffect(() => {
@@ -391,19 +497,16 @@ export default function Home() {
 
   const loadNotes = useCallback(async () => {
     try {
-      const res = await fetch("/api/todos");
-      const data = await res.json();
-      if (data.todos) {
-        // Undated notes first (newest on top), then dated ones by due date.
-        const items = data.todos as NoteItem[];
-        const undated = items.filter((n) => !n.dueDate);
-        const dated = items
-          .filter((n) => n.dueDate)
-          .sort((a, b) => a.dueDate!.localeCompare(b.dueDate!));
-        setNotes([...undated, ...dated]);
-      }
-    } catch (err) {
-      console.error("Failed to load notes:", err);
+      const data = await requestJson<{ todos: NoteItem[] }>("/api/todos");
+      if (!Array.isArray(data.todos)) throw new Error("Invalid notes response.");
+      const undated = data.todos.filter((n) => !n.dueDate);
+      const dated = data.todos.filter((n) => n.dueDate).sort((a, b) => a.dueDate!.localeCompare(b.dueDate!));
+      setNotes([...undated, ...dated]);
+      setNotesError("");
+    } catch {
+      setNotesError("Your notes could not be loaded. Try again.");
+    } finally {
+      setNotesLoaded(true);
     }
   }, []);
 
@@ -422,11 +525,13 @@ export default function Home() {
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
     } catch (err) {
       console.error("Failed to complete note:", err);
+      setActionError({ message: "That note could not be marked as done. Please try again." });
       loadNotes();
     }
   };
 
   const toggleNotes = () => {
+    if (!isDesktop) setSidebarOpen(false);
     setNotesOpen((prev) => {
       const next = !prev;
       localStorage.setItem("zuychin-notes-open", String(next));
@@ -457,46 +562,56 @@ export default function Home() {
     });
   };
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/providers");
-        const data = await res.json();
-        const avail: ProviderInfo[] = (data.providers ?? []).filter((p: ProviderInfo) => p.available);
-        setProviders(avail);
-
-        let savedChat = localStorage.getItem("zuychin-chat-model");
-        const savedProvider = avail.find((p) => savedChat?.startsWith(`${p.id}::`));
-        const savedModel = savedChat?.slice((savedProvider?.id.length ?? 0) + 2);
-        const replacement = savedModel && savedProvider?.chatModelAliases?.[savedModel];
-        if (replacement && savedProvider?.chatModels.some((m) => m.id === replacement)) {
-          savedChat = `${savedProvider.id}::${replacement}`;
-          localStorage.setItem("zuychin-chat-model", savedChat);
-        }
-        const validChat = avail.some((p) =>
-          savedChat?.startsWith(p.id + "::") && p.chatModels.some((m) => `${p.id}::${m.id}` === savedChat)
-        );
-        if (validChat && savedChat) {
-          setChatSel(savedChat);
-        } else if (data.defaults?.chat) {
-          setChatSel(`${data.defaults.chat.providerId}::${data.defaults.chat.modelId}`);
-        }
-
-        // The selector mirrors the server's ACTIVE knowledge partition (which
-        // the re-embed flow can change at runtime), never a local preference.
-        try {
-          const activeRes = await fetch("/api/admin/reembed");
-          const active = activeRes.ok ? (await activeRes.json()).active : null;
-          if (active) setEmbedSel(active);
-          else if (data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
-        } catch {
-          if (data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
-        }
-      } catch (err) {
-        console.error("Failed to load providers:", err);
+  const loadProviders = useCallback(async () => {
+    const requestId = ++providerRequest.current;
+    const current = () => requestId === providerRequest.current;
+    setProvidersLoading(true);
+    setProvidersError("");
+    try {
+      const res = await fetch("/api/providers", { cache: "no-store" });
+      if (!res.ok) throw new Error(`Request failed (${res.status}).`);
+      const data = await res.json();
+      if (!Array.isArray(data.providers)) throw new Error("Invalid provider response.");
+      if (!current()) return;
+      const avail: ProviderInfo[] = data.providers.filter((p: ProviderInfo) => p.available);
+      let savedChat: string | null = null;
+      try { savedChat = localStorage.getItem("zuychin-chat-model"); } catch {}
+      const savedProvider = avail.find((p) => savedChat?.startsWith(`${p.id}::`));
+      const savedModel = savedChat?.slice((savedProvider?.id.length ?? 0) + 2);
+      const replacement = savedModel && savedProvider?.chatModelAliases?.[savedModel];
+      if (replacement && savedProvider?.chatModels.some((m) => m.id === replacement)) {
+        savedChat = `${savedProvider.id}::${replacement}`;
+        try { localStorage.setItem("zuychin-chat-model", savedChat); } catch {}
       }
-    })();
+      const validChat = (value: string | null) => avail.some((p) => p.chatModels.some((m) => `${p.id}::${m.id}` === value));
+      const defaultChat = data.defaults?.chat ? `${data.defaults.chat.providerId}::${data.defaults.chat.modelId}` : "";
+      setChatSel(value => validChat(value) ? value : validChat(savedChat) ? savedChat! : defaultChat);
+      setProviders(avail);
+      setProvidersLoaded(true);
+      setProvidersLoading(false);
+
+      // Embedding selection follows the server's active knowledge partition.
+      try {
+        const activeRes = await fetch("/api/admin/reembed");
+        const active = activeRes.ok ? (await activeRes.json()).active : null;
+        if (!current()) return;
+        if (active) setEmbedSel(active);
+        else if (data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
+      } catch {
+        if (current() && data.defaults?.embedding) setEmbedSel(data.defaults.embedding.modelId);
+      }
+    } catch {
+      if (current()) setProvidersError("Could not load chat models. Try again.");
+    } finally {
+      if (current()) setProvidersLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    const request = providerRequest;
+    void loadProviders();
+    return () => { request.current++; };
+  }, [loadProviders]);
 
   const handleChatSelChange = (val: string) => {
     setChatSel(val);
@@ -547,15 +662,20 @@ export default function Home() {
     localStorage.setItem("zuychin-gen-params", JSON.stringify(next));
   }, []);
 
+  const chatProviders = eligibleChatProviders(providers, freeOnly);
+  const effectiveChatSel = resolveChatSelection(providers, chatSel, freeOnly);
+  const preferencesBlocked = !preferencesLoaded || preferencesSaving || !!preferencesError;
+  const noFreeChatModel = providersLoaded && freeOnly && !effectiveChatSel;
+  const sendBlocked = preferencesBlocked || (!knowledgeOnly && (!providersLoaded || noFreeChatModel));
   const currentChatProvider = (() => {
-    const sep = chatSel.indexOf("::");
+    const sep = effectiveChatSel.indexOf("::");
     if (sep === -1) return undefined;
-    return providers.find((p) => p.id === chatSel.slice(0, sep));
+    return providers.find((p) => p.id === effectiveChatSel.slice(0, sep));
   })();
   const currentChatModel = (() => {
-    const sep = chatSel.indexOf("::");
+    const sep = effectiveChatSel.indexOf("::");
     if (sep === -1) return undefined;
-    const mid = chatSel.slice(sep + 2);
+    const mid = effectiveChatSel.slice(sep + 2);
     return currentChatProvider?.chatModels.find((m) => m.id === mid);
   })();
   const canThink = !!currentChatModel?.supportsThinking;
@@ -641,7 +761,7 @@ export default function Home() {
   };
 
   const refreshLists = async () => (await Promise.all([loadProjects(), loadConversations()])).every(Boolean);
-  const runAction = async (key: string, label: string, write: () => Promise<void>, refresh: () => Promise<boolean>, retryInPlace = true): Promise<boolean> => {
+  const runAction = async (key: string, label: string, write: () => Promise<void>, refresh: () => Promise<boolean>, retryInPlace = true, retryControl?: string): Promise<boolean> => {
     if (pendingActionsRef.current.has(key)) return false;
     pendingActionsRef.current.add(key);
     setPendingActions([...pendingActionsRef.current]);
@@ -650,7 +770,7 @@ export default function Home() {
       await write();
     } catch (error) {
       setActionError({
-        message: `Could not ${label}. ${error instanceof Error ? error.message : "Please try again."}${retryInPlace ? "" : " Your form is still open; use its button to try again."}`,
+        message: `Could not ${label}. ${error instanceof Error ? error.message : "Please try again."}${retryInPlace ? "" : ` Your form is still open; ${retryControl ? `choose ${retryControl}` : "use its button"} to try again.`}`,
         ...(retryInPlace ? { retry: () => { void runAction(key, label, write, refresh); } } : {}),
       });
       return false;
@@ -683,7 +803,7 @@ export default function Home() {
 
   const handleUpdateProject = (id: string, patch: { name?: string; instructions?: string }) => runAction(`project:${id}`, "save the project", async () => {
     await requestJson("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, ...patch }) });
-  }, loadProjects, false);
+  }, loadProjects, false, patch.instructions === undefined ? undefined : "Save instructions");
 
   const handleDeleteProject = (id: string): Promise<boolean> => new Promise((resolve) => {
     setDeleteConfirm({ kind: "project", id, title: projects.find((project) => project.id === id)?.name ?? "this project", resolve });
@@ -724,12 +844,21 @@ export default function Home() {
 
   const handleSubmit = (e: React.FormEvent | null, resume?: { runId: string; text: string }) => {
     e?.preventDefault();
+    if (sendBlocked || !chatPolicyRef.current.ready) return;
     const target = chats.get();
     if (!target.loaded || target.historyLoading) return;
     const text = resume?.text ?? target.draft.text.trim();
     if (!text && !target.draft.file) return;
+    if (knowledgeOnly && (resume || target.draft.file)) {
+      setActionError({ message: resume
+        ? "Turn Knowledge only off to resume an agent run."
+        : "Remove the attachment or turn Knowledge only off. This mode uses saved sources." });
+      return;
+    }
 
     const payload: OutgoingPayload = {
+      knowledgeOnly,
+      freeOnly: chatPolicyRef.current.freeOnly,
       text,
       file: resume ? null : target.draft.file,
       replyTo: resume ? null : target.draft.replyTo,
@@ -753,12 +882,17 @@ export default function Home() {
   };
 
   const resumeQueue = (target: Session) => {
-    if (target.run || !target.loaded || target.historyLoading) return;
+    if (!chatPolicyRef.current.ready || target.run || !target.loaded || target.historyLoading) return;
     const next = chats.shift(target);
     if (next) void sendPayload(next.payload, target);
   };
 
   const sendPayload = async (p: OutgoingPayload, target = chats.get(), retryMessage?: ChatMessage) => {
+    if (!chatPolicyRef.current.ready) return;
+    p = { ...p, freeOnly: p.freeOnly || chatPolicyRef.current.freeOnly };
+    const requestChatSel = resolveChatSelection(providers, chatSel, p.freeOnly);
+    const requestProvider = providers.find((provider) => requestChatSel.startsWith(`${provider.id}::`));
+    const requestModel = requestProvider?.chatModels.find((model) => `${requestProvider.id}::${model.id}` === requestChatSel);
     const run = chats.beginRun(target);
     if (!run) { if (!retryMessage) chats.enqueue(target, p); return; }
     const controller = run.controller;
@@ -787,6 +921,8 @@ export default function Home() {
     let canDrain = false;
 
     try {
+      if (p.freeOnly && !p.knowledgeOnly && !requestChatSel) throw new Error("No eligible free chat model is available. Configure a free provider, or turn Free only off and send a new message.");
+      if (p.freeOnly && p.file?.mimeType.startsWith("audio/")) throw new Error("Audio is unavailable with Free only. Remove the audio attachment before sending.");
       if (retryMessage?.retry && target.key !== NEW_CHAT) {
         const data = await requestJson<{ messages: ServerMessage[] }>(`/api/conversations?id=${encodeURIComponent(target.key)}`, { signal: controller.signal });
         if (!Array.isArray(data.messages)) throw new Error("Could not check whether the reply was saved. Please retry.");
@@ -805,6 +941,7 @@ export default function Home() {
       }
       setMessages((previous) => [...previous, userMessage]);
       started = true;
+      if (p.knowledgeOnly) setAgentRun(() => ({ status: "Searching saved sources…", steps: [], lines: [] }));
       if (target.key === NEW_CHAT) {
         const data = await requestJson<{ id: string }>("/api/conversations", { method: "POST", signal: controller.signal });
         controller.signal.throwIfAborted();
@@ -824,6 +961,8 @@ export default function Home() {
         body: JSON.stringify({
           message: userMessage.content,
           conversationId: convId,
+          knowledgeOnly: p.knowledgeOnly,
+          freeOnly: p.freeOnly,
           thinking: thinkingEnabled && canThink,
           agent: p.resume ? true : agentEnabled,
           ...(p.resume && { resumeRunId: p.resume.runId }),
@@ -833,9 +972,9 @@ export default function Home() {
             ...(genParams.topP !== null && { topP: genParams.topP }),
             ...(genParams.maxTokens !== null && { maxTokens: genParams.maxTokens }),
           },
-          ...(chatSel.includes("::") && {
-            provider: chatSel.split("::")[0],
-            model: chatSel.split("::").slice(1).join("::"),
+          ...(requestChatSel.includes("::") && {
+            provider: requestChatSel.split("::")[0],
+            model: requestChatSel.split("::").slice(1).join("::"),
           }),
           ...(p.file && {
             file: {
@@ -855,7 +994,7 @@ export default function Home() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let done: { reply: string; messageId: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal } | null = null;
+      let done: { reply: string; messageId: string; userMessageId?: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal; replyTrace?: ReplyTrace } | null = null;
       let streamError = "";
       let runId = "";
 
@@ -905,7 +1044,7 @@ export default function Home() {
               setMessages((prev) => prev.map((m) => (m.id === sid ? { ...m, content: reset ? text : m.content + text } : m)));
             }
           } else if (evt.type === "done") {
-            done = { reply: evt.reply, messageId: evt.messageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal };
+            done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, replyTrace: evt.replyTrace };
           } else if (evt.type === "error") {
             streamError = evt.message;
           }
@@ -930,13 +1069,17 @@ export default function Home() {
         return;
       }
 
+      const userMessageId = done.userMessageId;
+      if (userMessageId) setMessages((previous) => previous.map((item) => item.id === userMessage.id ? { ...item, id: userMessageId, persisted: true } : item));
       const assistantMessage: ChatMessage = {
         id: done.messageId || crypto.randomUUID(),
+        persisted: !!done.messageId,
         role: "assistant",
         content: done.reply,
         artifacts: done.artifacts,
         councilProposal: done.councilProposal,
-        modelLabel: currentChatModel?.label,
+        modelLabel: p.knowledgeOnly ? "Saved sources" : requestModel?.label,
+        replyTrace: done.replyTrace,
         at: new Date().toISOString(),
       };
       // The forming bubble becomes the final message in place (citations and
@@ -949,7 +1092,7 @@ export default function Home() {
       // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
       // toggleSpeak's completion restarts the mic while the loop is active.
       const micTurn = !!p.file && p.file.name.startsWith("voice-note.") && p.file.mimeType.startsWith("audio/");
-      if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
+      if (!p.freeOnly && !chatPolicyRef.current.freeOnly && chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
         void toggleSpeak(assistantMessage);
       }
       canDrain = true;
@@ -1032,6 +1175,7 @@ export default function Home() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (slashMatches.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -1088,6 +1232,7 @@ export default function Home() {
   // chunk sample-accurately after the last: sound starts ~2.5s after the
   // click instead of waiting for the whole clip to be synthesized.
   const toggleSpeak = async (msg: ChatMessage) => {
+    if (!chatPolicyRef.current.ready || chatPolicyRef.current.freeOnly) return;
     if (speakingId === msg.id) {
       stopSpeaking();
       return;
@@ -1109,7 +1254,7 @@ export default function Home() {
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: msg.content, stream: true }),
+        body: JSON.stringify({ text: msg.content, stream: true, freeOnly: chatPolicyRef.current.freeOnly }),
         signal: abort.signal,
       });
       if (!res.ok || !res.body) throw new Error(`TTS failed (${res.status})`);
@@ -1207,6 +1352,7 @@ export default function Home() {
   };
 
   const startVoiceRecording = async () => {
+    if (!chatPolicyRef.current.ready || chatPolicyRef.current.freeOnly) return;
     if (recorderRef.current) return;
     const origin = chats.get();
     if (!origin.loaded || origin.historyLoading) return;
@@ -1315,7 +1461,7 @@ export default function Home() {
           const base64 = (reader.result as string).split(",")[1] ?? "";
           const file = { name: `voice-note.${ext}`, mimeType, base64, size: blob.size };
           if (voiceLoopRef.current && chats.get() === origin) {
-            void sendPayload({ text: "", file, replyTo: null }, origin);
+            void sendPayload({ text: "", file, replyTo: null, knowledgeOnly: false, freeOnly: chatPolicyRef.current.freeOnly }, origin);
           } else {
             chats.setDraft(origin, { ...origin.draft, file });
             if (chats.get() === origin) inputRef.current?.focus();
@@ -1477,9 +1623,9 @@ export default function Home() {
           align="right"
           ariaLabel="Chat model"
           icon={<Cpu size={14} color="var(--color-primary)" />}
-          value={chatSel}
+          value={effectiveChatSel}
           onChange={handleChatSelChange}
-          groups={providers.map((p) => ({
+          groups={chatProviders.map((p) => ({
             label: p.label,
             options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label, searchTerms: modelSearchTerms(m) })),
           }))}
@@ -1496,7 +1642,11 @@ export default function Home() {
         </button>
         <button
           type="button"
+          ref={generationTriggerRef}
           onClick={() => setGenerationOpen((open) => !open)}
+          aria-expanded={generationOpen}
+          aria-haspopup="dialog"
+          aria-controls={generationOpen ? "generation-settings" : undefined}
           style={{ ...styles.modelClusterButton, ...(generationOpen ? styles.modelClusterButtonActive : {}) }}
           aria-label="Generation settings"
           title="Generation settings"
@@ -1504,19 +1654,35 @@ export default function Home() {
           <SlidersHorizontal size={16} />
         </button>
         {generationOpen && (
-          <div style={styles.modelSettingsPopover} className="animate-fade-in-scale">
-            <div style={styles.settingsHeader}>
-              <span style={styles.settingsTitle}>Generation</span>
-              <button onClick={() => setGenerationOpen(false)} style={styles.filePreviewRemove} aria-label="Close generation settings">
-                <X size={14} />
-              </button>
-            </div>
-            <ParamRow label="Temperature" min={0} max={2} step={0.1} def={0.7} value={genParams.temperature} onChange={(v) => updateGenParams({ ...genParams, temperature: v })} />
-            <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
-            <ParamRow label="Max tokens" min={256} max={maxTokenCeiling} step={maxTokenStep} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
-            <p style={styles.settingsNote}>
-              Auto uses the selected model&apos;s provider default. Ceiling is {maxTokenCeiling.toLocaleString()} for {currentChatModel?.label ?? "this model"}.
-            </p>
+          <GenerationSettings triggerRef={generationTriggerRef} onClose={closeGeneration}>
+            <section className={chatModeStyles.modes} aria-label="Modes">
+              <h3>Modes</h3>
+              <ModeToggle label="Agent mode" icon={<Brain size={15} aria-hidden="true" />} checked={agentEnabled && !knowledgeOnly} disabled={knowledgeOnly}
+                onChange={toggleAgent} title={knowledgeOnly ? "Unavailable while Knowledge only is on" : "Plan and complete multi-step tasks"} />
+              <ModeToggle label="Free only" icon={<CircleDollarSign size={15} aria-hidden="true" />} checked={freeOnly}
+                disabled={!preferencesLoaded || preferencesSaving || !!preferencesError} onChange={() => { void saveFreeOnly(!freeOnly); }}
+                title="Use free models for interactive chat. Voice is unavailable. Scheduled tasks use paid models." />
+              <ModeToggle label="Knowledge only" icon={<BookOpen size={15} aria-hidden="true" />} checked={knowledgeOnly}
+                onChange={() => { if (!knowledgeOnly) exitVoiceLoop(); setKnowledgeOnly(!knowledgeOnly); }}
+                title="Return saved source passages. Agent and thinking modes are unavailable." />
+              {(preferencesSaving || !preferencesLoaded) && !preferencesError && <p role="status" className={chatModeStyles.feedback}>{preferencesSaving ? "Saving preference…" : "Loading preferences…"}</p>}
+              {preferencesError && <div className={chatModeStyles.feedback} role="alert">{preferencesError.message}
+                <button type="button" onClick={() => { if (preferencesError.attempted === undefined) void loadChatPreferences(); else void saveFreeOnly(preferencesError.attempted); }}>Retry</button>
+              </div>}
+              {providersLoading && <p role="status" className={chatModeStyles.feedback}>{providersLoaded ? "Refreshing chat models…" : "Loading chat models…"}</p>}
+              {providersError && <div className={chatModeStyles.feedback} role="alert">{providersError} {providersLoaded && "Previously loaded models are still available."}
+                <button type="button" disabled={providersLoading} onClick={() => void loadProviders()}>Retry models</button>
+              </div>}
+              {noFreeChatModel && !knowledgeOnly && !providersError && !providersLoading && <p role="status" className={chatModeStyles.feedback}>No free model is available. Configure a free provider or turn Free only off.</p>}
+            </section>
+            {!knowledgeOnly && <>
+              <ParamRow label="Temperature" min={0} max={2} step={0.1} def={0.7} value={genParams.temperature} onChange={(v) => updateGenParams({ ...genParams, temperature: v })} />
+              <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
+              <ParamRow label="Max tokens" min={256} max={maxTokenCeiling} step={maxTokenStep} def={2048} value={genParams.maxTokens} onChange={(v) => updateGenParams({ ...genParams, maxTokens: v })} />
+              <p style={styles.settingsNote}>
+                Auto uses the selected model&apos;s provider default. Ceiling is {maxTokenCeiling.toLocaleString()} for {currentChatModel?.label ?? "this model"}.
+              </p>
+            </>}
             {providers.some((p) => p.embeddingModels.length > 0) && (
               <div style={styles.settingsEmbedRow}>
                 <span style={styles.settingsEmbedLabel}>Embedding</span>
@@ -1536,31 +1702,7 @@ export default function Home() {
                 />
               </div>
             )}
-            <div style={styles.settingsToggleRow}>
-              <div style={styles.agentSwitchWrap}>
-                <span style={styles.settingsEmbedLabel}>Agent mode</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={agentEnabled}
-                  onClick={toggleAgent}
-                  style={{
-                    ...styles.switchTrack,
-                    ...(agentEnabled ? styles.switchTrackOn : {}),
-                  }}
-                  aria-label={agentEnabled ? "Disable agent mode" : "Enable agent mode"}
-                  title={agentEnabled ? "Agent mode ON (multi-step + files)" : "Agent mode OFF (auto-detects complex tasks)"}
-                >
-                  <span
-                    style={{
-                      ...styles.switchKnob,
-                      transform: agentEnabled ? "translateX(16px)" : "translateX(0)",
-                    }}
-                  />
-                </button>
-              </div>
-            </div>
-          </div>
+          </GenerationSettings>
         )}
       </div>
     ) : null;
@@ -1616,6 +1758,13 @@ export default function Home() {
       )}
 
       <aside
+        ref={notesRef}
+        id="notes-panel"
+        role={isDesktop ? undefined : "dialog"}
+        aria-modal={!isDesktop && notesOpen && !sidebarOpen ? true : undefined}
+        aria-labelledby="notes-title"
+        aria-hidden={!notesOpen || (!isDesktop && sidebarOpen)}
+        inert={!notesOpen || (!isDesktop && sidebarOpen)}
         style={{
           ...(isDesktop ? {
             ...styles.notesPanelDesktop,
@@ -1626,7 +1775,7 @@ export default function Home() {
         }}
       >
         <div style={styles.sidebarHeader}>
-          <h2 style={styles.sidebarTitle}>Notes</h2>
+          <h2 id="notes-title" style={styles.sidebarTitle}>Notes</h2>
           <button
             onClick={() => setNotesOpen(false)}
             style={styles.closeBtn}
@@ -1637,7 +1786,9 @@ export default function Home() {
         </div>
 
         <div style={styles.notesList}>
-          {notes.length === 0 && (
+          {!notesLoaded && <p role="status" style={styles.noConversations}>Loading notes…</p>}
+          {notesError && <div role="alert" style={styles.noConversations}><p>{notesError}</p><button type="button" style={styles.exportBtn} onClick={() => void loadNotes()}>Retry</button></div>}
+          {notesLoaded && !notesError && notes.length === 0 && (
             <p style={styles.noConversations}>
               Nothing pending. Ask me to remember a task and it will show up here.
             </p>
@@ -1657,7 +1808,7 @@ export default function Home() {
                 )}
                 {note.dueDate && (
                   <span style={styles.noteDue}>
-                    {new Date(note.dueDate).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+                    {new Date(note.dueDate).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}
                   </span>
                 )}
               </div>
@@ -1667,6 +1818,13 @@ export default function Home() {
       </aside>
 
       <aside
+        ref={sidebarRef}
+        id="chats-panel"
+        role={isDesktop ? undefined : "dialog"}
+        aria-modal={!isDesktop && sidebarOpen ? true : undefined}
+        aria-labelledby="chats-title"
+        aria-hidden={!sidebarOpen}
+        inert={!sidebarOpen}
         style={{
           ...(isDesktop ? {
             ...styles.sidebarDesktop,
@@ -1677,7 +1835,7 @@ export default function Home() {
         }}
       >
         <div style={styles.sidebarHeader}>
-          <h2 style={styles.sidebarTitle}>Chats</h2>
+          <h2 id="chats-title" style={styles.sidebarTitle}>Chats</h2>
           <button
             onClick={() => setSidebarOpen(false)}
             style={styles.closeBtn}
@@ -1712,9 +1870,9 @@ export default function Home() {
 
       </aside>
 
-      <div style={isDesktop ? styles.containerDesktop : styles.container}>
+      <div ref={containerRef} inert={!isDesktop && (sidebarOpen || notesOpen)} style={isDesktop ? styles.containerDesktop : styles.container}>
         <header style={styles.header}>
-          <div style={styles.headerContent}>
+          <div style={{ ...styles.headerContent, ...(!isDesktop ? { padding: "10px 12px", gap: 8 } : {}) }}>
             <div style={styles.headerLeft}>
               <span aria-hidden style={isDesktop ? styles.logoMark : styles.logoMarkMobile} />
               <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
@@ -1722,7 +1880,7 @@ export default function Home() {
                 <span style={isDesktop ? styles.subtitle : styles.subtitleMobile}>Assistant</span>
               </div>
 
-              {isDesktop && (
+              {!compactHeader && (
                 <div style={styles.headerCenter}>
                   {renderNavLinks(false)}
                   {renderModelSelectors(false)}
@@ -1745,6 +1903,8 @@ export default function Home() {
                 onClick={toggleNotes}
                 style={{ ...styles.iconBtn, position: "relative" }}
                 aria-label={notesOpen ? "Close notes" : `Open notes (${notes.length} pending)`}
+                aria-expanded={notesOpen}
+                aria-controls="notes-panel"
                 title="Notes & tasks"
               >
                 <ListTodo size={19} color={notesOpen ? "var(--color-primary)" : "var(--color-text-primary)"} />
@@ -1752,7 +1912,7 @@ export default function Home() {
                   <span style={styles.noteBadge}>{notes.length > 9 ? "9+" : notes.length}</span>
                 )}
               </button>
-              <button onClick={() => setSidebarOpen((prev) => !prev)} style={styles.iconBtn} aria-label="Conversation history" title="History">
+              <button onClick={() => { if (!isDesktop) setNotesOpen(false); setSidebarOpen((prev) => !prev); }} style={styles.iconBtn} aria-label="Conversation history" aria-expanded={sidebarOpen} aria-controls="chats-panel" title="History">
                 <History size={19} color="var(--color-text-primary)" />
               </button>
               <button onClick={() => handleNewChat()} disabled={pendingActions.includes("new-chat")} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
@@ -1761,13 +1921,13 @@ export default function Home() {
             </div>
           </div>
 
-          {!isDesktop && (
+          {compactHeader && (
             <div style={styles.headerNavRow}>
               {renderNavLinks(true)}
             </div>
           )}
 
-          {!isDesktop && providers.length > 0 && (
+          {compactHeader && providers.length > 0 && (
             <div style={styles.headerSelectorsRow}>
               {renderModelSelectors(true)}
             </div>
@@ -1799,6 +1959,7 @@ export default function Home() {
           onScroll={handleMessagesScroll}
           style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}
         >
+          <BranchNavigation conversationId={session.key === NEW_CHAT ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
           {session.historyLoading && <p role="status" style={styles.emptySubtitle}>Loading conversation…</p>}
           {!session.loaded && !session.historyLoading && <p role="status" style={styles.emptySubtitle}>Load this conversation before sending a message. Your draft is safe.</p>}
           {messages.length === 0 && session.loaded && (
@@ -1832,7 +1993,7 @@ export default function Home() {
                       <span style={styles.todaySectionLabel}>Due soon</span>
                       {today.dueTodos.map((t) => (
                         <div key={t.id} style={styles.todayItem}>
-                          <span>⚠️ {t.title}</span>
+                          <span style={styles.todayItemTitle}>⚠️ {t.title}</span>
                           {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
                         </div>
                       ))}
@@ -1843,7 +2004,7 @@ export default function Home() {
                       <span style={styles.todaySectionLabel}>Next 48 hours</span>
                       {today.events.map((e, i) => (
                         <div key={e.id ?? i} style={styles.todayItem}>
-                          <span>{e.summary}</span>
+                          <span style={styles.todayItemTitle}>{e.summary}</span>
                           <span style={styles.todayItemMeta}>{fmtWhen(e.start)}</span>
                         </div>
                       ))}
@@ -1854,7 +2015,7 @@ export default function Home() {
                       <span style={styles.todaySectionLabel}>Pending</span>
                       {today.todos.map((t) => (
                         <div key={t.id} style={styles.todayItem}>
-                          <span>• {t.title}</span>
+                          <span style={styles.todayItemTitle}>• {t.title}</span>
                           {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
                         </div>
                       ))}
@@ -2023,6 +2184,14 @@ export default function Home() {
                     {[msg.modelLabel, msgClock(msg.at)].filter(Boolean).join(" · ")}
                   </div>
                 )}
+                {msg.role === "assistant" && msg.replyTrace && <ReplyTraceDetails trace={msg.replyTrace} />}
+                {msg.persisted && session.key !== NEW_CHAT && !msg.retry && !msg.resume && <BranchMessageAction
+                  conversationId={session.key} messageId={msg.id} disabled={isLoading}
+                  onCreated={(branchId, parentId) => {
+                    void loadConversations();
+                    if (chats.get().key === parentId) void loadConversation(branchId);
+                  }}
+                />}
               </div>
               {msg.role === "assistant" && !msg.resume && !msg.retry && (
                 <button
@@ -2088,7 +2257,7 @@ export default function Home() {
           {queuedView.length > 0 && !isLoading && (
             <div role="status" style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--color-text-secondary)" }}>
               <span>Queued messages are paused.</span>
-              <button type="button" style={styles.exportBtn} onClick={() => resumeQueue(chats.get())}>Send next</button>
+              <button type="button" style={styles.exportBtn} disabled={preferencesBlocked} onClick={() => resumeQueue(chats.get())}>Send next</button>
             </div>
           )}
           {queuedView.map((q) => (
@@ -2193,12 +2362,17 @@ export default function Home() {
           )}
 
           {slashMatches.length > 0 && (
-            <div style={styles.cmdMenu} className="animate-fade-in-scale">
+            <div id="chat-command-list" role="listbox" aria-label="Commands" style={styles.cmdMenu} className="animate-fade-in-scale">
               {slashMatches.map((c, i) => (
                 <button
                   key={c.id}
                   type="button"
-                  onMouseDown={(e) => { e.preventDefault(); applyCommand(c); }}
+                  id={`chat-command-${i}`}
+                  role="option"
+                  aria-selected={i === cmdSel}
+                  tabIndex={-1}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => applyCommand(c)}
                   onMouseEnter={() => setCmdIndex(i)}
                   style={{ ...styles.cmdItem, ...(i === cmdSel ? styles.cmdItemActive : {}) }}
                 >
@@ -2209,6 +2383,15 @@ export default function Home() {
             </div>
           )}
 
+          {!knowledgeOnly && providersLoading && !providersLoaded && <p className={chatModeStyles.feedback} role="status">Loading chat models…</p>}
+          {!knowledgeOnly && providersError && <div className={chatModeStyles.composerError} role="alert">
+            <span>{providersError} {providersLoaded && "Previously loaded models are still available."}</span>
+            <button type="button" disabled={providersLoading} onClick={() => void loadProviders()}>Retry models</button>
+          </div>}
+          {(preferencesError || (noFreeChatModel && !knowledgeOnly && !providersError && !providersLoading)) && <div className={chatModeStyles.composerError} role="status">
+            <span>{preferencesError ? "Chat preferences need attention." : "No free chat model is available."}</span>
+            <button type="button" onClick={() => setGenerationOpen(true)}>Open settings</button>
+          </div>}
           <form onSubmit={handleSubmit} style={styles.inputRow}>
             <input
               ref={fileInputRef}
@@ -2222,21 +2405,23 @@ export default function Home() {
               onClick={() => fileInputRef.current?.click()}
               style={styles.attachBtn}
               aria-label="Attach file"
+              disabled={knowledgeOnly}
+              title={knowledgeOnly ? "Turn Knowledge only off to attach files" : "Attach file"}
             >
               <Paperclip size={18} color="var(--color-text-muted)" />
             </button>
             <button
               type="button"
               onClick={toggleRecording}
-              disabled={!session.loaded || session.historyLoading}
+              disabled={knowledgeOnly || freeOnly || preferencesBlocked || !session.loaded || session.historyLoading}
               style={styles.attachBtn}
               aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
-              title={isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat - replies are spoken, say “Zuychin, stop” to end"}
+              title={freeOnly ? "Voice is unavailable with Free only" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat - replies are spoken, say “Zuychin, stop” to end"}
               className={isRecording ? "animate-fade-in" : undefined}
             >
               <Mic size={18} color={isRecording ? "#ef4444" : "var(--color-text-muted)"} />
             </button>
-            {canThink && (
+            {canThink && !knowledgeOnly && (
               <button
                 type="button"
                 onClick={toggleThinking}
@@ -2255,7 +2440,11 @@ export default function Home() {
               value={input}
               onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
-              placeholder="Message Zuychin..."
+              aria-label={knowledgeOnly ? "Search your saved sources" : "Message Zuychin"}
+              aria-autocomplete="list"
+              aria-controls={slashMatches.length ? "chat-command-list" : undefined}
+              aria-activedescendant={slashMatches.length ? `chat-command-${cmdSel}` : undefined}
+              placeholder={knowledgeOnly ? "Search your saved sources..." : "Message Zuychin..."}
               rows={1}
               style={styles.textarea}
             />
@@ -2264,18 +2453,18 @@ export default function Home() {
                 type="button"
                 onClick={handleCancel}
                 style={{ ...styles.sendButton, background: "var(--color-surface)" }}
-                aria-label="Stop generating"
-                title="Stop generating (also clears queued messages)"
+                aria-label={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
+                title={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
               >
                 <Square size={15} color="var(--color-text-primary)" fill="var(--color-text-primary)" />
               </button>
             )}
             <button
               type="submit"
-              disabled={(!input.trim() && !pendingFile) || !session.loaded || session.historyLoading}
+              disabled={sendBlocked || (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading}
               style={{
                 ...styles.sendButton,
-                opacity: (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading ? 0.3 : 1,
+                opacity: sendBlocked || (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading ? 0.3 : 1,
               }}
               aria-label={isLoading ? "Queue message" : "Send message"}
               title={isLoading ? "Queue message (sends after the current reply)" : "Send message"}

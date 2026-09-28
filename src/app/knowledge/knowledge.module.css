@@ -1,5 +1,7 @@
 .shell {
-    min-height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
     background:
         radial-gradient(circle at 12% -8%, color-mix(in srgb, var(--color-primary) 6%, transparent), transparent 31rem),
         var(--color-background);
@@ -8,6 +10,7 @@
 }
 
 .header {
+    flex-shrink: 0;
     min-height: 82px;
     padding: 15px clamp(18px, 3vw, 42px);
     display: flex;
@@ -50,6 +53,7 @@
 .shell :is(button, a, select, textarea):focus-visible { outline: 2px solid color-mix(in srgb, var(--color-primary) 58%, transparent); outline-offset: 2px; }
 
 .tabs {
+    flex-shrink: 0;
     height: 49px;
     padding: 0 clamp(18px, 3vw, 42px);
     display: flex;
@@ -77,13 +81,13 @@
 .tabs .activeTab { color: var(--color-text-primary); border-bottom-color: var(--color-primary); }
 .error { margin: 12px clamp(18px, 3vw, 42px) 0; padding: 10px 13px; display: flex; align-items: center; gap: 8px; border: 1px solid #ef444466; border-radius: var(--radius-sm); background: #ef444410; color: #dc2626; font-size: 12px; }
 
-.library { height: calc(100vh - 131px); display: grid; grid-template-columns: minmax(275px, 330px) minmax(0, 1fr); }
+.shell > nav { flex-shrink: 0; }
+.library { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(275px, 330px) minmax(0, 1fr); }
 .sidebar { display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-background) 94%, var(--color-surface)); }
-.filters { padding: 13px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-bottom: 1px solid var(--color-border); }
-.filters label { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); }
+.filters { padding: 13px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-bottom: 1px solid var(--color-border); }
+.filters label { height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); }
 .filters label:focus-within { border-color: var(--color-text-muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 8%, transparent); }
-.filters input { width: 100%; border: 0; outline: 0; background: transparent; color: inherit; font: 13px var(--font-family); }
-.filters select { padding: 0 8px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); color: inherit; font: 12px var(--font-family); text-transform: capitalize; }
+.filters input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: inherit; font: 13px var(--font-family); }
 .count { padding: 10px 14px 7px; color: var(--color-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .documentList { min-height: 0; padding: 0 8px 18px; overflow-y: auto; }
 .documentList > button { width: 100%; padding: 10px 9px; display: flex; gap: 9px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -130,13 +134,13 @@
 .chunks small { margin-left: 9px; color: var(--color-text-muted); }
 .chunks p { margin-top: 7px; color: var(--color-text-muted); font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
 
-.panel { max-width: 980px; margin: 0 auto; padding: clamp(34px, 5vw, 54px) clamp(18px, 4vw, 38px) 70px; }
+.panel { min-height: 0; overflow-y: auto; width: 100%; max-width: 980px; margin: 0 auto; padding: clamp(34px, 5vw, 54px) clamp(18px, 4vw, 38px) 70px; }
 .intro { margin-bottom: 22px; }
 .intro h2 { margin: 6px 0; font-size: clamp(24px, 3vw, 30px); font-weight: 620; letter-spacing: -.035em; line-height: 1.18; }
 .intro p { max-width: 630px; color: var(--color-text-muted); font-size: 13px; line-height: 1.55; }
 .recallForm { height: 52px; padding: 0 8px 0 15px; display: flex; align-items: center; gap: 11px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-background) 88%, var(--color-surface)); box-shadow: var(--shadow-sm); }
 .recallForm:focus-within { border-color: var(--color-text-muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 8%, transparent); }
-.recallForm input { min-width: 0; flex: 1; border: 0 !important; outline: 0 !important; box-shadow: none !important; appearance: none; background: transparent; color: inherit; font: 14px var(--font-family); }
+.recallForm input { min-width: 0; min-height: 44px; flex: 1; border: 0 !important; outline: 0 !important; box-shadow: none !important; appearance: none; background: transparent; color: inherit; font: 14px var(--font-family); }
 
 .recallResults { margin-top: 17px; display: grid; gap: 27px; }
 .answerCard { overflow: hidden; border: 1px solid color-mix(in srgb, var(--color-success) 42%, var(--color-border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-success) 4%, var(--color-background)); box-shadow: var(--shadow-sm); }
@@ -200,11 +204,10 @@
 .suggestionList footer { margin-top: 12px; justify-content: flex-start; flex-wrap: wrap; }
 .emptySuggestions { padding: 28px; display: grid; place-items: center; gap: 5px; border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); }
 .emptySuggestions p { font-size: 11px; }
-.mergeReview { margin-top: 16px; padding: 18px; border: 1px solid var(--color-primary); border-radius: var(--radius-md); background: var(--color-surface); }
+.mergeReview { margin-top: 16px; scroll-margin-top: 12px; padding: 18px; border: 1px solid var(--color-primary); border-radius: var(--radius-md); background: var(--color-surface); }
 .mergeReview header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .mergeReview header h3 { margin-top: 4px; }
 .mergeReview label { margin: 16px 0 7px; display: grid; gap: 6px; color: var(--color-text-muted); font-size: 10px; font-weight: 700; }
-.mergeReview select { height: 36px; padding: 0 9px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); color: inherit; }
 .mergeReview textarea { width: 100%; min-height: 360px; padding: 15px; resize: vertical; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background); color: inherit; font: 12px/1.6 var(--font-mono); }
 .mergeReview > p { margin: 9px 0; color: var(--color-text-muted); font-size: 10px; }
 .importPlan { margin-top: 16px; padding: 18px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
@@ -214,6 +217,7 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 900px) {
+    .shell { height: auto; min-height: 100dvh; }
     .header { align-items: flex-start; flex-direction: column; }
     .actions { justify-content: flex-start; }
     .library { height: auto; grid-template-columns: 1fr; }
@@ -227,12 +231,12 @@
 
 @media (max-width: 600px) {
     .header { padding: 13px 16px; }
-    .titleGroup { width: 100%; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 9px; }
-    .iconButton { width: 30px; min-height: 30px; margin: 0; }
+    .titleGroup { width: 100%; display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 9px; }
+    .iconButton { width: 44px; min-height: 44px; margin: 0; }
     .titleGroup h1 { font-size: 21px; line-height: 1.16; }
     .titleGroup p { max-width: 330px; margin-top: 4px; font-size: 10.5px; }
-    .actions { width: 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .actions :is(a, button) { min-width: 0; padding: 0 7px; font-size: 10px; }
+    .actions { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .actions :is(a, button) { min-width: 0; padding: 8px; font-size: 12px; line-height: 1.35; }
     .tabs { padding: 0 10px; overflow-x: auto; }
     .tabs button { padding: 0 11px; white-space: nowrap; }
     .detail { padding: 21px 16px; }
@@ -241,11 +245,36 @@
     .panel { padding: 27px 15px 48px; }
     .metrics, .maintenance, .scores { grid-template-columns: 1fr; }
     .recallForm { height: auto; padding: 8px 8px 8px 12px; }
-    .recallForm input { font-size: 13px; }
+    .recallForm input { font-size: 16px; }
     .answerHeader { align-items: center; flex-flow: row wrap; }
     .answerBody { padding: 16px; }
     .hits > article { padding: 14px; }
     .excerpt, .scoreDetails { margin-left: 0; }
     .suggestionHeader { align-items: flex-start; flex-direction: column; }
     .suggestionHeader small { text-align: left; }
+}
+
+.tabs { scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+
+.titleGroup, .sidebar, .detailHeader > div, .sourceTitle, .timeline article > div { min-width: 0; }
+.detailHeader h2, .detailHeader code, .chunks p, .timeline p, .suggestionList, .error { overflow-wrap: anywhere; }
+.sourceTitle { flex: 1; }
+.error > svg, .actions svg { flex-shrink: 0; }
+.error { color: var(--color-text-primary); align-items: flex-start; }
+.timeline > p { margin: 0 0 16px; padding-left: 18px; font: 13px/1.6 var(--font-family); }
+.metrics strong { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    .shell :is(button, a):not(.sourceTitle) { min-height: 44px; }
+    .shell :is(input, textarea) { font-size: 16px; }
+    .filters label { height: 44px; }
+    .detailHeader { width: 100%; }
+    .detailHeader > div { max-width: 100%; }
+    .shell .sourceTitle { min-height: 44px !important; }
+    .shell .actions { gap: 8px; }
+    .metrics div { border-right: 0; border-bottom: 1px solid var(--color-border); }
+    .suggestionMeta { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .shell *, .shell *::before, .shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
