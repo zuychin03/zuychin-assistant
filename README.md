@@ -699,6 +699,12 @@ council. Pointed at the deployed URL, a council needs no local dev server at all
 the deployed site shows it; pointed at `http://localhost:3000/api/mcp/mcp`, you get local changes but
 must keep `npm run dev` running. Both hit the same Supabase, so the councils are the same councils.
 
+**Council CI.** Offline process tests and their harness guards run on Linux and Windows. Database
+checks create a disposable Supabase stack inside the GitHub runner, apply the full setup SQL and
+require mid-turn crash recovery against a temporary local Next server. No hosted test project or
+`TEST_*` secrets are needed. The job removes its stack and temporary credentials after execution.
+See the [database CI guide](scripts/council-ci-setup.md) for isolation and exact-commit acceptance.
+
 **Running the host.** `scripts/council-host-start.cmd` starts one for this checkout, deriving every
 path from its own location. An idle host is a single ~88 MB node process with two timers that return
 immediately, so leaving it running costs approximately nothing. To have it always available, drop a

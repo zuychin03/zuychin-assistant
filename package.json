@@ -21,7 +21,9 @@
     "council:fault:test": "tsx scripts/test-council-fault.mts",
     "journal:test": "tsx --env-file=.env.local scripts/test-mutation-journal.mts",
     "v6:test": "tsx scripts/test-v6.mts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "council:fault:options:test": "tsx scripts/test-council-fault-options.mts",
+    "council:ci:env:test": "tsx scripts/test-council-ci-env.mts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.3.0",

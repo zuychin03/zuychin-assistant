@@ -204,18 +204,43 @@ async function testWorkItemLease(): Promise<void> {
     check("a lapsed lease is reclaimed", reclaimed?.status === "in_progress", reclaimed);
     check("the reclaim counts a second attempt", reclaimed?.attempts === 2, reclaimed);
 
-    // Third expiry hits max_attempts (3) and must block rather than cycle.
-    await db.from("council_work_items")
-        .update({ lease_expires_at: new Date(Date.now() - 60_000).toISOString() })
-        .eq("id", claimed!.id);
-    await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    await db.from("council_work_items")
-        .update({ lease_expires_at: new Date(Date.now() - 60_000).toISOString() })
-        .eq("id", claimed!.id);
-    const fourth = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    const { data: item } = await db.from("council_work_items").select("status, attempts").eq("id", claimed!.id).single();
-    check("attempts do not cycle forever", item?.status === "blocked", item);
-    check("nothing is served once blocked", fourth.data === null, fourth.data);
+    for (let attempt = 3; attempt <= 5; attempt++) {
+        const expired = await db.from("council_work_items")
+            .update({ lease_expires_at: new Date(Date.now() - 60_000).toISOString() })
+            .eq("id", claimed!.id);
+        if (expired.error) throw new Error(`lease expiry failed: ${expired.error.message}`);
+        const next = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
+        if (next.error) throw new Error(`reclaim failed: ${next.error.message}`);
+        check(`lease expiry ${attempt - 1} permits another claim without a rejection`,
+            next.data?.id === claimed!.id && next.data?.status === "in_progress"
+            && next.data?.attempts === attempt && next.data?.rejections === 0, next.data);
+    }
+
+    for (let rejection = 1; rejection <= 3; rejection++) {
+        const completed = await db.rpc("complete_council_work_item", {
+            p_item_id: claimed!.id, p_agent_name: "alpha",
+            p_commit_hash: FIRST_SHA, p_verification: "ready for review",
+        });
+        if (completed.error) throw new Error(`completion failed: ${completed.error.message}`);
+        check(`submission ${rejection} reaches review`, completed.data === true, completed.data);
+        const reviewed = await db.rpc("review_council_work_item", {
+            p_item_id: claimed!.id, p_reviewer: "alpha", p_accepted: false, p_note: "needs rework",
+        });
+        if (reviewed.error) throw new Error(`review failed: ${reviewed.error.message}`);
+        check(`rejection ${rejection} succeeds`, reviewed.data?.ok === true, reviewed.data);
+        const { data: item, error } = await db.from("council_work_items")
+            .select("status, rejections").eq("id", claimed!.id).single();
+        if (error) throw new Error(`work item read failed: ${error.message}`);
+        check(`rejection ${rejection} ${rejection < 3 ? "requeues" : "blocks"} the item`,
+            item.rejections === rejection && item.status === (rejection < 3 ? "queued" : "blocked"), item);
+        const next = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
+        if (next.error) throw new Error(`claim after review failed: ${next.error.message}`);
+        check(`rejection ${rejection} ${rejection < 3 ? "allows rework" : "prevents further claims"}`,
+            rejection < 3 ? next.data?.id === claimed!.id : next.data === null, next.data);
+    }
+    const campaign = await db.from("council_campaigns").select("status").eq("session_id", id).single();
+    if (campaign.error) throw new Error(`campaign read failed: ${campaign.error.message}`);
+    check("exhausted rejections block the campaign", campaign.data.status === "blocked", campaign.data);
 }
 
 async function testPause(): Promise<void> {
@@ -253,10 +278,17 @@ async function testPause(): Promise<void> {
     const { data: heldFloor } = await db.from("council_sessions").select("floor_holder").eq("id", id).single();
     check("a moderator post preserves a granted floor", heldFloor?.floor_holder === "beta", heldFloor);
 
-    // A paused council must not be swept away by the clock it is not running on.
-    await db.from("council_sessions")
-        .update({ expires_at: new Date(Date.now() - 60_000).toISOString() })
-        .eq("id", id);
+    const pauseState = await db.from("council_sessions").select("paused_at").eq("id", id).single();
+    if (pauseState.error || !pauseState.data?.paused_at) throw new Error("Paused session was not persisted.");
+    const pausedAt = Date.parse(pauseState.data.paused_at);
+    // Advance the fixture's pause without relying on network latency or sleeps.
+    const beforeResume = await db.from("council_sessions")
+        .update({
+            paused_at: new Date(pausedAt - 120_000).toISOString(),
+            expires_at: new Date(pausedAt - 60_000).toISOString(),
+        })
+        .eq("id", id).select("expires_at, last_message_at, paused_total_seconds").single();
+    if (beforeResume.error) throw new Error(`pause fixture failed: ${beforeResume.error.message}`);
     const { data: swept } = await db.from("council_sessions")
         .update({ status: "expired" })
         .eq("id", id)
@@ -267,12 +299,21 @@ async function testPause(): Promise<void> {
     check("a paused council is not expired by the sweep", (swept ?? []).length === 0, swept);
 
     const resumed = await db.rpc("resume_council", { p_session_id: id });
+    if (resumed.error) throw new Error(`resume failed: ${resumed.error.message}`);
     check("resuming succeeds", (resumed.data as { ok?: boolean })?.ok === true, resumed.data);
 
-    const { data: after } = await db.from("council_sessions")
-        .select("paused_at, expires_at, floor_holder").eq("id", id).single();
+    const { data: after, error: afterError } = await db.from("council_sessions")
+        .select("paused_at, expires_at, last_message_at, paused_total_seconds, floor_holder").eq("id", id).single();
+    if (afterError) throw new Error(`resumed session read failed: ${afterError.message}`);
+    const pausedSeconds = resumed.data?.paused_seconds;
+    check("resume measures the elapsed pause", Number.isInteger(pausedSeconds) && pausedSeconds >= 120, resumed.data);
     check("resume clears the pause", after?.paused_at === null, after);
-    check("resume gives back the time it took", Date.parse(after!.expires_at) > Date.now() - 60_000, after);
+    check("resume gives back the elapsed pause to expiry",
+        Date.parse(after.expires_at) - Date.parse(beforeResume.data.expires_at) === pausedSeconds * 1000, after);
+    check("resume preserves the silence clock",
+        Date.parse(after.last_message_at) - Date.parse(beforeResume.data.last_message_at) === pausedSeconds * 1000, after);
+    check("resume accumulates the paused duration",
+        after.paused_total_seconds - beforeResume.data.paused_total_seconds === pausedSeconds, after);
     check("resume drops the stale floor grant", after?.floor_holder === null, after);
 
     const allowed = await post(id, "beta", { intent: "propose", body: "after the resume" });
@@ -459,8 +500,9 @@ async function testHostVerification(): Promise<void> {
 
     const failed = await verify(id, item.id, FIRST_SHA, false, "FAIL commit does not descend from main");
     check("a failed host check is recorded", (failed as { ok?: boolean })?.ok === true, failed);
-    const { data: bounced } = await db.from("council_work_items").select("status, host_verified").eq("id", item.id).single();
-    check("a failed host check returns the task to its owner", bounced?.status === "queued", bounced);
+    const { data: bounced } = await db.from("council_work_items").select("status, host_verified, rejections").eq("id", item.id).single();
+    check("a failed host check returns the task to its owner and counts a rejection",
+        bounced?.status === "queued" && bounced.rejections === 1, bounced);
 
     // Re-submit, then pass the host check.
     await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });

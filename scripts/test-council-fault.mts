@@ -1,25 +1,12 @@
-// Council host process-fault tests (V3.5.5).
-//
-//   npx tsx scripts/test-council-fault.mts
-//
-// Two phases. Phase A kills real host processes and needs nothing configured:
-// no database, no MCP endpoint, its own throwaway git repo, and its own HOME so
-// the machine-level lock it exercises is not the one a real host is holding.
-//
-// Phase B is the mid-turn kill the plan asked for and needs the whole stack -
-// Supabase credentials in .env.local and a reachable MCP endpoint, which means
-// `npm run dev`. It skips with a reason when either is missing rather than
-// failing, so phase A stays useful in CI.
-//
-// Every process it starts is killed, and every directory and council row it
-// creates is removed, including on failure.
+// --phase-a-only is offline; --require-phase-b requires an explicit loopback --mcp-url.
+// Without either flag, Phase B skips when credentials or the MCP endpoint are unavailable.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createClient } from "@supabase/supabase-js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
     parseSupervisionLine, type HostExitV1, type HostHealthV1, type HostSupervisionMessage,
 } from "../src/lib/council/supervisor.ts";
@@ -29,6 +16,46 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..");
 const HOST_ENTRY = join(HERE, "council-host.mts");
 const FAKE_AGENT = join(HERE, "council-fake-agent.mjs");
+const OFFLINE_MCP_URL = "http://127.0.0.1:1/api/mcp/mcp";
+class FaultTestFailure extends Error {}
+
+export interface FaultOptions {
+    phaseAOnly: boolean;
+    requirePhaseB: boolean;
+    mcpUrl?: string;
+}
+
+export function parseFaultOptions(args: string[]): FaultOptions {
+    const options: FaultOptions = { phaseAOnly: false, requirePhaseB: false };
+    const seen = new Set<string>();
+    for (let index = 0; index < args.length; index++) {
+        const flag = args[index];
+        if (!["--phase-a-only", "--require-phase-b", "--mcp-url"].includes(flag)) {
+            throw new Error("Unknown fault-test option.");
+        }
+        if (seen.has(flag)) throw new Error("Duplicate fault-test option.");
+        seen.add(flag);
+        if (flag === "--phase-a-only") options.phaseAOnly = true;
+        else if (flag === "--require-phase-b") options.requirePhaseB = true;
+        else {
+            const value = args[++index];
+            let endpoint: URL;
+            try { endpoint = new URL(value); } catch { throw new Error("--mcp-url requires a loopback HTTP URL."); }
+            if (endpoint.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname)
+                || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+                throw new Error("--mcp-url requires a loopback HTTP URL without credentials, query or fragment.");
+            }
+            options.mcpUrl = endpoint.href;
+        }
+    }
+    if (options.phaseAOnly && options.requirePhaseB) {
+        throw new Error("--phase-a-only and --require-phase-b are mutually exclusive.");
+    }
+    if (options.requirePhaseB && !options.mcpUrl) {
+        throw new Error("--require-phase-b requires an explicit loopback --mcp-url.");
+    }
+    return options;
+}
 
 let passed = 0;
 let failed = 0;
@@ -51,8 +78,6 @@ function skip(name: string, why: string): void {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// .env.local is read here rather than through node --env-file because the
-// harness needs the values for its own database client as well as the child's.
 function readEnvFile(): Record<string, string> {
     const out: Record<string, string> = {};
     try {
@@ -65,7 +90,17 @@ function readEnvFile(): Record<string, string> {
     return out;
 }
 
-const fileEnv = readEnvFile();
+export function hostEnvironment(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+    const environment: NodeJS.ProcessEnv = { NODE_ENV: "test" };
+    const allowed = new Set([
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+        "SYSTEMDRIVE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "LANG", "LC_ALL",
+    ]);
+    for (const [key, value] of Object.entries(process.env)) {
+        if (allowed.has(key.toUpperCase())) environment[key] = value;
+    }
+    return { ...environment, ...overrides };
+}
 
 // Windows keeps a handle on a directory for a while after the process that used
 // it dies, and rmSync's own retries are not always long enough. A scratch tree
@@ -106,6 +141,10 @@ interface Host {
     exitReport(): HostExitV1 | undefined;
 }
 
+function hostDiagnostics(host: Host): { exitCode: number | null; reason: string | null } {
+    return { exitCode: host.exitCode, reason: host.exitReport()?.reason ?? null };
+}
+
 function startHost(options: {
     repo: string; configPath: string; home: string;
     launch?: Record<string, unknown>;
@@ -117,14 +156,10 @@ function startHost(options: {
     ], {
         cwd: REPO,
         env: {
-            ...process.env,
-            ...fileEnv,
-            ...options.env,
+            ...hostEnvironment(options.env),
             ZUYCHIN_SUPERVISED: "1",
-            ...(options.launch ? { ZUYCHIN_HOST_LAUNCH: JSON.stringify({ v: 1, type: "launch", ...options.launch }) } : {}),
-            // os.homedir() reads these, and the singleton lock lives under it.
-            // Pointing them at a scratch directory isolates the test from the
-            // lock a real host on this machine may already be holding.
+            ZUYCHIN_HOST_LAUNCH: JSON.stringify({ v: 1, type: "launch", autoAdopt: false, ...options.launch }),
+            // Isolate the machine lock from an owner's running host.
             HOME: options.home,
             USERPROFILE: options.home,
         },
@@ -204,19 +239,6 @@ function lockPath(home: string): string {
     return join(home, ".zuychin", "council-host.lock");
 }
 
-/**
- * A throwaway HOME, at a stable path rather than inside the scratch tree.
- * Windows holds a handle on it well past the last child's death and a per-run
- * copy would pile up; one directory holding one lock file does not. Only the
- * lock is cleared, which is the state the suite actually depends on.
- */
-function stableHome(name: string): string {
-    const home = join(tmpdir(), name);
-    mkdirSync(join(home, ".zuychin"), { recursive: true });
-    rmSync(lockPath(home), { force: true });
-    return home;
-}
-
 function readLock(home: string): { pid?: number; hostId?: string } | null {
     try { return JSON.parse(readFileSync(lockPath(home), "utf8")); } catch { return null; }
 }
@@ -257,9 +279,9 @@ function mcpUrl(): string {
 // A port each. Two hosts must never contend for one, or the loser is refused by
 // the port rather than by the lock and the singleton check proves nothing:
 // anything above HOST_PORT_LAST leaves the host exactly one candidate.
-function writeConfig(path: string, port: number, extra: Record<string, unknown>): void {
+function writeConfig(path: string, port: number, endpoint: string, extra: Record<string, unknown>): void {
     writeFileSync(path, JSON.stringify({
-        mcpUrl: mcpUrl(),
+        mcpUrl: endpoint,
         host: { port, origins: [], autoAdopt: false },
         agents: {
             fake: {
@@ -279,13 +301,13 @@ async function phaseA(): Promise<void> {
     console.log("\nphase A: host process faults");
     const scratch = mkdtempSync(join(tmpdir(), "zch-fault-a-"));
     const repo = join(scratch, "repo");
-    const home = stableHome("zch-fault-home-a");
+    const home = join(scratch, "home");
     const configs = [1, 2, 3].map((n) => join(scratch, `council-agents-${n}.json`));
     const running: Host[] = [];
     try {
         await makeDirs(repo, home);
         makeRepo(repo);
-        configs.forEach((path, index) => writeConfig(path, 8894 + index, { instances: {} }));
+        configs.forEach((path, index) => writeConfig(path, 8894 + index, OFFLINE_MCP_URL, { instances: {} }));
         const env = { MCP_COUNCIL_HOST_KEY: "fault-test-key-not-used-in-phase-a" };
 
         const first = startHost({ repo, configPath: configs[0], home, env });
@@ -341,40 +363,83 @@ async function phaseA(): Promise<void> {
 
 // ---------------------------------------------------------------- phase B
 
-async function phaseB(): Promise<void> {
-    console.log("\nphase B: killed mid-turn");
+interface PhaseBConfig {
+    url: string;
+    serviceKey: string;
+    hostKey: string;
+    endpoint: string;
+}
 
-    const url = fileEnv.NEXT_PUBLIC_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const serviceKey = fileEnv.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const hostKey = fileEnv.MCP_COUNCIL_HOST_KEY ?? process.env.MCP_COUNCIL_HOST_KEY;
+export async function probeMcpEndpoint(endpoint: string, hostKey: string, timeoutMs = 90_000): Promise<boolean> {
+    try {
+        const response = await fetch(endpoint, {
+            method: "POST",
+            redirect: "error",
+            signal: AbortSignal.timeout(timeoutMs),
+            headers: {
+                Authorization: `Bearer ${hostKey}`,
+                "Content-Type": "application/json",
+                Accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        });
+        if (!response.ok) { await response.body?.cancel(); return false; }
+        const reader = response.body?.getReader();
+        if (!reader) return false;
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > 1_000_000) { await reader.cancel(); return false; }
+            chunks.push(value);
+        }
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const line = raw.split("\n").find((entry) => entry.startsWith("data:"));
+        const payload = JSON.parse(line ? line.slice(5).trim() : raw);
+        if (payload?.jsonrpc !== "2.0" || payload.id !== 1 || payload.error || !Array.isArray(payload.result?.tools)) return false;
+        const names = new Set(payload.result.tools.map((tool: { name?: unknown }) => tool?.name));
+        return ["council_host_claim", "council_host_issue_seat", "council_dispatch"].every((name) => names.has(name));
+    } catch { return false; }
+}
+
+async function preparePhaseB(options: FaultOptions): Promise<PhaseBConfig | null> {
+    // CI-injected values take precedence over an owner's local defaults.
+    const env = { ...readEnvFile(), ...process.env };
+    const url = env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
+    const hostKey = env.MCP_COUNCIL_HOST_KEY;
+    const unavailable = (why: string): null => {
+        if (options.requirePhaseB) throw new FaultTestFailure(`Required Phase B unavailable: ${why}`);
+        skip("mid-turn kill", why);
+        return null;
+    };
     if (!url || !serviceKey || !hostKey) {
-        skip("mid-turn kill", "no .env.local with Supabase and MCP_COUNCIL_HOST_KEY");
-        return;
+        return unavailable("Supabase URL, service role key and MCP_COUNCIL_HOST_KEY are required.");
     }
+    const endpoint = options.mcpUrl ?? mcpUrl();
+    if (!await probeMcpEndpoint(endpoint, hostKey)) {
+        return unavailable("MCP readiness failed: authenticated Council host tools were not available within 90 seconds.");
+    }
+    return { url, serviceKey, hostKey, endpoint };
+}
 
-    const endpoint = mcpUrl();
-    const reachable = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    }).then((r) => r.status < 500).catch(() => false);
-    if (!reachable) {
-        skip("mid-turn kill", `${endpoint} is not answering - start the app with npm run dev`);
-        return;
-    }
+async function phaseB({ url, serviceKey, hostKey, endpoint }: PhaseBConfig): Promise<void> {
+    console.log("\nphase B: killed mid-turn");
 
     const db = makeDb(url, serviceKey);
     const scratch = mkdtempSync(join(tmpdir(), "zch-fault-b-"));
     const repo = join(scratch, "repo");
-    const home = stableHome("zch-fault-home-b");
+    const home = join(scratch, "home");
     const configPath = join(scratch, "council-agents.json");
     const running: Host[] = [];
     let sessionId: string | null = null;
 
     try {
-        await makeDirs(repo);
+        await makeDirs(repo, home);
         const baseSha = makeRepo(repo);
-        writeConfig(configPath, 8899, {
+        writeConfig(configPath, 8899, endpoint, {
             host: { port: 8899, origins: [], autoAdopt: false, repos: { faultrepo: { path: repo, baseBranch: "main" } } },
             instances: { "fault-a": { provider: "fake", expertise: "fault testing" } },
         });
@@ -388,26 +453,26 @@ async function phaseB(): Promise<void> {
             expires_at: new Date(Date.now() + 3600_000).toISOString(),
             repo_path: repo, base_branch: "main", protocol_version: 3, base_sha: baseSha,
         }).select("id").single();
-        if (error) throw new Error(`session insert failed: ${error.message}`);
+        if (error) throw new FaultTestFailure("Test council session insert failed.");
         sessionId = session.id as string;
         const { error: rosterError } = await db.from("council_participants").insert({
             session_id: sessionId, name: "fault-a", kind: "agent",
             expertise: "fault testing", joined_seq: 1,
         });
-        if (rosterError) throw new Error(`roster insert failed: ${rosterError.message}`);
+        if (rosterError) throw new FaultTestFailure("Test council roster insert failed.");
 
         const env = { MCP_COUNCIL_HOST_KEY: hostKey };
         const first = startHost({ repo, configPath, home, env, launch: { attach: code } });
         running.push(first);
         const started = await first.waitForHealth();
         if (!started) {
-            check("the host attaches to the council", false, first.stderr.slice(-6));
+            check("the host attaches to the council", false, hostDiagnostics(first));
             return;
         }
 
         const lease = await waitForLease(db, sessionId, started.hostId, 60_000);
         check("the host attaches and claims the lease", lease !== null,
-            lease ?? first.stderr.slice(-6).concat(first.exitReport() ? [JSON.stringify(first.exitReport())] : []));
+            lease ?? hostDiagnostics(first));
         if (!lease) return;
 
         // dispatch_mode is set by the host through council_join once the agent's
@@ -416,7 +481,7 @@ async function phaseB(): Promise<void> {
         // in its kickoff prompt: genuinely mid-turn, not merely attached.
         const driven = await waitForDispatchMode(db, sessionId, "fault-a", 60_000);
         check("the host starts the agent and takes its seat", driven,
-            (await participantRow(db, sessionId, "fault-a")) ?? first.stderr.slice(-6));
+            (await participantRow(db, sessionId, "fault-a")) ?? hostDiagnostics(first));
         if (!driven) return;
 
         // The delivery the host would have written when it dispatched the turn,
@@ -467,12 +532,12 @@ async function phaseB(): Promise<void> {
         const second = startHost({ repo, configPath, home, env, launch: { attach: code } });
         running.push(second);
         const secondStarted = await second.waitForHealth();
-        check("a successor host starts over the stale lock", secondStarted !== null, second.stderr.slice(-6));
+        check("a successor host starts over the stale lock", secondStarted !== null, hostDiagnostics(second));
         if (!secondStarted) return;
 
         const secondLease = await waitForLease(db, sessionId, secondStarted.hostId, 60_000);
         check("the successor attaches to the same council", secondLease !== null,
-            secondLease ?? second.stderr.slice(-6));
+            secondLease ?? hostDiagnostics(second));
         if (!secondLease) return;
         check("the successor holds a higher epoch", secondLease.epoch > lease.epoch,
             { was: lease.epoch, now: secondLease.epoch });
@@ -504,7 +569,7 @@ async function phaseB(): Promise<void> {
         for (const host of running) await stopHost(host);
         if (sessionId) {
             const { error } = await db.from("council_sessions").delete().eq("id", sessionId);
-            if (error) console.warn(`cleanup failed for the test council: ${error.message}`);
+            if (error) console.warn("Cleanup failed for the test council.");
         }
         await removeTree(scratch);
     }
@@ -519,7 +584,7 @@ type Db = ReturnType<typeof makeDb>;
 
 async function rpc(db: Db, fn: string, args: Record<string, unknown>): Promise<unknown> {
     const { data, error } = await db.rpc(fn, args);
-    return error ? { __error: error.message } : data;
+    return error ? { __error: "Database RPC failed." } : data;
 }
 
 async function waitForLease(
@@ -568,15 +633,27 @@ async function participantRow(db: Db, sessionId: string, name: string) {
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
+    let options: FaultOptions;
     try {
+        options = parseFaultOptions(process.argv.slice(2));
+    } catch (error) {
+        console.error(error instanceof Error ? error.message : "Invalid fault-test options.");
+        process.exitCode = 2;
+        return;
+    }
+    try {
+        const requiredConfig = options.requirePhaseB ? await preparePhaseB(options) : null;
         await phaseA();
-        await phaseB();
+        if (!options.phaseAOnly) {
+            const config = requiredConfig ?? await preparePhaseB(options);
+            if (config) await phaseB(config);
+        }
     } catch (err) {
         failed++;
-        console.error("\naborted:", err instanceof Error ? err.message : err);
+        console.error("\naborted:", err instanceof FaultTestFailure ? err.message : "Unexpected fault-test failure.");
     }
     console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
-    process.exit(failed === 0 ? 0 : 1);
+    process.exitCode = failed === 0 && (!options.requirePhaseB || skipped === 0) ? 0 : 1;
 }
 
-await main();
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) await main();
