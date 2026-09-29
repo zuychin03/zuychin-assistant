@@ -40,6 +40,8 @@ next-env.d.ts
 .brain/
 docs/
 CHANGELOG.md
+/ASSISTANT_V6_FEATURES.md
+/V6_IMPLEMENTATION_HANDOFF.md
 
 # local supabase project / migration history (use supabase-setup.sql instead)
 /supabase/
