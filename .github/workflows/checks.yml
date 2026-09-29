@@ -64,6 +64,29 @@ jobs:
       - name: named client migration and credential isolation
         run: npm run agents:offline:test
 
+  desktop:
+    name: Windows desktop supervisor
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup component add rustfmt clippy
+      - name: formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: native lint
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: contract and isolated process tests
+        shell: pwsh
+        run: |
+          $env:COUNCIL_TEST_NODE = (Get-Command node).Source
+          cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored
+
   database:
     name: suites against isolated Supabase
     runs-on: ubuntu-latest
@@ -153,6 +176,28 @@ jobs:
             exit 1
           fi
           npx tsx scripts/test-agent-claim-postgres.mts --container "$claims_container"
+
+      - name: campaign credential transaction races
+        shell: bash
+        run: |
+          set -euo pipefail
+          seats_container="council-seat-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$seats_container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --rm --network none --name "$seats_container" \
+            --env POSTGRES_PASSWORD=disposable-test-only postgres:16-alpine >/dev/null
+          ready=false
+          for attempt in {1..30}; do
+            if docker exec "$seats_container" pg_isready -U postgres >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::The isolated seat-test database did not become ready."
+            exit 1
+          fi
+          npx tsx scripts/test-council-seat-renewal-postgres.mts --container "$seats_container"
 
       - name: council V3 against the database
         run: npm run council:v3:test:db

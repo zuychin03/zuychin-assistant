@@ -720,6 +720,10 @@ council. Pointed at the deployed URL, a council needs no local dev server at all
 the deployed site shows it; pointed at `http://localhost:3000/api/mcp/mcp`, you get local changes but
 must keep `npm run dev` running. Both hit the same Supabase, so the councils are the same councils.
 
+**Desktop shell (Windows preview).** The Tauri shell can start, stop and restart its own local
+host while loading the deployed web app. See [desktop setup and recovery](src-tauri/README.md).
+It uses the existing supervision contract and leaves separately launched hosts alone.
+
 **Council CI.** Offline process tests and their harness guards run on Linux and Windows. Database
 checks create a disposable Supabase stack inside the GitHub runner, apply the full setup SQL and
 require mid-turn crash recovery against a temporary local Next server. No hosted test project or

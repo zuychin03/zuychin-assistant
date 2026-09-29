@@ -83,9 +83,9 @@ try {
     assert(wave.startsWith("-- ===== Council V3.5 wave:"));
     await db.exec(wave);
     await db.exec("grant all on all tables in schema public to anon, authenticated; grant all on all sequences in schema public to anon, authenticated");
-    const marker = "-- ===== Atomic named-client claim replacement =====";
-    const migration = setup.includes(marker) ? setup.slice(setup.indexOf(marker)) : "";
-    if (migration) { await db.exec(migration); await db.exec(migration); }
+    const migration = await readFile(new URL("./migrations/council-agent-claims.sql", import.meta.url), "utf8");
+    assert(setup.includes(migration.trimEnd()), "Setup and incremental claim migration must not drift");
+    await db.exec(migration); await db.exec(migration);
     await db.exec(`
         create table fixture_claim_failures(mode text);
         grant select on fixture_claim_failures to service_role;

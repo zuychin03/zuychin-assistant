@@ -167,10 +167,13 @@ try {
         assert.ok(turn, "probe must send the visibility instructions to the adapter");
         const instructions = turn.params.prompt.map((block: { text?: string }) => block.text ?? "").join("\n");
         assert.match(instructions, /runtime tool discovery\/loading.*tool_search.*permitted/i);
+        assert.match(instructions, /metadata-only JavaScript through functions\.exec.*permitted/i);
+        assert.match(instructions, /inspect ALL_TOOLS names and descriptions/i);
+        assert.match(instructions, /without invoking any tool from that list/i);
         assert.doesNotMatch(instructions, /do not (?:call|use|invoke) (?:any )?tools\b/i);
         assert.match(instructions, /do not invoke any discovered MCP tools, including knowledge or Council tools/i);
         assert.match(instructions, /do not read, write or edit files/i);
-        assert.match(instructions, /do not run commands/i);
+        assert.match(instructions, /do not run shell commands/i);
         assert.deepEqual(calls.map((call) => call.method), ["tools/list"]);
     });
     await test("absent, denied, redirected, oversized and tool-free MCP endpoints fail before launch", async () => {

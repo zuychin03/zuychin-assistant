@@ -16,6 +16,8 @@ import { OwnerChannelPanel } from "./owner-channel-panel";
 import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
 import { IntegrationPanel } from "./integration-panel";
+import { DesktopHostControls } from "./desktop-host-controls";
+import { isDesktopHostAvailable } from "./desktop-host";
 import { Dropdown } from "@/components/dropdown";
 import { isLoopbackUrl, publicBaseUrl } from "@/lib/public-url";
 import ui from "./council.module.css";
@@ -127,6 +129,7 @@ export default function CouncilPage() {
     const lastSeqRef = useRef(0);
 
     const [hostState, setHostState] = useState<HostConnection>("probing");
+    const [desktop, setDesktop] = useState(false);
     const [hostPort, setHostPort] = useState<number | null>(null);
     const [host, setHost] = useState<HostSnapshot | null>(null);
     const [activity, setActivity] = useState<HostActivity[]>([]);
@@ -218,6 +221,7 @@ export default function CouncilPage() {
     }, [form, agentSelections]);
 
     useEffect(() => setOrigin(window.location.origin), []);
+    useEffect(() => setDesktop(isDesktopHostAvailable()), []);
 
     useEffect(() => {
         const check = () => setIsNarrow(window.innerWidth < 900);
@@ -381,7 +385,7 @@ export default function CouncilPage() {
                             <RefreshCw size={15} /> Retry
                         </button>
                     )}
-                    {hostState === "connected" && (
+                    {hostState === "connected" && !desktop && (
                         <button
                             type="button"
                             onClick={() => { clientRef.current?.stop(); forgetHost(); }}
@@ -393,9 +397,16 @@ export default function CouncilPage() {
                     )}
                 </div>
 
+                {desktop && (
+                    <DesktopHostControls
+                        externalHost={hostState === "connected" || hostState === "unpaired"}
+                        onHostAvailable={probeHost}
+                    />
+                )}
+
                 {hostError && <div style={styles.errorBox} role="alert">{hostError}</div>}
 
-                {hostState === "absent" && (
+                {hostState === "absent" && !desktop && (
                     <div style={styles.emptyText}>
                         Observing through Zuychin. Agents can still join by hand, but nothing here can
                         start one, mediate its file access or push it a turn. To take control, run{" "}

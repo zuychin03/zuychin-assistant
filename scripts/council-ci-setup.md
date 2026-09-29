@@ -25,13 +25,15 @@ The database job runs every suite below, without a secret-dependent skip:
 
 For the last check, CI starts an owned temporary Next server on `127.0.0.1:3105`, verifies authenticated MCP readiness and requires mid-turn crash recovery to execute. Missing prerequisites or a skipped Phase B fail the job.
 
-Cleanup runs even after failure: it stops the owned Next process group, stops this Supabase stack with `--no-backup`, and removes the temporary environment, status and log files. The normal Linux/Windows offline suites remain separate checks. Native desktop CI belongs to the separate, unpublished desktop work.
+Two additional transaction suites run in separate PostgreSQL 16 containers with networking disabled and no published ports: `test-agent-claim-postgres.mts` and `test-council-seat-renewal-postgres.mts`. They verify real lock contention, credential revocation/replacement and expiry after waits. Each suite removes its own database; the workflow always removes its owned container.
 
-After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm both offline jobs, all five database suites and required Phase B pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
+Cleanup runs even after failure: it stops the owned Next process group, stops this Supabase stack with `--no-backup`, and removes the temporary environment, status and log files. The normal Linux/Windows offline suites and Windows desktop supervisor job remain separate checks.
+
+After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm both offline jobs, the Windows desktop supervisor job, both transaction suites, all five database suites and required Phase B pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
 
 ## Local checks and remaining gates
 
-On 29/09/2026 an isolated Windows run with Node 25.6.0, Supabase CLI 2.118.0 and PostgreSQL 17 passed the complete SQL setup, schema gate (6), credentials (52), V3 database contracts (35), protocol (83), journal (10) and fault Phases A/B (35, zero skips). The environment helper passed 76 checks and actionlint 1.7.12 passed. Protocol tests were corrected to reflect the existing rejection policy and remove a network-timing assumption; no SQL changed. The exact-commit Ubuntu/Node 24 GitHub run remains pending publication.
+On 29/09/2026 an isolated Windows run with Node 25.6.0, Supabase CLI 2.118.0 and PostgreSQL 17 passed the complete SQL setup, schema gate (6), credentials (52), V3 database contracts (35), protocol (83), journal (10) and fault Phases A/B (35, zero skips). The environment helper passed 76 checks and actionlint 1.7.12 passed. Protocol tests were corrected to reflect the existing rejection policy and remove a network-timing assumption; no SQL changed in that snapshot. Published `60347c2` passed exact-commit GitHub run `36540520042`; retirement commit `300b808` passed run `36583804961`. Those results do not cover the subsequent native and campaign-credential changes.
 
 Final typecheck and full lint passed in a temporary copy after clean `npm ci`; the original checkout lacked installed dependencies. The workflow's exact REST-readiness code also passed locally. The owned Next server and Supabase stack were stopped, with no listener on port 3105 or remaining test containers, and generated environment/status/startup-log files were removed. Existing unrelated containers were preserved; this does not claim removal of every temporary artifact.
 
@@ -46,4 +48,10 @@ To reproduce the database job locally, use Docker and an isolated checkout with 
 
 Passing isolated database CI does not validate hosted configuration or finish the live credential migration. Each knowledge caller, including the ACP probe, must move to a named client key before the shared knowledge bearers are removed. The dedicated Council host key stays separate.
 
-The desktop shell still needs deployed HTTPS sign-in, pairing and full Council-flow acceptance. V4.0 starts only after V3.5's readiness requirements pass, and V4.2 waits for V4.0's V1 contract freeze. The owner's 29/09/2026 approval resumes the database CI blocker only; it does not waive those gates.
+The desktop shell still needs deployed HTTPS sign-in, pairing and full Council-flow acceptance. V4.0 starts only after V3.5's readiness requirements pass, and V4.2 waits for V4.0's V1 contract freeze. Local implementation and isolated tests do not waive these gates or authorise hosted changes.
+
+## Campaign credential migration
+
+For an existing database, the incremental artefact is [`migrations/council-seat-renewal.sql`](migrations/council-seat-renewal.sql). It is also included at the end of the full setup script. Apply it only as an authorised hosted change, before deploying the guest reissue route. Reapplying it is supported.
+
+Eligible host-issued seats renew to 24 hours when one hour remains, through a live host heartbeat during unfinished work or integration. Renewal preserves the token and requires the same host and lease epoch. It never revives expired or revoked keys. Guests retain 24-hour owner-issued keys and can be explicitly reissued after debate closure while the campaign is unfinished. The resolver rechecks identity, revocation and expiry after database lock waits.

@@ -1,0 +1,8 @@
+{
+  "appUrl": "https://your-app.example/council",
+  "nodePath": "C:/Program Files/nodejs/node.exe",
+  "repositoryPath": "C:/projects/zuychin-assistant",
+  "hostConfigPath": "C:/projects/zuychin-assistant/scripts/council-agents.json",
+  "envFilePath": "C:/projects/zuychin-assistant/src-tauri/host.local.env",
+  "launch": { "v": 1, "type": "launch", "autoAdopt": false }
+}

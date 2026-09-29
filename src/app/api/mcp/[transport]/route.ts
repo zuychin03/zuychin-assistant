@@ -36,6 +36,7 @@ import {
     canOwnCouncil, canParticipateInCouncil, canWriteNotes,
     canWriteVault, isCouncilOwner,
 } from "@/lib/agents/scopes";
+import { requireKnowledgeRead as assertKnowledgeRead, requireCouncilObserver as assertCouncilObserver } from "@/lib/agents/read-access";
 import { councilHostService } from "@/lib/council/service";
 import {
     exactVerificationSchema, integrationReportSchema, requireCouncilHost,
@@ -46,6 +47,24 @@ import { promptDigest } from "@/lib/council/v3";
 export const maxDuration = 300;
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+function requireKnowledgeRead(extra: ToolExtra) {
+    try {
+        assertKnowledgeRead(extra.authInfo);
+        return null;
+    } catch (error) {
+        return denied(errMsg(error));
+    }
+}
+
+function requireCouncilObserver(extra: ToolExtra, sessionId?: string) {
+    try {
+        assertCouncilObserver(extra.authInfo, sessionId);
+        return null;
+    } catch (error) {
+        return denied(errMsg(error));
+    }
+}
 
 function requireNotesWrite(extra: ToolExtra) {
     if (canWriteNotes(extra.authInfo?.scopes)) return null;
@@ -60,7 +79,7 @@ function requireVaultWrite(extra: ToolExtra) {
 // Coarse gate for council tools. Tools that act AS an agent must ALSO call
 // requireSeat once they have resolved what they are acting on - a seat key is
 // valid for one council and one name, and this check knows neither yet.
-// Read-only keys observe via council_transcript, which is deliberately ungated.
+// Read-only keys observe through the Council read gate.
 function requireCouncil(extra: ToolExtra) {
     if (canParticipateInCouncil(extra.authInfo?.scopes)) return null;
     return denied("This tool needs an owner API key or a council seat key; the key you used has neither.");
@@ -148,7 +167,9 @@ const handler = createMcpHandler(
                         .describe("Restrict to saved notes with this category tag (e.g. 'project', 'plan', 'study')."),
                 },
             },
-            async ({ query, category }) => {
+            async ({ query, category }, extra) => {
+                const denied = requireKnowledgeRead(extra);
+                if (denied) return denied;
                 try {
                     await refreshEmbeddingOverride();
                     const embRef = getEmbeddingRef();
@@ -230,7 +251,9 @@ const handler = createMcpHandler(
                     limit: z.number().int().min(1).max(50).optional().describe("How many notes (default 20)."),
                 },
             },
-            async ({ category, limit }) => {
+            async ({ category, limit }, extra) => {
+                const denied = requireKnowledgeRead(extra);
+                if (denied) return denied;
                 try {
                     const notes = await listKnowledgeNotes({ category, limit });
                     const text = notes.length
@@ -325,7 +348,9 @@ const handler = createMcpHandler(
                     "Search the second-brain vault (long-form interlinked notes) by topic. Returns matching page paths, titles and summaries.",
                 inputSchema: { query: z.string().min(1).describe("Topic or question to search the vault for.") },
             },
-            async ({ query }) => {
+            async ({ query }, extra) => {
+                const denied = requireKnowledgeRead(extra);
+                if (denied) return denied;
                 try {
                     if (!getVaultConfig()) {
                         return { content: [{ type: "text", text: "The vault is not configured." }] };
@@ -353,7 +378,9 @@ const handler = createMcpHandler(
                     "Read the full Markdown of a vault page by its path (e.g. a path from vault_search, or 'index.md').",
                 inputSchema: { path: z.string().min(1).describe("Vault page path, e.g. 'wiki/concepts/foo.md'.") },
             },
-            async ({ path }) => {
+            async ({ path }, extra) => {
+                const denied = requireKnowledgeRead(extra);
+                if (denied) return denied;
                 try {
                     const cfg = getVaultConfig();
                     if (!cfg) {
@@ -473,7 +500,9 @@ const handler = createMcpHandler(
                     limit: z.number().int().min(1).max(30).optional().describe("How many recent messages (default 10)."),
                 },
             },
-            async ({ limit }) => {
+            async ({ limit }, extra) => {
+                const denied = requireKnowledgeRead(extra);
+                if (denied) return denied;
                 try {
                     const messages = await getRecentMessages(limit ?? 10);
                     const text = messages.length
@@ -600,12 +629,16 @@ const handler = createMcpHandler(
                     limit: z.number().int().min(1).max(50).optional().describe("How many messages (default 30, oldest-first from fromSeq)."),
                 },
             },
-            async ({ sessionCode, fromSeq, limit }) => {
+            async ({ sessionCode, fromSeq, limit }, extra) => {
+                const denied = requireCouncilObserver(extra);
+                if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
+                    const seatDenied = requireCouncilObserver(extra, session.id);
+                    if (seatDenied) return seatDenied;
                     const messages = await readTranscript({
                         sessionId: session.id, fromSeq: fromSeq ?? 0, limit: limit ?? 30,
                     });
@@ -1254,10 +1287,14 @@ const handler = createMcpHandler(
         server.registerTool(
             "council_work_status",
             { description: "[COUNCIL WORK CAMPAIGN] Read campaign progress and assigned task states without changing them. Use for supervision and recovery.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1).optional() } },
-            async ({ sessionCode, agentName }) => {
+            async ({ sessionCode, agentName }, extra) => {
+                const denied = requireCouncilObserver(extra);
+                if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    const seatDenied = requireCouncilObserver(extra, session.id);
+                    if (seatDenied) return seatDenied;
                     const campaign = await getCampaignForSession(session.id);
                     // Distinct from idle, which an agent with nothing to do right now
                     // also returns. The host releases a Council on this and must never

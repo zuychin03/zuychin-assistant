@@ -83,7 +83,7 @@ try {
     assert(seatTableStart >= 0 && seatTableEnd > seatTableStart);
     await db.exec(setup.slice(seatTableStart, seatTableEnd));
     await db.exec("alter table council_seat_keys add column issued_by text not null default 'owner', add column host_id uuid, add column lease_epoch bigint");
-    const seatResolvers = [...setup.matchAll(/create or replace function resolve_council_seat_key\(p_token_hash text\)[\s\S]*?\$\$;/g)];
+    const seatResolvers = [...setup.matchAll(/create or replace function (?:public\.)?resolve_council_seat_key\(p_token_hash text\)[\s\S]*?\$\$;/g)];
     assert(seatResolvers.length > 0);
     await db.exec(seatResolvers.at(-1)![0]);
     const waveStart = setup.indexOf("-- ===== Council V3.5 wave:");

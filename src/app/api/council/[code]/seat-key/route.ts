@@ -3,11 +3,7 @@ import { getSessionByCode } from "@/lib/council/store";
 import { issueSeatKey, listSeatKeys, revokeSeatKey } from "@/lib/council/seat-keys";
 import { getCampaignForSession } from "@/lib/council/campaign";
 
-const CAMPAIGN_SEAT_TTL_HOURS = 24 * 7;
-
-// Mints the credential a guest agent uses instead of MCP_API_KEY. Session-gated
-// by proxy.ts. The plaintext is returned exactly once and is not recoverable:
-// re-issuing replaces the hash, which is also how a mis-sent key is revoked.
+// Owner session auth is enforced by proxy.ts; reissue replaces the existing hash.
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
@@ -30,22 +26,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
         const session = await getSessionByCode(code);
         if (!session) return NextResponse.json({ error: "No council with that code." }, { status: 404 });
-        if (session.status === "closed") {
-            return NextResponse.json({ error: "That council is closed." }, { status: 409 });
+        if (session.pausedAt || !["open", "concluding", "closed"].includes(session.status)) {
+            return NextResponse.json({ error: "That council is not active for seat issuance." }, { status: 409 });
         }
 
-        // The campaign phase runs AFTER the council closes and has no TTL of its
-        // own, so the 24h default can strand a guest mid-campaign.
-        const campaign = await getCampaignForSession(session.id).catch(() => null);
-        const ttlHours = campaign ? CAMPAIGN_SEAT_TTL_HOURS : undefined;
+        if (session.status === "closed") {
+            const campaign = await getCampaignForSession(session.id);
+            const unfinished = campaign && (
+                campaign.status === "running" || campaign.status === "blocked"
+                || (campaign.status === "complete" && (
+                    campaign.integrationStatus === null || campaign.integrationStatus === "pending"
+                    || campaign.integrationStatus === "running"
+                ))
+            );
+            if (!unfinished) {
+                return NextResponse.json({ error: "That council has no unfinished campaign." }, { status: 409 });
+            }
+        }
 
-        const issued = await issueSeatKey({ sessionId: session.id, seatName, ttlHours });
+        const issued = await issueSeatKey({ sessionId: session.id, seatName });
         if (!issued.ok) {
             const message = issued.reason === "not_on_roster"
                 ? `"${seatName}" is not on this council's roster. Convene with that name first.`
                 : issued.reason === "not_an_agent_seat"
                     ? `"${seatName}" is not an agent seat.`
-                    : "Could not issue a key for that seat.";
+                    : issued.reason === "inactive_session"
+                        ? "That council is no longer active for seat issuance."
+                        : "Could not issue a key for that seat.";
             return NextResponse.json({ error: message }, { status: 409 });
         }
         return NextResponse.json({ seatName, token: issued.token, expiresAt: issued.expiresAt });
