@@ -24,7 +24,7 @@ set "REPO=%~dp0.."
 cd /d "%REPO%"
 
 if not exist ".env.local" (
-  echo Missing .env.local in %REPO% - MCP_API_KEY has to come from somewhere.
+  echo Missing .env.local in %REPO% - configure MCP_COUNCIL_HOST_KEY first.
   exit /b 1
 )
 if not exist "scripts\council-agents.json" (

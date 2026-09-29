@@ -205,7 +205,9 @@ try {
     if (wantPrompt) {
         const turn = session.prompt(wantEdit
             ? "Create a file called probe.txt in the current directory containing the single word ok, then stop. Do not read or write anything else."
-            : "Do not call tools or edit files. Reply with exactly one line, then stop. "
+            : "Runtime tool discovery/loading (such as tool_search) is permitted only to list tool names. "
+              + "Do not invoke any discovered MCP tools, including knowledge or Council tools. "
+              + "Do not read, write or edit files. Do not run commands. Reply with exactly one line, then stop. "
               + `List the tool names you can see from the ${COUNCIL_MCP_SERVER_NAME} MCP server as MCP_TOOLS: followed by comma-separated names. `
               + "If you have none, reply exactly NO MCP TOOLS. Do not print credentials.",
         );

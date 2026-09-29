@@ -8,12 +8,7 @@ export const CLAIM_TTL_MINUTES = 15;
 export type AccessLevel = "read" | "notes" | "full" | "council";
 export type ClientKind = "local_host" | "remote_agent" | "owner_tool";
 
-// council is opt-in per client and deliberately not part of full. The rule it
-// bends is "council:owner is never minted into an agent key", which existed so
-// that every read/write key could not convene; choosing it for one named,
-// revocable client does not reinstate that. It is still strictly tighter than
-// the shared MCP_API_KEY it replaces, which grants the same authority to anyone
-// holding one unattributable secret.
+// Council authority is opt-in per named client; full grants knowledge writes only.
 export const ACCESS_SCOPES: Record<AccessLevel, string[]> = {
     read: ["knowledge:read"],
     notes: ["knowledge:read", "notes:write"],

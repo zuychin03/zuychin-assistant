@@ -159,6 +159,20 @@ try {
         assert.deepEqual(calls, [{ method: "tools/list", authorization: `Bearer ${key}` }]);
         assert.doesNotMatch(result.output, new RegExp(key));
     });
+    await test("visibility instructions permit runtime discovery without permitting MCP execution", async () => {
+        calls.length = 0;
+        const result = await run(["--prompt"], { COUNCIL_PROBE_MCP_KEY: key });
+        assert.equal(result.code, 0, result.output);
+        const turn = result.records.find((record) => record.method === "session/prompt");
+        assert.ok(turn, "probe must send the visibility instructions to the adapter");
+        const instructions = turn.params.prompt.map((block: { text?: string }) => block.text ?? "").join("\n");
+        assert.match(instructions, /runtime tool discovery\/loading.*tool_search.*permitted/i);
+        assert.doesNotMatch(instructions, /do not (?:call|use|invoke) (?:any )?tools\b/i);
+        assert.match(instructions, /do not invoke any discovered MCP tools, including knowledge or Council tools/i);
+        assert.match(instructions, /do not read, write or edit files/i);
+        assert.match(instructions, /do not run commands/i);
+        assert.deepEqual(calls.map((call) => call.method), ["tools/list"]);
+    });
     await test("absent, denied, redirected, oversized and tool-free MCP endpoints fail before launch", async () => {
         for (const url of [`http://127.0.0.1:1/mcp`, `${endpoint}/denied`, `${endpoint}/redirect`, `${endpoint}/large`, `${endpoint}/missing`]) {
             const result = await run(["--prompt"], { COUNCIL_PROBE_MCP_KEY: key, COUNCIL_MCP_URL: url });

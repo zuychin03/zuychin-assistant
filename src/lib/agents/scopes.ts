@@ -1,12 +1,4 @@
-// Scope predicates, kept out of the MCP route so they can be tested directly
-// and reused by any non-MCP caller.
-//
-// knowledge:write is the owner's legacy scope and satisfies both write gates.
-// notes:write and vault:write exist so a minted agent key can file a note
-// without also being able to rewrite long-form vault pages. council:owner is
-// minted only by the "council" access level, never by read/notes/full, so an
-// ordinary agent key still cannot convene. It grants create and observe, not
-// participation: asserting a seat is refused for an owner-scoped key regardless.
+// knowledge:write remains compatible with both granular write scopes.
 
 export const OWNER_SCOPES = [
     "knowledge:read", "knowledge:write", "notes:write", "vault:write", "council:owner",

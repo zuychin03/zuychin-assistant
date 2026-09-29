@@ -1,6 +1,5 @@
 import { after } from "next/server";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -31,10 +30,10 @@ import { proposeCouncilVerdict } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
 import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
 import { blockWorkItem, claimNextWorkItem, completeWorkItem, freezeIntegrationManifest, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordExactVerification, recordV3Integration, reviewWorkItem } from "@/lib/council/campaign";
-import { issueHostSeatKey, resolveSeatKey } from "@/lib/council/seat-keys";
-import { resolveAgentKey } from "@/lib/agents/clients";
+import { issueHostSeatKey } from "@/lib/council/seat-keys";
+import { verifyMcpToken } from "@/lib/agents/mcp-auth";
 import {
-    OWNER_SCOPES, READONLY_SCOPES, canOwnCouncil, canParticipateInCouncil, canWriteNotes,
+    canOwnCouncil, canParticipateInCouncil, canWriteNotes,
     canWriteVault, isCouncilOwner,
 } from "@/lib/agents/scopes";
 import { councilHostService } from "@/lib/council/service";
@@ -96,12 +95,9 @@ function seatIdentity(extra: ToolExtra): { sessionId: string; seatName: string }
     return { sessionId: rest.slice(0, idx), seatName: rest.slice(idx + 1) };
 }
 
-// A master key passes everything. A seat key passes only its own council and
-// its own name, so a guest can neither speak as a peer nor reach a council it
-// was not invited to.
+// Seat credentials bind an agent to one council and participant name.
 function requireSeat(extra: ToolExtra, opts: { sessionId?: string; agentName?: string; protocolVersion?: number }) {
-    // V2 identity compatibility, and only for the owner's own key: a minted
-    // agent key never holds council:owner, so it can never assert a seat.
+    // Owner scope retains V2 compatibility; V3 always requires a seat.
     if (isCouncilOwner(extra.authInfo?.scopes)) {
         if (opts.protocolVersion === 3) return denied("Council V3 requires the participant's seat credential.");
         if (opts.protocolVersion === undefined && process.env.COUNCIL_V2_ASSERTED_IDENTITY !== "true") {
@@ -1351,50 +1347,6 @@ function errMsg(error: unknown): string {
     return error instanceof Error ? error.message : "unexpected error";
 }
 
-// Four resolution paths. The two shared environment keys are the legacy pair
-// and are retired once every caller holds a per-client key; MCP_API_KEY keeps
-// every scope it ever implied, including council:owner, so nothing in flight
-// changes behaviour. An unmatched or missing token stays locked (undefined ->
-// 401), so the knowledge base is never exposed unauthenticated.
-const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
-    if (!bearerToken) return undefined;
-    const rw = process.env.MCP_API_KEY;
-    const ro = process.env.MCP_API_KEY_READONLY;
-    const host = process.env.MCP_COUNCIL_HOST_KEY;
-    if (host && bearerToken === host) {
-        return { token: bearerToken, clientId: "council-host", scopes: ["council:host"] };
-    }
-    if (rw && bearerToken === rw) {
-        return { token: bearerToken, clientId: "mcp-external-rw", scopes: [...OWNER_SCOPES] };
-    }
-    if (ro && bearerToken === ro) {
-        return { token: bearerToken, clientId: "mcp-external-ro", scopes: [...READONLY_SCOPES] };
-    }
-    // A guest seat: one council, one seat, expires with the session. The
-    // identity rides in clientId because the council tools have to check it
-    // against whatever they are being asked to act on.
-    const seat = await resolveSeatKey(bearerToken);
-    if (seat) {
-        return {
-            token: bearerToken,
-            clientId: `council-seat:${seat.sessionId}:${seat.seatName}`,
-            scopes: ["council:seat"],
-        };
-    }
-    // A per-agent knowledge key. clientId names the machine rather than the
-    // shared mcp-external-rw principal, so the audit trail is attributable and
-    // one client can be revoked without touching another.
-    const agent = await resolveAgentKey(bearerToken);
-    if (agent) {
-        return {
-            token: bearerToken,
-            clientId: `agent:${agent.clientId}:${agent.displayName}`,
-            scopes: agent.scopes,
-        };
-    }
-    return undefined;
-};
-
-const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+const authHandler = withMcpAuth(handler, verifyMcpToken, { required: true });
 
 export { authHandler as GET, authHandler as POST, authHandler as DELETE };

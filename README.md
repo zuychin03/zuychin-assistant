@@ -247,8 +247,6 @@ Optional auth, integrations, channels and cron:
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
-| `MCP_API_KEY` | Read + write bearer for the shared MCP server (`/api/mcp/mcp`) |
-| `MCP_API_KEY_READONLY` | Read-only bearer for the shared MCP server; both unset = endpoint locked |
 | `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
@@ -366,7 +364,7 @@ npm run dev
 | GET | `/api/council/[code]` | One council's status and transcript for the council dashboard |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
-| GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (Bearer `MCP_API_KEY`) |
+| GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client, Council seat or dedicated host bearer) |
 | POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
 | GET | `/api/telegram/test` | Telegram connectivity / config check |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
@@ -618,15 +616,17 @@ before deploying this version. It adds the required `mint_agent_claim` RPC and h
 credential lifecycle; deploying the code first prevents new setup claims from being minted.
 Confirm the migration succeeded and the RPC is available through the Supabase REST schema cache
 before deployment. Fresh installations receive the same migration in `supabase-setup.sql`.
-Keep shared knowledge keys until every caller has verified its own named client key; the
-dedicated Council host key remains separate.
+Before upgrading, issue and verify a named client key for every knowledge caller, including
+other machines and ad hoc scripts. This version rejects the retired shared bearers even if
+`MCP_API_KEY` or `MCP_API_KEY_READONLY` remains configured on the server. The dedicated
+`MCP_COUNCIL_HOST_KEY` remains separate.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
 dominant embedding partition so pages never fragment across models. `vault_delete` is
 deliberately not exposed - page removal stays with the assistant and the graph UI.
 
-**Per-agent keys are the preferred way in.** The **Agents** panel on the dashboard adds an agent,
+**Configure knowledge clients with a named client key.** The **Agents** panel on the dashboard adds an agent,
 picks its access level, and hands back a setup brief. The brief carries a 15-minute *claim*, not the
 key: the agent exchanges the claim at `POST /api/agent/claim` and writes its MCP config once with
 the real key already in place. Every key is tracked, shows its last use, and is revocable on its own
@@ -645,25 +645,21 @@ Only the last convenes, and it is opt-in per client: a read, notes or full key s
 that level cannot *participate* in a Council - asserting a seat needs a seat credential, which the
 host issues per council.
 
-**The shared keys still work.** `MCP_API_KEY` grants read + write; `MCP_API_KEY_READONLY` grants
-read only (write tools return an error for a read-only key). They are the fallback for a client you
-do not want to give its own identity.
-
 Setup:
 
-1. Set `MCP_API_KEY` and/or `MCP_API_KEY_READONLY` in `.env.local` / Vercel (any long random
-   strings). While both are unset the endpoint answers 401 to everything.
-2. Point a client at `https://<your-app>/api/mcp/mcp` with header
-   `Authorization: Bearer <key>`. For example:
+1. In `/agents`, add one named client per installation and choose its access level.
+2. Give that client its setup brief. It redeems the 15-minute claim at `POST /api/agent/claim`
+   and stores the returned `zck_` key privately in its MCP configuration.
+3. Point the client at `https://<your-app>/api/mcp/mcp` with
+   `Authorization: Bearer <named-client-key>`. Replace an existing credential for that endpoint,
+   then restart or reconnect the client so it loads the new key.
+4. Verify a read operation and the client's last-used entry in `/agents`. Missing, unknown,
+   revoked or expired credentials receive HTTP 401. Named keys work without either retired
+   shared environment variable; no shared-key fallback remains.
 
-```bash
-claude mcp add --transport http zuychin https://<your-app>/api/mcp/mcp \
-  --header "Authorization: Bearer <key>"
-```
-
-Or test locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
-"Streamable HTTP"). Note that anything saved through `save_note` later surfaces in the
-assistant's own context - only hand the key to agents you trust.
+For local inspection, use the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
+"Streamable HTTP") with a separate named client. Anything saved through `save_note` later
+surfaces in the assistant's own context, so choose write access deliberately.
 
 ### Run a council on the local ACP host
 
