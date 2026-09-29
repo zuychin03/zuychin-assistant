@@ -1,91 +1,83 @@
-/**
- * Probes one candidate ACP command exactly the way scripts/council-host.mts
- * will drive it, and prints what the council needs to know about it.
- *
- *   npx tsx --env-file=.env.local <this file> -- codex acp
- *   npx tsx --env-file=.env.local <this file> --prompt -- npx -y @zed-industries/codex-acp
- *
- * --prompt adds a real turn that asks the agent to list its council tools. It
- * costs vendor tokens and is the only check that proves the MCP server passed in
- * session/new actually reached the model.
- *
- * --models prints the model and reasoning IDs this adapter advertises, in the
- * form council-agents.json wants. The host rejects an allowedModels entry the
- * adapter never advertised, so these strings have to be copied, not guessed.
- * It costs nothing: the options ride the session/new response.
- */
-import { mkdtempSync, readFileSync } from "node:fs";
+// --models reads adapter configuration; --prompt and --edit spend vendor tokens.
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as acp from "@agentclientprotocol/sdk";
-import { onPath, spawnResolved } from "./council-host-paths.mts";
+import { killTree, onPath, spawnResolved } from "./council-host-paths.mts";
 import { selectConfig } from "./council-models.mts";
 import { COUNCIL_MCP_SERVER_NAME } from "../src/lib/council/protocol.ts";
+import { buildCouncilAdapterEnv, credentialValues, redactCredentials, type AdapterEnvOverrides } from "./council-adapter-env.mts";
+import { confirmsMcpVisibility, deadline, installProbeDiagnostics, loadProbeAdapter, parseProbeArguments, probeCredential, probeEndpoint, probeMcpTools, type ProbeArguments } from "./council-acp-probe-support.mts";
 
-interface ProbeAdapter {
-    command: string;
-    args: string[];
-    env?: Record<string, string | Record<string, unknown> | null>;
+let options: ProbeArguments;
+try { options = parseProbeArguments(process.argv.slice(2)); }
+catch (error) {
+    console.error(`FAIL arguments: ${error instanceof Error ? error.message : "invalid probe arguments"}`);
+    process.exit(2);
 }
-
-const split = process.argv.indexOf("--");
-const flags = process.argv.slice(0, split < 0 ? process.argv.length : split);
-// Only flags BEFORE the separator are ours; everything after belongs to the
-// agent, which may legitimately take a --prompt of its own.
-const wantPrompt = flags.includes("--prompt") || flags.includes("--edit");
-const wantEdit = flags.includes("--edit");
-const wantModels = flags.includes("--models");
-const adapterName = flags[flags.indexOf("--agent") + 1];
+const { wantPrompt, wantEdit, wantModels, adapterName, endpointArg } = options;
 
 let command: string;
 let args: string[];
-let adapterEnv: NodeJS.ProcessEnv = process.env;
-let mcpUrl = process.env.COUNCIL_MCP_URL ?? "http://localhost:3000/api/mcp/mcp";
-const mcpKey = process.env.MCP_API_KEY;
+let adapterOverrides: AdapterEnvOverrides = {};
 
-// --agent probes the entry as CONFIGURED, env and all, which is the question
-// that actually matters once council-agents.json has been written.
-if (flags.includes("--agent")) {
+if (adapterName) {
     const configFile = join(dirname(fileURLToPath(import.meta.url)), "council-agents.json");
-    const parsed = JSON.parse(readFileSync(configFile, "utf8")) as { mcpUrl?: string; agents: Record<string, ProbeAdapter> };
-    // The endpoint the HOST will use, not a hardcoded default, or the probe can
-    // pass against localhost while the council runs against production.
-    if (parsed.mcpUrl && !process.env.COUNCIL_MCP_URL) mcpUrl = parsed.mcpUrl;
-    const adapter = parsed.agents[adapterName];
-    if (!adapter?.command) {
-        console.error(`no adapter "${adapterName}" in council-agents.json`);
+    try {
+        const adapter = loadProbeAdapter(configFile, adapterName);
+        command = adapter.command;
+        args = adapter.args;
+        adapterOverrides = adapter.env ?? {};
+    } catch (error) {
+        console.error(`FAIL configuration: ${error instanceof Error ? error.message : "invalid adapter configuration"}`);
         process.exit(2);
     }
-    command = adapter.command;
-    args = adapter.args ?? [];
-    adapterEnv = { ...process.env };
-    for (const [k, v] of Object.entries(adapter.env ?? {})) {
-        if (v === null) delete adapterEnv[k];
-        else adapterEnv[k] = typeof v === "string" ? v : JSON.stringify(v);
-    }
-} else if (split >= 0 && process.argv[split + 1]) {
-    [command, ...args] = process.argv.slice(split + 1);
+} else if (options.command) {
+    command = options.command;
+    args = options.args;
 } else {
-    console.error("usage: ... acp-probe.mts [--prompt] [--models] (--agent <name> | -- <command> [args...])");
+    console.error("usage: ... acp-probe.mts [--prompt --mcp-url <url> | --edit] [--models] (--agent <name> | -- <command> [args...])");
     process.exit(2);
+}
+
+const secrets = credentialValues(process.env, adapterOverrides);
+const redact = (value: string) => redactCredentials(value, secrets);
+const output = console.log.bind(console);
+const print = (value: string) => output(redact(value));
+const adapterEnv = buildCouncilAdapterEnv(process.env, adapterOverrides);
+let mcpKey: string | undefined;
+let mcpUrl: string | undefined;
+let readableTools: string[] = [];
+try {
+    if (wantPrompt && (!wantEdit || endpointArg)) {
+        mcpKey = probeCredential(process.env.COUNCIL_PROBE_MCP_KEY, true);
+        if ([process.env.MCP_API_KEY, process.env.MCP_API_KEY_READONLY, process.env.MCP_COUNCIL_HOST_KEY].includes(mcpKey)) {
+            throw new Error("COUNCIL_PROBE_MCP_KEY must be separate from configured shared and host bearers.");
+        }
+        if (!endpointArg) throw new Error("MCP validation requires --mcp-url with an explicit credential destination; configuration and environment URL defaults are not used.");
+        mcpUrl = probeEndpoint(endpointArg).toString();
+        readableTools = await probeMcpTools(new URL(mcpUrl), mcpKey!);
+    }
+} catch (error) {
+    print(`FAIL  MCP preflight: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
 }
 
 const cwd = mkdtempSync(join(tmpdir(), "acp-probe-"));
 const results: string[] = [];
 let stderrTail = "";
+let failed = false;
 
 let modelsBlock = "";
 
 function ok(label: string, detail = "") { results.push(`  PASS  ${label}${detail ? ` - ${detail}` : ""}`); }
-function bad(label: string, detail = "") { results.push(`  FAIL  ${label}${detail ? ` - ${detail}` : ""}`); }
+function bad(label: string, detail = "") { failed = true; results.push(`  FAIL  ${label}${detail ? ` - ${detail}` : ""}`); }
 function note(label: string, detail = "") { results.push(`  ....  ${label}${detail ? ` - ${detail}` : ""}`); }
 
 interface AdvertisedOption { id: string; currentValue?: string; options?: { value: string; name?: string }[] }
 
-// Printed as a paste-ready instance entry rather than a bare list: the whole
-// point is that these strings reach council-agents.json unretyped.
 function renderInstanceBlock(model: AdvertisedOption | null, reasoning: AdvertisedOption | null): string {
     const values = (option: AdvertisedOption | null) => (option?.options ?? []).map((o) => o.value);
     const lines: string[] = [];
@@ -97,8 +89,6 @@ function renderInstanceBlock(model: AdvertisedOption | null, reasoning: Advertis
             lines.push(`  ${o.value}${o.name && o.name !== o.value ? `   (${o.name})` : ""}${marker}`);
         }
     }
-    // --agent names the ADAPTER, so that is the provider; the instance name is
-    // the owner's to pick and stays a placeholder.
     const json = JSON.stringify({
         provider: adapterName ?? "<provider>",
         expertise: "<expertise>",
@@ -113,29 +103,23 @@ function renderInstanceBlock(model: AdvertisedOption | null, reasoning: Advertis
     return lines.join("\n");
 }
 
-function deadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-    return Promise.race([
-        promise,
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${what}`)), ms)),
-    ]);
-}
-
-console.log(`\nProbing: ${command} ${args.join(" ")}`);
-console.log(`cwd:     ${cwd}`);
-console.log(`mcp:     ${mcpUrl} (key ${mcpKey ? "present" : "MISSING - run with --env-file=.env.local"})\n`);
+print(`\nProbing: ${command} ${args.join(" ")}`);
+print(`cwd:     ${cwd}`);
+print(mcpKey ? `mcp:     ${mcpUrl} (dedicated named-client key; read tools verified)\n` : "MCP validation skipped; this session has no MCP server.\n");
 
 if (!onPath(command)) {
-    console.error(`"${command}" is not on PATH. The host resolves the command the same way, so fix this first.\n`);
+    print(`"${command}" is not on PATH. The host resolves the command the same way, so fix this first.\n`);
     process.exit(1);
 }
-// Spawned exactly as scripts/council-host.mts spawns it: same resolution, same
-// stdio, no shell. A probe that starts the agent differently proves nothing.
 const child = spawnResolved(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: adapterEnv });
 child.on("error", (error) => {
-    console.error(`\ncould not start "${command}": ${error.message}\n`);
+    print(`\ncould not start "${command}": ${error.message}\n`);
     process.exit(1);
 });
-child.stderr?.on("data", (chunk: Buffer) => { stderrTail = (stderrTail + chunk.toString()).slice(-1500); });
+child.stderr?.on("data", (chunk: Buffer) => { if (stderrTail.length < 1_000_000) stderrTail += chunk.toString(); });
+
+const restoreDiagnostics = installProbeDiagnostics(secrets);
+process.once("exit", restoreDiagnostics);
 
 const stream = acp.ndJsonStream(
     Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>,
@@ -180,7 +164,7 @@ try {
     );
     ok("1. speaks ACP on stdio", `protocol v${init.protocolVersion}${init.agentInfo ? `, ${init.agentInfo.name} ${init.agentInfo.version}` : ""}`);
     if (init.protocolVersion !== acp.PROTOCOL_VERSION) {
-        bad("   protocol version", `host speaks v${acp.PROTOCOL_VERSION}, agent answered v${init.protocolVersion}`);
+        throw new Error(`protocol mismatch: host speaks v${acp.PROTOCOL_VERSION}, agent answered v${init.protocolVersion}`);
     }
     if (init.authMethods?.length) {
         note("2. auth methods offered", init.authMethods.map((m) => m.id).join(", ") + " (log in with the vendor CLI first)");
@@ -192,19 +176,16 @@ try {
         connection.agent.buildSession({
             cwd,
             mcpServers: mcpKey ? [{
-                type: "http", name: COUNCIL_MCP_SERVER_NAME, url: mcpUrl,
+                type: "http", name: COUNCIL_MCP_SERVER_NAME, url: mcpUrl!,
                 headers: [{ name: "Authorization", value: `Bearer ${mcpKey}` }],
             }] : [],
         }).start(),
         60_000,
         "session/new",
     );
-    ok("3. session/new accepted with an http MCP server", `session ${session.sessionId.slice(0, 12)}…`);
+    ok(mcpKey ? "3. session/new accepted with an HTTP MCP server configuration" : "3. session/new accepted without MCP", `session ${session.sessionId.slice(0, 12)}…`);
 
     if (wantModels) {
-        // Read the options exactly where the host reads them, off the
-        // session/new response, so what prints is what the host will validate
-        // against rather than a second opinion from another call.
         const options = (session as unknown as { newSessionResponse?: { configOptions?: unknown } })
             .newSessionResponse?.configOptions;
         const model = selectConfig(options, "model");
@@ -222,16 +203,13 @@ try {
     }
 
     if (wantPrompt) {
-        // --edit is the only way to learn whether an agent populates
-        // toolCall.locations, which decides whether the host's worktree gate can
-        // see its file access at all. A list-tools turn never asks permission.
         const turn = session.prompt(wantEdit
             ? "Create a file called probe.txt in the current directory containing the single word ok, then stop. Do not read or write anything else."
-            : "Reply in one short paragraph, then stop. Do not edit any file. "
-              + `List the tool names you have from the ${COUNCIL_MCP_SERVER_NAME} MCP server. `
-              + "If you have none, say exactly: NO MCP TOOLS.",
+            : "Do not call tools or edit files. Reply with exactly one line, then stop. "
+              + `List the tool names you can see from the ${COUNCIL_MCP_SERVER_NAME} MCP server as MCP_TOOLS: followed by comma-separated names. `
+              + "If you have none, reply exactly NO MCP TOOLS. Do not print credentials.",
         );
-        void (async () => {
+        const updates = (async () => {
             for (;;) {
                 const message = await session.nextUpdate();
                 if (message.kind === "stop") return;
@@ -241,27 +219,26 @@ try {
                     text += update.content.text;
                 }
             }
-        })().catch(() => {});
+        })();
+        void updates.catch(() => {});
         const response = await deadline(turn, 180_000, "the prompt turn");
+        await deadline(updates, 2_000, "final prompt updates");
         ok("4. prompt turn completed", `stopReason ${response.stopReason}`);
         if (sawUpdate) ok("5. streams session/update", "the /council activity feed will show its work");
         else bad("5. streams session/update", "no updates arrived; /council will show state changes only");
         if (wantEdit) {
             note("6. MCP visibility", "not checked in --edit mode; run --prompt for that");
-        } else if (/council_(dispatch|speak|join|wait)/i.test(text)) {
-            ok("6. MCP servers from session/new reached the model", "council tools are visible");
+        } else if (confirmsMcpVisibility(text, readableTools)) {
+            ok("6. MCP visibility", "agent reports expected knowledge read tools from the supplied server");
         } else if (/NO MCP TOOLS/i.test(text)) {
-            bad("6. MCP servers from session/new reached the model", "agent reports no MCP tools - it needs the server in its OWN config instead");
+            bad("6. MCP visibility", "agent reports no MCP tools");
         } else {
-            note("6. MCP servers from session/new", "inconclusive, read the reply below");
+            bad("6. MCP visibility", "inconclusive reply; expected one MCP_TOOLS line containing a verified knowledge read tool");
         }
-        // What the host can actually SEE decides whether the worktree boundary
-        // applies to this agent at all. Writing through the client's fs methods
-        // is the strong case: every path is checked, permission or not.
         if (sawFsWrite) {
             ok("7. writes through the client's fs methods", `e.g. ${sawFsWrite} - the host path-checks every write`);
         } else if (wantEdit) {
-            bad("7. writes through the client's fs methods", "it wrote the file WITHOUT calling fs/write_text_file, so the host never sees its file access");
+            bad("7. writes through the client's fs methods", "no fs/write_text_file call observed; direct file writes are outside this observation");
         }
         if (sawPermission) {
             note("   permission requests", sawLocations ? "populate toolCall.locations, so the host can path-check them too" : "send NO toolCall.locations, so the host cannot path-check them and auto-allows");
@@ -276,8 +253,8 @@ try {
     }
 } catch (error) {
     bad("handshake", error instanceof Error ? error.message : String(error));
-    if (stderrTail.trim()) console.log(`\nagent stderr (tail):\n${stderrTail.trim().slice(-800)}\n`);
-    console.log(
+    if (stderrTail.trim()) print(`\nagent stderr (tail):\n${redact(stderrTail.trim()).slice(-800)}\n`);
+    print(
         "\nIf initialize timed out, the usual cause is the command printing a banner or logs on\n" +
         "STDOUT. ACP requires stdout to carry newline-delimited JSON-RPC and nothing else; all\n" +
         "human-readable output must go to stderr. Check with:\n" +
@@ -285,12 +262,17 @@ try {
     );
 }
 
-console.log(`\nResult for: ${command} ${args.join(" ")}`);
-console.log(results.join("\n"));
-if (modelsBlock) console.log(modelsBlock);
-if (wantPrompt && text) console.log(`\nAgent reply:\n${text.trim().slice(0, 1200)}`);
-console.log("");
+print(`\nResult for: ${command} ${args.join(" ")}`);
+print(results.join("\n"));
+if (modelsBlock) print(modelsBlock);
+if (wantPrompt && text) print(`\nAgent reply:\n${redact(text.trim()).slice(0, 1200)}`);
+print("");
 
-connection.close();
-child.kill();
-process.exit(0);
+try {
+    connection.close();
+    killTree(child);
+} finally {
+    restoreDiagnostics();
+    process.removeListener("exit", restoreDiagnostics);
+}
+process.exit(failed ? 1 : 0);

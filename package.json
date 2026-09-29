@@ -11,6 +11,8 @@
     "knowledge:eval": "node --no-warnings --experimental-strip-types scripts/evaluate-knowledge.ts",
     "council:schema:check": "tsx --env-file=.env.local scripts/check-council-schema.mts",
     "agents:test": "tsx --env-file=.env.local scripts/test-agent-credentials.mts",
+    "agents:offline:test": "tsx scripts/test-agent-brief.mts && tsx scripts/test-agent-claim-mint.mts && tsx scripts/test-council-host-env.mts && npm run council:probe:test",
+    "council:probe:test": "tsx scripts/test-council-adapter-env.mts && tsx scripts/test-council-acp-probe-support.mts && tsx scripts/test-council-acp-probe.mts",
     "council:v3:test": "tsx scripts/test-council-v3.mts",
     "council:v3:test:db": "tsx --env-file=.env.local scripts/test-council-v3-db.mts",
     "council:protocol:test": "tsx --env-file=.env.local scripts/test-council-protocol.mts",

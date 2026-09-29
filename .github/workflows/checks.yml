@@ -61,6 +61,9 @@ jobs:
       - name: isolated database environment guards
         run: npm run council:ci:env:test
 
+      - name: named client migration and credential isolation
+        run: npm run agents:offline:test
+
   database:
     name: suites against isolated Supabase
     runs-on: ubuntu-latest
@@ -128,6 +131,28 @@ jobs:
 
       - name: agent credentials
         run: npm run agents:test
+
+      - name: atomic credential transaction races
+        shell: bash
+        run: |
+          set -euo pipefail
+          claims_container="council-claims-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$claims_container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --rm --network none --name "$claims_container" \
+            --env POSTGRES_PASSWORD=disposable-test-only postgres:16-alpine >/dev/null
+          ready=false
+          for attempt in {1..30}; do
+            if docker exec "$claims_container" pg_isready -U postgres >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::The isolated claim-test database did not become ready."
+            exit 1
+          fi
+          npx tsx scripts/test-agent-claim-postgres.mts --container "$claims_container"
 
       - name: council V3 against the database
         run: npm run council:v3:test:db

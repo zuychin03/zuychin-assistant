@@ -5,6 +5,7 @@ import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { killTree, spawnResolved } from "./council-host-paths.mts";
+import { buildCouncilAdapterEnv } from "./council-adapter-env.mts";
 
 export interface VerificationCommand {
     command: string[];
@@ -55,7 +56,7 @@ const ATTRIBUTION_TRAILER = /^[ \t]*(?:co-authored-by|assisted-by|generated-by|c
 const ATTRIBUTION_MARKER = /^[ \t]*(?:\p{Emoji_Presentation}[ \t]*)?generated with\b/imu;
 
 function git(repo: string, args: string[]) {
-    const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", shell: false });
+    const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", shell: false, env: buildCouncilAdapterEnv(process.env) });
     return { ok: result.status === 0, status: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
@@ -64,7 +65,9 @@ function git(repo: string, args: string[]) {
 // every other git call here is a rev-parse or a diff and finishes in millis.
 function gitAsync(repo: string, args: string[]): Promise<{ ok: boolean; out: string }> {
     return new Promise((settle) => {
-        const child = spawnResolved("git", ["-C", repo, ...args], { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawnResolved("git", ["-C", repo, ...args], {
+            shell: false, stdio: ["ignore", "pipe", "pipe"], env: buildCouncilAdapterEnv(process.env),
+        });
         let out = "";
         const absorb = (chunk: string) => { out += chunk; };
         child.stdout?.setEncoding("utf8").on("data", absorb);
@@ -121,7 +124,7 @@ function runCommand(cwd: string, entry: VerificationCommand, limit: number): Pro
         let child: ChildProcess;
         try {
             child = spawnResolved(command, args, {
-                cwd, shell: false, env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"],
+                cwd, shell: false, env: buildCouncilAdapterEnv(process.env, { CI: "1" }), stdio: ["ignore", "pipe", "pipe"],
             });
         } catch (error) {
             absorb(error instanceof Error ? error.message : String(error));

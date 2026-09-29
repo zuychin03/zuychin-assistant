@@ -1,14 +1,12 @@
 // Council V3.5 agent credential tests: the scope split, and the mint/exchange/
 // resolve/revoke lifecycle for per-agent keys.
 //
-//   npx tsx --env-file=.env.local scripts/test-agent-credentials.mts
-//
-// Requires the Council V3.5 wave of supabase-setup.sql to be applied. Every
+// Requires current supabase-setup.sql in a disposable test project. Every
 // client it creates is prefixed zz-test- and hard-deleted afterwards, including
 // on failure; the cascade takes its keys and claims with it.
 
 import { createClient } from "@supabase/supabase-js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
     ACCESS_SCOPES, createAgentClient, exchangeClaim, mintKnowledgeClaim, resolveAgentKey,
     revokeAgentClient, revokeAgentKey, listAgentClients,
@@ -182,6 +180,63 @@ async function lifecycleChecks(): Promise<void> {
     const first = await mintKnowledgeClaim({ clientId: deltaId, accessLevel: "read" });
     await mintKnowledgeClaim({ clientId: deltaId, accessLevel: "full" });
     check("minting a second claim invalidates the first", (await exchangeClaim(first.claim)) === null);
+
+    console.log("\natomic claim replacement");
+    const parallelId = await newClient("parallel");
+    const previous = await mintKnowledgeClaim({ clientId: parallelId, accessLevel: "read" });
+    const replacements = await Promise.all([
+        mintKnowledgeClaim({ clientId: parallelId, accessLevel: "notes" }),
+        mintKnowledgeClaim({ clientId: parallelId, accessLevel: "full" }),
+    ]);
+    const { data: pending, error: pendingError } = await db.from("agent_client_claims")
+        .select("claim_hash").eq("client_id", parallelId).is("revoked_at", null).is("claimed_at", null);
+    if (pendingError) throw new Error(pendingError.message);
+    check("simultaneous mints leave exactly one pending claim", pending?.length === 1, pending?.length);
+    const digest = (claim: string) => createHash("sha256").update(claim).digest("hex");
+    const winner = replacements.find(candidate => digest(candidate.claim) === pending?.[0]?.claim_hash);
+    const loser = replacements.find(candidate => candidate !== winner);
+    check("both mints return distinct claims", replacements[0].claim !== replacements[1].claim);
+    check("the earlier claim cannot exchange after simultaneous replacement", (await exchangeClaim(previous.claim)) === null);
+    check("the replaced concurrent claim cannot exchange", !!loser && (await exchangeClaim(loser.claim)) === null);
+    check("the surviving concurrent claim exchanges", !!winner && (await exchangeClaim(winner.claim)) !== null);
+
+    const rollbackId = await newClient("rollback");
+    const preserved = await mintKnowledgeClaim({ clientId: rollbackId, accessLevel: "read" });
+    const { error: duplicateHashError } = await db.rpc("mint_agent_claim", {
+        p_client_id: rollbackId,
+        p_claim_hash: digest(preserved.claim),
+        p_scopes: ["knowledge:read"],
+        p_access_level: "read",
+        p_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    });
+    check("a duplicate claim hash fails the insert", duplicateHashError?.code === "23505", duplicateHashError?.code);
+    check("insert failure preserves the original claim", (await exchangeClaim(preserved.claim)) !== null);
+
+    const absentMint = await Promise.allSettled([mintKnowledgeClaim({ clientId: randomUUID(), accessLevel: "read" })]);
+    check("minting for an absent client is refused", absentMint[0].status === "rejected");
+    const revokedMint = await Promise.allSettled([mintKnowledgeClaim({ clientId: betaId, accessLevel: "read" })]);
+    check("minting for a revoked client is refused", revokedMint[0].status === "rejected");
+
+    const raceId = await newClient("mint-revoke");
+    const race = await Promise.allSettled([
+        mintKnowledgeClaim({ clientId: raceId, accessLevel: "read" }),
+        revokeAgentClient(raceId),
+    ]);
+    check("concurrent client revocation succeeds", race[1].status === "fulfilled");
+    const { count: liveClaims, error: liveClaimError } = await db.from("agent_client_claims")
+        .select("id", { count: "exact", head: true }).eq("client_id", raceId).is("revoked_at", null);
+    if (liveClaimError) throw new Error(liveClaimError.message);
+    check("mint and revoke cannot leave a live claim", liveClaims === 0, liveClaims);
+
+    const exchangeRaceId = await newClient("exchange-revoke");
+    const raceClaim = await mintKnowledgeClaim({ clientId: exchangeRaceId, accessLevel: "read" });
+    const [raceKey] = await Promise.all([exchangeClaim(raceClaim.claim), revokeAgentClient(exchangeRaceId)]);
+    check("exchange and revoke cannot leave a usable key", !raceKey || (await resolveAgentKey(raceKey.key)) === null);
+    check("a claim cannot replay after concurrent client revocation", (await exchangeClaim(raceClaim.claim)) === null);
+    const { count: liveKeys, error: liveKeyError } = await db.from("agent_client_keys")
+        .select("id", { count: "exact", head: true }).eq("client_id", exchangeRaceId).is("revoked_at", null);
+    if (liveKeyError) throw new Error(liveKeyError.message);
+    check("exchange and revoke cannot leave an unrevoked key row", liveKeys === 0, liveKeys);
 }
 
 async function cleanup(): Promise<void> {

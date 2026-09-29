@@ -172,25 +172,21 @@ export async function mintKnowledgeClaim(params: {
     clientId: string;
     accessLevel: AccessLevel;
 }): Promise<{ claim: string; expiresAt: string }> {
+    if (!isAccessLevel(params.accessLevel)) throw new Error("Unable to mint an agent claim.");
     const claim = `${CLAIM_PREFIX}${randomBytes(32).toString("hex")}`;
     const expiresAt = new Date(Date.now() + CLAIM_TTL_MINUTES * 60_000).toISOString();
 
-    // One live claim per client: minting a second invalidates the first, so a
-    // brief the owner has replaced cannot still be exchanged.
-    await supabase.from("agent_client_claims")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("client_id", params.clientId)
-        .is("revoked_at", null)
-        .is("claimed_at", null);
-
-    const { error } = await supabase.from("agent_client_claims").insert({
-        client_id: params.clientId,
-        claim_hash: hash(claim),
-        scopes: ACCESS_SCOPES[params.accessLevel],
-        access_level: params.accessLevel,
-        expires_at: expiresAt,
+    const { data, error } = await supabase.rpc("mint_agent_claim", {
+        p_client_id: params.clientId,
+        p_claim_hash: hash(claim),
+        p_scopes: ACCESS_SCOPES[params.accessLevel],
+        p_access_level: params.accessLevel,
+        p_expires_at: expiresAt,
     });
-    if (error) throw new Error(error.message);
+    const row = data as { ok?: unknown; reason?: unknown } | null;
+    if (error || row?.ok !== true || row.reason !== undefined) {
+        throw new Error("Unable to mint an agent claim.");
+    }
     return { claim, expiresAt };
 }
 

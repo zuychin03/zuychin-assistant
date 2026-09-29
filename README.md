@@ -601,15 +601,25 @@ if it earns it. Council messages are never embedded or indexed anywhere else.
 The council and campaign tables live in the `-- ===== Council wave =====`,
 `-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`,
 `-- ===== Council V3 wave =====` and `-- ===== Council V3.5 wave =====` blocks at the bottom of
-`supabase-setup.sql`; run the full idempotent script in the Supabase SQL Editor before first use or
-after upgrading.
+`supabase-setup.sql`; run the full idempotent script in the Supabase SQL Editor before first use.
+For existing installations, follow the upgrade note below.
 
-**Run the whole script, never a fragment.** Several functions are defined more than once across the
+**Run the whole script or a complete standalone migration, never an extracted fragment.**
+Several functions are defined more than once across the
 waves, so re-running an earlier block alone silently reverts a later definition. That happened once:
 acceptance quietly fell back to the pre-V3 behaviour with nothing logged anywhere. `npm run
 council:schema:check` exists to catch exactly that. It builds a throwaway V3 campaign and fails if
 the exact-commit gate is not actually enforced, so it detects the reversion rather than the missing
 table. Run it after any schema change.
+
+For existing installations with the Council V3.5 named-client tables, apply the complete
+[`scripts/migrations/council-agent-claims.sql`](scripts/migrations/council-agent-claims.sql)
+before deploying this version. It adds the required `mint_agent_claim` RPC and hardens the
+credential lifecycle; deploying the code first prevents new setup claims from being minted.
+Confirm the migration succeeded and the RPC is available through the Supabase REST schema cache
+before deployment. Fresh installations receive the same migration in `supabase-setup.sql`.
+Keep shared knowledge keys until every caller has verified its own named client key; the
+dedicated Council host key remains separate.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -672,10 +682,25 @@ Setup:
 2. `agents` holds one adapter per provider, each with a `mode`. `acp` means the host drives it;
    `shell` is the old one-process-per-turn behaviour. Verify the ACP entry point against your
    installed version - `claude` itself has no `--acp` flag, so `claude-code` uses Zed's adapter
-   (`npx -y @zed-industries/claude-code-acp`). `scripts/council-acp-probe.mts` starts a candidate
-   command exactly as the host will and reports whether the handshake, the MCP server passed in
-   `session/new`, streaming and permission requests all work:
-   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --prompt -- codex acp`.
+   (`npx -y @zed-industries/claude-code-acp`). `scripts/council-acp-probe.mts` checks a candidate
+   adapter's handshake, streaming and client callbacks. For MCP visibility, create a separate
+   **Read-only** named client for the ACP probe in `/agents`, then store its redeemed key as
+   `COUNCIL_PROBE_MCP_KEY`. The probe accepts only a complete `zck_` key and has no shared-key or
+   host-key fallback. Choose the intended destination explicitly:
+   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --prompt --mcp-url http://localhost:3000/api/mcp/mcp --agent codex`.
+   `--mcp-url` accepts HTTPS or loopback HTTP without credentials, a query or a fragment. The
+   probe does not take a credential destination from `COUNCIL_MCP_URL` or the adapter config.
+   It makes a bounded authenticated `tools/list` check, then sends the key to the adapter only
+   in the ACP `session/new` headers. The model must report a verified knowledge read tool in the
+   requested format; missing or ambiguous replies and protocol failures return a nonzero exit.
+   This checks tool visibility as reported by the model, without invoking knowledge or Council
+   mutation tools. `--prompt` and `--edit` can spend vendor tokens.
+   Discovery and standalone `--models` omit MCP entirely. `--edit` also omits MCP unless `--mcp-url` is
+   explicitly supplied. Adapter environments retain OS/runtime and vendor CLI configuration,
+   while application credentials and Node preload options are stripped after config overrides.
+   Only explicit adapter overrides can supply supported vendor credentials (`OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). Vendor login/config files remain accessible;
+   environment filtering is not an operating-system sandbox.
    Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself (`docs/` is
    gitignored, so that guide lives only in the working copy).
 3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
@@ -1114,7 +1139,7 @@ scripts/
 ├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
 ├── council-git.mts                     # Exact-commit verification, manifest assembly, protected-ref checks
 ├── council-models.mts                  # Per-seat model/reasoning choice against advertised ACP options
-├── council-acp-probe.mts               # Verify a vendor's ACP command the way the host runs it; --models lists its model IDs
+├── council-acp-probe.mts               # ACP checks; explicit MCP endpoint and dedicated read-only probe key
 ├── council-host-start.cmd              # Start a host (the launch method; portable, used by the Startup shim)
 ├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
 ├── check-council-schema.mts            # Behavioural guard: fails if the V3 exact-commit gate is not enforced

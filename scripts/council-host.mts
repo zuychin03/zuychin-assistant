@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import * as acp from "@agentclientprotocol/sdk";
 import { insideWorktree, killTree, onPath, spawnResolved } from "./council-host-paths.mts";
+import { buildCouncilAdapterEnv } from "./council-adapter-env.mts";
 import { acquireHostLock, releaseHostLock } from "./council-host-lock.mts";
 import {
     formatSupervisionLine, parseControl, parseLaunch,
@@ -270,7 +271,7 @@ interface DispatchPayload {
 // ---------------------------------------------------------------- shell
 
 function git(repo: string, args: string[]): { ok: boolean; out: string } {
-    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env: buildCouncilAdapterEnv(process.env) });
     return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 
@@ -279,7 +280,9 @@ function git(repo: string, args: string[]): { ok: boolean; out: string } {
 // next report to die on it. Only the worktree calls need this.
 function gitAsync(repo: string, args: string[]): Promise<{ ok: boolean; out: string }> {
     return new Promise((settle) => {
-        const child = spawnResolved("git", ["-C", repo, ...args], { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawnResolved("git", ["-C", repo, ...args], {
+            shell: false, stdio: ["ignore", "pipe", "pipe"], env: buildCouncilAdapterEnv(process.env),
+        });
         let out = "";
         const absorb = (chunk: string) => { out += chunk; };
         child.stdout?.setEncoding("utf8").on("data", absorb);
@@ -900,7 +903,7 @@ function createTerminal(agent: AgentRuntime, params: acp.CreateTerminalRequest):
     // whole point, and a terminal is the easiest way around a path check.
     const child = spawnResolved(params.command, params.args ?? [], {
         cwd: agent.treeDir,
-        env: { ...process.env, ...Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])) },
+        env: buildCouncilAdapterEnv(process.env, Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value]))),
         stdio: ["ignore", "pipe", "pipe"],
     });
     const limit = params.outputByteLimit ?? TERMINAL_OUTPUT_LIMIT;
@@ -952,19 +955,8 @@ function relayUpdate(agent: AgentRuntime, update: acp.SessionUpdate): void {
 }
 
 function adapterEnv(agent: AgentRuntime): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    // Security boundary: adapters receive only seat credentials.
-    delete env.MCP_COUNCIL_HOST_KEY;
-    delete env.MCP_API_KEY_READONLY;
+    const env = buildCouncilAdapterEnv(process.env, agent.adapter.env);
     if (agent.seatToken) env.MCP_API_KEY = agent.seatToken;
-    else delete env.MCP_API_KEY;
-    for (const [key, value] of Object.entries(agent.adapter.env ?? {})) {
-        // Removal matters as much as setting: an agent that refuses to run when
-        // it detects its own vendor's session variable cannot be started from a
-        // host launched inside one.
-        if (value === null) delete env[key];
-        else env[key] = typeof value === "string" ? value : JSON.stringify(value);
-    }
     return env;
 }
 
@@ -1706,7 +1698,9 @@ function verifyIntegration(branches: string[]): CheckResult & { branch: string }
         }
         if (ok && state.verifyCommand.length) {
             const [cmd, ...rest] = state.verifyCommand;
-            const run = spawnSync(cmd, rest, { cwd: treeDir, encoding: "utf8", shell: process.platform === "win32" });
+            const run = spawnSync(cmd, rest, {
+                cwd: treeDir, encoding: "utf8", shell: process.platform === "win32", env: buildCouncilAdapterEnv(process.env),
+            });
             const output = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim();
             if (run.status === 0) {
                 lines.push(`ok   ${state.verifyCommand.join(" ")} exited 0`);
