@@ -129,7 +129,8 @@ try {
     }
     await sql(`alter table council_sessions add column protocol_version integer default 3, add column paused_at timestamptz;
         alter table council_campaigns add column integration_status text;
-        alter table council_seat_keys add column issued_by text default 'owner', add column host_id uuid, add column lease_epoch bigint;
+        alter table council_seat_keys add column issued_by text default 'owner', add column host_id uuid, add column lease_epoch bigint,
+            add column execution_id uuid, add column execution_binding_required boolean not null default false;
         grant usage on schema public to anon,authenticated,service_role;
         grant all on all tables in schema public to service_role;`);
     for (const name of ["renew_council_host_lease", "resolve_council_seat_key", "issue_council_seat_key"]) {
@@ -142,8 +143,21 @@ try {
     for (const signature of signatures) setupDefinitions.set(signature, await sql(`select pg_get_functiondef(${quote(signature)}::regprocedure);`));
     const migration = await readFile(new URL("./migrations/council-seat-renewal.sql", import.meta.url), "utf8");
     await sql(migration);
+    const renewalDefinitions = new Map<string, string>();
+    for (const signature of signatures) renewalDefinitions.set(signature, await sql(`select pg_get_functiondef(${quote(signature)}::regprocedure);`));
     await sql(migration);
-    await check("standalone migration and setup install identical function definitions", async () => {
+    await check("standalone renewal migration is mirrored and remains idempotent", async () => {
+        assert(setup.includes(migration.trim()), "Setup must retain the standalone renewal migration");
+        for (const signature of signatures) assert.equal(await sql(`select pg_get_functiondef(${quote(signature)}::regprocedure);`), renewalDefinitions.get(signature), signature);
+    });
+    const attribution = await readFile(new URL("./migrations/council-execution-attribution.sql", import.meta.url), "utf8");
+    for (const name of ["resolve_council_seat_key", "issue_council_seat_key"]) {
+        const functions = [...attribution.matchAll(new RegExp(`create or replace function (?:public\\.)?${name}\\([\\s\\S]*?\\$\\$;`, "g"))];
+        assert.equal(functions.length, 1, `Expected one attribution override for ${name}`);
+        await sql(functions[0][0]);
+        await sql(functions[0][0]);
+    }
+    await check("ordered credential migrations match the final setup definitions", async () => {
         for (const signature of signatures) assert.equal(await sql(`select pg_get_functiondef(${quote(signature)}::regprocedure);`), setupDefinitions.get(signature), signature);
     });
     await check("repeat migration keeps renewal, reissue and resolution restricted to service role", async () => {
