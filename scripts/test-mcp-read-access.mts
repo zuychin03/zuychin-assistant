@@ -8,6 +8,7 @@ import * as protocol from "../src/lib/council/protocol.ts";
 import * as render from "../src/lib/council/render.ts";
 import * as templates from "../src/lib/council/templates.ts";
 import * as hostContracts from "../src/lib/council/host-contracts.ts";
+import * as writeIdentity from "../src/lib/council/write-identity.ts";
 import * as v3 from "../src/lib/council/v3.ts";
 import type { CouncilSession, CouncilMessage } from "../src/lib/council/store.ts";
 import type { CouncilCampaign, CouncilWorkItem } from "../src/lib/council/campaign.ts";
@@ -31,7 +32,7 @@ const session: CouncilSession = {
 };
 const messages: CouncilMessage[] = [{
     seq: 1, round: 1, speaker: "other-seat", role: "agent", addressedTo: "all", intent: "propose",
-    replyToSeq: null, body: "private transcript fixture", answered: false, createdAt: now,
+    replyToSeq: null, body: "private transcript fixture", answered: false, createdAt: now, executionId: null,
 }];
 const campaign: CouncilCampaign = {
     id: "campaign-fixture", sessionId, status: "running", repoPath: "/fixture", baseBranch: "main", createdAt: now,
@@ -45,6 +46,7 @@ const items: CouncilWorkItem[] = [{
     progress: null, commitHash: null, verification: null, hostVerified: null, hostVerification: null, hostCheckedAt: null,
     declaredPaths: [], blockedReason: null, startedAt: now, completedAt: null, reviewedAt: null, branchName: null,
     acceptedCommitSha: null, verificationProfile: "offline", verificationRunId: null, dependencies: [],
+    submittedExecutionId: null, acceptedExecutionId: null,
 }];
 let campaignExists = true;
 function boundary(name: string, value: unknown) {
@@ -61,6 +63,7 @@ const dependencies: Record<string, unknown> = {
         withMcpAuth: (handler: unknown) => handler,
     },
     "@/lib/agents/scopes": scopes,
+    "@/lib/council/write-identity": writeIdentity,
     "@/lib/council/protocol": protocol,
     "@/lib/council/render": render,
     "@/lib/council/templates": templates,

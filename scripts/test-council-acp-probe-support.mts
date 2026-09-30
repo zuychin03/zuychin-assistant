@@ -6,7 +6,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { confirmsMcpVisibility, formatProbeDiagnostic, installProbeDiagnostics, loadProbeAdapter, probeCredential, probeEndpoint } from "./council-acp-probe-support.mts";
+import { confirmsMcpVisibility, formatProbeDiagnostic, installProbeDiagnostics, loadProbeAdapter, parseProbeArguments, probeCredential, probeEndpoint } from "./council-acp-probe-support.mts";
+
+await test("explicit selections enable metadata diagnostics without enabling prompts or MCP", () => {
+    const options = parseProbeArguments(["--set-model", "fixture-next", "--set-reasoning", "high", "--agent", "fixture"]);
+    assert.equal(options.wantModels, true);
+    assert.equal(options.wantPrompt, false);
+    assert.equal(options.wantEdit, false);
+    assert.equal(options.endpointArg, undefined);
+    assert.equal(options.modelId, "fixture-next");
+    assert.equal(options.reasoningEffort, "high");
+    assert.equal(parseProbeArguments(["--set-reasoning", "high", "--agent", "fixture"]).wantModels, true);
+});
+
+await test("selection arguments require one nonempty value and adapter flags stay opaque", () => {
+    for (const flag of ["--set-model", "--set-reasoning"]) {
+        for (const args of [[flag], [flag, ""], [flag, "--models"], [flag, "one", flag, "two"]]) {
+            assert.throws(() => parseProbeArguments([...args, "--", "node"]), /requires a value|Duplicate/);
+        }
+    }
+    const adapterArgs = ["--set-model", "--set-model", "--set-reasoning", "--unknown"];
+    const options = parseProbeArguments(["--", "node", ...adapterArgs]);
+    assert.deepEqual(options.args, adapterArgs);
+    assert.equal(options.modelId, undefined);
+    assert.equal(options.wantModels, false);
+});
 
 await test("adapter configuration errors omit file contents, paths and unchecked adapter names", () => {
     const root = mkdtempSync(join(tmpdir(), "council-probe-config-"));

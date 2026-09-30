@@ -5,11 +5,11 @@ import Link from "next/link";
 import { Gavel, Plug, Rocket, ChevronDown, ChevronRight, AlertTriangle, ExternalLink } from "lucide-react";
 import { styles } from "./styles";
 import { findHost, launchCouncil, pair, type HostSnapshot } from "@/app/council/host-client";
+import { Dropdown } from "@/components/dropdown";
+import { prepareProposalSelections, proposalSeatChoices, type ProposalSelections } from "./council-proposal-selection";
 import type { CouncilProposal } from "@/lib/types";
 
-// One probe per page load, shared by every card. Scanning the port range costs
-// a second when nothing is listening, and a conversation can hold several
-// proposals; the answer is the same for all of them.
+// Reuse host discovery across proposal cards in the same page.
 type Found = Awaited<ReturnType<typeof findHost>>;
 let lookup: Promise<Found> | null = null;
 
@@ -31,6 +31,7 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
     const [error, setError] = useState("");
     const [pairCode, setPairCode] = useState("");
     const [openBrief, setOpenBrief] = useState(false);
+    const [selections, setSelections] = useState<ProposalSelections>({});
 
     const settle = useCallback((found: Found) => {
         if (!found) { setPhase("absent"); setPort(null); return; }
@@ -58,6 +59,8 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
 
     const launch = useCallback(async () => {
         if (!port || !token) return;
+        const prepared = prepareProposalSelections(snapshot, proposal.participants.map(participant => participant.name), selections);
+        if ("error" in prepared) { setError(prepared.error); return; }
         setError("");
         setPhase("launching");
         const result = await launchCouncil(port, token, {
@@ -66,6 +69,7 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
             agents: proposal.participants.map((p) => p.name),
             closer: proposal.closerName,
             councilType: proposal.councilType,
+            ...(Object.keys(prepared.selections).length ? { selections: prepared.selections } : {}),
         });
         if ("error" in result) {
             setError(result.error);
@@ -74,10 +78,9 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
         }
         setCode(result.code);
         setPhase("launched");
-    }, [port, token, proposal]);
+    }, [port, token, proposal, snapshot, selections]);
 
-    // Only meaningful once the host has told us what it can run; an older host
-    // sends no instance list, and guessing wrong would flag a valid name.
+    // Older hosts omit the roster; do not reject names without that evidence.
     const known = snapshot?.instances?.map((i) => i.name);
     const unknown = known ? proposal.participants.filter((p) => !known.includes(p.name)) : [];
 
@@ -107,15 +110,34 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
             <div style={styles.proposalAgents}>
                 {proposal.participants.map((p) => {
                     const isUnknown = unknown.includes(p);
+                    const choice = proposalSeatChoices(snapshot, p.name);
+                    const selection = selections[p.name] ?? {};
+                    const explicit = Boolean(selection.modelId || selection.reasoningEffort);
                     return (
-                        <span
-                            key={p.name}
-                            style={{ ...styles.proposalAgent, ...(isUnknown ? styles.proposalAgentUnknown : {}) }}
-                            title={isUnknown ? `${p.name} is not configured on this machine` : p.expertise}
-                        >
-                            {p.name}
-                            {p.name === proposal.closerName && <span style={styles.proposalCloser}>closer</span>}
-                        </span>
+                        <details key={p.name} style={seatStyles.seat}>
+                            <summary style={seatStyles.summary}>
+                                <span style={{ color: isUnknown ? "var(--color-warning)" : "var(--color-text-primary)" }}>{p.name}</span>{" "}
+                                {p.name === proposal.closerName && <span style={styles.proposalCloser}>closer</span>}
+                                <span style={seatStyles.state}>{explicit ? "Custom selection" : "Host default"}</span>
+                            </summary>
+                            <div style={seatStyles.body}>
+                                <p style={styles.proposalNote}>{p.expertise}</p>
+                                {choice.instance && <p style={styles.proposalNote}>{choice.instance.provider} · {choice.instance.mode.toUpperCase()}</p>}
+                                {choice.models.length > 0 ? <label style={seatStyles.field}>Model
+                                    <Dropdown ariaLabel={`Model for ${p.name}`} value={selection.modelId ?? ""} disabled={phase !== "ready"}
+                                        onChange={modelId => setSelections(current => ({ ...current, [p.name]: { ...current[p.name], modelId: modelId || undefined } }))}
+                                        options={[{ value: "", label: `Host default${choice.instance?.defaultModel ? ` (${choice.instance.defaultModel})` : ""}` }, ...choice.models.map(value => ({ value }))]}
+                                        style={seatStyles.input} />
+                                </label> : <p style={styles.proposalNote}>{choice.instance ? `Model: ${choice.instance.defaultModel ?? "provider default"}. ${choice.supported ? "Model selection is locked for this seat." : "This host does not advertise model selection."}` : isUnknown ? "This seat is not configured on the host." : "Model choices appear when a supported host is connected."}</p>}
+                                {choice.efforts.length > 0 && <label style={seatStyles.field}>Reasoning effort
+                                    <Dropdown ariaLabel={`Reasoning effort for ${p.name}`} value={selection.reasoningEffort ?? ""} disabled={phase !== "ready"}
+                                        onChange={reasoningEffort => setSelections(current => ({ ...current, [p.name]: { ...current[p.name], reasoningEffort: reasoningEffort || undefined } }))}
+                                        options={[{ value: "", label: `Host default${choice.instance?.defaultReasoningEffort ? ` (${choice.instance.defaultReasoningEffort})` : ""}` }, ...choice.efforts.map(value => ({ value }))]}
+                                        style={seatStyles.input} />
+                                </label>}
+                                {choice.instance?.warn && <p style={styles.proposalWarn}>{choice.instance.warn}</p>}
+                            </div>
+                        </details>
                     );
                 })}
             </div>
@@ -169,6 +191,7 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
                     disabled={phase === "launching" || unknown.length > 0}
                     style={{
                         ...styles.proposalLaunch,
+                        minHeight: 44,
                         ...(phase === "launching" || unknown.length > 0 ? styles.proposalLaunchOff : {}),
                     }}
                 >
@@ -184,7 +207,16 @@ export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal })
                 </p>
             )}
 
-            {error && <p style={styles.proposalError}>{error}</p>}
+            {error && <p role="alert" style={styles.proposalError}>{error}</p>}
         </div>
     );
 }
+
+const seatStyles: Record<string, React.CSSProperties> = {
+    seat: { flex: "1 1 220px", minWidth: 0, maxWidth: "100%", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm, 8px)", background: "var(--color-background)", overflowWrap: "anywhere" },
+    summary: { minHeight: 44, padding: "10px 12px", fontSize: 12, cursor: "pointer" },
+    state: { marginLeft: 8, fontSize: 11, color: "var(--color-text-muted)" },
+    body: { display: "flex", flexDirection: "column", gap: 10, padding: "0 12px 12px" },
+    field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 11.5, color: "var(--color-text-muted)", minWidth: 0 },
+    input: { flex: "0 0 auto", width: "100%", minHeight: 44, fontSize: 12 },
+};

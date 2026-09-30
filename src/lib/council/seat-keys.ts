@@ -9,6 +9,9 @@ export interface SeatIdentity {
     sessionId: string;
     seatName: string;
     code: string;
+    issuer: "host" | "owner";
+    executionId: string | null;
+    bindingRequired: boolean;
 }
 
 export function hashSeatToken(token: string): string {
@@ -44,13 +47,14 @@ export async function issueHostSeatKey(params: {
     seatName: string;
     hostId: string;
     leaseEpoch: number;
+    bindExecution?: boolean;
     ttlHours?: number;
-}, caller: CouncilCaller | undefined): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false; reason: string }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: true; token: string; expiresAt: string; executionBindingRequired?: boolean } | { ok: false; reason: string }> {
     requireCouncilHost(caller);
     params = issueHostSeatSchema.parse(params);
     const token = `${PREFIX}${randomBytes(32).toString("hex")}`;
     const expiresAt = new Date(Date.now() + (params.ttlHours ?? TTL_HOURS) * 3600_000).toISOString();
-    const { data, error } = await supabase.rpc("issue_council_host_seat_key", {
+    const { data, error } = await supabase.rpc(params.bindExecution ? "issue_council_bound_host_seat_key" : "issue_council_host_seat_key", {
         p_session_id: params.sessionId,
         p_seat_name: params.seatName,
         p_token_hash: hashSeatToken(token),
@@ -59,9 +63,9 @@ export async function issueHostSeatKey(params: {
         p_lease_epoch: params.leaseEpoch,
     });
     if (error) throw new Error(error.message);
-    const row = (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string };
+    const row = (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; executionBindingRequired?: boolean };
     if (!row.ok) return { ok: false, reason: row.reason ?? "unknown" };
-    return { ok: true, token, expiresAt };
+    return { ok: true, token, expiresAt, ...(row.executionBindingRequired === true ? { executionBindingRequired: true } : {}) };
 }
 
 export async function resolveSeatKey(token: string): Promise<SeatIdentity | null> {
@@ -74,9 +78,12 @@ export async function resolveSeatKey(token: string): Promise<SeatIdentity | null
         return null;
     }
     if (!data) return null;
-    const row = data as { session_id?: string; seat_name?: string; code?: string };
+    const row = data as { session_id?: string; seat_name?: string; code?: string; issuer?: string;
+        execution_id?: string | null; execution_binding_required?: boolean };
     if (!row.session_id || !row.seat_name) return null;
-    return { sessionId: row.session_id, seatName: row.seat_name, code: row.code ?? "" };
+    return { sessionId: row.session_id, seatName: row.seat_name, code: row.code ?? "",
+        issuer: row.issuer === "host" ? "host" : "owner", executionId: row.execution_id ?? null,
+        bindingRequired: row.execution_binding_required === true };
 }
 
 export async function revokeSeatKey(sessionId: string, seatName: string): Promise<void> {

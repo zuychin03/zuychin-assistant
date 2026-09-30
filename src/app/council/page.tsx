@@ -16,6 +16,8 @@ import { OwnerChannelPanel } from "./owner-channel-panel";
 import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
 import { IntegrationPanel } from "./integration-panel";
+import { ExecutionEvidence, ExecutionHistory, ExecutionRecord } from "./execution-evidence";
+import { executionIdentityLabel, type CouncilExecutionPage, type CouncilExecutionRecord } from "@/lib/council/execution-evidence";
 import { DesktopHostControls } from "./desktop-host-controls";
 import { isDesktopHostAvailable } from "./desktop-host";
 import { Dropdown } from "@/components/dropdown";
@@ -51,6 +53,7 @@ interface Participant {
 interface Message {
     seq: number; round: number; speaker: string; role: string; addressedTo: string;
     intent: string; replyToSeq: number | null; body: string; answered: boolean; createdAt: string;
+    executionId: string | null;
 }
 interface Detail {
     session: {
@@ -64,6 +67,7 @@ interface Detail {
     };
     participants: Participant[];
     messages: Message[];
+    executions: CouncilExecutionPage;
     openObligations: { seq: number; from: string; to: string; intent: string }[];
     campaign: {
         id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
@@ -71,7 +75,7 @@ interface Detail {
         integrationReport: string | null; integrationCheckedAt: string | null;
         baseSha: string | null; verificationProfile: string; integrationManifest: unknown;
         manifestFrozenAt: string | null; integrationTipSha: string | null;
-        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; acceptedCommitSha: string | null; branchName: string | null; verificationProfile: string; verificationRunId: string | null; dependencies: string[]; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
+        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; acceptedCommitSha: string | null; submittedExecutionId: string | null; acceptedExecutionId: string | null; branchName: string | null; verificationProfile: string; verificationRunId: string | null; dependencies: string[]; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
     } | null;
 }
 
@@ -314,6 +318,7 @@ export default function CouncilPage() {
     }, [detail]);
 
     const s = detail?.session;
+    const executionRecords = [...(detail?.executions?.records ?? []), ...(detail?.executions?.referencedRecords ?? [])];
     const isRunning = s?.status === "open" || s?.status === "concluding";
     // One host owns one council, so Adopt is offered only while it owns none.
     const canAdopt = hostState === "connected" && !!host && !host.code;
@@ -480,9 +485,18 @@ export default function CouncilPage() {
                                         {host.floorHolder === a.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>has floor</span>}
                                         <span style={styles.rosterMeta}>{a.detail}</span>
                                         <span style={styles.workDetail}>
-                                            {a.identityAssurance}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
+                                            {executionIdentityLabel(a.identityAssurance)}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
                                             {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
                                         </span>
+                                        <div style={styles.workDetail}>
+                                            <ExecutionEvidence executionId={a.executionId} label="Host model report" snapshot={a.executionId ? {
+                                                executionId: a.executionId, agentName: a.name, connectorKind: a.mode,
+                                                identityAssurance: a.identityAssurance, provider: a.provider,
+                                                adapterVersion: a.adapterVersion ?? null, requestedModel: a.requestedModel,
+                                                effectiveModel: a.effectiveModel, requestedReasoningEffort: a.requestedReasoningEffort,
+                                                effectiveReasoningEffort: a.effectiveReasoningEffort, modelSource: a.modelSource ?? null,
+                                            } : null} />
+                                        </div>
                                         <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>
                                         {a.warn && <span style={{ ...styles.workDetail, color: "var(--council-caution)" }}>! {a.warn}</span>}
                                     </div>
@@ -518,14 +532,14 @@ export default function CouncilPage() {
                                     value={form.topic}
                                     onChange={(e) => setForm({ ...form, topic: e.target.value })}
                                     placeholder="One decidable question"
-                                    style={styles.input}
+                                    style={{ ...styles.input, flex: "none" }}
                                 />
                                 <textarea
                                     aria-label="Council brief"
                                     value={form.brief}
                                     onChange={(e) => setForm({ ...form, brief: e.target.value })}
                                     placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
-                                    style={{ ...styles.input, minHeight: 80, resize: "vertical" }}
+                                    style={{ ...styles.input, flex: "none", minHeight: 80, resize: "vertical" }}
                                 />
                                 <div style={styles.conveneRow}>
                                     <input
@@ -615,8 +629,8 @@ export default function CouncilPage() {
                                 <div style={styles.workDetail}>
                                     Names must exist in scripts/council-agents.json. Each gets its own worktree off{" "}
                                     {host.workspaces?.find((w) => w.name === form.workspace)?.path ?? host.repo}
-                                    {form.baseBranch ? ` at ${form.baseBranch}` : ""}, and every file and terminal call it
-                                    makes is checked against that worktree.
+                                    {form.baseBranch ? ` at ${form.baseBranch}` : ""}. The host checks ACP client file and
+                                    terminal requests against that worktree. Adapter-managed operations may bypass those checks.
                                 </div>
                             </div>
                         )}
@@ -823,6 +837,7 @@ export default function CouncilPage() {
                                         {detail.participants.filter((p) => p.kind === "agent").map((p) => {
                                             const stale = (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS;
                                             const isFloor = s.floorHolder === p.name;
+                                            const latestRun = detail.executions?.records.find(record => record.agentName === p.name);
                                             return (
                                                 <div key={p.name} style={styles.rosterRow}>
                                                     <span style={{ ...styles.dot, background: p.status === "left" ? "var(--color-text-muted)" : stale ? "var(--council-warning)" : "var(--council-good)" }} />
@@ -834,10 +849,15 @@ export default function CouncilPage() {
                                                     <span style={styles.rosterMeta}>
                                                         {p.postsThisRound}/2 this round · {p.postsTotal} total · seen {ago(p.lastSeenAt)} ago
                                                     </span>
+                                                    <div style={{ width: "100%", minWidth: 0 }}>
+                                                        {latestRun ? <ExecutionRecord record={latestRun} label="Latest recorded run" />
+                                                            : <span className={ui.evidenceState}>{detail.executions?.historyStatus === "available" ? "No run in loaded history" : "Run history unavailable"}</span>}
+                                                    </div>
                                                 </div>
                                             );
                                         })}
                                     </div>
+                                    {detail.executions && <ExecutionHistory key={s.code} code={s.code} page={detail.executions} onRetry={() => void fetchDetail(s.code)} />}
                                     {detail.openObligations.length > 0 && (
                                         <div style={styles.obligations}>
                                             <div style={styles.obligationsTitle}>Unanswered</div>
@@ -901,6 +921,14 @@ export default function CouncilPage() {
                                                     {item.blockedReason && <span style={styles.workDetail}>{item.blockedReason}</span>}
                                                     {!item.blockedReason && item.hostVerification && <span style={styles.workDetail}>{item.hostVerification.split("\n").find((l) => l.startsWith("FAIL")) ?? item.progress}</span>}
                                                     {!item.blockedReason && !item.hostVerification && item.progress && <span style={styles.workDetail}>{item.progress}</span>}
+                                                    {item.commitHash && <div style={styles.workDetail}>
+                                                        <span className={ui.evidenceNote}>Submitted commit <code>{item.commitHash}</code></span>
+                                                        <ExecutionEvidence executionId={item.submittedExecutionId} records={executionRecords} label="Submitted in run" />
+                                                    </div>}
+                                                    {item.acceptedCommitSha && <div style={styles.workDetail}>
+                                                        <span className={ui.evidenceNote}>Accepted commit <code>{item.acceptedCommitSha}</code></span>
+                                                        <ExecutionEvidence executionId={item.acceptedExecutionId} records={executionRecords} label="Accepted submission run" />
+                                                    </div>}
                                                 </div>
                                             ))}
                                         </div>
@@ -931,7 +959,7 @@ export default function CouncilPage() {
                                         </button>
                                     </div>
                                     <div style={styles.transcript}>
-                                        {detail.messages.map((m) => <MessageRow key={m.seq} m={m} />)}
+                                        {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} />)}
                                         {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
                                         <div ref={monitor ? undefined : transcriptEnd} />
                                     </div>
@@ -993,7 +1021,7 @@ export default function CouncilPage() {
                         {!detail && !detailError && <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading transcript…</div>}
                         {detail && (
                             <div style={styles.monitorInner}>
-                                {detail.messages.map((m) => <MessageRow key={m.seq} m={m} />)}
+                                {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} />)}
                                 {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
                                 <div ref={transcriptEnd} />
                             </div>
@@ -1007,7 +1035,7 @@ export default function CouncilPage() {
 
 // Shared by the inline transcript and the monitor overlay so the two views can
 // never drift apart.
-function MessageRow({ m }: { m: Message }) {
+function MessageRow({ m, executions }: { m: Message; executions: CouncilExecutionRecord[] }) {
     return (
         <div style={styles.msg}>
             <div style={styles.msgHead}>
@@ -1026,6 +1054,7 @@ function MessageRow({ m }: { m: Message }) {
             <div style={{ ...styles.msgBody, ...(m.role !== "agent" ? styles.msgModerator : {}) }}>
                 {m.body}
             </div>
+            {m.role === "agent" && <ExecutionEvidence executionId={m.executionId} records={executions} />}
         </div>
     );
 }

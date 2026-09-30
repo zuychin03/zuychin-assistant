@@ -6,7 +6,7 @@ import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as acp from "@agentclientprotocol/sdk";
 import { killTree, onPath, spawnResolved } from "./council-host-paths.mts";
-import { selectConfig } from "./council-models.mts";
+import { configureAcpSession, sessionModelEvidence } from "./council-models.mts";
 import { COUNCIL_MCP_SERVER_NAME } from "../src/lib/council/protocol.ts";
 import { buildCouncilAdapterEnv, credentialValues, redactCredentials, type AdapterEnvOverrides } from "./council-adapter-env.mts";
 import { confirmsMcpVisibility, deadline, installProbeDiagnostics, loadProbeAdapter, parseProbeArguments, probeCredential, probeEndpoint, probeMcpTools, type ProbeArguments } from "./council-acp-probe-support.mts";
@@ -17,7 +17,7 @@ catch (error) {
     console.error(`FAIL arguments: ${error instanceof Error ? error.message : "invalid probe arguments"}`);
     process.exit(2);
 }
-const { wantPrompt, wantEdit, wantModels, adapterName, endpointArg } = options;
+const { wantPrompt, wantEdit, wantModels, modelId, reasoningEffort, adapterName, endpointArg } = options;
 
 let command: string;
 let args: string[];
@@ -38,7 +38,7 @@ if (adapterName) {
     command = options.command;
     args = options.args;
 } else {
-    console.error("usage: ... acp-probe.mts [--prompt --mcp-url <url> | --edit] [--models] (--agent <name> | -- <command> [args...])");
+    console.error("usage: ... acp-probe.mts [--prompt --mcp-url <url> | --edit] [--models] [--set-model <id>] [--set-reasoning <effort>] (--agent <name> | -- <command> [args...])");
     process.exit(2);
 }
 
@@ -78,24 +78,24 @@ function note(label: string, detail = "") { results.push(`  ....  ${label}${deta
 
 interface AdvertisedOption { id: string; currentValue?: string; options?: { value: string; name?: string }[] }
 
-function renderInstanceBlock(model: AdvertisedOption | null, reasoning: AdvertisedOption | null): string {
+function renderInstanceBlock(model: AdvertisedOption | null, reasoning: AdvertisedOption | null, modelSelection: boolean, legacyNegotiated: boolean): string {
     const values = (option: AdvertisedOption | null) => (option?.options ?? []).map((o) => o.value);
     const lines: string[] = [];
     for (const [label, option] of [["models", model], ["reasoning efforts", reasoning]] as const) {
         const advertised = values(option);
         lines.push(`\nAdvertised ${label}: ${advertised.length ? "" : "(none)"}`);
         for (const o of option?.options ?? []) {
-            const marker = o.value === option?.currentValue ? "  <- current" : "";
+            const marker = o.value === option?.currentValue ? `  <- ${label === "models" && legacyNegotiated ? "negotiated" : "current"}` : "";
             lines.push(`  ${o.value}${o.name && o.name !== o.value ? `   (${o.name})` : ""}${marker}`);
         }
     }
     const json = JSON.stringify({
         provider: adapterName ?? "<provider>",
         expertise: "<expertise>",
-        allowedModels: values(model),
+        allowedModels: modelSelection ? values(model) : [],
         allowedReasoningEfforts: values(reasoning),
-        ...(model?.currentValue ? { defaultModel: model.currentValue } : {}),
-        ...(reasoning?.currentValue ? { defaultReasoningEffort: reasoning.currentValue } : {}),
+        ...(modelSelection && model?.currentValue && values(model).includes(model.currentValue) ? { defaultModel: model.currentValue } : {}),
+        ...(reasoning?.currentValue && values(reasoning).includes(reasoning.currentValue) ? { defaultReasoningEffort: reasoning.currentValue } : {}),
     }, null, 2);
     lines.push(`\nFor scripts/council-agents.json, under "instances":\n  "<instance-name>": ${json.replace(/\n/g, "\n  ")}`);
     lines.push("\ndefaultModel must be inside allowedModels. Anything you list that the");
@@ -185,21 +185,52 @@ try {
     );
     ok(mcpKey ? "3. session/new accepted with an HTTP MCP server configuration" : "3. session/new accepted without MCP", `session ${session.sessionId.slice(0, 12)}…`);
 
+    let modelResponse: unknown = session.newSessionResponse;
+    let negotiated: Awaited<ReturnType<typeof configureAcpSession>> | undefined;
+    if (modelId || reasoningEffort) {
+        negotiated = await configureAcpSession({
+            initialized: init,
+            sessionResponse: modelResponse,
+            selection: { modelId, reasoningEffort },
+            allowedModels: modelId ? [modelId] : [],
+            allowedReasoningEfforts: reasoningEffort ? [reasoningEffort] : [],
+            setConfigOption: async (configId, value) => {
+                modelResponse = await deadline(connection.agent.request(acp.methods.agent.session.setConfigOption, {
+                    sessionId: session.sessionId, configId, value,
+                }), 30_000, "session/set_config_option");
+                return modelResponse;
+            },
+            setLegacyModel: (selectedModel) => deadline(connection.agent.request("session/set_model", {
+                sessionId: session.sessionId, modelId: selectedModel,
+            }), 30_000, "session/set_model"),
+        });
+        if (negotiated.modelSource !== "adapter_legacy_set_model") {
+            ok("M. confirms requested configuration", "adapter readback matches the explicit selection");
+        }
+    }
+
     if (wantModels) {
-        const options = (session as unknown as { newSessionResponse?: { configOptions?: unknown } })
-            .newSessionResponse?.configOptions;
-        const model = selectConfig(options, "model");
-        const reasoning = selectConfig(options, "thought_level");
+        const { modelOption: reportedModel, reasoningOption: reportedReasoning, modelSelection } = sessionModelEvidence(modelResponse);
+        const legacyNegotiated = negotiated?.modelSource === "adapter_legacy_set_model";
+        const model = legacyNegotiated && reportedModel ? { ...reportedModel, currentValue: negotiated?.effectiveModel ?? undefined } : reportedModel;
+        const reasoning = legacyNegotiated ? null : reportedReasoning;
         if (!model && !reasoning) {
             note("M. advertises no selectable model", "leave allowedModels empty; this adapter uses whatever the vendor CLI is set to");
         }
-        if (model) {
+        if (legacyNegotiated) {
+            ok("M. legacy model selection acknowledged", `negotiated ${model?.currentValue}; no independent readback`);
+        } else if (model && model.type !== "select") {
+            if (model.currentValue) ok("M. reports legacy model", `currently ${model.currentValue}`);
+            note("M. legacy model selection", "advertised IDs use session/set_model; an acknowledgement is negotiated evidence, not independent readback");
+        } else if (modelSelection && model) {
             ok("M. advertises model selection", `config id "${model.id}", currently ${model.currentValue ?? "unset"}`);
+        } else if (model) {
+            note("M. reports model", `currently ${model.currentValue ?? "unset"}; no selectable models advertised`);
         }
         if (reasoning) {
             ok("M. advertises reasoning selection", `config id "${reasoning.id}", currently ${reasoning.currentValue ?? "unset"}`);
         }
-        modelsBlock = renderInstanceBlock(model, reasoning);
+        modelsBlock = renderInstanceBlock(model, reasoning, modelSelection, legacyNegotiated);
     }
 
     if (wantPrompt) {

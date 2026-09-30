@@ -15,7 +15,7 @@
  * reads a tick and relays, and computes no floor of its own.
  */
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import * as acp from "@agentclientprotocol/sdk";
 import { insideWorktree, killTree, onPath, spawnResolved } from "./council-host-paths.mts";
-import { buildCouncilAdapterEnv } from "./council-adapter-env.mts";
+import { buildCouncilAdapterEnv, credentialValues } from "./council-adapter-env.mts";
 import { acquireHostLock, releaseHostLock } from "./council-host-lock.mts";
 import {
     formatSupervisionLine, parseControl, parseLaunch,
@@ -38,8 +38,9 @@ import {
 import { parseKickoffBlocks, renderDispatchKickoff } from "../src/lib/council/render.ts";
 import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
 import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, type CouncilAgentSelection, type ConnectorCapabilitySnapshot } from "../src/lib/council/v3.ts";
-import { integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest } from "./council-git.mts";
-import { validateSelection } from "./council-models.mts";
+import { exactIntegrationDiff, integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest, type VerificationReceipt } from "./council-git.mts";
+import { sanitiseIntegrationEvidence, sanitiseIntegrationText, sanitiseVerificationReceipts, type IntegrationEvidence, type IntegrationRedactionContext } from "../src/lib/council/integration-evidence.ts";
+import { configureAcpSession } from "./council-models.mts";
 import { configuredSelection, preflightCouncilPaths, requireLaunchPreflightProtocol } from "./council-launch-preflight.mts";
 
 const HOST_VERSION = "3.1.0";
@@ -47,6 +48,8 @@ const CAMPAIGN_POLL_MS = 30_000;
 const TERMINAL_OUTPUT_LIMIT = 1_000_000;
 const MAX_PAIR_FAILURES = 10;
 const HEALTH_BEAT_MS = 5_000;
+const ACP_STARTUP_TIMEOUT_MS = 30_000;
+const CLEANUP_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------- supervision
 
@@ -189,7 +192,7 @@ const config: HostConfig = JSON.parse(readFileSync(configPath, "utf8"));
 
 // The endpoint answers a bare tools/call with no initialize handshake, and
 // frames the reply as one SSE "data:" line.
-async function callMcp(method: string, params: Record<string, unknown>, bearer = mcpHostKey) {
+async function callMcp(method: string, params: Record<string, unknown>, bearer = mcpHostKey, signal?: AbortSignal) {
     const res = await fetch(config.mcpUrl, {
         method: "POST",
         headers: {
@@ -198,6 +201,7 @@ async function callMcp(method: string, params: Record<string, unknown>, bearer =
             Accept: "application/json, text/event-stream",
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal,
     });
     const raw = await res.text();
     if (!res.ok) throw new Error(`${params.name ?? method} failed: HTTP ${res.status} ${raw.slice(0, 300)}`);
@@ -207,8 +211,8 @@ async function callMcp(method: string, params: Record<string, unknown>, bearer =
     return payload.result;
 }
 
-async function callTool(name: string, args: Record<string, unknown>, bearer = mcpHostKey): Promise<string> {
-    const result = await callMcp("tools/call", { name, arguments: args }, bearer);
+async function callTool(name: string, args: Record<string, unknown>, bearer = mcpHostKey, signal?: AbortSignal): Promise<string> {
+    const result = await callMcp("tools/call", { name, arguments: args }, bearer, signal);
     const text = result?.content?.[0]?.text;
     // An unknown tool or a rejected key comes back as a RESULT carrying isError,
     // not as a JSON-RPC error. Returning that prose would hand a JSON caller a
@@ -217,6 +221,39 @@ async function callTool(name: string, args: Record<string, unknown>, bearer = mc
     if (result?.isError) throw new Error(`${name} failed: ${typeof text === "string" ? text : "unknown error"}`);
     if (typeof text !== "string") throw new Error(`${name} returned no text`);
     return text;
+}
+
+async function requireHostRuntimeProtocol(): Promise<void> {
+    await requireToolProperties(new Map([
+        ["council_dispatch", { property: "statusOnly", type: "boolean", label: "status-only host probes" }],
+        ["council_host_issue_seat", { property: "bindExecution", type: "boolean", label: "execution-bound seat issuance" }],
+        ["council_execution_start", { property: "seatTokenHash", type: "string", label: "execution-bound registration" }],
+    ]));
+}
+
+async function requireToolProperties(required: Map<string, { property: string; type: string; label: string }>): Promise<void> {
+    let cursor: string | undefined;
+    const visited = new Set<string>();
+    const signal = AbortSignal.timeout(CLEANUP_TIMEOUT_MS);
+    do {
+        const result = await callMcp("tools/list", cursor ? { cursor } : {}, mcpHostKey, signal) as {
+            tools?: { name: string; inputSchema?: { properties?: Record<string, { type?: string }> } }[];
+            nextCursor?: string;
+        };
+        for (const tool of result.tools ?? []) {
+            const contract = required.get(tool.name);
+            if (!contract) continue;
+            if (tool.inputSchema?.properties?.[contract.property]?.type !== contract.type) {
+                throw new Error(`Council server does not support ${contract.label}; update it before starting a Council`);
+            }
+            required.delete(tool.name);
+        }
+        if (required.size === 0) return;
+        cursor = result.nextCursor;
+        if (cursor && visited.has(cursor)) break;
+        if (cursor) visited.add(cursor);
+    } while (cursor);
+    throw new Error(`Council server does not support ${[...required.values()].map((contract) => contract.label).join(", ")}; update it before starting a Council`);
 }
 
 /**
@@ -254,9 +291,11 @@ interface DispatchSlice {
 }
 interface DispatchPayload {
     error?: string;
+    statusOnly?: boolean;
     sessionCode: string;
     topic: string;
     status: string;
+    pausedAt?: string | null;
     round: number;
     maxRounds: number;
     lastSeq: number;
@@ -310,6 +349,8 @@ interface AgentRuntime {
     state: AgentState;
     detail: string;
     inFlight: boolean;
+    ready: boolean;
+    startupController?: AbortController;
     /**
      * Last turn read to completion; an errored turn never lands here, so a
      * failed delivery redelivers while an identical clean one does not.
@@ -317,8 +358,12 @@ interface AgentRuntime {
     lastDelivered: string | null;
     seatToken: string | null;
     executionId: string | null;
+    executionFence?: { sessionCode: string; hostId: string; leaseEpoch: number };
+    executionCleanup?: Promise<void>;
     requestedModel: string | null;
     effectiveModel: string | null;
+    adapterVersion: string | null;
+    modelSource: string;
     requestedReasoningEffort: string | null;
     effectiveReasoningEffort: string | null;
     capabilities: ConnectorCapabilitySnapshot;
@@ -535,6 +580,9 @@ function agentView(agent: AgentRuntime) {
         effectiveModel: agent.effectiveModel,
         requestedReasoningEffort: agent.requestedReasoningEffort,
         effectiveReasoningEffort: agent.effectiveReasoningEffort,
+        executionId: agent.executionId,
+        modelSource: agent.modelSource,
+        adapterVersion: agent.adapterVersion,
         identityAssurance: agent.seatToken ? "verified_seat" : "unverified_declaration",
         capabilities: agent.capabilities,
     };
@@ -781,7 +829,7 @@ function handleSocketMessage(raw: string): void {
             break;
         case "interrupt": {
             const agent = state.agents.get(String(message.agent));
-            if (agent?.session) void agent.session.prompt("").catch(() => {});
+            if (agent?.ready && agent.session) void agent.session.prompt("").catch(() => {});
             break;
         }
         case "stop":
@@ -971,7 +1019,9 @@ function mcpServersFor(agent: AgentRuntime): acp.McpServer[] {
     }];
 }
 
-async function startAcpAgent(agent: AgentRuntime): Promise<void> {
+async function startAcpAgent(agent: AgentRuntime, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    agent.ready = false;
     agent.state = "starting";
     const child = spawnResolved(agent.adapter.command, agent.adapter.args, {
         cwd: agent.treeDir,
@@ -982,13 +1032,17 @@ async function startAcpAgent(agent: AgentRuntime): Promise<void> {
     agent.log = createWriteStream(agent.logPath, { flags: "a" });
     child.stderr?.on("data", (chunk: Buffer) => agent.log?.write(chunk.toString()));
     child.on("exit", (code) => {
-        agent.state = "exited";
-        agent.detail = `process exited (${code})`;
+        agent.ready = false;
+        if (agent.state !== "failed") {
+            agent.state = "exited";
+            agent.detail = `process exited (${code})`;
+        }
         agent.inFlight = false;
         broadcast({ type: "agent_exit", agent: agent.name, code });
         log(`${agent.name} exited (${code})`);
     });
     child.on("error", (error) => {
+        agent.ready = false;
         agent.state = "failed";
         agent.detail = error.message;
         broadcast({ type: "error", agent: agent.name, detail: error.message });
@@ -1062,40 +1116,44 @@ async function startAcpAgent(agent: AgentRuntime): Promise<void> {
         protocolVersion: acp.PROTOCOL_VERSION,
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
         clientInfo: { name: "zuychin-council-host", version: HOST_VERSION },
-    });
+    }, { cancellationSignal: signal });
+    signal.throwIfAborted();
+    if (initialized.protocolVersion !== acp.PROTOCOL_VERSION) {
+        throw new Error(`unsupported ACP protocol version ${initialized.protocolVersion}`);
+    }
 
-    agent.session = await connection.agent
+    const session = await connection.agent
         .buildSession({ cwd: agent.treeDir, mcpServers: mcpServersFor(agent) })
-        .start();
+        .start({ cancellationSignal: signal });
+    signal.throwIfAborted();
+    agent.session = session;
 
-    const options = (agent.session as unknown as { newSessionResponse?: { configOptions?: unknown } })
-        .newSessionResponse?.configOptions;
     const instance = config.instances?.[agent.name];
-    const selected = validateSelection({
+    const evidence = await configureAcpSession({
+        initialized,
+        sessionResponse: session.newSessionResponse,
         selection: {
             modelId: agent.requestedModel ?? undefined,
             reasoningEffort: agent.requestedReasoningEffort ?? undefined,
         },
         allowedModels: instance?.allowedModels ?? [],
         allowedReasoningEfforts: instance?.allowedReasoningEfforts ?? [],
-        configOptions: options,
+        setConfigOption: (configId, value) => connection.agent.request(acp.methods.agent.session.setConfigOption, {
+            sessionId: session.sessionId, configId, value,
+        }, { cancellationSignal: signal }),
+        setLegacyModel: (modelId) => connection.agent.request("session/set_model", {
+            sessionId: session.sessionId, modelId,
+        }, { cancellationSignal: signal }),
     });
-    if (agent.requestedModel && selected.modelOption) {
-        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
-            sessionId: agent.session.sessionId, configId: selected.modelOption.id, value: agent.requestedModel,
-        });
-    }
-    if (agent.requestedReasoningEffort && selected.reasoningOption) {
-        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
-            sessionId: agent.session.sessionId, configId: selected.reasoningOption.id, value: agent.requestedReasoningEffort,
-        });
-    }
-    agent.effectiveModel = agent.requestedModel ?? selected.modelOption?.currentValue ?? null;
-    agent.effectiveReasoningEffort = agent.requestedReasoningEffort ?? selected.reasoningOption?.currentValue ?? null;
+    signal.throwIfAborted();
+    agent.effectiveModel = evidence.effectiveModel;
+    agent.effectiveReasoningEffort = evidence.effectiveReasoningEffort;
+    agent.adapterVersion = evidence.adapterVersion;
+    agent.modelSource = evidence.modelSource;
     agent.capabilities = {
         ...agent.capabilities,
         source: "probed",
-        modelSelection: selected.modelOption !== null,
+        modelSelection: evidence.modelSelection,
         cancellation: Boolean((initialized as { agentCapabilities?: { promptCapabilities?: unknown } }).agentCapabilities),
         observedAt: new Date().toISOString(),
     };
@@ -1105,7 +1163,7 @@ async function startAcpAgent(agent: AgentRuntime): Promise<void> {
     void (async () => {
         for (;;) {
             try {
-                const message = await agent.session!.nextUpdate();
+                const message = await session.nextUpdate();
                 if (message.kind === "session_update") relayUpdate(agent, message.update);
             } catch {
                 return;
@@ -1113,9 +1171,8 @@ async function startAcpAgent(agent: AgentRuntime): Promise<void> {
         }
     })();
 
-    agent.state = "idle";
-    agent.detail = "session ready";
-    log(`${agent.name}: ACP session ${agent.session.sessionId}`);
+    agent.detail = "session negotiated; recording execution";
+    log(`${agent.name}: ACP session ${session.sessionId}`);
 }
 
 function startShellAgent(agent: AgentRuntime, prompt: string): void {
@@ -1153,8 +1210,6 @@ function startShellAgent(agent: AgentRuntime, prompt: string): void {
         agent.detail = error.message;
     });
     agent.child = child;
-    agent.effectiveModel = agent.requestedModel;
-    agent.effectiveReasoningEffort = agent.requestedReasoningEffort;
     agent.state = "idle";
     agent.detail = "shell mode: long-polls its own turns";
 }
@@ -1175,7 +1230,8 @@ function persistDeliveryJournal(): void {
 // completes, so a host that dies mid-turn redelivers the same batch rather than
 // leaving a hole in what the agent read.
 async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: string): Promise<void> {
-    if (!agent.session || agent.inFlight) return;
+    if (!agent.ready || !agent.executionId || !agent.session || agent.inFlight || state.stopping || !state.leaseHealthy) return;
+    agent.inFlight = true;
     if (deliveryId) {
         try {
             const result = JSON.parse(await callTool("council_delivery_state", {
@@ -1183,12 +1239,16 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
             })) as { ok?: boolean };
             if (!result.ok) throw new Error(`delivery ${deliveryId} could not enter in_flight`);
         } catch (error) {
+            agent.inFlight = false;
             agent.detail = error instanceof Error ? error.message : String(error);
             broadcast({ type: "error", agent: agent.name, detail: agent.detail });
             return;
         }
     }
-    agent.inFlight = true;
+    if (!agent.ready || !agent.session || state.stopping || !state.leaseHealthy) {
+        agent.inFlight = false;
+        return;
+    }
     agent.state = "busy";
     broadcast({ type: "turn", agent: agent.name, chars: prompt.length });
     agent.log?.write(`\n--- TURN PUSHED ---\n${prompt}\n\n`);
@@ -1218,11 +1278,12 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
 
 // ---------------------------------------------------------------- lifecycle
 
-function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}, repo = state.repo): AgentRuntime {
+function makeRuntime(name: string, code: string, selection: CouncilAgentSelection = {}, repo = state.repo, restoreSelection = false): AgentRuntime {
     const { adapter, provider, expertise } = resolveAgent(name);
     const instance = config.instances?.[name];
     const { requestedModel, requestedReasoningEffort } = configuredSelection({
-        name, selection, defaultModel: seatDefaultModel(name), defaultReasoningEffort: seatDefaultReasoning(name),
+        name, selection, defaultModel: restoreSelection ? null : seatDefaultModel(name),
+        defaultReasoningEffort: restoreSelection ? null : seatDefaultReasoning(name),
         allowedModels: instance?.allowedModels ?? [], allowedReasoningEfforts: instance?.allowedReasoningEfforts ?? [],
     });
     const relDir = councilWorktreeDir(repo, code, name);
@@ -1238,11 +1299,14 @@ function makeRuntime(name: string, code: string, selection: CouncilAgentSelectio
         state: "pending",
         detail: "",
         inFlight: false,
+        ready: false,
         lastDelivered: null,
         seatToken: null,
         executionId: null,
         requestedModel,
         effectiveModel: null,
+        adapterVersion: null,
+        modelSource: "unknown",
         requestedReasoningEffort,
         effectiveReasoningEffort: null,
         capabilities: configuredCapabilities({
@@ -1283,50 +1347,171 @@ memory of it. Call council_join first - it returns the rules and the recent tran
 continue the protocol from there. Your worktree and branch are unchanged and your earlier commits
 are still in it.`;
 
-async function recordAgentExecution(agent: AgentRuntime): Promise<void> {
+async function recordAgentExecution(agent: AgentRuntime, signal?: AbortSignal): Promise<void> {
     if (!state.code || state.leaseEpoch === null) throw new Error("cannot record execution without a host lease");
+    if (!agent.seatToken) throw new Error("cannot record execution without a runtime seat credential");
+    const fence = { sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch };
+    // A cancelled startup still needs the eventual ID to close this write.
     const result = JSON.parse(await callTool("council_execution_start", {
-        sessionCode: state.code, agentName: agent.name, hostId: state.hostId,
-        leaseEpoch: state.leaseEpoch, hostGeneration: COUNCIL_HOST_GENERATION,
+        ...fence, agentName: agent.name, hostGeneration: COUNCIL_HOST_GENERATION,
+        seatTokenHash: createHash("sha256").update(agent.seatToken).digest("hex"),
         capabilities: agent.capabilities, identityAssurance: "verified_seat",
-        provider: agent.provider, adapterVersion: agent.adapter.version,
+        provider: agent.provider, adapterVersion: agent.adapterVersion ?? undefined,
         requestedModel: agent.requestedModel ?? undefined, effectiveModel: agent.effectiveModel ?? undefined,
         requestedReasoningEffort: agent.requestedReasoningEffort ?? undefined,
         effectiveReasoningEffort: agent.effectiveReasoningEffort ?? undefined,
-        modelSource: agent.mode === "acp" ? "adapter_config" : "configured_cli",
+        modelSource: agent.modelSource,
         branch: agent.branch, worktree: agent.treeDir, baseSha: state.baseSha ?? undefined,
-    })) as { ok?: boolean; reason?: string; executionId?: string };
+    })) as { ok?: boolean; reason?: string; executionId?: string; seatBound?: boolean };
     if (!result.ok || !result.executionId) throw new Error(`execution evidence rejected: ${result.reason ?? "unknown"}`);
     agent.executionId = result.executionId;
+    agent.executionFence = fence;
+    if (signal?.aborted) {
+        await stopRecordedExecution(agent, "startup cancelled before execution acknowledgement");
+        signal.throwIfAborted();
+    }
+    if (result.seatBound !== true) throw new Error("execution registration did not confirm runtime credential binding");
+}
+
+async function stopRecordedExecution(agent: AgentRuntime, reason: string): Promise<void> {
+    if (agent.executionCleanup) return agent.executionCleanup;
+    const executionId = agent.executionId;
+    const fence = agent.executionFence;
+    if (!executionId || !fence) return;
+    const cleanup = (async () => {
+        try {
+            const result = JSON.parse(await callTool("council_execution_stop", {
+                executionId, hostId: fence.hostId, leaseEpoch: fence.leaseEpoch, stopReason: reason.slice(0, 500),
+            }, mcpHostKey, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))) as { ok?: boolean; reason?: string };
+            if (result.ok !== true) throw new Error(result.reason ?? "server did not confirm execution stop");
+            if (agent.executionId === executionId) {
+                agent.executionId = null;
+                agent.executionFence = undefined;
+            }
+        } catch (error) {
+            const detail = `${agent.name}: execution cleanup unconfirmed for ${fence.sessionCode}: ${error instanceof Error ? error.message : String(error)}`;
+            broadcast({ type: "error", agent: agent.name, detail });
+            log(detail);
+        }
+    })();
+    agent.executionCleanup = cleanup;
+    try { await cleanup; }
+    finally { agent.executionCleanup = undefined; }
+}
+
+async function startRecordedAgent(agent: AgentRuntime, joinSeat: boolean, shellPrompt?: string): Promise<void> {
+    const controller = new AbortController();
+    const { signal } = controller;
+    agent.startupController = controller;
+    agent.state = "starting";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(`${agent.name}: ${agent.mode === "acp" ? "ACP" : "shell"} startup timed out after ${ACP_STARTUP_TIMEOUT_MS / 1000}s`);
+            controller.abort(error);
+            closeAgent(agent);
+            reject(error);
+        }, ACP_STARTUP_TIMEOUT_MS);
+    });
+    try {
+        await Promise.race([deadline, (async () => {
+            if (agent.mode === "shell") {
+                if (!shellPrompt) throw new Error(`${agent.name}: shell startup requires a prompt`);
+                agent.effectiveModel = agent.requestedModel;
+                agent.adapterVersion = agent.adapter.version ?? null;
+                agent.effectiveReasoningEffort = agent.requestedReasoningEffort;
+                agent.modelSource = agent.requestedModel || agent.requestedReasoningEffort ? "configured_cli" : "unknown";
+                await recordAgentExecution(agent, signal);
+                signal.throwIfAborted();
+                if (state.stopping) throw new Error(`${agent.name}: host stopped during startup`);
+                startShellAgent(agent, shellPrompt);
+                return;
+            }
+            await startAcpAgent(agent, signal);
+            signal.throwIfAborted();
+            await recordAgentExecution(agent, signal);
+            if (joinSeat) {
+                await callTool("council_join", {
+                    sessionCode: state.code, agentName: agent.name,
+                    expertise: agent.expertise, dispatchMode: true,
+                }, agent.seatToken!, signal);
+            }
+            signal.throwIfAborted();
+            if (agent.state === "exited" || agent.state === "failed" || state.stopping) throw new Error(`${agent.name}: adapter stopped during startup`);
+            agent.ready = true;
+            agent.state = "idle";
+            agent.detail = "session ready";
+        })()]);
+    } finally {
+        clearTimeout(timer);
+        agent.startupController = undefined;
+    }
 }
 
 async function startAgents(kickoff: Map<string, string>): Promise<void> {
     for (const agent of state.agents.values()) {
         const prompt = kickoff.get(agent.name) ?? RESUME_PREAMBLE(state.code!);
         try {
-            if (agent.mode === "shell") {
-                startShellAgent(agent, prompt);
-                await recordAgentExecution(agent);
-                continue;
-            }
-            await startAcpAgent(agent);
-            await recordAgentExecution(agent);
-            // Claimed by the host, not the agent: it must be true before the
-            // agent's first call and cannot depend on an LLM passing a flag.
-            // Only after a session exists, so a failed agent misses quorum.
-            await callTool("council_join", {
-                sessionCode: state.code, agentName: agent.name,
-                expertise: agent.expertise, dispatchMode: true,
-            }, agent.seatToken!);
+            await startRecordedAgent(agent, true, prompt);
+            if (agent.mode === "shell") continue;
             void promptAgent(agent, `${prompt}\n${renderDispatchKickoff(state.code!, agent.name)}`);
         } catch (error) {
+            closeAgent(agent);
             agent.state = "failed";
             agent.detail = error instanceof Error ? error.message : String(error);
+            await stopRecordedExecution(agent, `startup failed: ${agent.detail}`);
             broadcast({ type: "error", agent: agent.name, detail: agent.detail });
             log(`${agent.name} failed to start: ${agent.detail}`);
         }
     }
     broadcast({ type: "state", ...snapshot() });
+}
+
+function closeAgent(agent: AgentRuntime): void {
+    agent.ready = false;
+    agent.startupController?.abort(new Error(`${agent.name}: startup cancelled`));
+    agent.session?.dispose();
+    agent.session = undefined;
+    agent.connection?.close();
+    agent.connection = undefined;
+    if (agent.child) killTree(agent.child);
+    const stream = agent.log;
+    agent.log = undefined;
+    stream?.end();
+}
+
+function restoreAgents(code: string, names: string[], resumedNames: string[]): AgentRuntime[] {
+    const path = join(state.repo, "..", `.council-run-${code.toLowerCase()}`, "campaign-run.json");
+    if (!existsSync(path)) {
+        if (resumedNames.length) throw new Error(`${code}: saved campaign selections are missing for ${resumedNames.join(", ")}; refusing to replace them with host defaults`);
+        return names.map((name) => makeRuntime(name, code));
+    }
+    const journal = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (!journal || journal.code !== code || journal.baseSha !== state.baseSha || !Array.isArray(journal.agents)
+        || (journal.repo !== undefined && journal.repo !== state.repo)
+        || (journal.sessionId !== undefined && journal.sessionId !== state.sessionId)) {
+        throw new Error(`${code}: saved campaign journal does not match this Council and frozen repository`);
+    }
+    return names.map((name) => {
+        const entries = journal.agents as Record<string, unknown>[];
+        const matching = entries.filter((entry) => entry && entry.name === name);
+        if (matching.length === 0 && !resumedNames.includes(name)) return makeRuntime(name, code);
+        if (matching.length !== 1) throw new Error(`${name}: saved campaign journal must contain exactly one seat`);
+        const saved = matching[0];
+        if ((saved.requestedModel !== null && (typeof saved.requestedModel !== "string" || !saved.requestedModel.trim()))
+            || (saved.requestedReasoningEffort !== null && (typeof saved.requestedReasoningEffort !== "string" || !saved.requestedReasoningEffort.trim()))) {
+            throw new Error(`${name}: saved campaign model selection is invalid`);
+        }
+        const agent = makeRuntime(name, code, {
+            modelId: saved.requestedModel ?? undefined,
+            reasoningEffort: saved.requestedReasoningEffort ?? undefined,
+        }, state.repo, true);
+        if (typeof saved.dir !== "string" || resolve(saved.dir) !== agent.treeDir
+            || saved.branch !== agent.branch || saved.mode !== agent.mode) {
+            throw new Error(`${name}: saved campaign seat does not match its configured worktree`);
+        }
+        return agent;
+    });
 }
 
 function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime[]): void {
@@ -1335,7 +1520,7 @@ function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime
     mkdirSync(state.runDir, { recursive: true });
     for (const agent of preparedAgents ?? names.map((name) => makeRuntime(name, code))) state.agents.set(agent.name, agent);
     writeFileSync(join(state.runDir, "campaign-run.json"), JSON.stringify({
-        code, configPath, port: hostPort,
+        code, configPath, port: hostPort, repo: state.repo, sessionId: state.sessionId,
         hostId: state.hostId, leaseEpoch: state.leaseEpoch, baseSha: state.baseSha,
         agents: [...state.agents.values()].map((a) => ({
             name: a.name, dir: a.treeDir, branch: a.branch, mcpFile: a.mcpFile, mode: a.mode,
@@ -1380,14 +1565,22 @@ async function renewLease(): Promise<void> {
 }
 
 async function issueAgentSeats(): Promise<void> {
+    for (const agent of state.agents.values()) await issueAgentSeat(agent);
+}
+
+async function issueAgentSeat(agent: AgentRuntime): Promise<void> {
     if (!state.code || state.leaseEpoch === null) throw new Error("host lease is not active");
-    for (const agent of state.agents.values()) {
-        const result = JSON.parse(await callTool("council_host_issue_seat", {
-            sessionCode: state.code, agentName: agent.name, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
-        })) as { ok?: boolean; token?: string; reason?: string };
-        if (!result.ok || !result.token) throw new Error(`${agent.name}: seat credential rejected (${result.reason ?? "unknown"})`);
-        agent.seatToken = result.token;
+    const fence = { sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch };
+    const result = JSON.parse(await callTool("council_host_issue_seat", {
+        ...fence, agentName: agent.name,
+        bindExecution: true,
+    })) as { ok?: boolean; token?: string; reason?: string; executionBindingRequired?: boolean };
+    if (state.code !== fence.sessionCode || state.leaseEpoch !== fence.leaseEpoch || state.stopping) {
+        throw new Error(`${agent.name}: host ownership changed during seat issuance`);
     }
+    if (!result.ok || !result.token) throw new Error(`${agent.name}: seat credential rejected (${result.reason ?? "unknown"})`);
+    if (result.executionBindingRequired !== true) throw new Error(`${agent.name}: seat issuance did not confirm required execution binding`);
+    agent.seatToken = result.token;
 }
 
 interface ConveneParams {
@@ -1449,6 +1642,7 @@ async function launchCouncil(params: ConveneParams): Promise<void> {
     const preparedAgents = names.map((name) => makeRuntime(name, requestedCode, params.selections?.[name], repo));
     await preflightCouncilPaths(repo, requestedCode, names, gitAsync);
     await requireLaunchPreflightProtocol((cursor) => callMcp("tools/list", cursor ? { cursor } : {}));
+    await requireHostRuntimeProtocol();
     if (state.stopping) throw new Error("host stopped during launch preflight");
 
     const text = await callTool("council_convene", {
@@ -1486,13 +1680,39 @@ async function attach(code: string): Promise<void> {
 
 async function attachCouncil(code: string): Promise<void> {
     const upper = code.trim().toUpperCase();
+    await requireHostRuntimeProtocol();
+    const previous = {
+        sessionId: state.sessionId, leaseEpoch: state.leaseEpoch, leaseExpiresAt: state.leaseExpiresAt,
+        leaseHealthy: state.leaseHealthy, baseSha: state.baseSha, repo: state.repo,
+        baseBranch: state.baseBranch, protectedRefs: state.protectedRefs,
+    };
     const claim = await claimLease(upper);
-    // The roster is the thing being read here; a name that is not on it gets no
-    // slice and changes nothing, which is what makes this safe as a probe.
+    const fence = { sessionCode: upper, hostId: state.hostId, leaseEpoch: state.leaseEpoch };
+    try {
+        await attachClaimedCouncil(upper, claim);
+    } catch (error) {
+        if (state.code === upper) throw error;
+        let releaseFailure = "";
+        try {
+            const released = JSON.parse(await callTool("council_host_release", fence, mcpHostKey,
+                AbortSignal.timeout(CLEANUP_TIMEOUT_MS))) as { ok?: boolean; reason?: string };
+            if (released.ok !== true) throw new Error(released.reason ?? "server did not confirm lease release");
+        } catch (cleanupError) {
+            releaseFailure = `; lease release unconfirmed for ${upper}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+        }
+        Object.assign(state, previous);
+        if (releaseFailure) throw new Error(`${error instanceof Error ? error.message : String(error)}${releaseFailure}`);
+        throw error;
+    }
+}
+
+async function attachClaimedCouncil(upper: string, claim: HostClaimPayload): Promise<void> {
     const payload = JSON.parse(await callTool("council_dispatch", {
-        sessionCode: upper, agentNames: ["host-probe"], hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        sessionCode: upper, agentNames: ["host-probe"], statusOnly: true, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
     })) as DispatchPayload;
     if (payload.error === "unknown_session") throw new Error(`no council found with code ${upper}`);
+    if (payload.statusOnly !== true) throw new Error("Council server does not support status-only host probes");
+    if (payload.status === "expired" && payload.pausedAt) throw new Error(`${upper} expired while paused and cannot be attached`);
 
     const configured = (payload.participants ?? [])
         .filter((p) => p.name !== MODERATOR_NAME && p.status !== "left")
@@ -1529,7 +1749,7 @@ async function attachCouncil(code: string): Promise<void> {
     }
     state.baseBranch = claim.session?.baseBranch ?? state.baseBranch;
     state.protectedRefs = snapshotProtectedRefs(state.repo, [state.baseBranch, "main"]);
-    prepareRun(upper, names);
+    prepareRun(upper, names, restoreAgents(upper, names, claimable.filter((p) => p.dispatchMode).map((p) => p.name)));
     state.topic = payload.topic;
     state.status = payload.status;
     log(`Attached to ${upper}: ${names.join(", ")}`);
@@ -1546,51 +1766,61 @@ async function attachCouncil(code: string): Promise<void> {
 let dispatching = false;
 
 async function dispatchTick(): Promise<void> {
-    const owned = [...state.agents.values()].filter((a) => a.mode === "acp" && a.session);
-    if (!state.code || owned.length === 0 || dispatching || !state.leaseHealthy || state.leaseEpoch === null) return;
+    const owned = [...state.agents.values()].filter((a) => a.mode === "acp" && a.ready && a.session);
+    if (!state.code || dispatching || state.leaseEpoch === null) return;
+    const code = state.code;
+    const leaseEpoch = state.leaseEpoch;
+    const statusOnly = owned.length === 0 || !state.leaseHealthy;
     dispatching = true;
-
-    const acknowledgementEntries = [...delivered.entries()];
-    const ackDeliveryIds = acknowledgementEntries.map(([, id]) => id);
-    let payload: DispatchPayload;
     try {
-        payload = JSON.parse(await callTool("council_dispatch", {
-            sessionCode: state.code,
-            agentNames: owned.map((a) => a.name),
-            hostId: state.hostId, leaseEpoch: state.leaseEpoch,
+        const acknowledgementEntries = statusOnly ? [] : [...delivered.entries()];
+        const ackDeliveryIds = acknowledgementEntries.map(([, id]) => id);
+        const payload = JSON.parse(await callTool("council_dispatch", {
+            sessionCode: code,
+            agentNames: statusOnly ? ["host-probe"] : owned.map((a) => a.name),
+            hostId: state.hostId, leaseEpoch,
+            ...(statusOnly ? { statusOnly: true } : {}),
             ...(ackDeliveryIds.length ? { ackDeliveryIds } : {}),
         })) as DispatchPayload;
+        if (state.code !== code || state.leaseEpoch !== leaseEpoch) return;
+        if (statusOnly && payload.statusOnly !== true) throw new Error("Council server does not support status-only host probes");
+        if (payload.status === "expired" && payload.pausedAt) {
+            state.status = "expired";
+            state.campaignComplete = false;
+            await releaseCouncil("Council expired while paused", code, leaseEpoch);
+            return;
+        }
+        if (payload.error) {
+            if (payload.error === "stale_host" || payload.error === "stale_epoch") state.leaseHealthy = false;
+            return;
+        }
+        if (statusOnly) return;
+        for (const [name, id] of acknowledgementEntries) {
+            if (delivered.get(name) === id) delivered.delete(name);
+        }
+        persistDeliveryJournal();
+
+        // Closure was invisible here: the status moved from open to concluding to
+        // awaiting_owner to closed with nothing written down, so the log showed a
+        // Council that simply stopped talking.
+        if (payload.status !== state.status) log(`${state.code}: ${state.status} -> ${payload.status}`);
+        state.status = payload.status;
+        state.round = payload.round;
+        state.maxRounds = payload.maxRounds;
+        state.floorHolder = payload.floorHolder;
+
+        for (const agent of owned) {
+            const slice = payload.agents?.[agent.name];
+            if (!slice || agent.inFlight || !slice.prompt) continue;
+            if (slice.status === "left" || !slice.deliveryId) continue;
+            void promptAgent(agent, slice.prompt, slice.deliveryId);
+        }
+        broadcast({ type: "state", ...snapshot() });
     } catch (error) {
         broadcast({ type: "error", detail: `dispatch: ${error instanceof Error ? error.message : String(error)}` });
-        return;
     } finally {
         dispatching = false;
     }
-    if (payload.error) {
-        if (payload.error === "stale_host" || payload.error === "stale_epoch") state.leaseHealthy = false;
-        return;
-    }
-    for (const [name, id] of acknowledgementEntries) {
-        if (delivered.get(name) === id) delivered.delete(name);
-    }
-    persistDeliveryJournal();
-
-    // Closure was invisible here: the status moved from open to concluding to
-    // awaiting_owner to closed with nothing written down, so the log showed a
-    // Council that simply stopped talking.
-    if (payload.status !== state.status) log(`${state.code}: ${state.status} -> ${payload.status}`);
-    state.status = payload.status;
-    state.round = payload.round;
-    state.maxRounds = payload.maxRounds;
-    state.floorHolder = payload.floorHolder;
-
-    for (const agent of owned) {
-        const slice = payload.agents?.[agent.name];
-        if (!slice || agent.inFlight || !slice.prompt) continue;
-        if (slice.status === "left" || !slice.deliveryId) continue;
-        void promptAgent(agent, slice.prompt, slice.deliveryId);
-    }
-    broadcast({ type: "state", ...snapshot() });
 }
 
 // ---------------------------------------------------------------- host checks
@@ -1785,8 +2015,8 @@ async function hostVerifyTick(): Promise<void> {
         await callToolRetrying("council_work_verify", {
             itemId: item.id, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
             commitSha: result.commitSha, baseSha: result.baseSha, branchName: branch,
-            profileId, receipts: result.receipts, outputDigest: result.outputDigest,
-            passed: result.ok, report: result.lines.join("\n"),
+            profileId, receipts: sanitiseVerificationReceipts(result.receipts, evidenceContext()), redactionVersion: 1, outputDigest: result.outputDigest,
+            passed: result.ok, report: sanitiseIntegrationText(result.lines.join("\n"), evidenceContext()),
         }).catch((e) => log(`host verify report failed: ${e instanceof Error ? e.message : String(e)}`));
     }
     setBusy(null);
@@ -1816,7 +2046,83 @@ async function legacyIntegrationTick(): Promise<void> {
 
 let integrationDone = false;
 
-interface FrozenManifestPayload { ok?: boolean; reason?: string; manifest?: IntegrationManifest; integratorAgent?: string | null }
+interface FrozenManifestPayload { ok?: boolean; reason?: string; manifest?: IntegrationManifest; integratorAgent?: string | null; integrationStatus?: string | null }
+
+interface IntegrationAttempt {
+    id: string;
+    status: "running";
+    mode: "host" | "agent";
+    integratorAgent: string | null;
+    manifest: IntegrationManifest;
+    manifestHash: string;
+    baseBranch: string;
+    baseSha: string;
+}
+
+interface IntegrationAssembly {
+    ok: boolean;
+    branch: string | null;
+    tipSha: string | null;
+    executionId: string | null;
+    files: string[] | null;
+    diffSummary: string | null;
+    lines: string[];
+    receipts: VerificationReceipt[];
+}
+
+interface IntegrationRun {
+    code: string;
+    hostId: string;
+    leaseEpoch: number;
+    repo: string;
+    attemptId: string;
+    redaction: IntegrationRedactionContext;
+    nomination?: string | null;
+    attempt?: IntegrationAttempt;
+    finishSubmitted?: boolean;
+    finish?: { attemptId: string; hostId: string; leaseEpoch: number; status: "verified" | "conflict" | "failed";
+        branch: string | null; tipSha: string | null; executionId: string | null; evidence: IntegrationEvidence };
+}
+
+let pendingIntegration: IntegrationRun | null = null;
+let integrating = false;
+
+function evidenceContext(previous: IntegrationRedactionContext = {}): IntegrationRedactionContext {
+    return { secrets: [...(previous.secrets ?? []), mcpHostKey ?? "", ...[...state.agents.values()].map((agent) => agent.seatToken ?? ""),
+        ...credentialValues(process.env, ...Object.values(config.agents).map((adapter) => adapter.env ?? {}))].filter(Boolean),
+        privatePaths: [...(previous.privatePaths ?? []), state.repo, state.runDir ?? "", process.env.USERPROFILE ?? "", process.env.HOME ?? ""].filter(Boolean) };
+}
+
+function ownsIntegration(run: IntegrationRun): boolean {
+    return pendingIntegration === run && state.code === run.code && state.hostId === run.hostId && state.leaseEpoch === run.leaseEpoch
+        && state.leaseHealthy && !state.stopping && !releasingCouncil;
+}
+
+function failedIntegration(error: unknown): IntegrationAssembly {
+    return { ok: false, branch: null, tipSha: null, executionId: null, files: null, diffSummary: null, receipts: [],
+        lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`] };
+}
+
+async function integrationRequest(run: IntegrationRun, name: string, args: Record<string, unknown>): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+        if (!ownsIntegration(run)) throw new Error("host ownership changed during integration");
+        if (name === "council_integration_finish" && run.finish && !run.finishSubmitted) {
+            const observed = run.finish.evidence.protectedRefs.after;
+            if (run.finish.status === "verified" && observed && !protectedRefsUnchanged(run.repo, observed)) {
+                run.finish.status = "failed";
+                run.finish.evidence.protectedRefs.after = snapshotProtectedRefs(run.repo, Object.keys(observed));
+                run.finish.evidence.conflictNotes = "A protected branch moved before finalisation was submitted.";
+            }
+            run.finishSubmitted = true;
+        }
+        try {
+            return await callTool(name, args, mcpHostKey, AbortSignal.timeout(15_000));
+        } catch (error) {
+            if (attempt >= 3 || (!(error instanceof TypeError) && !(error instanceof DOMException && error.name === "TimeoutError"))) throw error;
+            await new Promise((settle) => setTimeout(settle, 750 * (attempt + 1)));
+        }
+    }
+}
 
 function nextIntegrationBranch(): string {
     const stem = `council/${(state.code ?? "run").toLowerCase()}/integration`;
@@ -1825,89 +2131,142 @@ function nextIntegrationBranch(): string {
     return candidate;
 }
 
-async function delegatedIntegration(manifest: IntegrationManifest, integratorName: string) {
+async function delegatedIntegration(run: IntegrationRun, manifest: IntegrationManifest, integratorName: string): Promise<IntegrationAssembly> {
+    const { code, repo } = run;
+    if (!ownsIntegration(run)) throw new Error("delegated integration requires an active host lease");
     const original = state.agents.get(integratorName);
     if (!original) throw new Error(`nominated integrator ${integratorName} is not hosted here`);
+    if (original.mode !== "acp") throw new Error(`nominated integrator ${integratorName} requires an ACP adapter`);
     const branch = nextIntegrationBranch();
     const relDir = `../integration-${(state.code ?? "run").toLowerCase()}-${randomBytes(4).toString("hex")}`;
-    const treeDir = resolve(state.repo, relDir);
-    const added = git(state.repo, ["worktree", "add", relDir, "-b", branch, manifest.baseSha]);
+    const treeDir = resolve(repo, relDir);
+    const added = git(repo, ["worktree", "add", relDir, "-b", branch, manifest.baseSha]);
     if (!added.ok) throw new Error(`could not create delegated integration worktree: ${added.out}`);
-    original.connection?.close();
-    const agent = makeRuntime(integratorName, state.code!);
+    closeAgent(original);
+    const agent = makeRuntime(integratorName, code, {
+        modelId: original.requestedModel ?? undefined,
+        reasoningEffort: original.requestedReasoningEffort ?? undefined,
+    }, repo, true);
     agent.branch = branch; agent.relDir = relDir; agent.treeDir = treeDir;
     agent.logPath = join(state.runDir!, `${integratorName}-integration.log`);
     agent.mcpFile = join(state.runDir!, `${integratorName}-integration.mcp.json`);
-    agent.seatToken = original.seatToken;
     state.agents.set(integratorName, agent);
     try {
-        await startAcpAgent(agent);
-        await recordAgentExecution(agent);
+        await stopRecordedExecution(original, "replaced by delegated integration");
+        if (!ownsIntegration(run)) {
+            throw new Error("host ownership changed before delegated integration");
+        }
+        await issueAgentSeat(agent);
+        await startRecordedAgent(agent, false);
+        if (!ownsIntegration(run)) throw new Error("host ownership changed before integration prompt");
         const commits = [...manifest.items].sort((a, b) => a.sequence - b.sequence).map((item) => item.commitSha);
         const prompt = `You are the nominated integrator for Council ${state.code}. This is a dedicated integration worktree on ${branch}, frozen at ${manifest.baseSha}.
 Merge ONLY these accepted commits in this exact order:\n${commits.map((sha) => `- ${sha}`).join("\n")}
 Attempt each merge with git merge --no-edit <sha>. Resolve conflicts only inside this worktree. Do not merge, reset, switch, or update main or ${state.baseBranch}. Run the repository checks, commit any conflict resolution, then stop and summarize the resulting HEAD. The host will independently verify the exact manifest and branch tip.`;
         await promptAgent(agent, prompt);
+        if (!ownsIntegration(run)) throw new Error("host ownership changed during integration prompt");
+        if (agent.detail.startsWith("turn failed:")) throw new Error(agent.detail);
         const tip = git(treeDir, ["rev-parse", "HEAD"]);
         if (!tip.ok) throw new Error("integrator produced no branch tip");
         const tipSha = tip.out.split(/\s/)[0];
         for (const sha of commits) {
             if (!git(treeDir, ["merge-base", "--is-ancestor", sha, tipSha]).ok) throw new Error(`integration tip omits accepted commit ${sha}`);
         }
+        const profile = loadVerificationProfile(repo, "standard");
         const verified = await verifyExactCommit({
-            repo: state.repo, commitSha: tipSha, baseSha: manifest.baseSha, branch,
-            declaredPaths: [], profile: loadVerificationProfile(state.repo, "standard"),
+            repo, commitSha: tipSha, baseSha: manifest.baseSha, branch,
+            declaredPaths: [], profile: { ...profile, commands: [{ command: ["git", "diff", "--check", manifest.baseSha, tipSha, "--"] }, ...profile.commands] },
             onProgress: (p) => setBusy(`verifying ${integratorName}'s integration tip - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
         });
-        return { ...verified, branch, tipSha };
+        if (git(repo, ["rev-parse", branch]).out !== tipSha) { verified.ok = false; verified.lines.push("FAIL integration tip changed during verification"); }
+        return { ...verified, ...exactIntegrationDiff(repo, manifest.baseSha, tipSha), branch, tipSha, executionId: agent.executionId };
+    } catch (error) {
+        return { ...failedIntegration(error), branch, executionId: agent.executionId };
     } finally {
-        agent.connection?.close();
-        await gitAsync(state.repo, ["worktree", "remove", "--force", treeDir]);
+        closeAgent(agent);
+        await stopRecordedExecution(agent, "delegated integration ended");
+        await gitAsync(repo, ["worktree", "remove", "--force", treeDir]);
     }
 }
 
 async function integrationTick(): Promise<void> {
-    if (!state.code || !state.campaignComplete || integrationDone || !state.leaseHealthy || state.leaseEpoch === null) return;
-    integrationDone = true;
-    const frozen = JSON.parse(await callTool("council_integration_manifest", {
-        sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
-    })) as FrozenManifestPayload;
-    if (!frozen.ok || !frozen.manifest) {
-        integrationDone = false;
-        throw new Error(`integration manifest rejected: ${frozen.reason ?? "unknown"}`);
-    }
-    log(`Assembling ${frozen.manifest.items.length} accepted commit(s) on a clean integration worktree.`);
-    await callTool("council_integration_report", {
-        sessionCode: state.code, status: "running", reporter: "host", hostId: state.hostId,
-        leaseEpoch: state.leaseEpoch, report: "Assembling the immutable accepted-commit manifest.",
-    }).catch(() => { });
-    let result;
-    setBusy(frozen.integratorAgent ? `${frozen.integratorAgent} is merging the accepted manifest` : "assembling the accepted manifest");
+    if (!state.code || !state.campaignComplete || integrationDone || integrating || !state.leaseHealthy || state.leaseEpoch === null) return;
+    integrating = true;
+    const run = pendingIntegration ??= { code: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch, repo: state.repo,
+        attemptId: randomUUID(), redaction: evidenceContext() };
     try {
-        result = frozen.integratorAgent
-            ? await delegatedIntegration(frozen.manifest, frozen.integratorAgent)
-            : await integrateAcceptedManifest({
-                repo: state.repo, code: state.code, manifest: frozen.manifest,
-                profile: loadVerificationProfile(state.repo, "standard"),
-                onProgress: (p) => setBusy(`integrating - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
-            });
+        if (!ownsIntegration(run)) return;
+        if (!run.attempt) {
+            await requireToolProperties(new Map([
+                ["council_integration_begin", { property: "attemptId", type: "string", label: "immutable integration attempts" }],
+                ["council_integration_finish", { property: "evidence", type: "object", label: "integration attempt evidence" }],
+            ]));
+            if (run.nomination === undefined) {
+                const frozen = JSON.parse(await integrationRequest(run, "council_integration_manifest", {
+                    sessionCode: run.code, hostId: run.hostId, leaseEpoch: run.leaseEpoch,
+                })) as FrozenManifestPayload;
+                if (!frozen.ok || !frozen.manifest) throw new Error(`integration manifest rejected: ${frozen.reason ?? "unknown"}`);
+                run.nomination = frozen.integratorAgent ?? null;
+            }
+            const begun = JSON.parse(await integrationRequest(run, "council_integration_begin", {
+                sessionCode: run.code, hostId: run.hostId, leaseEpoch: run.leaseEpoch, attemptId: run.attemptId, expectedIntegrator: run.nomination,
+            })) as { ok?: boolean; reason?: string; attempt?: IntegrationAttempt };
+            if (!ownsIntegration(run)) return;
+            if (!begun.ok && begun.reason === "integrator_changed") run.nomination = undefined;
+            const attempt = begun.attempt;
+            if (!begun.ok || !attempt || attempt.id !== run.attemptId || attempt.status !== "running"
+                || attempt.integratorAgent !== run.nomination || attempt.mode !== (run.nomination ? "agent" : "host")
+                || attempt.baseSha !== state.baseSha || attempt.manifest?.baseSha !== attempt.baseSha || !Array.isArray(attempt.manifest.items)
+                || !/^[0-9a-f]{64}$/i.test(attempt.manifestHash)) throw new Error(`integration begin rejected: ${begun.reason ?? "invalid attempt acknowledgement"}`);
+            run.attempt = attempt;
+        }
+        if (!run.finish) {
+            const attempt = run.attempt;
+            const before = snapshotProtectedRefs(run.repo, [...new Set([attempt.baseBranch, "main"])]);
+            let result: IntegrationAssembly;
+            setBusy(attempt.integratorAgent ? `${attempt.integratorAgent} is merging the accepted manifest` : "assembling the accepted manifest");
+            try {
+                if (!protectedRefsUnchanged(run.repo, state.protectedRefs)) throw new Error("a protected branch moved before integration");
+                result = attempt.integratorAgent
+                    ? await delegatedIntegration(run, attempt.manifest, attempt.integratorAgent)
+                    : { ...await integrateAcceptedManifest({ repo: run.repo, code: run.code, manifest: attempt.manifest,
+                        profile: loadVerificationProfile(run.repo, "standard"),
+                        onProgress: (progress) => { if (ownsIntegration(run)) setBusy(`integrating - step ${progress.step}/${progress.steps}: ${progress.command.join(" ")}`); },
+                    }), executionId: null };
+            } catch (error) { result = failedIntegration(error); }
+            if (!ownsIntegration(run)) return;
+            const after = snapshotProtectedRefs(run.repo, Object.keys(before));
+            if (Object.keys(before).some((ref) => before[ref] !== after[ref])) { result.ok = false; result.lines.push("FAIL a protected branch moved during integration"); }
+            let status: "verified" | "conflict" | "failed" = result.ok ? "verified" : result.lines.some((line) => line.startsWith("FAIL conflict")) ? "conflict" : "failed";
+            let evidence: IntegrationEvidence;
+            try {
+                evidence = sanitiseIntegrationEvidence({ version: 1, redactionVersion: 1, receipts: result.receipts,
+                    changedPaths: result.files, diffSummary: result.diffSummary, protectedRefs: { before, after },
+                    conflictNotes: result.ok ? null : result.lines.filter((line) => line.startsWith("FAIL ")).join("\n"), manualChecks: null,
+                }, evidenceContext(run.redaction));
+            } catch {
+                status = "failed";
+                evidence = { version: 1, redactionVersion: 1, receipts: [], changedPaths: null, diffSummary: null,
+                    protectedRefs: { before: null, after: null }, conflictNotes: "Integration evidence exceeded supported limits or could not be recorded safely.",
+                    manualChecks: ["Inspect the retained integration branch. Structured verification evidence is incomplete."] };
+            }
+            run.finish = { attemptId: run.attemptId, hostId: run.hostId, leaseEpoch: run.leaseEpoch, status,
+                branch: result.branch, tipSha: result.tipSha, executionId: result.executionId, evidence };
+        }
+        const finished = JSON.parse(await integrationRequest(run, "council_integration_finish", run.finish)) as { ok?: boolean; reason?: string; attemptId?: string };
+        if (!ownsIntegration(run)) return;
+        if (!finished.ok || finished.attemptId !== run.attemptId) throw new Error(`integration finish rejected: ${finished.reason ?? "invalid acknowledgement"}`);
+        integrationDone = true;
+        log(`Integration ${run.finish.status}.`);
     } catch (error) {
-        result = { ok: false, branch: nextIntegrationBranch(), tipSha: null, lines: [`FAIL ${error instanceof Error ? error.message : String(error)}`] };
+        if (ownsIntegration(run)) {
+            const detail = sanitiseIntegrationText(`integration attempt failed: ${error instanceof Error ? error.message : String(error)}`, evidenceContext(run.redaction));
+            log(detail); broadcast({ type: "error", detail });
+        }
+    } finally {
+        integrating = false;
+        if (ownsIntegration(run)) { setBusy(null); broadcast({ type: "state", ...snapshot() }); }
     }
-    const status = result.ok ? "verified" : result.lines.some((line) => line.startsWith("FAIL conflict")) ? "conflict" : "failed";
-    log(`Integration ${status}.`);
-    // Losing this costs the integrator's whole turn as well as the host's
-    // verification, and integrationDone means nothing will run it again.
-    await callToolRetrying("council_integration_report", {
-        sessionCode: state.code, status, branch: result.branch, tipSha: result.tipSha ?? undefined,
-        reporter: frozen.integratorAgent ?? "host", hostId: state.hostId,
-        leaseEpoch: state.leaseEpoch, report: result.lines.join("\n"),
-    }).catch((error) => {
-        integrationDone = false;
-        log(`integration report failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    setBusy(null);
-    broadcast({ type: "state", ...snapshot() });
 }
 
 // Non-reentrant: hostVerifyTick now yields for the minutes a build takes, so
@@ -1925,26 +2284,36 @@ let noCampaignSightings = 0;
  * dead Council holding its lease until someone killed the process, and no other
  * host could adopt it.
  */
-async function releaseCouncil(reason: string): Promise<void> {
-    const code = state.code;
-    if (!code) return;
-    log(`${code} released: ${reason}`);
-    for (const agent of state.agents.values()) {
-        if (agent.executionId && state.leaseEpoch !== null) {
-            await callTool("council_execution_stop", {
-                executionId: agent.executionId, hostId: state.hostId,
-                leaseEpoch: state.leaseEpoch, stopReason: reason,
-            }).catch(() => { });
+let releasingCouncil: Promise<void> | undefined;
+
+async function releaseCouncil(reason: string, code: string, leaseEpoch: number | null): Promise<void> {
+    if (state.code !== code || state.leaseEpoch !== leaseEpoch) return;
+    if (releasingCouncil) return releasingCouncil;
+    const release = releaseOwnedCouncil(reason, code, leaseEpoch);
+    releasingCouncil = release;
+    try { await release; }
+    finally { if (releasingCouncil === release) releasingCouncil = undefined; }
+}
+
+async function releaseOwnedCouncil(reason: string, code: string, leaseEpoch: number | null): Promise<void> {
+    log(`${code} stopping: ${reason}`);
+    const agents = [...state.agents.values()];
+    for (const agent of agents) closeAgent(agent);
+    for (const agent of agents) await stopRecordedExecution(agent, reason);
+    if (leaseEpoch !== null) {
+        try {
+            const released = JSON.parse(await callTool("council_host_release", {
+                sessionCode: code, hostId: state.hostId, leaseEpoch,
+            }, mcpHostKey, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))) as { ok?: boolean; reason?: string };
+            if (released.ok !== true) throw new Error(released.reason ?? "server did not confirm lease release");
+            log(`${code} released: ${reason}`);
+        } catch (error) {
+            const detail = `lease release unconfirmed for ${code}: ${error instanceof Error ? error.message : String(error)}`;
+            broadcast({ type: "error", detail });
+            log(detail);
         }
-        agent.connection?.close();
-        if (agent.child) killTree(agent.child);
-        agent.log?.end();
     }
-    if (state.leaseEpoch !== null) {
-        await callTool("council_host_release", {
-            sessionCode: code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
-        }).catch((error) => log(`lease release failed: ${error instanceof Error ? error.message : String(error)}`));
-    }
+    if (state.code !== code || state.leaseEpoch !== leaseEpoch) return;
     state.agents.clear();
     delivered.clear();
     state.code = null;
@@ -1963,6 +2332,7 @@ async function releaseCouncil(reason: string): Promise<void> {
     state.baseSha = null;
     state.protectedRefs = {};
     integrationDone = false;
+    pendingIntegration = null;
     noCampaignSightings = 0;
     broadcast({ type: "state", ...snapshot() });
     log("idle - waiting for a convene from /council");
@@ -1970,23 +2340,39 @@ async function releaseCouncil(reason: string): Promise<void> {
 
 async function superviseTick(): Promise<void> {
     if (!state.code || state.status !== "closed" || supervising) return;
+    const code = state.code;
+    const leaseEpoch = state.leaseEpoch;
     if (state.campaignComplete) {
-        // integrationDone reopens when a report is lost, so this is how a
-        // stranded integration gets re-driven rather than sitting there.
+        const completed = pendingIntegration;
+        if (integrationDone && completed && ownsIntegration(completed)) {
+            supervising = true;
+            try {
+                const current = JSON.parse(await callTool("council_integration_manifest", {
+                    sessionCode: code, hostId: completed.hostId, leaseEpoch,
+                }, mcpHostKey, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))) as FrozenManifestPayload;
+                if (ownsIntegration(completed) && integrationDone && current.ok && current.integrationStatus === "pending") {
+                    pendingIntegration = null;
+                    integrationDone = false;
+                }
+            } catch { /* A failed status read must not reopen a completed attempt. */ }
+            finally { supervising = false; }
+        }
         if (!integrationDone) void integrationTick();
         return;
     }
     supervising = true;
     try {
         await hostVerifyTick();
+        if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
         for (const agent of state.agents.values()) {
-            if (agent.mode !== "acp" || !agent.session || agent.inFlight) continue;
+            if (agent.mode !== "acp" || !agent.ready || !agent.session || agent.inFlight) continue;
             let text: string;
             try {
-                text = await callTool("council_work_status", { sessionCode: state.code, agentName: agent.name });
+                text = await callTool("council_work_status", { sessionCode: code, agentName: agent.name });
             } catch {
                 continue;
             }
+            if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
             if (text.startsWith("SUPERVISE: complete")) {
                 log("Campaign complete.");
                 state.campaignComplete = true;
@@ -1999,7 +2385,7 @@ async function superviseTick(): Promise<void> {
                 return;
             }
             if (text.startsWith("SUPERVISE: no_campaign")) {
-                if (++noCampaignSightings >= 2) await releaseCouncil("closed with no work campaign");
+                if (++noCampaignSightings >= 2) await releaseCouncil("closed with no work campaign", code, leaseEpoch);
                 return;
             }
             noCampaignSightings = 0;
@@ -2063,15 +2449,8 @@ async function shutdown(code: number, reason: HostExitReason = "requested", deta
     emitHealth();
     for (const terminal of terminals.values()) killTree(terminal.child);
     for (const agent of state.agents.values()) {
-        if (agent.executionId && state.leaseEpoch !== null) {
-            await callTool("council_execution_stop", {
-                executionId: agent.executionId, hostId: state.hostId,
-                leaseEpoch: state.leaseEpoch, stopReason: "host shutdown",
-            }).catch(() => {});
-        }
-        agent.connection?.close();
-        if (agent.child) killTree(agent.child);
-        agent.log?.end();
+        await stopRecordedExecution(agent, "host shutdown");
+        closeAgent(agent);
     }
     if (state.code && state.leaseEpoch !== null) {
         await callTool("council_host_release", {

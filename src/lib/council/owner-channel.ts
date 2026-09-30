@@ -174,21 +174,27 @@ Prefer "none" when he has not actually asked you to move the council.`;
     }
 
     const rawAction = String(plan.action ?? "none");
-    const action: OwnerAction = ["none", "pause", "resume", "relay"].includes(rawAction)
+    let action: OwnerAction = ["none", "pause", "resume", "relay"].includes(rawAction)
         ? rawAction as OwnerAction
         : "none";
-    const reply = String(plan.reply ?? "").trim().slice(0, MAX_REPLY_CHARS)
+    let reply = String(plan.reply ?? "").trim().slice(0, MAX_REPLY_CHARS)
         || "Noted.";
 
     let relay: OwnerTurnResult["relay"] = null;
     let paused = session.pausedAt !== null;
 
-    if (action === "pause") {
-        const outcome = await pauseCouncil(session.id);
-        paused = outcome.ok;
-    } else if (action === "resume") {
-        const outcome = await resumeCouncil(session.id);
-        if (outcome.ok) paused = false;
+    if (action === "pause" || action === "resume") {
+        const outcome = action === "pause" ? await pauseCouncil(session.id) : await resumeCouncil(session.id);
+        if (outcome.ok) {
+            paused = action === "pause";
+        } else {
+            reply = outcome.reason === "pause_expired"
+                ? "This council expired after seven consecutive paused days. Its transcript is retained."
+                : outcome.reason === "not_running"
+                    ? "This council is no longer running and cannot be paused or resumed."
+                    : `I could not ${action} the council. Please try again.`;
+            action = "none";
+        }
     } else if (action === "relay") {
         const directive = String(plan.directive ?? "").trim().slice(0, MAX_DIRECTIVE_CHARS);
         const addressedTo = agents.includes(String(plan.addressedTo ?? "")) ? String(plan.addressedTo) : "all";

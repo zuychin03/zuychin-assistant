@@ -165,6 +165,7 @@ export async function acknowledgeDelivery(params: {
 export async function startAgentExecution(params: {
     sessionId: string;
     agentName: string;
+    seatTokenHash?: string;
     hostId: string;
     leaseEpoch: number;
     hostGeneration: string;
@@ -180,10 +181,11 @@ export async function startAgentExecution(params: {
     branch?: string;
     worktree?: string;
     baseSha?: string;
-}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; executionId?: string }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; executionId?: string; seatBound?: boolean }> {
     requireCouncilHost(caller);
     params = startExecutionSchema.parse(params);
-    const { data, error } = await supabase.rpc("start_council_agent_execution", {
+    const { data, error } = await supabase.rpc(params.seatTokenHash ? "start_council_bound_agent_execution" : "start_council_agent_execution", {
+        ...(params.seatTokenHash ? { p_seat_token_hash: params.seatTokenHash } : {}),
         p_session_id: params.sessionId,
         p_agent_name: params.agentName,
         p_host_id: params.hostId,
@@ -206,7 +208,7 @@ export async function startAgentExecution(params: {
     });
     if (error) throw new Error(error.message);
     return (data ?? { ok: false, reason: "no_result" }) as {
-        ok: boolean; reason?: string; executionId?: string;
+        ok: boolean; reason?: string; executionId?: string; seatBound?: boolean;
     };
 }
 

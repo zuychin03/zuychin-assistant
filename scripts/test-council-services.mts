@@ -12,7 +12,7 @@ const network = mock.method(globalThis, "fetch", async () => {
 const { supabaseAdmin } = await import("../src/lib/supabase.ts");
 const hostServices = await import("../src/lib/council/host-service.ts");
 const { recordExactVerification, freezeIntegrationManifest, recordV3Integration } = await import("../src/lib/council/campaign.ts");
-const { issueHostSeatKey, hashSeatToken } = await import("../src/lib/council/seat-keys.ts");
+const { issueHostSeatKey, hashSeatToken, resolveSeatKey } = await import("../src/lib/council/seat-keys.ts");
 const { createCouncilSession } = await import("../src/lib/council/store.ts");
 
 after(() => {
@@ -201,6 +201,49 @@ test("host seat issuance persists only the token hash with the validated fence a
         }]);
     }
     assert.equal(rpc.mock.callCount(), 2);
+});
+
+test("bound host issuance selects the bound RPC and retains its binding acknowledgement", async (t) => {
+    const rpc = stubRpc(t, { ok: true, executionBindingRequired: true });
+    const result = await issueHostSeatKey({ ...fence, seatName: "agent-a", bindExecution: true }, HOST);
+    assert.equal(result.ok, true);
+    assert.equal(result.executionBindingRequired, true);
+    assert.deepEqual(rpc.mock.calls[0].arguments, ["issue_council_bound_host_seat_key", {
+        p_session_id: SESSION_ID, p_seat_name: "agent-a", p_token_hash: hashSeatToken(result.token),
+        p_expires_at: result.expiresAt, p_host_id: HOST_ID, p_lease_epoch: 1,
+    }]);
+});
+
+test("bound execution registration forwards only the token hash to its dedicated RPC", async (t) => {
+    const rpc = stubRpc(t, { ok: true, executionId: EXECUTION_ID, seatBound: true });
+    const result = await hostServices.startAgentExecution({ ...execution, seatTokenHash: DIGEST }, HOST);
+    assert.equal(result.seatBound, true);
+    assert.equal(result.executionId, EXECUTION_ID);
+    assert.equal(rpc.mock.calls[0].arguments[0], "start_council_bound_agent_execution");
+    assert.equal(rpc.mock.calls[0].arguments[1]?.p_seat_token_hash, DIGEST);
+});
+
+test("binding selectors reject malformed values before RPC", async (t) => {
+    const rpc = stubRpc(t);
+    for (const value of ["", "g".repeat(64), "a".repeat(63), "a".repeat(65), `${DIGEST}\n`]) {
+        await assert.rejects(() => hostServices.startAgentExecution({ ...execution, seatTokenHash: value }, HOST), { name: "ZodError" });
+    }
+    await assert.rejects(() => issueHostSeatKey({ ...fence, seatName: "agent-a", bindExecution: "true" as unknown as boolean }, HOST), { name: "ZodError" });
+    assert.equal(rpc.mock.callCount(), 0);
+});
+
+test("seat resolution preserves verified binding identity and explicit legacy nulls", async (t) => {
+    const rpc = stubRpc(t, { session_id: SESSION_ID, seat_name: "agent-a", code: "CN-TEST", issuer: "host",
+        execution_id: EXECUTION_ID, execution_binding_required: true });
+    assert.deepEqual(await resolveSeatKey("zcs_fixture"), {
+        sessionId: SESSION_ID, seatName: "agent-a", code: "CN-TEST", issuer: "host",
+        executionId: EXECUTION_ID, bindingRequired: true,
+    });
+    rpc.mock.mockImplementation(async () => ({ data: { session_id: SESSION_ID, seat_name: "agent-a", code: "CN-TEST", issuer: "owner" }, error: null }));
+    assert.deepEqual(await resolveSeatKey("zcs_fixture"), {
+        sessionId: SESSION_ID, seatName: "agent-a", code: "CN-TEST", issuer: "owner",
+        executionId: null, bindingRequired: false,
+    });
 });
 
 test("exact verification and execution reject invalid commit and base SHAs before RPC", async (t) => {

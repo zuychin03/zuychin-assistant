@@ -1,6 +1,6 @@
 import {
     MAX_BATCH_MESSAGES, MAX_WAIT_CALLS, SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS,
-    TOUCH_MS, pollIntervalMs, sleep,
+    TOUCH_MS, isPauseExpired, pollIntervalMs, sleep,
 } from "./protocol";
 import {
     buildDispatchViews, buildView, electFloor, expireSessionIfDue, getParticipant, getSessionById,
@@ -114,7 +114,15 @@ export async function pollCouncil(params: {
     let paused = false;
 
     for (;;) {
-        const tick = await readTick(sessionId);
+        let tick = await readTick(sessionId);
+
+        if (tick && ["open", "concluding"].includes(tick.status) && isPauseExpired(tick.pausedAt)) {
+            await expireSessionIfDue(sessionId);
+            tick = await readTick(sessionId);
+            if (!tick || (["open", "concluding"].includes(tick.status) && isPauseExpired(tick.pausedAt))) {
+                return { kind: "degraded", session: latest, cursor };
+            }
+        }
 
         if (!tick) {
             failures++;
@@ -128,7 +136,7 @@ export async function pollCouncil(params: {
             latest = { ...latest, round: tick.round, status: tick.status, lastSeq: tick.lastSeq, lastMessageAt: tick.lastMessageAt, pausedAt: tick.pausedAt };
             paused = tick.pausedAt !== null;
 
-            if (tick.status === "closed") {
+            if (tick.status === "closed" || (tick.status === "expired" && tick.pausedAt)) {
                 return { kind: "closed", session: (await getSessionById(sessionId)) ?? latest };
             }
 
@@ -234,8 +242,20 @@ export async function dispatchCouncil(params: {
     durable?: boolean;
 }): Promise<DispatchResult> {
     const sessionId = params.session.id;
-    const tick = await readTick(sessionId);
+    let tick = await readTick(sessionId);
     if (!tick) return { kind: "degraded" };
+
+    if (["open", "concluding"].includes(tick.status) && isPauseExpired(tick.pausedAt)) {
+        await expireSessionIfDue(sessionId);
+        tick = await readTick(sessionId);
+        if (!tick || (["open", "concluding"].includes(tick.status) && isPauseExpired(tick.pausedAt))) {
+            return { kind: "degraded" };
+        }
+    }
+    if (tick.status === "expired" && tick.pausedAt) {
+        const session = { ...params.session, status: tick.status, pausedAt: tick.pausedAt };
+        return { kind: "ok", session, floorHolder: null, view: { session, participants: [], agents: {} } };
+    }
 
     // No turns while the owner has the room stopped. Presence is still refreshed:
     // these agents have not gone anywhere, and dropping them from the election

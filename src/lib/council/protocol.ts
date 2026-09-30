@@ -57,6 +57,11 @@ export const MAX_BATCH_MESSAGES = 20;
 export const MAX_BATCH_CHARS = 12_000;
 export const MAX_OPEN_COUNCILS = 3;
 export const SESSION_TTL_MINUTES = 90;
+export const PAUSE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function isPauseExpired(pausedAt: string | null, now = Date.now()): boolean {
+    return pausedAt !== null && Date.parse(pausedAt) <= now - PAUSE_TTL_MS;
+}
 
 // Retyped by the human into several terminals: no 0/O/1/I.
 export const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";

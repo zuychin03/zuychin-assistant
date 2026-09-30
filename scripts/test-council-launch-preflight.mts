@@ -108,6 +108,8 @@ try {
 
     const calls: { method: string; params?: { name?: string; arguments?: Record<string, unknown> } }[] = [];
     let oldServer = false;
+    let oldStatusServer = false;
+    let oldBinding: "issue" | "start" | undefined;
     let wrongCode = false;
     const mcp = createServer(async (request, response) => {
         let raw = "";
@@ -116,7 +118,12 @@ try {
         calls.push(rpc);
         let result: unknown;
         if (rpc.method === "tools/list") {
-            result = { tools: [{ name: "council_convene", inputSchema: { properties: oldServer ? {} : { requestedCode: { type: "string" } } } }] };
+            result = { tools: [
+                { name: "council_convene", inputSchema: { properties: oldServer ? {} : { requestedCode: { type: "string" } } } },
+                { name: "council_dispatch", inputSchema: { properties: oldStatusServer ? {} : { statusOnly: { type: "boolean" } } } },
+                { name: "council_host_issue_seat", inputSchema: { properties: oldBinding === "issue" ? {} : { bindExecution: { type: "boolean" } } } },
+                { name: "council_execution_start", inputSchema: { properties: oldBinding === "start" ? {} : { seatTokenHash: { type: "string" } } } },
+            ] };
         } else if (rpc.params?.name === "council_convene") {
             const createdCode = wrongCode ? "CN-3333" : rpc.params.arguments?.requestedCode;
             result = { content: [{ type: "text", text: `COUNCIL OPENED - code ${createdCode}\n--- PASTE INTO alpha ---\nfixture\n--- PASTE INTO beta ---\nfixture` }] };
@@ -216,20 +223,38 @@ try {
         });
         calls.length = 0;
         oldServer = false;
+        oldStatusServer = true;
+        const oldStatusError = await launchError();
+        check("real host refuses a server without status-only support before creating a council", () => {
+            assert.match(oldStatusError, /status-only/);
+            assert.deepEqual(calls.map((call) => call.method), ["tools/list", "tools/list"]);
+        });
+        calls.length = 0;
+        oldStatusServer = false;
+        for (const capability of ["issue", "start"] as const) {
+            oldBinding = capability;
+            const oldBindingError = await launchError();
+            check(`real host refuses missing bound execution ${capability} before convene`, () => {
+                assert.match(oldBindingError, /execution-bound/);
+                assert.deepEqual(calls.map((call) => call.method), ["tools/list", "tools/list"]);
+            });
+            calls.length = 0;
+        }
+        oldBinding = undefined;
         wrongCode = true;
         const mismatchError = await launchError();
         check("mismatched server code cannot claim a lease", () => {
             assert.match(mismatchError, /instead of preflighted code/);
-            assert.deepEqual(calls.map((call) => call.params?.name ?? call.method), ["tools/list", "council_convene"]);
+            assert.deepEqual(calls.map((call) => call.params?.name ?? call.method), ["tools/list", "tools/list", "council_convene"]);
         });
         calls.length = 0;
         wrongCode = false;
         const leaseError = await launchError();
         check("valid retry uses preflighted code and claims only after creation", () => {
             assert.match(leaseError, /fixture lease rejection/);
-            assert.deepEqual(calls.map((call) => call.params?.name ?? call.method), ["tools/list", "council_convene", "council_host_claim"]);
-            assert.equal(calls[1].params?.arguments?.requestedCode, code);
-            const workspace = calls[1].params?.arguments?.workspace as { repoPath?: string };
+            assert.deepEqual(calls.map((call) => call.params?.name ?? call.method), ["tools/list", "tools/list", "council_convene", "council_host_claim"]);
+            assert.equal(calls[2].params?.arguments?.requestedCode, code);
+            const workspace = calls[2].params?.arguments?.workspace as { repoPath?: string };
             assert.equal(workspace.repoPath, repo);
         });
         const response = await fetch(`http://127.0.0.1:${identity.port}/health`, { headers: { Authorization: `Bearer ${identity.token}` } });

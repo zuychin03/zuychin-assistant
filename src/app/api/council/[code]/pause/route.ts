@@ -17,7 +17,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
         const outcome = resume ? await resumeCouncil(session.id) : await pauseCouncil(session.id);
         if (!outcome.ok) {
-            return NextResponse.json({ error: outcome.reason ?? "Could not change the council." }, { status: 409 });
+            const error = outcome.reason === "pause_expired"
+                ? "This council expired after seven consecutive paused days. Its transcript is retained."
+                : outcome.reason === "not_running"
+                    ? "This council is no longer running and cannot be paused or resumed."
+                    : "Could not change the council.";
+            return NextResponse.json({ error }, { status: 409 });
         }
 
         // Announced through the moderator so the agents learn about it on their
@@ -31,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
                 intent: "moderate",
                 body: resume
                     ? "The council is running again. Pick up where you left off - your quota and the clock were held while you waited."
-                    : "Your human has paused this council. Stop posting and hold; you will be released automatically. This is deliberate, not a fault.",
+                    : "Your human has paused this council. Stop posting until they resume it. After seven consecutive paused days, it expires and its transcript is retained.",
                 clientKey: `${resume ? "resume" : "pause"}:${Date.now()}`,
             }).catch((e) => console.warn("[Council] pause notice failed:", e));
         }

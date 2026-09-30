@@ -40,6 +40,12 @@ export interface ExactVerificationResult {
     outputDigest: string;
 }
 
+export interface IntegrationGitResult extends ExactVerificationResult {
+    branch: string;
+    tipSha: string | null;
+    diffSummary: string | null;
+}
+
 export interface IntegrationManifest {
     version: number;
     campaignId: string;
@@ -57,7 +63,7 @@ const ATTRIBUTION_MARKER = /^[ \t]*(?:\p{Emoji_Presentation}[ \t]*)?generated wi
 
 function git(repo: string, args: string[]) {
     const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", shell: false, env: buildCouncilAdapterEnv(process.env) });
-    return { ok: result.status === 0, status: result.status, out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
+    return { ok: result.status === 0, status: result.status, stdout: result.stdout ?? "", out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
 // Only for the worktree lifecycle. Those two calls copy and then delete a tree
@@ -191,6 +197,14 @@ export function protectedRefsUnchanged(repo: string, snapshot: Record<string, st
     return Object.entries(snapshot).every(([ref, sha]) => snapshotProtectedRefs(repo, [ref])[ref] === sha);
 }
 
+export function exactIntegrationDiff(repo: string, baseSha: string, tipSha: string): { files: string[]; diffSummary: string } {
+    if (![baseSha, tipSha].every((sha) => /^[0-9a-f]{40}$/i.test(sha))) throw new Error("integration diff requires exact commit SHAs");
+    const paths = git(repo, ["diff", "--name-only", "-z", baseSha, tipSha, "--"]);
+    const summary = git(repo, ["diff", "--stat", "--no-renames", baseSha, tipSha, "--"]);
+    if (!paths.ok || !summary.ok) throw new Error("could not read exact integration diff");
+    return { files: paths.stdout.split("\0").filter(Boolean), diffSummary: summary.out };
+}
+
 export async function verifyExactCommit(params: {
     repo: string; commitSha: string; baseSha: string; branch: string;
     declaredPaths: string[]; profile: VerificationProfile;
@@ -264,31 +278,40 @@ export async function verifyExactCommit(params: {
 export async function integrateAcceptedManifest(params: {
     repo: string; code: string; manifest: IntegrationManifest; profile: VerificationProfile;
     onProgress?: (progress: VerificationProgress) => void;
-}): Promise<ExactVerificationResult & { branch: string; tipSha: string | null }> {
+}): Promise<IntegrationGitResult> {
     const repo = resolve(params.repo);
     const stem = `council/${params.code.toLowerCase()}/integration`;
     let branch = stem;
     for (let version = 2; git(repo, ["show-ref", "--verify", `refs/heads/${branch}`]).ok; version++) branch = `${stem}-v${version}`;
     const checkout = await temporaryCheckout(repo, params.manifest.baseSha);
     const lines: string[] = [`ok   integration starts at frozen base ${params.manifest.baseSha.slice(0, 12)}`];
+    const receipts: VerificationReceipt[] = [];
     let ok = true;
     try {
         const created = git(checkout.dir, ["switch", "-c", branch]);
         if (!created.ok) { ok = false; lines.push(`FAIL could not create ${branch}: ${created.out}`); }
-        for (const item of params.manifest.items.sort((a, b) => a.sequence - b.sequence)) {
+        for (const item of [...params.manifest.items].sort((a, b) => a.sequence - b.sequence)) {
             if (!ok) break;
-            const merged = git(checkout.dir, ["merge", "--no-edit", item.commitSha]);
-            if (!merged.ok) { ok = false; lines.push(`FAIL conflict merging exact SHA ${item.commitSha}: ${merged.out.slice(-3000)}`); git(checkout.dir, ["merge", "--abort"]); }
+            const merged = await runCommand(checkout.dir, { command: ["git", "merge", "--no-edit", item.commitSha] }, 4000);
+            receipts.push(merged);
+            if (merged.exitCode !== 0 || merged.timedOut) { ok = false; lines.push(`FAIL conflict merging exact SHA ${item.commitSha}: ${merged.outputTail.slice(-3000)}`); git(checkout.dir, ["merge", "--abort"]); }
             else lines.push(`ok   merged ${item.itemId} at ${item.commitSha.slice(0, 12)}`);
         }
-        const receipts = ok ? await runProfile(checkout.dir, params.profile, params.onProgress) : [];
+        const tip = git(checkout.dir, ["rev-parse", "HEAD"]);
+        const tipSha = tip.ok ? tip.out.split(/\s/)[0] : null;
+        if (ok && tipSha) {
+            receipts.push(await runCommand(checkout.dir, { command: ["git", "diff", "--check", params.manifest.baseSha, tipSha, "--"] }, 4000));
+            receipts.push(...await runProfile(checkout.dir, params.profile, params.onProgress));
+        }
         for (const receipt of receipts) {
             if (receipt.exitCode !== 0 || receipt.timedOut) { ok = false; lines.push(`FAIL ${receipt.command.join(" ")} failed`); }
             else lines.push(`ok   ${receipt.command.join(" ")} exited 0`);
         }
-        const tip = git(checkout.dir, ["rev-parse", "HEAD"]);
+        if (!tipSha) { ok = false; lines.push("FAIL integration produced no exact tip"); }
+        if (git(checkout.dir, ["rev-parse", "HEAD"]).out !== tipSha) { ok = false; lines.push("FAIL integration tip changed during verification"); }
+        const diff = tipSha ? exactIntegrationDiff(repo, params.manifest.baseSha, tipSha) : { files: [], diffSummary: null };
         const outputDigest = createHash("sha256").update(JSON.stringify({ branch, lines, receipts, tip: tip.out })).digest("hex");
-        return { ok, branch, tipSha: tip.ok ? tip.out.split(/\s/)[0] : null, commitSha: tip.out, baseSha: params.manifest.baseSha, files: [], lines, receipts, outputDigest };
+        return { ok, branch, tipSha, commitSha: tipSha ?? "", baseSha: params.manifest.baseSha, ...diff, lines, receipts, outputDigest };
     } finally {
         await removeTemporaryCheckout(repo, checkout);
     }

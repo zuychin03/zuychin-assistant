@@ -40,7 +40,8 @@ try {
         alter table council_sessions drop constraint council_sessions_status_check;
         alter table council_sessions add constraint council_sessions_status_check check(status in ('open','concluding','awaiting_owner','closed','expired'));
         alter table council_campaigns add column integration_status text;
-        alter table council_seat_keys add column issued_by text default 'owner', add column host_id uuid, add column lease_epoch bigint;`);
+        alter table council_seat_keys add column issued_by text default 'owner', add column host_id uuid, add column lease_epoch bigint,
+            add column execution_id uuid, add column execution_binding_required boolean not null default false;`);
     for (const name of ["renew_council_host_lease", "resolve_council_seat_key", "issue_council_seat_key"]) {
         const functions = [...setup.matchAll(new RegExp(`create or replace function (?:public\\.)?${name}\\([\\s\\S]*?\\$\\$;`, "g"))];
         assert(functions.length, `Missing ${name}`);
@@ -135,7 +136,7 @@ try {
     });
     await check("migration can be reapplied and only service role can renew or issue", async () => {
         const migration = await readFile(new URL("./migrations/council-seat-renewal.sql", import.meta.url), "utf8");
-        assert(setup.trimEnd().endsWith(migration.trimEnd()), "Setup and incremental migration must not drift");
+        assert(setup.includes(migration.trim()), "Setup must retain the exact renewal migration before later additions");
         await db.exec(migration); await db.exec(migration);
         for (const signature of ["renew_council_host_lease(uuid,uuid,bigint,integer)", "issue_council_seat_key(uuid,text,text,timestamptz)", "resolve_council_seat_key(text)"]) {
             for (const role of ["anon", "authenticated", "service_role"]) {

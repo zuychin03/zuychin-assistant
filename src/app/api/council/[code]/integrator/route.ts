@@ -14,7 +14,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
         const res = await setCampaignIntegrator({ sessionId: session.id, agentName });
         if (!res.ok) {
-            const message = res.reason === "campaign_incomplete"
+            const message = res.reason === "attempt_running"
+                ? "Assembly is running. Wait for this attempt to finish before delegating again."
+                : res.reason === "campaign_incomplete"
                 ? `Every task has to be accepted first; the campaign is ${res.status}.`
                 : res.reason === "not_on_roster"
                     ? `"${agentName}" is not on this council's roster.`

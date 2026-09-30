@@ -29,9 +29,10 @@ import { dispatchCouncil, pollCouncil } from "@/lib/council/wait";
 import { proposeCouncilVerdict } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
 import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
-import { blockWorkItem, claimNextWorkItem, completeWorkItem, freezeIntegrationManifest, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordExactVerification, recordV3Integration, reviewWorkItem } from "@/lib/council/campaign";
+import { beginIntegrationAttempt, blockWorkItem, claimNextWorkItem, completeWorkItem, finishIntegrationAttempt, freezeIntegrationManifest, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordExactVerification, recordV3Integration, reviewWorkItem } from "@/lib/council/campaign";
 import { issueHostSeatKey } from "@/lib/council/seat-keys";
 import { verifyMcpToken } from "@/lib/agents/mcp-auth";
+import { getCouncilWriteIdentity } from "@/lib/council/write-identity";
 import {
     canOwnCouncil, canParticipateInCouncil, canWriteNotes,
     canWriteVault, isCouncilOwner,
@@ -39,7 +40,7 @@ import {
 import { requireKnowledgeRead as assertKnowledgeRead, requireCouncilObserver as assertCouncilObserver } from "@/lib/agents/read-access";
 import { councilHostService } from "@/lib/council/service";
 import {
-    exactVerificationSchema, integrationReportSchema, requireCouncilHost,
+    exactVerificationSchema, integrationBeginSchema, integrationFinishSchema, integrationReportSchema, requireCouncilHost,
     startExecutionSchema, stopExecutionSchema,
 } from "@/lib/council/host-contracts";
 import { promptDigest } from "@/lib/council/v3";
@@ -126,6 +127,9 @@ function requireSeat(extra: ToolExtra, opts: { sessionId?: string; agentName?: s
     }
     const seat = seatIdentity(extra);
     if (!seat) return denied("This tool needs a read-write API key.");
+    if (extra.authInfo?.extra?.councilExecutionBindingRequired === true && !extra.authInfo.extra.councilExecutionId) {
+        return denied("This seat is waiting for its execution binding.");
+    }
     if (opts.sessionId && opts.sessionId !== seat.sessionId) {
         return denied("That seat key belongs to a different council.");
     }
@@ -742,6 +746,7 @@ const handler = createMcpHandler(
                     const post = await appendMessage({
                         sessionId: session.id, speaker: agentName, intent, body: message,
                         clientKey, addressedTo: target, replyToSeq, ackSeq: sinceSeq,
+                        identity: getCouncilWriteIdentity(extra.authInfo),
                     });
                     if (post.advanced) scheduleModeration(session.id, post.round);
                     const receipt = {
@@ -927,14 +932,15 @@ const handler = createMcpHandler(
                 inputSchema: {
                     sessionCode: z.string().min(1), agentName: z.string().min(1),
                     hostId: z.string().uuid(), leaseEpoch: z.number().int().positive(),
+                    bindExecution: z.boolean().optional(),
                 },
             },
-            async ({ sessionCode, agentName, hostId, leaseEpoch }, extra) => {
+            async ({ sessionCode, agentName, hostId, leaseEpoch, bindExecution }, extra) => {
                 const denied = requireHost(extra); if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const result = await issueHostSeatKey({ sessionId: session.id, seatName: agentName, hostId, leaseEpoch }, extra.authInfo);
+                    const result = await issueHostSeatKey({ sessionId: session.id, seatName: agentName, hostId, leaseEpoch, bindExecution }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify(result) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
             },
@@ -1006,20 +1012,41 @@ const handler = createMcpHandler(
                     hostId: z.string().uuid(),
                     leaseEpoch: z.number().int().positive(),
                     ackDeliveryIds: z.array(z.string().uuid()).max(10).optional(),
+                    statusOnly: z.boolean().optional().describe("Read session and roster metadata without acknowledging deliveries or changing debate state."),
                 },
             },
-            async ({ sessionCode, agentNames, hostId, leaseEpoch, ackDeliveryIds }, extra) => {
+            async ({ sessionCode, agentNames, hostId, leaseEpoch, ackDeliveryIds, statusOnly }, extra) => {
                 // The host drives other agents' turns; a guest seat drives only
                 // itself.
                 const denied = requireHost(extra);
                 if (denied) return denied;
                 try {
+                    if (statusOnly && ackDeliveryIds?.length) {
+                        return { content: [{ type: "text", text: JSON.stringify({ error: "status_only_cannot_acknowledge" }) }] };
+                    }
                     const session = await getSessionByCode(sessionCode);
                     if (!session) {
                         return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session", sessionCode }) }] };
                     }
                     if (session.protocolVersion !== 3) {
                         return { content: [{ type: "text", text: JSON.stringify({ error: "not_v3", sessionCode: session.code }) }] };
+                    }
+                    if (statusOnly) {
+                        const participants = await listParticipants(session.id);
+                        return { content: [{ type: "text", text: JSON.stringify({
+                            statusOnly: true,
+                            sessionCode: session.code, topic: session.topic, status: session.status,
+                            pausedAt: session.pausedAt, round: session.round, maxRounds: session.maxRounds,
+                            lastSeq: session.lastSeq, lastMessageAt: session.lastMessageAt,
+                            closerName: session.closerName, verdict: session.verdict,
+                            openQuestions: session.openQuestions, vaultPath: session.vaultPath,
+                            floorHolder: session.floorHolder,
+                            participants: participants.map(p => ({
+                                name: p.name, kind: p.kind, status: p.status, postsTotal: p.postsTotal,
+                                cursorSeq: p.cursorSeq, dispatchMode: p.dispatchMode, lastSeenAt: p.lastSeenAt,
+                            })),
+                            agents: {},
+                        }) }] };
                     }
                     for (const deliveryId of ackDeliveryIds ?? []) {
                         const ack = await councilHostService.acknowledgeDelivery({ deliveryId, hostId, leaseEpoch }, extra.authInfo);
@@ -1038,6 +1065,7 @@ const handler = createMcpHandler(
                                 type: "text",
                                 text: JSON.stringify({
                                     sessionCode: session.code, paused: true,
+                                    pausedAt: outcome.session.pausedAt,
                                     status: outcome.session.status, round: outcome.session.round,
                                     agents: {},
                                 }),
@@ -1086,6 +1114,7 @@ const handler = createMcpHandler(
                                 sessionCode: latest.code,
                                 topic: latest.topic,
                                 status: latest.status,
+                                pausedAt: latest.pausedAt,
                                 round: latest.round,
                                 maxRounds: latest.maxRounds,
                                 lastSeq: latest.lastSeq,
@@ -1150,7 +1179,7 @@ const handler = createMcpHandler(
             { description: "[COUNCIL WORK CAMPAIGN] Submit a committed, verified task for closer review. This never self-approves the work.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), commitHash: z.string().min(1).max(120), verification: z.string().min(1).max(4000) } },
             async ({ itemId, agentName, commitHash, verification }, extra) => {
                 const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
-                try { const ok = await completeWorkItem({ itemId, agentName, commitHash, verification }); return { content: [{ type: "text", text: ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] }; }
+                try { const ok = await completeWorkItem({ itemId, agentName, commitHash, verification, identity: getCouncilWriteIdentity(extra.authInfo) }); return { content: [{ type: "text", text: ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] }; }
                 catch (error) { return { content: [{ type: "text", text: "Completion failed: " + errMsg(error) }] }; }
             },
         );
@@ -1231,11 +1260,11 @@ const handler = createMcpHandler(
                 description: "[COUNCIL WORK CAMPAIGN] Host only: record what the HOST observed about a submitted commit, independently of what the agent claimed. A failed check returns the task to its owner. The closer cannot accept a task until this passes.",
                 inputSchema: exactVerificationSchema.shape,
             },
-            async ({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, outputDigest, passed, report }, extra) => {
+            async ({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, redactionVersion, outputDigest, passed, report }, extra) => {
                 const denied = requireHost(extra);
                 if (denied) return denied;
                 try {
-                    const result = await recordExactVerification({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, outputDigest, passed, report }, extra.authInfo);
+                    const result = await recordExactVerification({ itemId, hostId, leaseEpoch, commitSha, baseSha, branchName, profileId, receipts, redactionVersion, outputDigest, passed, report }, extra.authInfo);
                     return { content: [{ type: "text", text: result.ok ? JSON.stringify(result) : JSON.stringify(result) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: "Host verify failed: " + errMsg(error) }] };
@@ -1256,8 +1285,46 @@ const handler = createMcpHandler(
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
                     const result = await freezeIntegrationManifest({ sessionId: session.id, hostId, leaseEpoch }, extra.authInfo);
                     const campaign = await getCampaignForSession(session.id);
-                    return { content: [{ type: "text", text: JSON.stringify({ ...result, integratorAgent: campaign?.integratorAgent ?? null }) }] };
+                    return { content: [{ type: "text", text: JSON.stringify({ ...result, integratorAgent: campaign?.integratorAgent ?? null, integrationStatus: campaign?.integrationStatus ?? null }) }] };
                 } catch (error) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: errMsg(error) }) }] }; }
+            },
+        );
+
+        server.registerTool(
+            "council_integration_begin",
+            {
+                description: "[COUNCIL V3 HOST] Start or recover one integration attempt with its immutable frozen manifest and nominated integrator.",
+                inputSchema: { ...integrationBeginSchema.omit({ sessionId: true }).shape, sessionCode: z.string().min(1) },
+            },
+            async ({ sessionCode, ...params }, extra) => {
+                const denied = requireHost(extra);
+                if (denied) return denied;
+                try {
+                    const session = await getSessionByCode(sessionCode);
+                    const result = session ? await beginIntegrationAttempt({ ...params, sessionId: session.id }, extra.authInfo)
+                        : { ok: false, reason: "unknown_session" };
+                    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+                } catch {
+                    return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "integration_begin_failed" }) }] };
+                }
+            },
+        );
+
+        server.registerTool(
+            "council_integration_finish",
+            {
+                description: "[COUNCIL V3 HOST] Finalise an integration attempt with exact-tip, redacted verification evidence under its original host lease.",
+                inputSchema: integrationFinishSchema.shape,
+            },
+            async (params, extra) => {
+                const denied = requireHost(extra);
+                if (denied) return denied;
+                try {
+                    const result = await finishIntegrationAttempt(params, extra.authInfo);
+                    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+                } catch {
+                    return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "integration_finish_failed" }) }] };
+                }
             },
         );
 
@@ -1351,6 +1418,7 @@ const handler = createMcpHandler(
                         intent: "pass",
                         body: reason,
                         clientKey: `${agentName}-pass-r${session.round}-${done ? "done" : "round"}`,
+                        identity: getCouncilWriteIdentity(extra.authInfo),
                     });
                     if (!result.ok) {
                         return { content: [{ type: "text", text: `NOT_YOUR_TURN - nothing was recorded (${result.reason}).\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };

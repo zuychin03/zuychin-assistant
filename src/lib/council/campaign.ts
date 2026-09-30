@@ -1,6 +1,10 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { councilWriteIdentitySchema, type CouncilWriteIdentity } from "./write-identity";
+import type { CouncilExecutionEvidence } from "./execution-evidence";
+import { sanitiseIntegrationEvidence, sanitiseIntegrationText, sanitiseVerificationReceipts,
+    type IntegrationEvidence } from "./integration-evidence";
 import {
-    exactVerificationSchema, integrationReportSchema, requireCouncilHost,
+    exactVerificationSchema, integrationBeginSchema, integrationFinishSchema, integrationReportSchema, requireCouncilHost,
     sessionFenceSchema, type CouncilCaller,
 } from "./host-contracts";
 
@@ -42,7 +46,11 @@ export interface CouncilIntegrationManifest {
     version: number;
     campaignId: string;
     baseSha: string;
-    items: { itemId: string; sequence: number; agentName: string; branch: string; commitSha: string; verificationRunId: string; dependencies: string[] }[];
+    items: {
+        itemId: string; sequence: number; agentName: string; branch: string; commitSha: string;
+        verificationRunId: string; dependencies: string[];
+        acceptedExecutionId?: string | null; executionEvidence?: CouncilExecutionEvidence | null;
+    }[];
 }
 
 export interface CouncilWorkItem {
@@ -71,6 +79,8 @@ export interface CouncilWorkItem {
     reviewedAt: string | null;
     branchName: string | null;
     acceptedCommitSha: string | null;
+    submittedExecutionId: string | null;
+    acceptedExecutionId: string | null;
     verificationProfile: string;
     verificationRunId: string | null;
     dependencies: string[];
@@ -96,11 +106,12 @@ interface WorkItemRow {
     declared_paths: string[] | null;
     branch_name: string | null; accepted_commit_sha: string | null; verification_profile: string;
     verification_run_id: string | null; dependencies: string[] | null;
+    submitted_execution_id: string | null; accepted_execution_id: string | null;
 }
 
 const CAMPAIGN_COLUMNS = "id, session_id, status, repo_path, base_branch, created_at, completed_at, "
     + "integrator_agent, integration_branch, integration_status, integration_report, integration_checked_at, base_sha, verification_profile, integration_manifest, manifest_frozen_at, integration_tip_sha";
-const ITEM_COLUMNS = "id, campaign_id, sequence, agent_name, title, instructions, acceptance_criteria, status, heartbeat_at, attempts, progress, commit_hash, verification, blocked_reason, started_at, completed_at, reviewed_at, host_verified, host_verification, host_checked_at, declared_paths, branch_name, accepted_commit_sha, verification_profile, verification_run_id, dependencies";
+const ITEM_COLUMNS = "id, campaign_id, sequence, agent_name, title, instructions, acceptance_criteria, status, heartbeat_at, attempts, progress, commit_hash, verification, blocked_reason, started_at, completed_at, reviewed_at, host_verified, host_verification, host_checked_at, declared_paths, branch_name, accepted_commit_sha, verification_profile, verification_run_id, dependencies, submitted_execution_id, accepted_execution_id";
 
 function mapCampaign(row: CampaignRow): CouncilCampaign {
     return {
@@ -125,6 +136,8 @@ function mapItem(row: WorkItemRow): CouncilWorkItem {
         hostVerified: row.host_verified, hostVerification: row.host_verification,
         hostCheckedAt: row.host_checked_at, declaredPaths: row.declared_paths ?? [],
         branchName: row.branch_name, acceptedCommitSha: row.accepted_commit_sha,
+        submittedExecutionId: row.submitted_execution_id ?? null,
+        acceptedExecutionId: row.accepted_execution_id ?? null,
         verificationProfile: row.verification_profile, verificationRunId: row.verification_run_id,
         dependencies: row.dependencies ?? [],
     };
@@ -193,13 +206,16 @@ export async function heartbeatWorkItem(params: { itemId: string; agentName: str
 
 export async function completeWorkItem(params: {
     itemId: string; agentName: string; commitHash: string; verification: string;
+    identity?: CouncilWriteIdentity;
 }): Promise<boolean> {
-    const { data, error } = await supabase.rpc("complete_council_work_item", {
+    const identity = params.identity === undefined ? undefined : councilWriteIdentitySchema.parse(params.identity);
+    const { data, error } = await supabase.rpc(identity ? "complete_council_work_item_attributed" : "complete_council_work_item", {
         p_item_id: params.itemId, p_agent_name: params.agentName,
         p_commit_hash: params.commitHash, p_verification: params.verification,
+        ...(identity ? { p_seat_token_hash: identity.tokenHash, p_expected_execution_id: identity.executionId } : {}),
     });
     if (error) throw new Error(error.message);
-    return data === true;
+    return identity ? data?.ok === true : data === true;
 }
 
 export async function blockWorkItem(params: { itemId: string; agentName: string; reason: string }): Promise<boolean> {
@@ -242,18 +258,89 @@ export interface VerificationReceipt {
 export async function recordExactVerification(params: {
     itemId: string; hostId: string; leaseEpoch: number; commitSha: string; baseSha: string;
     branchName: string; profileId: string; receipts: VerificationReceipt[];
-    outputDigest: string; passed: boolean; report: string;
+    outputDigest: string; passed: boolean; report: string; redactionVersion?: 1;
 }, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; verificationRunId?: string }> {
     requireCouncilHost(caller);
     params = exactVerificationSchema.parse(params);
+    const redaction = serverIntegrationRedactionContext();
+    const receipts = params.redactionVersion === 1 ? sanitiseVerificationReceipts(params.receipts, redaction) : params.receipts;
     const { data, error } = await supabase.rpc("record_council_verification", {
         p_item_id: params.itemId, p_host_id: params.hostId, p_lease_epoch: params.leaseEpoch,
         p_commit_sha: params.commitSha, p_base_sha: params.baseSha, p_branch_name: params.branchName,
-        p_profile_id: params.profileId, p_command_receipts: params.receipts,
-        p_output_digest: params.outputDigest, p_passed: params.passed, p_report: params.report,
+        p_profile_id: params.profileId, p_command_receipts: receipts,
+        p_output_digest: params.outputDigest, p_passed: params.passed,
+        p_report: params.redactionVersion === 1 ? sanitiseIntegrationText(params.report, redaction) : params.report,
     });
     if (error) throw new Error(error.message);
     return (data ?? { ok: false, reason: "no_result" }) as { ok: boolean; reason?: string; verificationRunId?: string };
+}
+
+function serverIntegrationRedactionContext() {
+    return {
+        secrets: Object.entries(process.env).filter(([name, value]) => value
+            && /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(name)).map(([, value]) => value!),
+        privatePaths: [process.cwd(), process.env.USERPROFILE, process.env.HOME].filter((value): value is string => !!value),
+    };
+}
+
+export interface BegunIntegrationAttempt {
+    id: string;
+    sessionId: string;
+    campaignId: string;
+    attemptNumber: number;
+    status: "running" | "verified" | "conflict" | "failed";
+    mode: "host" | "agent";
+    integratorAgent: string | null;
+    manifest: CouncilIntegrationManifest;
+    manifestHash: string;
+    baseBranch: string;
+    baseSha: string;
+    decision: string | null;
+    openQuestions: string[];
+    startedAt: string;
+}
+
+export async function beginIntegrationAttempt(params: {
+    sessionId: string; hostId: string; leaseEpoch: number; attemptId: string; expectedIntegrator: string | null;
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; attempt?: BegunIntegrationAttempt }> {
+    requireCouncilHost(caller);
+    const parsed = integrationBeginSchema.safeParse(params);
+    if (!parsed.success) throw new Error("Invalid integration attempt.");
+    const value = parsed.data;
+    const { data, error } = await supabase.rpc("begin_council_integration_attempt", {
+        p_session_id: value.sessionId, p_host_id: value.hostId, p_lease_epoch: value.leaseEpoch,
+        p_attempt_id: value.attemptId, p_expected_integrator: value.expectedIntegrator,
+    });
+    if (error) throw new Error("Could not begin integration attempt.");
+    if (!data) return { ok: false, reason: "no_result" };
+    if (data.ok !== true || !data.attempt) return { ok: false, reason: data.reason ?? "invalid_result" };
+    const attempt = data.attempt as BegunIntegrationAttempt;
+    return { ok: true, attempt: {
+        id: attempt.id, sessionId: attempt.sessionId, campaignId: attempt.campaignId,
+        attemptNumber: attempt.attemptNumber, status: attempt.status, mode: attempt.mode,
+        integratorAgent: attempt.integratorAgent, manifest: attempt.manifest, manifestHash: attempt.manifestHash,
+        baseBranch: attempt.baseBranch, baseSha: attempt.baseSha, decision: attempt.decision,
+        openQuestions: attempt.openQuestions, startedAt: attempt.startedAt,
+    } };
+}
+
+export async function finishIntegrationAttempt(params: {
+    attemptId: string; hostId: string; leaseEpoch: number; status: "verified" | "conflict" | "failed";
+    branch: string | null; tipSha: string | null; executionId: string | null; evidence: IntegrationEvidence;
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; attemptId?: string }> {
+    requireCouncilHost(caller);
+    const parsed = integrationFinishSchema.safeParse(params);
+    if (!parsed.success) throw new Error("Invalid integration result.");
+    const value = parsed.data;
+    const evidence = sanitiseIntegrationEvidence(value.evidence, serverIntegrationRedactionContext());
+    const { data, error } = await supabase.rpc("finalize_council_integration_attempt", {
+        p_attempt_id: value.attemptId, p_host_id: value.hostId, p_lease_epoch: value.leaseEpoch,
+        p_status: value.status, p_branch: value.branch, p_tip_sha: value.tipSha,
+        p_execution_id: value.executionId, p_evidence: evidence,
+    });
+    if (error) throw new Error("Could not record integration result.");
+    if (!data) return { ok: false, reason: "no_result" };
+    return data.ok === true ? { ok: true, attemptId: data.attemptId } : { ok: false, reason: data.reason ?? "invalid_result" };
 }
 
 export async function freezeIntegrationManifest(params: {

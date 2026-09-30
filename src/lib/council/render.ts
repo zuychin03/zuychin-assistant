@@ -371,7 +371,7 @@ This post is exempt from the ${POSTS_PER_ROUND}-per-round quota - post even if y
             // its human and stop, which is the one outcome a pause must not cause.
             return `Your human has stopped this council while they think something through. This is deliberate and it is not an error.
 Do not post, do not conclude, and do not report a problem - they already know. Read anything below, then keep waiting.
-You are released automatically when they resume; your place, your quota and the clock are all held.`
+Your place, quota and running clock are held until they resume. After seven consecutive paused days, this council expires and its transcript is retained.`
                 + renderNewMessages(result.fresh, result.omittedBefore);
         case "standby":
             return `The closer has written a verdict and it is now with your human. The debate is over unless they send it back.
@@ -614,7 +614,7 @@ export function renderTurn(params: {
 }): string {
     const { session, agentName, cursor } = params;
 
-    if (session.status === "closed") return renderClosed(session);
+    if (session.status === "closed" || (session.status === "expired" && session.pausedAt)) return renderClosed(session);
 
     const result: WaitResult = session.status === "concluding" || session.status === "expired"
         ? {
@@ -640,6 +640,12 @@ export function renderTurn(params: {
 }
 
 export function renderClosed(session: CouncilSession): string {
+    if (session.status === "expired" && session.pausedAt) {
+        return `=== COUNCIL CLOSED ===
+${session.code} - ${session.topic}
+This council expired after seven consecutive paused days. Its transcript has been retained.
+You are released. Do not post, write a verdict, or call council tools for this session again.`;
+    }
     const questions = session.openQuestions.length
         ? `\nOpen questions:\n${session.openQuestions.map((q) => `- ${q}`).join("\n")}`
         : "";

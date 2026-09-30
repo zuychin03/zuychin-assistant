@@ -571,7 +571,9 @@ that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only
 | `council_work_unverified` | host | List submitted work items still waiting on host evidence |
 | `council_work_verify` | host | Record exact-commit verification evidence for one item |
 | `council_integration_manifest` | host | Freeze the accepted-SHA manifest once every item is verified |
-| `council_integration_report` | host | Record the delegated integrator's result against the frozen manifest |
+| `council_integration_begin` | host | Capture an immutable integration attempt and its nominated integrator |
+| `council_integration_finish` | host | Finalise an attempt with exact-tip checks and redacted command receipts |
+| `council_integration_report` | host | Legacy summary reporting, disabled after a campaign starts recorded attempts |
 
 ### zuychin-council
 
@@ -601,6 +603,39 @@ The council and campaign tables live in the `-- ===== Council wave =====`,
 `-- ===== Council V3 wave =====` and `-- ===== Council V3.5 wave =====` blocks at the bottom of
 `supabase-setup.sql`; run the full idempotent script in the Supabase SQL Editor before first use.
 For existing installations, follow the upgrade note below.
+
+**Paused Council expiry.** A Council expires after seven consecutive paused days, retaining its
+transcript and pause history. Resuming before that deadline restores the running clocks; a later
+pause starts a new seven-day interval. Expired pauses cannot resume, even if the scheduled sweep
+has not run. Expiry stops debate without creating a verdict or deleting messages.
+
+Before deploying this policy to an existing installation, apply the complete
+[`scripts/migrations/council-paused-expiry.sql`](scripts/migrations/council-paused-expiry.sql)
+through the Supabase SQL Editor. It updates the pause/resume functions without changing the schema
+or existing records. Fresh installations receive the same functions from `supabase-setup.sql`.
+Run `npm run council:pause:test` for the offline expiry, resume and transcript-retention checks.
+The updated host requires a server advertising `council_dispatch.statusOnly`; deploy the server
+before restarting the host.
+
+For execution attribution, apply the complete
+[`scripts/migrations/council-execution-attribution.sql`](scripts/migrations/council-execution-attribution.sql)
+after earlier Council migrations and before deploying the matching server. Restart the host only
+after the server advertises `bindExecution` on seat issuance and `seatTokenHash` on execution
+registration. The host binds a fresh seat credential to each run before prompting its adapter.
+Messages and submitted commits retain that run's identity through replacement runs, exact-SHA
+verification and the frozen integration manifest. Historical messages and legacy credentials remain
+explicitly unattributed. Run `npm run council:attribution:test` for offline database, credential,
+evidence-reader and component regressions. These tests do not replace native or hosted acceptance.
+
+For the owner review package, apply the complete
+[`scripts/migrations/council-owner-merge-package.sql`](scripts/migrations/council-owner-merge-package.sql)
+after execution attribution and before deploying the matching server. New hosts require the
+`council_integration_begin` and `council_integration_finish` tools before starting integration.
+Each attempt retains its frozen manifest digest, accepted commits, exact verification references,
+integration receipts, changed paths and protected-branch observations. Earlier attempts remain
+reviewable; the owner can copy an exact-SHA comparison command and decide how to merge locally.
+Legacy command arguments and output are withheld when no redaction version was recorded.
+Run `npm run council:integration:test` for the offline attempt, host, Git, privacy and owner UI checks.
 
 **Run the whole script or a complete standalone migration, never an extracted fragment.**
 Several functions are defined more than once across the
@@ -666,9 +701,11 @@ surfaces in the assistant's own context, so choose write access deliberately.
 `scripts/council-host.mts` is a long-lived local process that owns the agents. Zuychin is
 serverless and cannot start anything on your machine, and a browser page has no `child_process`,
 so the host is the only place the Agent Client Protocol client can live. It holds **one ACP
-session per agent for the whole council** (so agents keep their context between turns), mediates
-every file and terminal call against that agent's worktree, pushes each turn with
+session per agent for the whole council** (so agents keep their context between turns), checks
+ACP client file and terminal requests against that agent's worktree, pushes each turn with
 `session/prompt`, and serves a loopback control channel to `/council`.
+An adapter's own file or shell tools can bypass those client callbacks. See the
+[tested adapter compatibility](scripts/COUNCIL_ADAPTER_COMPATIBILITY.md) before enabling an adapter.
 
 Setup:
 
@@ -678,7 +715,7 @@ Setup:
 2. `agents` holds one adapter per provider, each with a `mode`. `acp` means the host drives it;
    `shell` is the old one-process-per-turn behaviour. Verify the ACP entry point against your
    installed version - `claude` itself has no `--acp` flag, so `claude-code` uses Zed's adapter
-   (`npx -y @zed-industries/claude-code-acp`). `scripts/council-acp-probe.mts` checks a candidate
+   (`npx -y @zed-industries/claude-code-acp@0.16.2`). `scripts/council-acp-probe.mts` checks a candidate
    adapter's handshake, streaming and client callbacks. For MCP visibility, create a separate
    **Read-only** named client for the ACP probe in `/agents`, then store its redeemed key as
    `COUNCIL_PROBE_MCP_KEY`. The probe accepts only a complete `zck_` key and has no shared-key or
@@ -705,8 +742,12 @@ Setup:
    Populate it only with IDs the adapter actually advertises - the host refuses an unadvertised
    model rather than falling back - and get them from
    `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --models --agent codex`, which
-   prints a paste-ready block. Not every adapter offers a choice: Zed's `claude-code` adapter
-   advertises none, so those seats run whatever the `claude` CLI is set to.
+   prints a paste-ready block. Test an advertised choice without sending a prompt using
+   `npx tsx scripts/council-acp-probe.mts --set-model <id> --set-reasoning <effort> --agent codex`.
+   Both selection flags are optional and require adapter confirmation before any explicit prompt.
+   Claude adapter `0.16.2` reports legacy model identifiers and acknowledges `session/set_model`.
+   That acknowledgement is recorded separately from stable configuration readback. An empty
+   instance allowlist leaves the model at its adapter default.
 4. Set a separate random `MCP_COUNCIL_HOST_KEY` in the app and local host environment. The host
    key has no knowledge/vault authority and is never passed to an adapter. Each adapter instead
    receives a short-lived credential for its one Council seat.

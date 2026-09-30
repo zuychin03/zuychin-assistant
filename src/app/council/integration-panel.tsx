@@ -3,6 +3,10 @@
 import { useState } from "react";
 import { GitMerge, ShieldCheck } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
+import { parseFrozenExecutionItems } from "@/lib/council/execution-evidence";
+import { ExecutionEvidence } from "./execution-evidence";
+import { OwnerMergePackage } from "./owner-merge-package";
+import ui from "./council.module.css";
 
 
 interface Campaign {
@@ -13,6 +17,7 @@ interface Campaign {
     integrationStatus: string | null;
     integrationReport: string | null;
     integrationCheckedAt: string | null;
+    integrationManifest?: unknown;
 }
 
 const TONE: Record<string, string> = {
@@ -35,7 +40,7 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
 
     async function nominate() {
         const agentName = agent.trim();
-        if (!agentName || busy) return;
+        if (!agentName || busy || campaign.integrationStatus === "running") return;
         setBusy(true);
         setError("");
         try {
@@ -46,7 +51,7 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
             });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({})) as { error?: string };
-                setError(data.error ?? "Could not nominate an integrator.");
+                setError(data.error === "attempt_running" ? "Assembly is running. Wait for this attempt to finish before delegating again." : data.error ?? "Could not nominate an integrator.");
                 return;
             }
             setAgent("");
@@ -60,6 +65,7 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
 
     const status = campaign.integrationStatus;
     const tone = status ? TONE[status] ?? "var(--color-text-muted)" : "var(--color-text-muted)";
+    const frozenItems = parseFrozenExecutionItems(campaign.integrationManifest);
 
     return (
         <div style={styles.wrap}>
@@ -74,9 +80,6 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
                         {campaign.integrationBranch && <code style={styles.branch}>{campaign.integrationBranch}</code>}
                         {campaign.integratorAgent && <span style={styles.meta}>by {campaign.integratorAgent}</span>}
                     </div>
-                    {campaign.integrationReport && (
-                        <pre style={styles.report}>{campaign.integrationReport}</pre>
-                    )}
                     {status === "verified" && (
                         <div style={styles.merged}>
                             <ShieldCheck size={13} /> Assembled and checked. Merging into{" "}
@@ -92,6 +95,15 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
                 </div>
             )}
 
+            {frozenItems.length > 0 && <details className={ui.executionHistory}>
+                <summary>Accepted submission evidence <span className={ui.evidenceSummary}>{frozenItems.length} tasks</span></summary>
+                {frozenItems.map(item => <div key={item.itemId} className={ui.executionRecord}>
+                    <div className={ui.evidenceNote}>Task {item.sequence} · {item.agentName} · <code>{item.commitSha}</code></div>
+                    <ExecutionEvidence executionId={item.acceptedExecutionId} snapshot={item.executionEvidence} label="Frozen model details" />
+                </div>)}
+            </details>}
+            <OwnerMergePackage key={code} code={code} revision={campaign.integrationCheckedAt} />
+
             {campaign.status === "complete" && (
                 <div style={styles.row}>
                     <Dropdown
@@ -100,14 +112,15 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
                         options={agentNames}
                         ariaLabel="Integration agent"
                         placeholder="Delegate the assembly to…"
-                        disabled={busy || agentNames.length === 0}
+                        disabled={busy || status === "running" || agentNames.length === 0}
                         style={styles.input}
                     />
-                    <button type="button" onClick={nominate} disabled={busy || !agentNames.includes(agent)} style={styles.button}>
+                    <button type="button" onClick={nominate} disabled={busy || status === "running" || !agentNames.includes(agent)} style={styles.button}>
                         {busy ? "Delegating…" : "Delegate"}
                     </button>
                 </div>
             )}
+            {campaign.status === "complete" && status === "running" && <p style={styles.note}>Assembly is running. Delegation becomes available when this attempt finishes.</p>}
 
             {error && <div role="alert" style={styles.error}>{error}</div>}
         </div>
@@ -133,12 +146,6 @@ const styles: Record<string, React.CSSProperties> = {
     branch: { fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5 },
     meta: { fontSize: 11.5, color: "var(--color-text-muted)" },
     note: { fontSize: 11.5, color: "var(--color-text-muted)", lineHeight: 1.5 },
-    report: {
-        margin: 0, padding: 9, borderRadius: 9, maxHeight: 220, overflow: "auto",
-        fontSize: 11, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word",
-        background: "color-mix(in srgb, var(--color-text-muted) 10%, transparent)",
-        color: "var(--color-text-primary)",
-    },
     merged: {
         display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
         fontSize: 11.5, color: "var(--color-text-muted)",

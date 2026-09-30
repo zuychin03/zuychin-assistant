@@ -14,6 +14,10 @@ export async function verifyMcpToken(_req: Request, bearerToken?: string): Promi
             token: bearerToken,
             clientId: `council-seat:${seat.sessionId}:${seat.seatName}`,
             scopes: ["council:seat"],
+            extra: {
+                councilExecutionId: seat.executionId,
+                councilExecutionBindingRequired: seat.bindingRequired,
+            },
         };
     }
     const agent = await resolveAgentKey(bearerToken);

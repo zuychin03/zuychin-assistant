@@ -15,16 +15,40 @@
     --council-info: #7aa2ff;
     --council-secondary: #c792ea;
 }
-.council :is(button, a, input, textarea):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.council :is(button, a, input, textarea, summary):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .council button:disabled { cursor: not-allowed; opacity: .55; }
 .council svg { flex-shrink: 0; }
 .council :is(input, textarea)::placeholder { color: var(--color-text-muted); opacity: 1; }
 .monitor { overflow-wrap: anywhere; }
 .monitor::backdrop { background: var(--color-background); }
+.evidence, .executionHistory { min-width: 0; width: 100%; font-size: 12px; line-height: 1.55; color: var(--color-text-primary); }
+.evidence summary, .executionHistory > summary { cursor: pointer; min-height: 44px; padding-block: 10px; overflow-wrap: anywhere; }
+.evidenceSummary { margin-left: 8px; color: var(--color-text-muted); font-weight: 400; }
+.evidenceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin: 0; padding: 8px 0 12px; }
+.evidenceGrid > div { min-width: 0; }
+.evidenceGrid dt, .evidenceNote, .evidenceState { font-size: 11.5px; color: var(--color-text-muted); line-height: 1.55; overflow-wrap: anywhere; }
+.evidenceGrid dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.evidenceWide { grid-column: 1 / -1; }
+.evidenceNote { margin-block: 4px; }
+.evidenceState { display: block; padding-block: 5px; }
+.executionRecord { min-width: 0; padding-block: 6px 10px; border-top: 1px solid color-mix(in srgb, var(--color-text-muted) 20%, transparent); }
+.evidenceButton { min-height: 44px; margin-top: 8px; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--color-text-muted) 35%, transparent); border-radius: var(--radius-sm, 8px); background: transparent; color: var(--color-text-primary); font: inherit; cursor: pointer; }
+.executionHistory { margin-top: 8px; }
+.ownerControls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ownerAttemptPicker { flex: 1 1 240px; min-width: 0; max-width: 100%; min-height: 44px; }
+.ownerReview { min-width: 0; margin-top: 16px; }
+.ownerTitle { font-size: 13px; margin: 0 0 6px; }
+.ownerError { color: var(--council-error); font-size: 12px; line-height: 1.55; margin-block: 8px; }
+.ownerCommand { display: block; width: 100%; resize: vertical; margin-top: 6px; padding: 10px; color: var(--color-text-primary); background: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-sm, 8px); font: 12px/1.6 var(--font-mono, monospace); }
+.ownerCompare { margin-block: 10px 16px; }
+.ownerOutput { margin: 8px 0; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: color-mix(in srgb, var(--color-text-muted) 7%, transparent); border-radius: var(--radius-sm, 8px); font: 11.5px/1.6 var(--font-mono, monospace); }
+.ownerProse { white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 6px 12px; }
+.ownerList { padding-left: 20px; margin-block: 8px; }
 @media (max-width: 600px) {
     .council :is(button, a) { min-height: 44px; }
     .council :is(input, textarea) { font-size: 16px !important; }
     .modelRow { grid-template-columns: minmax(0, 1fr) !important; padding-block: 8px; }
+    .evidenceGrid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
     .council *, .council *::before, .council *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

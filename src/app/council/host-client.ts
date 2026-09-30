@@ -25,6 +25,9 @@ export interface HostAgent {
     requestedReasoningEffort: string | null;
     effectiveReasoningEffort: string | null;
     identityAssurance: string;
+    executionId?: string | null;
+    modelSource?: string | null;
+    adapterVersion?: string | null;
     capabilities: Record<string, unknown>;
 }
 

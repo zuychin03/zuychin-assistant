@@ -49,6 +49,8 @@ export interface ProbeArguments {
     wantPrompt: boolean;
     wantEdit: boolean;
     wantModels: boolean;
+    modelId?: string;
+    reasoningEffort?: string;
     adapterName?: string;
     endpointArg?: string;
     command?: string;
@@ -59,14 +61,14 @@ export function parseProbeArguments(argv: readonly string[]): ProbeArguments {
     const split = argv.indexOf("--");
     const flags = split < 0 ? argv : argv.slice(0, split);
     const seen = new Set<string>();
-    const known = new Set(["--prompt", "--edit", "--models", "--agent", "--mcp-url"]);
+    const known = new Set(["--prompt", "--edit", "--models", "--set-model", "--set-reasoning", "--agent", "--mcp-url"]);
     const values = new Map<string, string>();
     for (let index = 0; index < flags.length; index++) {
         const flag = flags[index];
         if (!known.has(flag)) throw new Error("Unknown probe argument; adapter arguments must follow --.");
         if (seen.has(flag)) throw new Error(`Duplicate ${flag} argument.`);
         seen.add(flag);
-        if (flag === "--agent" || flag === "--mcp-url") {
+        if (flag === "--agent" || flag === "--mcp-url" || flag === "--set-model" || flag === "--set-reasoning") {
             const value = flags[++index];
             if (!value?.trim() || value.startsWith("-")) throw new Error(`${flag} requires a value, not another flag.`);
             values.set(flag, value);
@@ -78,7 +80,9 @@ export function parseProbeArguments(argv: readonly string[]): ProbeArguments {
     if (!seen.has("--agent") && (!command?.trim() || command.startsWith("-"))) throw new Error("Select --agent or provide a command after --.");
     if (seen.has("--prompt") && !values.has("--mcp-url")) throw new Error("--prompt requires --mcp-url with an explicit credential destination.");
     return {
-        wantPrompt: seen.has("--prompt") || seen.has("--edit"), wantEdit: seen.has("--edit"), wantModels: seen.has("--models"),
+        wantPrompt: seen.has("--prompt") || seen.has("--edit"), wantEdit: seen.has("--edit"),
+        wantModels: seen.has("--models") || seen.has("--set-model") || seen.has("--set-reasoning"),
+        modelId: values.get("--set-model"), reasoningEffort: values.get("--set-reasoning"),
         adapterName: values.get("--agent"), endpointArg: values.get("--mcp-url"), command,
         args: split < 0 ? [] : argv.slice(split + 2),
     };

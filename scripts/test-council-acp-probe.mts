@@ -62,6 +62,112 @@ async function run(flags: string[], env: Record<string, string | undefined> = {}
 }
 
 try {
+    await test("model and reasoning selection confirms final readback without prompts or MCP", async () => {
+        calls.length = 0;
+        const result = await run(["--set-model", "fixture-next", "--set-reasoning", "high"], {}, "selection-ok");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /"defaultModel": "fixture-next"/);
+        assert.match(result.output, /"defaultReasoningEffort": "high"/);
+        assert.match(result.output, /currently fixture-next/);
+        assert.match(result.output, /currently high/);
+        assert.deepEqual(calls, []);
+        assert.deepEqual(result.records.find((record) => record.method === "session/new").params.mcpServers, []);
+        assert.deepEqual(result.records.filter((record) => record.method).map((record) => record.method), [
+            "initialize", "session/new", "session/set_config_option", "session/set_config_option",
+        ]);
+        assert.deepEqual(result.records.filter((record) => record.method === "session/set_config_option").map((record) => record.params), [
+            { sessionId: "fixture-session", configId: "fixture-model", value: "fixture-next" },
+            { sessionId: "fixture-session", configId: "next-effort", value: "high" },
+        ]);
+    });
+    await test("reasoning-only selection preserves the adapter default", async () => {
+        const result = await run(["--set-reasoning", "low"], {}, "selection-ok");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /"defaultModel": "fixture-default"/);
+        const setters = result.records.filter((record) => record.method === "session/set_config_option");
+        assert.deepEqual(setters.map((record) => record.params.configId), ["default-effort"]);
+        assert.equal(result.records.some((record) => record.method === "session/prompt"), false);
+    });
+    await test("unadvertised overrides fail before setters or prompts", async () => {
+        for (const [mode, flags] of [
+            ["legacy-model", ["--set-model", "unknown-model"]],
+            ["selection-ok", ["--set-model", "unknown-model"]],
+            ["selection-ok", ["--set-reasoning", "high"]],
+        ] as const) {
+            const result = await run(["--prompt", ...flags], { COUNCIL_PROBE_MCP_KEY: key }, mode);
+            assert.equal(result.code, 1, result.output);
+            assert.deepEqual(result.records.filter((record) => record.method).map((record) => record.method), ["initialize", "session/new"]);
+            assert.match(result.output, /did not advertise/);
+        }
+    });
+    await test("unconfirmed or changed selections fail before a requested prompt", async () => {
+        for (const mode of ["selection-wrong", "selection-missing", "selection-drift"]) {
+            const result = await run(["--prompt", "--set-model", "fixture-next", "--set-reasoning", "high"], { COUNCIL_PROBE_MCP_KEY: key }, mode);
+            assert.equal(result.code, 1, result.output);
+            assert.equal(result.records.some((record) => record.method === "session/prompt"), false);
+            assert.match(result.output, /did not confirm|changed or omitted/);
+            assert.doesNotMatch(result.output, /"defaultModel"/);
+        }
+    });
+    await test("confirmed selection precedes an explicitly requested prompt", async () => {
+        const result = await run(["--prompt", "--set-model", "fixture-next"], { COUNCIL_PROBE_MCP_KEY: key }, "selection-ok");
+        assert.equal(result.code, 0, result.output);
+        assert.deepEqual(result.records.filter((record) => record.method).map((record) => record.method), [
+            "initialize", "session/new", "session/set_config_option", "session/prompt",
+        ]);
+    });
+    await test("legacy selection records a negotiated ACK without claiming readback", async () => {
+        calls.length = 0;
+        const result = await run(["--set-model", "claude-next"], {}, "legacy-model");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /negotiated claude-next/);
+        assert.match(result.output, /no independent readback/);
+        assert.match(result.output, /"defaultModel": "claude-next"/);
+        assert.doesNotMatch(result.output, /readback matches|currently claude-next|currently claude-fixture/);
+        assert.deepEqual(calls, []);
+        assert.deepEqual(result.records.filter((record) => record.method).map((record) => record.method), [
+            "initialize", "session/new", "session/set_model",
+        ]);
+        assert.deepEqual(result.records.find((record) => record.method === "session/set_model").params, {
+            sessionId: "fixture-session", modelId: "claude-next",
+        });
+    });
+    await test("legacy rejection or malformed ACK prevents an explicit prompt", async () => {
+        for (const mode of ["legacy-reject", "legacy-invalid"]) {
+            const result = await run(["--prompt", "--set-model", "claude-next"], { COUNCIL_PROBE_MCP_KEY: key }, mode);
+            assert.equal(result.code, 1, result.output);
+            assert.equal(result.records.some((record) => record.method === "session/prompt"), false);
+            assert.equal(result.records.filter((record) => record.method === "session/set_model").length, 1);
+            assert.doesNotMatch(result.output, /"defaultModel"/);
+        }
+    });
+    await test("legacy advertised IDs without a current model remain usable without inventing a default", async () => {
+        const result = await run(["--models"], {}, "legacy-no-current");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /legacy model selection/);
+        assert.match(result.output, /"allowedModels": \[\s*"claude-fixture",\s*"claude-next"\s*\]/);
+        assert.doesNotMatch(result.output, /"defaultModel"|config id "model"/);
+        assert.equal(result.records.some((record) => record.method === "session/set_model"), false);
+    });
+    await test("legacy selection drops reasoning defaults not refreshed by the ACK", async () => {
+        const result = await run(["--set-model", "claude-next"], {}, "legacy-reasoning");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /"defaultModel": "claude-next"/);
+        assert.match(result.output, /"allowedReasoningEfforts": \[\]/);
+        assert.doesNotMatch(result.output, /"defaultReasoningEffort"|currently low/);
+    });
+    await test("legacy ACP model evidence survives the actual session boundary", async () => {
+        calls.length = 0;
+        const result = await run(["--models"], {}, "legacy-model");
+        assert.equal(result.code, 0, result.output);
+        assert.match(result.output, /currently claude-fixture/);
+        assert.match(result.output, /Claude fixture/);
+        assert.match(result.output, /fixture-adapter 1\.2\.3-fixture/);
+        assert.match(result.output, /"allowedModels": \[\s*"claude-fixture",\s*"claude-next"\s*\]/);
+        assert.match(result.output, /"defaultModel": "claude-fixture"/);
+        assert.deepEqual(calls, []);
+        assert.deepEqual(result.records.filter((record) => record.method).map((record) => record.method), ["initialize", "session/new"]);
+    });
     await test("invalid probe arguments fail before config reads, HTTP requests or adapter launch", async () => {
         const rejected = [
             ["--prompt", "--mcp-url", `${endpoint}/mcp`, "--mcp-url", `${endpoint}/missing`],
@@ -71,6 +177,8 @@ try {
             ["--prompt", "--edit", "--mcp-url", `${endpoint}/mcp`],
             ["--mcp-url"], ["--mcp-url", "--models"], ["--mcp-url", "-url"],
             ["--agent"], ["--agent", "--models"], ["--agent", "fixture"],
+            ["--set-model"], ["--set-model", "--models"], ["--set-model", "one", "--set-model", "two"],
+            ["--set-reasoning"], ["--set-reasoning", "--prompt"], ["--set-reasoning", "low", "--set-reasoning", "high"],
         ];
         for (const flags of rejected) {
             calls.length = 0;

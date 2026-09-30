@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isCouncilHost } from "../agents/scopes";
+import { integrationEvidenceSchema } from "./integration-evidence";
 
 export interface CouncilCaller {
     readonly scopes: readonly string[];
@@ -27,6 +28,7 @@ export const renewLeaseSchema = claimLeaseSchema.extend({ leaseEpoch: hostFenceS
 export const sessionFenceSchema = z.object({ sessionId: z.string().uuid(), ...hostFenceShape });
 export const issueHostSeatSchema = sessionFenceSchema.extend({
     seatName: z.string().min(1),
+    bindExecution: z.boolean().optional(),
     ttlHours: z.number().positive().finite().optional(),
 });
 
@@ -50,6 +52,7 @@ export const capabilitySchema = z.object({
 });
 export const startExecutionSchema = sessionFenceSchema.extend({
     agentName: z.string().min(1),
+    seatTokenHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     hostGeneration: z.string().min(1),
     capabilities: capabilitySchema,
     identityAssurance: z.enum(["verified_seat", "host_bound", "owner_relay", "unverified_declaration"]),
@@ -87,6 +90,7 @@ export const exactVerificationSchema = z.object({
     profileId: z.string().min(1).max(100),
     passed: z.boolean(),
     receipts: z.array(verificationReceiptSchema).max(20),
+    redactionVersion: z.literal(1).optional(),
     outputDigest: z.string().min(1),
     report: reportSchema.describe("Checks run and their outcomes, bound to the exact commit and frozen base."),
 });
@@ -96,4 +100,19 @@ export const integrationReportSchema = sessionFenceSchema.extend({
     tipSha: commitShaSchema.optional(),
     reporter: z.string().min(1),
     report: reportSchema,
+});
+
+export const integrationBeginSchema = sessionFenceSchema.extend({
+    attemptId: z.string().uuid(),
+    expectedIntegrator: z.string().min(1).max(100).nullable(),
+});
+
+export const integrationFinishSchema = z.object({
+    attemptId: z.string().uuid(),
+    ...hostFenceShape,
+    status: z.enum(["verified", "conflict", "failed"]),
+    branch: z.string().min(1).max(200).nullable(),
+    tipSha: commitShaSchema.nullable(),
+    executionId: z.string().uuid().nullable(),
+    evidence: integrationEvidenceSchema,
 });

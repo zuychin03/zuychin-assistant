@@ -2,9 +2,10 @@ import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { CouncilType } from "./templates";
 import { COUNCIL_PROTOCOL_VERSION } from "./v3";
 import { requireCouncilHost, type CouncilCaller } from "./host-contracts";
+import { councilWriteIdentitySchema, type CouncilWriteIdentity } from "./write-identity";
 import {
     MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
-    PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES,
+    PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES, PAUSE_TTL_MS,
     SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
     CODE_ALPHABET, COUNCIL_CODE_PATTERN, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
     type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
@@ -42,7 +43,7 @@ export interface CouncilOwnerMessage {
 export interface CouncilMessage {
     seq: number; round: number; speaker: string; role: CouncilRole;
     addressedTo: string; intent: string; replyToSeq: number | null;
-    body: string; answered: boolean; createdAt: string;
+    body: string; answered: boolean; createdAt: string; executionId: string | null;
 }
 
 export interface CouncilParticipant {
@@ -81,7 +82,7 @@ interface SessionRow {
 interface MessageRow {
     seq: number; round: number; speaker: string; role: CouncilRole;
     addressed_to: string; intent: string; reply_to_seq: number | null;
-    body: string; answered: boolean; created_at: string;
+    body: string; answered: boolean; created_at: string; execution_id: string | null;
 }
 
 interface ParticipantRow {
@@ -100,7 +101,7 @@ const SESSION_COLUMNS =
     "paused_at, paused_total_seconds, verdict_proposed_at, standby_expires_at, continue_count";
 
 const MESSAGE_COLUMNS =
-    "seq, round, speaker, role, addressed_to, intent, reply_to_seq, body, answered, created_at";
+    "seq, round, speaker, role, addressed_to, intent, reply_to_seq, body, answered, created_at, execution_id";
 
 const PARTICIPANT_COLUMNS =
     "name, kind, expertise, status, posts_total, posts_this_round, cursor_seq, " +
@@ -156,6 +157,7 @@ function mapMessage(row: MessageRow): CouncilMessage {
         body: row.body,
         answered: row.answered,
         createdAt: row.created_at,
+        executionId: row.execution_id ?? null,
     };
 }
 
@@ -377,13 +379,15 @@ export async function appendMessage(params: {
     addressedTo?: string;
     replyToSeq?: number;
     ackSeq?: number;
+    identity?: CouncilWriteIdentity;
 }): Promise<{
     ok: boolean; seq?: number; round: number; reason?: string;
     duplicate?: boolean; advanced?: boolean; posts?: number;
     cleared?: boolean; status?: CouncilStatus;
 }> {
     try {
-        const { data, error } = await supabase.rpc("append_council_message", {
+        const identity = params.identity === undefined ? undefined : councilWriteIdentitySchema.parse(params.identity);
+        const { data, error } = await supabase.rpc(identity ? "append_council_message_attributed" : "append_council_message", {
             p_session_id: params.sessionId,
             p_speaker: params.speaker,
             p_role: params.role ?? "agent",
@@ -395,6 +399,7 @@ export async function appendMessage(params: {
             p_ack_seq: params.ackSeq ?? null,
             p_posts_per_round: POSTS_PER_ROUND,
             p_stale_seconds: PARTICIPANT_STALE_SECONDS,
+            ...(identity ? { p_seat_token_hash: identity.tokenHash, p_expected_execution_id: identity.executionId } : {}),
         });
         if (error) throw new Error(error.message);
         return (data ?? { ok: false, reason: "no_result", round: 0 }) as {
@@ -520,20 +525,20 @@ export async function getParticipant(sessionId: string, name: string): Promise<C
     return mapParticipant(data as unknown as ParticipantRow);
 }
 
-// Best-effort, and issued only when the transition actually applies: an
-// unconditional per-window UPDATE would fire the updated_at trigger and take a
-// row-exclusive lock on the one hot row the entire poll reads.
-// is("paused_at", null) on every expiry path: a paused council is waiting on a
-// human, not on its agents. resume_council adds the paused span back to
-// expires_at, so the deadline it is eventually judged against is unchanged.
+function expiryFilter(): string {
+    const now = Date.now();
+    const pauseCutoff = new Date(now - PAUSE_TTL_MS).toISOString();
+    return `and(paused_at.is.null,expires_at.lt.${new Date(now).toISOString()}),paused_at.lte.${pauseCutoff}`;
+}
+
+// Keep the predicate on the UPDATE so a concurrent resume is rechecked under its row lock.
 export async function expireSessionIfDue(sessionId: string): Promise<void> {
     const { error } = await supabase
         .from("council_sessions")
         .update({ status: "expired" })
         .eq("id", sessionId)
         .in("status", ["open", "concluding"])
-        .is("paused_at", null)
-        .lt("expires_at", new Date().toISOString());
+        .or(expiryFilter());
     if (error) console.warn("[Council] expireSessionIfDue failed:", error.message);
 }
 
@@ -646,7 +651,7 @@ async function readOpenToYou(sessionId: string, agentName: string): Promise<Coun
 }
 
 function baseKeyword(session: CouncilSession, you: CouncilParticipant | null): CouncilStatusKeyword {
-    if (session.status === "closed") return "COUNCIL_CLOSED";
+    if (session.status === "closed" || (session.status === "expired" && session.pausedAt)) return "COUNCIL_CLOSED";
     if (session.status === "concluding" || session.status === "expired") return "COUNCIL_CONCLUDING";
     if (you && session.floorHolder === you.name) return "YOUR_TURN";
     return "WAITING";
@@ -1001,8 +1006,7 @@ export async function expireOverdueSessions(): Promise<CouncilSession[]> {
         .from("council_sessions")
         .update({ status: "expired" })
         .in("status", ["open", "concluding"])
-        .is("paused_at", null)
-        .lt("expires_at", new Date().toISOString())
+        .or(expiryFilter())
         .select(SESSION_COLUMNS);
     if (error) {
         console.error("[Council] expireOverdueSessions failed:", error.message);
