@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const START_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 20 });
+const START_TIMEOUT: Duration = Duration::from_secs(20);
 const STOP_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
 const KILL_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_FRESHNESS: Duration = Duration::from_secs(15);
@@ -1015,7 +1015,8 @@ if (config.mode === 'singleton') {
     output({type:'exit', at:new Date().toISOString(), code:1, reason:'singleton', detail:'private manual host path', councilCode:null, draining:false});
     setTimeout(() => process.exit(1), 20);
 } else {
-    if (config.mode !== 'hang-start') { health(); setInterval(health, 100); }
+    if (config.mode === 'delayed-ready') setTimeout(() => { health(); setInterval(health, 100); }, 3000);
+    else if (config.mode !== 'hang-start') { health(); setInterval(health, 100); }
     else setInterval(() => {}, 100);
     output({type:'log', level:'warn', at:new Date().toISOString(), message:'private-secret-material'});
     process.stderr.write('private-secret-material\n');
@@ -1034,6 +1035,34 @@ if (config.mode === 'singleton') {
         supervisor: Supervisor,
         root: tempfile::TempDir,
         node: PathBuf,
+    }
+
+    const FIXTURE_SLACK: Duration = Duration::from_secs(3);
+    const DESCENDANT_TIMEOUT: Duration = Duration::from_secs(3);
+
+    #[derive(Clone, Copy, Debug)]
+    enum FixtureWait {
+        Ready,
+        Restart,
+        StartFailure,
+        Stopped,
+    }
+
+    impl FixtureWait {
+        fn timeout(self) -> Duration {
+            match self {
+                Self::Ready => START_TIMEOUT + FIXTURE_SLACK,
+                Self::Restart => STOP_TIMEOUT + KILL_TIMEOUT + START_TIMEOUT + FIXTURE_SLACK,
+                Self::StartFailure => START_TIMEOUT + KILL_TIMEOUT + FIXTURE_SLACK,
+                Self::Stopped => STOP_TIMEOUT + KILL_TIMEOUT + FIXTURE_SLACK,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn abrupt_helper_timeout() -> Duration {
+        let shutdown_timeout = STOP_TIMEOUT + KILL_TIMEOUT + Duration::from_secs(3);
+        FixtureWait::Ready.timeout() + DESCENDANT_TIMEOUT + shutdown_timeout + FIXTURE_SLACK
     }
 
     impl Fixture {
@@ -1076,7 +1105,7 @@ if (config.mode === 'singleton') {
 
         fn descendant_pid(&self) -> u32 {
             let pid_file = self.root.path().join("descendant.pid");
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + DESCENDANT_TIMEOUT;
             while !pid_file.exists() {
                 assert!(Instant::now() < deadline);
                 thread::sleep(POLL_INTERVAL);
@@ -1084,16 +1113,24 @@ if (config.mode === 'singleton') {
             std::fs::read_to_string(pid_file).unwrap().parse().unwrap()
         }
 
-        fn wait(&self, predicate: impl Fn(&DesktopHostStatus) -> bool) -> DesktopHostStatus {
-            let deadline = Instant::now() + Duration::from_secs(8);
+        fn wait(
+            &self,
+            operation: FixtureWait,
+            predicate: impl Fn(&DesktopHostStatus) -> bool,
+        ) -> DesktopHostStatus {
+            let deadline = Instant::now() + operation.timeout();
             loop {
                 let status = self.supervisor.status();
                 if predicate(&status) {
                     return status;
                 }
                 assert!(
+                    status.phase != Phase::Failed || status.owned,
+                    "fixture {operation:?} reached unexpected terminal failure: {status:?}"
+                );
+                assert!(
                     Instant::now() < deadline,
-                    "fixture lifecycle deadline: {status:?}"
+                    "fixture {operation:?} deadline: {status:?}"
                 );
                 thread::sleep(Duration::from_millis(25));
             }
@@ -1103,6 +1140,117 @@ if (config.mode === 'singleton') {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = self.supervisor.shutdown();
+        }
+    }
+
+    const DIAGNOSTIC_TAIL_BYTES: usize = 4_096;
+
+    struct DiagnosticCapture {
+        tail: Arc<Mutex<VecDeque<u8>>>,
+        done: Arc<AtomicBool>,
+    }
+
+    impl DiagnosticCapture {
+        fn start(mut stream: impl Read + Send + 'static) -> Self {
+            let tail = Arc::new(Mutex::new(VecDeque::with_capacity(DIAGNOSTIC_TAIL_BYTES)));
+            let done = Arc::new(AtomicBool::new(false));
+            let reader_tail = Arc::clone(&tail);
+            let reader_done = Arc::clone(&done);
+            thread::spawn(move || {
+                let mut chunk = [0; 1_024];
+                while let Ok(size) = stream.read(&mut chunk) {
+                    if size == 0 {
+                        break;
+                    }
+                    let mut bytes = reader_tail
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    for byte in &chunk[..size] {
+                        if bytes.len() == DIAGNOSTIC_TAIL_BYTES {
+                            bytes.pop_front();
+                        }
+                        bytes.push_back(*byte);
+                    }
+                }
+                reader_done.store(true, Ordering::Release);
+            });
+            Self { tail, done }
+        }
+
+        fn snapshot(&self, private_values: &[&str]) -> String {
+            let Ok(bytes) = self.tail.try_lock() else {
+                return "[diagnostic snapshot busy]".into();
+            };
+            let raw: Vec<_> = bytes.iter().copied().collect();
+            drop(bytes);
+            let mut text = String::from_utf8_lossy(&raw).into_owned();
+            for value in private_values
+                .iter()
+                .copied()
+                .chain(["private-secret-material"])
+            {
+                if !value.is_empty() {
+                    text = text.replace(value, "[REDACTED]");
+                }
+            }
+            text.chars()
+                .filter(|value| !value.is_control() || *value == '\n')
+                .collect()
+        }
+
+        fn finished(&self) -> bool {
+            self.done.load(Ordering::Acquire)
+        }
+    }
+
+    #[test]
+    fn helper_diagnostics_are_bounded_redacted_and_readable_before_eof() {
+        struct HeldReader {
+            prefix: Cursor<Vec<u8>>,
+            release: Receiver<()>,
+        }
+        impl Read for HeldReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let size = self.prefix.read(buffer)?;
+                if size == 0 {
+                    let _ = self.release.recv();
+                }
+                Ok(size)
+            }
+        }
+        let (release, receiver) = mpsc::channel();
+        let input = format!(
+            "{}private-secret-material /private/fixture-path end",
+            "x".repeat(DIAGNOSTIC_TAIL_BYTES * 2)
+        );
+        let capture = DiagnosticCapture::start(HeldReader {
+            prefix: Cursor::new(input.into_bytes()),
+            release: receiver,
+        });
+        let deadline = Instant::now() + KILL_TIMEOUT;
+        loop {
+            let text = capture.snapshot(&["/private/fixture-path"]);
+            if text.ends_with("end") {
+                assert!(text.len() <= DIAGNOSTIC_TAIL_BYTES);
+                assert!(!text.contains("private-secret-material"));
+                assert!(!text.contains("/private/fixture-path"));
+                assert!(!capture.finished());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "diagnostics were blocked before EOF"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+        drop(release);
+        let deadline = Instant::now() + KILL_TIMEOUT;
+        while !capture.finished() {
+            assert!(
+                Instant::now() < deadline,
+                "diagnostic reader did not finish after EOF"
+            );
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -1170,19 +1318,19 @@ if (config.mode === 'singleton') {
         for mode in ["tree", "tree-clean"] {
             let fixture = Fixture::new(&node, mode);
             fixture.supervisor.start().unwrap();
-            let ready = fixture.wait(|status| status.restart_safe);
+            let ready = fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
             let parent = ready.health.unwrap().pid;
             let descendant = fixture.descendant_pid();
             assert_pid_running_now(descendant, true);
             fixture.supervisor.restart().unwrap();
             if mode == "tree" {
-                let stopped = fixture.wait(|status| !status.owned);
+                let stopped = fixture.wait(FixtureWait::Stopped, |status| !status.owned);
                 let exit = stopped.last_exit.unwrap();
                 assert!(!exit.clean && exit.forced);
                 assert_eq!(exit.code, Some(0));
                 assert_eq!(stopped.phase, Phase::Failed);
             } else {
-                fixture.wait(|status| {
+                fixture.wait(FixtureWait::Restart, |status| {
                     status.restart_safe
                         && status
                             .health
@@ -1194,7 +1342,7 @@ if (config.mode === 'singleton') {
             assert_pid_running_now(descendant, false);
             let mut current_descendant = fixture.descendant_pid();
             if mode == "tree-clean" {
-                let deadline = Instant::now() + Duration::from_secs(3);
+                let deadline = Instant::now() + DESCENDANT_TIMEOUT;
                 while current_descendant == descendant {
                     assert!(Instant::now() < deadline);
                     thread::sleep(POLL_INTERVAL);
@@ -1264,9 +1412,9 @@ if (config.mode === 'singleton') {
         let node = PathBuf::from(std::env::var_os("COUNCIL_TEST_NODE").unwrap());
         let fixture = Fixture::with_root(&node, "tree-hang", tempfile::tempdir_in(&out).unwrap());
         fixture.supervisor.start().unwrap();
-        let ready = fixture.wait(|status| status.restart_safe);
+        let ready = fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
         let pid_file = fixture.root.path().join("descendant.pid");
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + DESCENDANT_TIMEOUT;
         while !pid_file.exists() {
             assert!(Instant::now() < deadline);
             thread::sleep(POLL_INTERVAL);
@@ -1305,23 +1453,43 @@ if (config.mode === 'singleton') {
                 "supervisor::tests::abrupt_supervisor_fixture_helper",
                 "--ignored",
             ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .creation_flags(0x08000000);
         let mut helper = command.spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
+        let stdout = DiagnosticCapture::start(helper.stdout.take().unwrap());
+        let stderr = DiagnosticCapture::start(helper.stderr.take().unwrap());
+        let deadline = Instant::now() + abrupt_helper_timeout();
+        let mut timed_out = false;
+        let result = loop {
             if let Some(result) = helper.try_wait().unwrap() {
-                assert!(result.success());
-                break;
+                break result;
             }
             if Instant::now() >= deadline {
+                timed_out = true;
                 let _ = helper.kill();
-                let _ = helper.wait();
-                panic!("abrupt-exit helper did not finish");
+                break helper.wait().unwrap();
             }
             thread::sleep(POLL_INTERVAL);
+        };
+        let diagnostics_deadline = Instant::now() + KILL_TIMEOUT;
+        while !(stdout.finished() && stderr.finished()) && Instant::now() < diagnostics_deadline {
+            thread::sleep(POLL_INTERVAL);
         }
+        let temporary_root = std::env::temp_dir();
+        let private_paths = [
+            out.path(),
+            node.as_path(),
+            temporary_root.as_path(),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        ]
+        .map(|path| path.to_string_lossy().into_owned());
+        let private_values: Vec<_> = private_paths.iter().map(String::as_str).collect();
+        assert!(
+            !timed_out && result.success(),
+            "abrupt-exit helper failed: timeout={timed_out}, exit={:?}, readers_finished={}, stdout={}, stderr={}",
+            result.code(), stdout.finished() && stderr.finished(), stdout.snapshot(&private_values), stderr.snapshot(&private_values),
+        );
         let pids: serde_json::Value =
             serde_json::from_slice(&std::fs::read(out.path().join("pids.json")).unwrap()).unwrap();
         assert_pid_stopped(&node, pids["host"].as_u64().unwrap() as u32);
@@ -1404,6 +1572,22 @@ if (config.mode === 'singleton') {
 
     #[test]
     #[ignore = "requires COUNCIL_TEST_NODE pointing to a local Node 24+ runtime"]
+    fn delayed_valid_health_uses_production_startup_allowance() {
+        let node =
+            PathBuf::from(std::env::var_os("COUNCIL_TEST_NODE").expect("set COUNCIL_TEST_NODE"));
+        let fixture = Fixture::new(&node, "delayed-ready");
+        let started = Instant::now();
+        fixture.supervisor.start().unwrap();
+        let ready = fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
+        assert!(started.elapsed() >= Duration::from_secs(3));
+        assert!(ready.owned && ready.health.is_some());
+        let stopped = fixture.supervisor.shutdown().unwrap();
+        assert!(!stopped.owned);
+        assert!(stopped.last_exit.unwrap().clean);
+    }
+
+    #[test]
+    #[ignore = "requires COUNCIL_TEST_NODE pointing to a local Node 24+ runtime"]
     fn isolated_node_lifecycle_and_descendant_cleanup() {
         let node =
             PathBuf::from(std::env::var_os("COUNCIL_TEST_NODE").expect("set COUNCIL_TEST_NODE"));
@@ -1411,10 +1595,10 @@ if (config.mode === 'singleton') {
         {
             let fixture = Fixture::new(&node, "ready");
             fixture.supervisor.start().unwrap();
-            let ready = fixture.wait(|status| status.restart_safe);
+            let ready = fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
             let first_pid = ready.health.unwrap().pid;
             fixture.supervisor.restart().unwrap();
-            let restarted = fixture.wait(|status| {
+            let restarted = fixture.wait(FixtureWait::Restart, |status| {
                 status.restart_safe
                     && status
                         .health
@@ -1427,7 +1611,7 @@ if (config.mode === 'singleton') {
             fixture.supervisor.stop().unwrap();
             assert!(
                 fixture
-                    .wait(|status| !status.owned)
+                    .wait(FixtureWait::Stopped, |status| !status.owned)
                     .last_exit
                     .unwrap()
                     .clean
@@ -1436,7 +1620,7 @@ if (config.mode === 'singleton') {
         {
             let fixture = Fixture::new(&node, "busy");
             fixture.supervisor.start().unwrap();
-            fixture.wait(|status| status.phase == Phase::Running);
+            fixture.wait(FixtureWait::Ready, |status| status.phase == Phase::Running);
             assert!(fixture.supervisor.stop().is_err());
             assert!(fixture.supervisor.restart().is_err());
             let stopped = fixture.supervisor.shutdown().unwrap();
@@ -1447,7 +1631,9 @@ if (config.mode === 'singleton') {
         for mode in ["unreported", "hang-start", "singleton"] {
             let fixture = Fixture::new(&node, mode);
             fixture.supervisor.start().unwrap();
-            let failed = fixture.wait(|status| status.phase == Phase::Failed && !status.owned);
+            let failed = fixture.wait(FixtureWait::StartFailure, |status| {
+                status.phase == Phase::Failed && !status.owned
+            });
             let exit = failed.last_exit.unwrap();
             assert!(!exit.clean);
             assert_eq!(exit.forced, mode == "hang-start");
@@ -1462,15 +1648,17 @@ if (config.mode === 'singleton') {
         {
             let fixture = Fixture::new(&node, "hang-stop");
             fixture.supervisor.start().unwrap();
-            fixture.wait(|status| status.restart_safe);
+            fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
             fixture.supervisor.restart().unwrap();
-            let failed = fixture.wait(|status| status.phase == Phase::Failed && !status.owned);
+            let failed = fixture.wait(FixtureWait::Stopped, |status| {
+                status.phase == Phase::Failed && !status.owned
+            });
             assert!(failed.last_exit.unwrap().forced);
         }
         {
             let fixture = Fixture::new(&node, "tree");
             fixture.supervisor.start().unwrap();
-            fixture.wait(|status| status.restart_safe);
+            fixture.wait(FixtureWait::Ready, |status| status.restart_safe);
             let descendant = fixture.descendant_pid();
             #[cfg(windows)]
             assert_pid_running_now(descendant, true);
