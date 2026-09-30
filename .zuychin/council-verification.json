@@ -9,7 +9,7 @@
       "commands": [
         { "command": ["npm", "ci", "--no-audit", "--no-fund", "--prefer-offline"], "timeoutMs": 600000 },
         { "command": ["npm", "run", "lint"], "timeoutMs": 180000 },
-        { "command": ["npm", "run", "build"], "timeoutMs": 300000 }
+        { "command": ["node", "--import", "tsx", "scripts/build-council-check.mts"], "timeoutMs": 300000 }
       ]
     },
     "fast": {
