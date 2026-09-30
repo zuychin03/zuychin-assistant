@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "./supabase";
 import { getEmbeddingRef } from "./ai/embeddings";
+import { resolveOwnerProfile } from "./owner-profile";
 import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
 
 export async function saveMessage(params: {
@@ -257,23 +258,12 @@ export async function deleteKnowledgeNote(id: string): Promise<boolean> {
 }
 
 export async function getDefaultProfile() {
-    const { data, error } = await supabase
-        .from("user_profiles")
-        .select("*")
-        .limit(1)
-        .single();
-
-    if (error) {
-        console.error("[DB] Failed to fetch profile:", error.message);
+    try {
+        return await resolveOwnerProfile();
+    } catch (error) {
+        console.error("[DB] Failed to fetch profile:", error instanceof Error ? error.message : error);
         return null;
     }
-
-    return {
-        id: data.id,
-        displayName: data.display_name,
-        systemPrompt: data.system_prompt,
-        preferences: data.preferences,
-    };
 }
 
 export async function updateSystemPrompt(

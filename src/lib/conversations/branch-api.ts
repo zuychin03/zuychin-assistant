@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
+import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { BranchError } from "./branches";
 
 export async function branchUserId(): Promise<string> {
-    const { data, error } = await supabaseAdmin.from("user_profiles").select("id").limit(1).maybeSingle();
-    if (error) throw new BranchError("Your profile could not be loaded.", 503);
-    if (!data) throw new BranchError("Your profile was not found.", 404);
-    return data.id;
+    const profile = await resolveOwnerProfile().catch(() => { throw new BranchError("Your profile could not be loaded.", 503); });
+    if (!profile) throw new BranchError("Your profile was not found.", 404);
+    return profile.id;
 }
 export function branchResponse(value: unknown, status = 200) {
     return NextResponse.json(value, { status, headers: { "Cache-Control": "no-store" } });

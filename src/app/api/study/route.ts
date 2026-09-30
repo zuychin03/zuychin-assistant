@@ -1,13 +1,14 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { knowledgeRevisions } from "@/lib/knowledge/revision-store";
+import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { createStudyService } from "@/lib/study/service";
 import { createStudyHandlers } from "@/lib/study/api";
 import { StudyError } from "@/lib/study/contracts";
 
 const handlers = createStudyHandlers(createStudyService(supabaseAdmin, knowledgeRevisions), async () => {
-    const { data, error } = await supabaseAdmin.from("user_profiles").select("id").limit(1).abortSignal(AbortSignal.timeout(5000)).maybeSingle();
-    if (error || !data) throw new StudyError("Your study profile is unavailable. Please retry.", 503);
-    return data.id;
+    const profile = await resolveOwnerProfile(AbortSignal.timeout(5000)).catch(() => null);
+    if (!profile) throw new StudyError("Your study profile is unavailable. Please retry.", 503);
+    return profile.id;
 });
 export const GET = handlers.GET;
 export const POST = handlers.POST;

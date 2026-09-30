@@ -265,6 +265,9 @@ the row-level-security policies, the search functions (`match_embeddings`,
 `match_vault_pages`, `match_memories` plus the hybrid keyword+vector
 `hybrid_match_knowledge` and `hybrid_match_vault_pages`) and a default profile. The script
 is safe to run more than once - re-run it after upgrading to pick up new tables and columns.
+Earlier versions added another default profile on every run; if yours did, run
+[`scripts/migrations/owner-profile-consolidation.sql`](scripts/migrations/owner-profile-consolidation.sql)
+once to merge them. It previews its changes until you set `apply_changes` to true.
 
 The same script creates the unified knowledge domain (`knowledge_documents`,
 `knowledge_chunks`, `knowledge_links`, `knowledge_assertions`,

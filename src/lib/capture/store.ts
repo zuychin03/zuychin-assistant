@@ -3,13 +3,14 @@ import { commitFiles, getBranchHead, getFile, requireVaultConfig } from "@/lib/v
 import { indexKnowledgeDocument } from "@/lib/knowledge/store";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
 import { assertFreeModel } from "@/lib/ai/model-policy";
+import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { CaptureError, createCaptureService } from "./service";
 import type { CaptureItem } from "./types";
 
 export async function captureProfile() {
-    const { data, error } = await db.from("user_profiles").select("id,preferences").limit(1).abortSignal(AbortSignal.timeout(10_000)).maybeSingle();
-    if (error || !data) throw new CaptureError("Your profile is unavailable. Reconnect before saving or synchronising.", 503);
-    return data as { id: string; preferences: Record<string, unknown> | null };
+    const profile = await resolveOwnerProfile(AbortSignal.timeout(10_000)).catch(() => null);
+    if (!profile) throw new CaptureError("Your profile is unavailable. Reconnect before saving or synchronising.", 503);
+    return profile;
 }
 interface Row { id: string; profile_id: string; source: CaptureItem["source"]; source_hash: string; created_at: string; receipt: CaptureItem["receipt"] }
 const item = (row: Row): CaptureItem => ({ id: row.id, profileId: row.profile_id, source: row.source, sourceHash: row.source_hash, createdAt: row.created_at, receipt: row.receipt });

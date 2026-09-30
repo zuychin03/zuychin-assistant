@@ -62,6 +62,7 @@ const tests = [
     "speech-observations",
     "approval-observations",
     "jev-decisions",
+    "owner-profile",
     "v6-migrations"
 ];
 const failed: string[] = [];

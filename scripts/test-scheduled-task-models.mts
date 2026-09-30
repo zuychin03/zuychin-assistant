@@ -61,9 +61,10 @@ function supabaseResponse(url: URL, method: string, headers: Headers, body: stri
         return Response.json({ status: "accepted", run: { id: `claimed-${value.id}`, task_id: value.id, user_profile_id: PROFILE.id, task_title: value.title, trigger: "manual", status: "running", started_at: new Date().toISOString(), finished_at: null, detail: null,
             task_snapshot: { id: value.id, title: value.title, instruction: value.instruction, schedule_type: value.scheduleType, cron: value.cron, run_at: value.runAt, timezone: value.timezone, channel: value.channel, conversation_id: value.conversationId, agent_mode: value.agentMode, enabled: value.enabled, next_run_at: value.nextRunAt, last_run_at: value.lastRunAt, last_status: value.lastStatus, last_result: value.lastResult, created_at: value.createdAt, user_profile_id: PROFILE.id } } });
     }
-    if (!(headers.get("Accept") ?? "").includes("vnd.pgrst.object+json")) return Response.json([]);
+    const wantsObject = (headers.get("Accept") ?? "").includes("vnd.pgrst.object+json");
     const table = url.pathname.replace(/^\/rest\/v1\//, "");
-    if (table === "user_profiles") return Response.json(PROFILE);
+    if (table === "user_profiles") return Response.json(wantsObject ? PROFILE : [PROFILE]);
+    if (!wantsObject) return Response.json([]);
     if (table === "conversations") return Response.json({ id: "conv-1", title: "Existing chat", project_id: null, projects: null });
     if (table === "agent_runs") return Response.json({ id: "run-1", root_run_id: "run-1" });
     return Response.json({ id: `row-${calls.length}` });

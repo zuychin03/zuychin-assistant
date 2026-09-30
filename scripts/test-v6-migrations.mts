@@ -19,7 +19,7 @@ try {
     }
     await db.exec("alter table conversations add column project_id uuid references projects(id); grant select,insert,update,delete on all tables in schema public to service_role;");
     const directory = new URL("./migrations/", import.meta.url);
-    const files = (await readdir(directory)).filter(file => file.startsWith("v6-") && file.endsWith(".sql") && !file.includes("legacy-conversation"));
+    const files = (await readdir(directory)).filter(file => file.startsWith("v6-") && file.endsWith(".sql"));
     for (const file of files) await db.exec(await readFile(new URL(file, directory), "utf8"));
     await check("all V6 migrations execute and are rerunnable", async () => {
         for (const file of files) await db.exec(await readFile(new URL(file, directory), "utf8"));

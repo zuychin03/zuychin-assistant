@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase";
+import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { createRevisionService, type RevisionDocument } from "@/lib/knowledge/revisions";
 import { indexKnowledgeDocument } from "@/lib/knowledge/store";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
@@ -6,9 +7,8 @@ import { commitFiles, getBranchHead, getFile, isVaultCommitAncestor, listVaultFi
 
 export const knowledgeRevisions = createRevisionService({
     async getDocument(id) {
-        const { data: profile, error: profileError } = await supabaseAdmin.from("user_profiles").select("id")
-            .limit(1).abortSignal(AbortSignal.timeout(5000)).maybeSingle();
-        if (profileError || !profile) throw new Error("Your knowledge profile is unavailable.");
+        const profile = await resolveOwnerProfile(AbortSignal.timeout(5000)).catch(() => null);
+        if (!profile) throw new Error("Your knowledge profile is unavailable.");
         const { data, error } = await supabaseAdmin.from("knowledge_documents")
             .select("id,path,title,summary,category,scope,trust,status,sensitivity,project_id,user_profile_id")
             .eq("id", id).abortSignal(AbortSignal.timeout(10_000)).maybeSingle();

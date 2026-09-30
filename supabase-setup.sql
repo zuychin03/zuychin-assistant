@@ -29,6 +29,17 @@ create trigger trigger_user_profiles_updated_at
   before update on user_profiles
   for each row execute function update_updated_at();
 
+-- Every owner-scoped row hangs off this one profile. A database that already holds
+-- duplicates skips the index until scripts/migrations/owner-profile-consolidation.sql runs.
+do $$
+begin
+  if (select count(*) from user_profiles) <= 1 then
+    create unique index if not exists user_profiles_single_owner on user_profiles ((true));
+  else
+    raise warning 'user_profiles holds more than one row; run scripts/migrations/owner-profile-consolidation.sql';
+  end if;
+end $$;
+
 -- Conversations group messages in the chat sidebar.
 create table if not exists conversations (
   id uuid primary key default gen_random_uuid(),
@@ -616,12 +627,12 @@ alter table custom_skills enable row level security;
 drop policy if exists "Allow all access to custom_skills" on custom_skills;
 create policy "Allow all access to custom_skills" on custom_skills for all using (true) with check (true);
 
--- Default profile so the app has something to read on first run.
+-- Default profile so the app has something to read on first run; re-runs must not add a second.
 insert into user_profiles (display_name, system_prompt)
-values (
+select
   'Owner',
   'You are Zuychin, a helpful, warm, and intelligent personal AI assistant. You have long-term memory and can remember past conversations. Be concise but thorough. Use a friendly, natural tone.'
-)
+where not exists (select 1 from user_profiles)
 on conflict do nothing;
 
 -- ===== V5 wave =====

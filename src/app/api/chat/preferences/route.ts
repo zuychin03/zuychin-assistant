@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { supabaseAdmin } from "@/lib/supabase";
+import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { patchProfilePreferences, ProfilePreferencesError } from "@/lib/profile-preferences";
 
 const respond = (body: Record<string, unknown>, status = 200) =>
     NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 async function readProfile() {
-    return supabaseAdmin.from("user_profiles").select("id, preferences").limit(1).maybeSingle();
+    try {
+        return { data: await resolveOwnerProfile(), error: null };
+    } catch (error) {
+        return { data: null, error };
+    }
 }
 
 export async function GET(req: NextRequest) {
