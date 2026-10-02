@@ -63,6 +63,7 @@ const tests = [
     "approval-observations",
     "jev-decisions",
     "owner-profile",
+    "server-only-tables",
     "v6-migrations"
 ];
 const failed: string[] = [];

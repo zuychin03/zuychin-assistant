@@ -135,9 +135,9 @@ create table if not exists artifacts (
 create index if not exists idx_artifacts_conversation
   on artifacts (conversation_id, created_at desc);
 
--- Row level security. This is a single-user app, so the policies just allow the
--- configured key full access. Tighten these with auth.uid() checks if you ever
--- make it multi-user.
+-- Server-only: the app uses the service role, which bypasses RLS. With no policies and no
+-- anon or authenticated grants, the public anon key reaches nothing. The drops remove the
+-- "Allow all access" policies that earlier versions created for every role.
 alter table user_profiles enable row level security;
 alter table conversations enable row level security;
 alter table messages enable row level security;
@@ -146,22 +146,22 @@ alter table todos enable row level security;
 alter table artifacts enable row level security;
 
 drop policy if exists "Allow all access to user_profiles" on user_profiles;
-create policy "Allow all access to user_profiles" on user_profiles for all using (true) with check (true);
+revoke all on user_profiles from public, anon, authenticated;
 
 drop policy if exists "Allow all access to conversations" on conversations;
-create policy "Allow all access to conversations" on conversations for all using (true) with check (true);
+revoke all on conversations from public, anon, authenticated;
 
 drop policy if exists "Allow all access to messages" on messages;
-create policy "Allow all access to messages" on messages for all using (true) with check (true);
+revoke all on messages from public, anon, authenticated;
 
 drop policy if exists "Allow all access to embeddings" on embeddings;
-create policy "Allow all access to embeddings" on embeddings for all using (true) with check (true);
+revoke all on embeddings from public, anon, authenticated;
 
 drop policy if exists "Allow all access to todos" on todos;
-create policy "Allow all access to todos" on todos for all using (true) with check (true);
+revoke all on todos from public, anon, authenticated;
 
 drop policy if exists "Allow all access to artifacts" on artifacts;
-create policy "Allow all access to artifacts" on artifacts for all using (true) with check (true);
+revoke all on artifacts from public, anon, authenticated;
 
 -- Vector search. Filters by model first so only same-dimension rows are compared,
 -- then ranks by cosine similarity.
@@ -222,7 +222,7 @@ create index if not exists idx_vault_pages_model
 alter table vault_pages enable row level security;
 
 drop policy if exists "Allow all access to vault_pages" on vault_pages;
-create policy "Allow all access to vault_pages" on vault_pages for all using (true) with check (true);
+revoke all on vault_pages from public, anon, authenticated;
 
 create or replace function match_vault_pages(
   query_embedding vector,
@@ -295,7 +295,7 @@ create index if not exists idx_agent_runs_time
 alter table agent_runs enable row level security;
 
 drop policy if exists "Allow all access to agent_runs" on agent_runs;
-create policy "Allow all access to agent_runs" on agent_runs for all using (true) with check (true);
+revoke all on agent_runs from public, anon, authenticated;
 
 -- Extracted long-term facts (Mem0-style). A post-turn extraction pass distills
 -- durable user facts from conversations and consolidates them (add/update/delete
@@ -327,7 +327,7 @@ create index if not exists idx_memories_model
 alter table memories enable row level security;
 
 drop policy if exists "Allow all access to memories" on memories;
-create policy "Allow all access to memories" on memories for all using (true) with check (true);
+revoke all on memories from public, anon, authenticated;
 
 -- filter_project null -> global facts only; set -> global + that project's facts.
 -- Work/study facts enter as invisible 'candidate' rows and are promoted to
@@ -421,7 +421,7 @@ create index if not exists idx_scheduled_tasks_due
 alter table scheduled_tasks enable row level security;
 
 drop policy if exists "Allow all access to scheduled_tasks" on scheduled_tasks;
-create policy "Allow all access to scheduled_tasks" on scheduled_tasks for all using (true) with check (true);
+revoke all on scheduled_tasks from public, anon, authenticated;
 
 -- Due-todo nagging (reminders cron): when the last nag went out, so overdue
 -- tasks re-nag roughly daily instead of every cron tick.
@@ -438,7 +438,7 @@ create table if not exists processed_emails (
 alter table processed_emails enable row level security;
 
 drop policy if exists "Allow all access to processed_emails" on processed_emails;
-create policy "Allow all access to processed_emails" on processed_emails for all using (true) with check (true);
+revoke all on processed_emails from public, anon, authenticated;
 
 -- Hybrid search (BM25 + vector, reciprocal rank fusion). vault_pages gains the
 -- page text so keyword search has something to match; legacy rows stay empty
@@ -591,7 +591,7 @@ create trigger trigger_projects_updated_at
 alter table projects enable row level security;
 
 drop policy if exists "Allow all access to projects" on projects;
-create policy "Allow all access to projects" on projects for all using (true) with check (true);
+revoke all on projects from public, anon, authenticated;
 
 alter table conversations add column if not exists project_id uuid references projects(id) on delete set null;
 
@@ -625,7 +625,7 @@ create trigger trigger_custom_skills_updated_at
 alter table custom_skills enable row level security;
 
 drop policy if exists "Allow all access to custom_skills" on custom_skills;
-create policy "Allow all access to custom_skills" on custom_skills for all using (true) with check (true);
+revoke all on custom_skills from public, anon, authenticated;
 
 -- Default profile so the app has something to read on first run; re-runs must not add a second.
 insert into user_profiles (display_name, system_prompt)
@@ -658,7 +658,7 @@ create index if not exists idx_initiative_log_category
 alter table initiative_log enable row level security;
 
 drop policy if exists "Allow all access to initiative_log" on initiative_log;
-create policy "Allow all access to initiative_log" on initiative_log for all using (true) with check (true);
+revoke all on initiative_log from public, anon, authenticated;
 
 -- Shared k/v state for crons (e.g. the run-review high-water mark). Kept out
 -- of user_profiles.preferences: that bag is replaced whole on write.
@@ -676,7 +676,7 @@ create trigger trigger_cron_state_updated_at
 alter table cron_state enable row level security;
 
 drop policy if exists "Allow all access to cron_state" on cron_state;
-create policy "Allow all access to cron_state" on cron_state for all using (true) with check (true);
+revoke all on cron_state from public, anon, authenticated;
 
 -- Web-push subscriptions (one row per browser). keys = {p256dh, auth}.
 create table if not exists push_subscriptions (
@@ -690,7 +690,7 @@ create table if not exists push_subscriptions (
 alter table push_subscriptions enable row level security;
 
 drop policy if exists "Allow all access to push_subscriptions" on push_subscriptions;
-create policy "Allow all access to push_subscriptions" on push_subscriptions for all using (true) with check (true);
+revoke all on push_subscriptions from public, anon, authenticated;
 -- Unified knowledge domain. Markdown remains canonical; these rows are rebuildable
 -- metadata, search indexes, temporal assertions and audit records.
 create table if not exists knowledge_documents (
@@ -1661,8 +1661,7 @@ create index if not exists idx_conversation_cleanup_pending
 alter table conversation_cleanup_recommendations enable row level security;
 
 drop policy if exists "Allow all access to conversation_cleanup_recommendations" on conversation_cleanup_recommendations;
-create policy "Allow all access to conversation_cleanup_recommendations"
-  on conversation_cleanup_recommendations for all using (true) with check (true);
+revoke all on conversation_cleanup_recommendations from public, anon, authenticated;
 
 -- Conversation-owned records must leave with the conversation, not become orphans.
 alter table agent_runs drop constraint if exists agent_runs_conversation_id_fkey;
@@ -1692,6 +1691,9 @@ begin
 end;
 $$;
 
+revoke all on function delete_conversation_with_associations(uuid) from public, anon, authenticated;
+grant execute on function delete_conversation_with_associations(uuid) to service_role;
+
 
 -- ===== Knowledge graph wave =====
 
@@ -1708,8 +1710,7 @@ create table if not exists vault_graph_snapshot (
 
 alter table vault_graph_snapshot enable row level security;
 drop policy if exists "Allow all access to vault_graph_snapshot" on vault_graph_snapshot;
-create policy "Allow all access to vault_graph_snapshot"
-  on vault_graph_snapshot for all using (true) with check (true);
+revoke all on vault_graph_snapshot from public, anon, authenticated;
 
 -- vault_pages.content is truncated at 8000 chars, so wikilinks cannot be
 -- re-derived from it. The graph build parses full GitHub text and lands the
@@ -1725,8 +1726,7 @@ create index if not exists idx_vault_page_links_target on vault_page_links (targ
 
 alter table vault_page_links enable row level security;
 drop policy if exists "Allow all access to vault_page_links" on vault_page_links;
-create policy "Allow all access to vault_page_links"
-  on vault_page_links for all using (true) with check (true);
+revoke all on vault_page_links from public, anon, authenticated;
 
 
 -- ===== Council ACP host wave =====
