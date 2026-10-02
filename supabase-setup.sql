@@ -908,6 +908,13 @@ alter table knowledge_assertions enable row level security;
 alter table knowledge_events enable row level security;
 alter table knowledge_sync_state enable row level security;
 alter table knowledge_suggestions enable row level security;
+revoke all on knowledge_documents from public, anon, authenticated;
+revoke all on knowledge_chunks from public, anon, authenticated;
+revoke all on knowledge_links from public, anon, authenticated;
+revoke all on knowledge_assertions from public, anon, authenticated;
+revoke all on knowledge_events from public, anon, authenticated;
+revoke all on knowledge_sync_state from public, anon, authenticated;
+revoke all on knowledge_suggestions from public, anon, authenticated;
 
 -- Knowledge data is server-only. The service role bypasses RLS; the anon key
 -- receives no direct table policy and must use authenticated application routes.
@@ -1163,6 +1170,9 @@ create index if not exists idx_council_participants_live
 alter table council_sessions enable row level security;
 alter table council_messages enable row level security;
 alter table council_participants enable row level security;
+revoke all on council_sessions from public, anon, authenticated;
+revoke all on council_messages from public, anon, authenticated;
+revoke all on council_participants from public, anon, authenticated;
 
 -- Every council utterance in one transaction: idempotency, quota, gapless seq,
 -- floor consumption, round advance and lifecycle. Returns jsonb (not the house
@@ -1494,6 +1504,9 @@ create table if not exists auth_totp (
 alter table auth_passkeys enable row level security;
 alter table auth_challenges enable row level security;
 alter table auth_totp enable row level security;
+revoke all on auth_passkeys from public, anon, authenticated;
+revoke all on auth_challenges from public, anon, authenticated;
+revoke all on auth_totp from public, anon, authenticated;
 
 -- The application uses SUPABASE_SERVICE_ROLE_KEY. Do not add anon policies to
 -- these tables: every read and write is server-side after auth verification.
@@ -1538,6 +1551,8 @@ create table if not exists council_work_items (
 create index if not exists idx_council_work_items_agent on council_work_items (campaign_id, agent_name, status, sequence);
 alter table council_campaigns enable row level security;
 alter table council_work_items enable row level security;
+revoke all on council_campaigns from public, anon, authenticated;
+revoke all on council_work_items from public, anon, authenticated;
 
 create or replace function create_council_campaign(p_session_id uuid, p_created_by text, p_work_items jsonb)
 returns jsonb language plpgsql as $$
@@ -2090,6 +2105,7 @@ create table if not exists council_owner_messages (
 create index if not exists idx_council_owner_messages
   on council_owner_messages (session_id, created_at);
 alter table council_owner_messages enable row level security;
+revoke all on council_owner_messages from public, anon, authenticated;
 
 create or replace function pause_council(p_session_id uuid)
 returns jsonb language plpgsql as $$
@@ -2630,6 +2646,7 @@ create table if not exists council_seat_keys (
 );
 create index if not exists idx_council_seat_keys_hash on council_seat_keys (token_hash);
 alter table council_seat_keys enable row level security;
+revoke all on council_seat_keys from public, anon, authenticated;
 
 -- Runs on every authenticated call a guest makes, so it is one indexed point
 -- read plus a claim stamp. Returns null for anything not currently usable;
@@ -2836,6 +2853,7 @@ create table if not exists agent_tool_calls (
 );
 create index if not exists idx_agent_tool_calls_root on agent_tool_calls (root_run_id, tool);
 alter table agent_tool_calls enable row level security;
+revoke all on agent_tool_calls from public, anon, authenticated;
 
 -- Insert-or-report in one statement. The unique constraint on operation_key is
 -- the mutex: two racing attempts cannot both believe they own the call.
@@ -2905,6 +2923,7 @@ create table if not exists council_host_leases (
   released_at timestamptz
 );
 alter table council_host_leases enable row level security;
+revoke all on council_host_leases from public, anon, authenticated;
 
 create or replace function claim_council_host_lease(
   p_session_id uuid, p_host_id uuid, p_duration_seconds integer default 45
@@ -3095,6 +3114,7 @@ create index if not exists idx_council_deliveries_pending
   on council_deliveries (session_id, participant_id, prepared_at)
   where status in ('prepared', 'in_flight', 'failed');
 alter table council_deliveries enable row level security;
+revoke all on council_deliveries from public, anon, authenticated;
 
 create or replace function prepare_council_delivery(
   p_session_id uuid, p_agent_name text, p_host_id uuid, p_lease_epoch bigint,
@@ -3259,6 +3279,7 @@ create table if not exists council_agent_executions (
 create index if not exists idx_council_agent_executions_participant
   on council_agent_executions (participant_id, started_at desc);
 alter table council_agent_executions enable row level security;
+revoke all on council_agent_executions from public, anon, authenticated;
 
 create or replace function start_council_agent_execution(
   p_session_id uuid, p_agent_name text, p_host_id uuid, p_lease_epoch bigint,
@@ -3382,6 +3403,7 @@ create table if not exists council_verification_runs (
 create index if not exists idx_council_verification_runs_item
   on council_verification_runs (work_item_id, checked_at desc);
 alter table council_verification_runs enable row level security;
+revoke all on council_verification_runs from public, anon, authenticated;
 
 -- The abandonment ceiling counts rework, not claims. attempts increments every
 -- time an item is picked up, including after a lapsed lease, so it charged the

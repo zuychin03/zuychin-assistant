@@ -271,9 +271,11 @@ once to merge them. It previews its changes until you set `apply_changes` to tru
 
 Every table is server-only: the app uses the service role, which bypasses row-level security,
 and the anon key reaches nothing. Earlier versions gave the anon key full access to the core
-tables through "Allow all access" policies. On an existing project, run
+tables through "Allow all access" policies, and left Supabase's default anon grants on the other
+tables, where row-level security alone hid the rows. On an existing project, run
 [`scripts/migrations/server-only-tables.sql`](scripts/migrations/server-only-tables.sql) to
-remove them; its final query lists anything still open and should return no rows.
+remove both; its final query lists anything in the public schema still open and should return
+no rows.
 
 The same script creates the unified knowledge domain (`knowledge_documents`,
 `knowledge_chunks`, `knowledge_links`, `knowledge_assertions`,

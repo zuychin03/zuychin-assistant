@@ -64,6 +64,24 @@ jobs:
       - name: named client migration and credential isolation
         run: npm run agents:offline:test
 
+  assistant:
+    name: assistant V6 suites
+    # In-memory PGlite and stubbed providers only, so one platform and no secrets.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: V6 regression suites
+        run: npm run v6:test
+
   desktop:
     name: Windows desktop supervisor
     runs-on: windows-latest
