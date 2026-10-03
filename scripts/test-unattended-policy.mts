@@ -29,6 +29,27 @@ await check("scheduled mutation proposes before any dispatch", async () => {
     assert.match(result!, /Awaiting your approval/);
     assert.equal(proposals.length, 1);
 });
+await check("review links use the configured address, never the per-deployment host", async () => {
+    const keys = ["NEXT_PUBLIC_BASE_URL", "AUTH_ORIGIN", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"] as const;
+    const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const reply = async (env: Partial<Record<(typeof keys)[number], string>>) => {
+        for (const key of keys) delete process.env[key];
+        Object.assign(process.env, env);
+        return (await withUnattendedRun(run, () => gateUnattendedTool("send_email", {}, propose)))!;
+    };
+    const link = async (env: Partial<Record<(typeof keys)[number], string>>) => /\]\(([^)]+)\)/.exec(await reply(env))![1];
+    try {
+        assert.equal(await link({ NEXT_PUBLIC_BASE_URL: "https://assistant.example/", AUTH_ORIGIN: "http://localhost:3000" }), "https://assistant.example/tasks?approval=approval");
+        assert.equal(await link({ AUTH_ORIGIN: "https://owner.example" }), "https://owner.example/tasks?approval=approval");
+        assert.equal(await link({ VERCEL_PROJECT_PRODUCTION_URL: "assistant.example", VERCEL_URL: "assistant-abc123.vercel.app" }), "https://assistant.example/tasks?approval=approval");
+        assert.equal(await link({ VERCEL_URL: "assistant-abc123.vercel.app" }), "/tasks?approval=approval");
+        const { convert } = await import("telegram-markdown-v2");
+        assert.ok(convert(await reply({ NEXT_PUBLIC_BASE_URL: "https://assistant.example" })).includes("(https://assistant.example/tasks?approval=approval)"),
+            "Telegram's MarkdownV2 conversion drops relative links, so the review link must arrive absolute");
+    } finally {
+        for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+});
 await check("proposal outage refuses the action", async () => {
     const result = await withUnattendedRun(run, () => gateUnattendedTool("send_email", {}, async () => { throw new Error("storage"); }));
     assert.match(result!, /not executed/i);

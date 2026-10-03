@@ -17,6 +17,16 @@ export function publicBaseUrl(fallbackOrigin?: string): string {
     return (fallbackOrigin ?? "").replace(/\/+$/, "");
 }
 
+/**
+ * A link the owner opens from Telegram or Discord, which drop or strand a relative path. The
+ * per-deployment VERCEL_URL is skipped: the owner signs in on the production host.
+ */
+export function ownerLink(path: string): string {
+    const production = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.AUTH_ORIGIN || (production ? `https://${production}` : "");
+    return base.replace(/\/+$/, "") + path;
+}
+
 export function isLoopbackUrl(url: string): boolean {
     return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url);
 }

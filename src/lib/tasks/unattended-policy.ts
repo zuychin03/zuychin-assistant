@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { ownerLink } from "@/lib/public-url";
 
 export interface UnattendedRun {
     runId: string; taskId: string; taskTitle: string; instruction: string; userProfileId: string;
@@ -96,9 +97,10 @@ export async function gateUnattendedTool(
         const proposal = await propose({ runId: current.runId, taskId: current.taskId, taskTitle: current.taskTitle,
             instruction: current.instruction, userProfileId: current.userProfileId, tool, args: action.args,
             argsHash: action.hash, sourceContext: [current.initialContext, ...current.sources].filter(Boolean).join("\n\n") });
+        const review = ownerLink(`/tasks?approval=${proposal.id}`);
         return proposal.status === "pending"
-            ? `Awaiting your approval: [review ${tool}](/tasks?approval=${proposal.id}). No action has been executed.`
-            : `This action is already recorded as ${proposal.status}. It was not repeated. [Review it](/tasks?approval=${proposal.id}).`;
+            ? `Awaiting your approval: [review ${tool}](${review}). No action has been executed.`
+            : `This action is already recorded as ${proposal.status}. It was not repeated. [Review it](${review}).`;
     } catch {
         return "Approval could not be recorded safely. This action was not executed. Report this to the user.";
     }
