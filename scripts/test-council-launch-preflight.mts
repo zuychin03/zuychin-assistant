@@ -171,13 +171,16 @@ try {
     child.stderr.resume();
     let socket: WebSocket | undefined;
     try {
+        // The host writes this file in place, so it can exist before it holds JSON.
         const identityPath = join(root, ".council-host", "host-repo.json");
+        const readIdentity = () => { try { return JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string }; } catch { return null; } };
         const deadline = Date.now() + 15_000;
-        while (!existsSync(identityPath)) {
+        let identity = readIdentity();
+        while (!identity) {
             if (child.exitCode !== null || Date.now() > deadline) throw new Error("fixture host failed to start");
             await new Promise((resume) => setTimeout(resume, 25));
+            identity = readIdentity();
         }
-        const identity = JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string };
         socket = new WebSocket(`ws://127.0.0.1:${identity.port}/ws`, identity.token);
         await once(socket, "open");
         const launch = { type: "convene", topic: "fixture", brief: "fixture", agents: names, closer: names[0], councilType: "code" };

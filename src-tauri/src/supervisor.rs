@@ -22,6 +22,9 @@ use std::{
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const STOP_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
 const KILL_TIMEOUT: Duration = Duration::from_secs(2);
+// A console host's conhost.exe sits in the same job and exits just after it, so
+// on a busy machine a clean exit briefly reads as a non-empty tree.
+const TREE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 const HEALTH_FRESHNESS: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_EVENTS: usize = 64;
@@ -683,7 +686,12 @@ fn complete_if_terminated(
 ) -> bool {
     let tree_confirmed = match tree_empty {
         Ok(empty) => {
-            if !empty && owned.ended.is_some() {
+            if !empty
+                && owned
+                    .ended
+                    .as_ref()
+                    .is_some_and(|(_, at)| at.elapsed() >= TREE_DRAIN_GRACE)
+            {
                 force_stop(
                     owned,
                     state,
@@ -910,7 +918,7 @@ mod tests {
                 started_at: Instant::now(),
                 stop_at: Some(Instant::now()),
                 killed_at: None,
-                ended: Some((ExitStatus::from_raw(0), Instant::now())),
+                ended: Some((ExitStatus::from_raw(0), Instant::now() - TREE_DRAIN_GRACE)),
                 report: Some(HostExit {
                     code: 0,
                     reason: ExitReason::Requested,
@@ -928,7 +936,8 @@ mod tests {
     fn pending_descendants_retain_ownership_and_block_clean_restart() {
         let (mut owned, mut state) = exited_parent();
         owned.output_done.store(false, Ordering::Release);
-        owned.ended.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(1);
+        owned.ended.as_mut().unwrap().1 =
+            Instant::now() - TREE_DRAIN_GRACE - Duration::from_secs(1);
         assert!(!complete_if_terminated(&mut owned, &mut state, Ok(false)));
         owned.output_done.store(true, Ordering::Release);
         assert!(!complete_if_terminated(&mut owned, &mut state, Ok(false)));
@@ -991,6 +1000,21 @@ mod tests {
         let exit = state.status.last_exit.unwrap();
         assert!(exit.clean && !exit.forced);
         assert_eq!(exit.code, Some(0));
+    }
+
+    #[test]
+    fn tree_draining_just_after_exit_stays_owned_then_clean() {
+        let (mut owned, mut state) = exited_parent();
+        owned.ended.as_mut().unwrap().1 = Instant::now();
+        assert!(!complete_if_terminated(&mut owned, &mut state, Ok(false)));
+        assert!(!owned.forced && owned.killed_at.is_none());
+        assert!(state.status.owned);
+        assert!(!state.snapshot().restart_safe);
+        assert!(state.status.last_exit.is_none());
+        assert!(complete_if_terminated(&mut owned, &mut state, Ok(true)));
+        assert!(!state.status.owned);
+        let exit = state.status.last_exit.unwrap();
+        assert!(exit.clean && !exit.forced);
     }
 
     const FAKE_HOST: &str = r#"

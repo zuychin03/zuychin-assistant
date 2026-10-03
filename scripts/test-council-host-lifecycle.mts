@@ -261,9 +261,11 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         child = spawn(process.execPath, ["--import", "tsx", join(source, "scripts/council-host.mts"), "--repo", repo, "--config", configPath],
             { cwd: source, env, stdio: ["pipe", "pipe", "pipe"] });
         closed = once(child, "close"); child.stdout!.resume(); child.stderr!.resume();
+        // The host writes this file in place, so it can exist before it holds JSON.
         const identityPath = join(root, ".council-host", "host-repo.json");
-        await until(() => existsSync(identityPath), "host identity");
-        const identity = JSON.parse(readFileSync(identityPath, "utf8"));
+        const readIdentity = () => { try { return JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string }; } catch { return null; } };
+        await until(() => readIdentity() !== null, "host identity");
+        const identity = readIdentity()!;
         socket = new WebSocket(`ws://127.0.0.1:${identity.port}/ws`, identity.token);
         socket.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
         await bounded(once(socket, "open"), 5_000);

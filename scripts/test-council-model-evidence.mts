@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -156,9 +156,11 @@ async function scenario(mode: Mode) {
         closed = once(child, "close");
         child.stdout!.resume();
         child.stderr!.resume();
+        // The host writes this file in place, so it can exist before it holds JSON.
         const identityPath = join(root, ".council-host", "host-repo.json");
-        await until(() => existsSync(identityPath), "fixture host identity", 15_000, child);
-        const identity = JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string };
+        const readIdentity = () => { try { return JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string }; } catch { return null; } };
+        await until(() => readIdentity() !== null, "fixture host identity", 15_000, child);
+        const identity = readIdentity()!;
         socket = new WebSocket(`ws://127.0.0.1:${identity.port}/ws`, identity.token);
         const messages: HostMessage[] = [];
         socket.on("message", (raw) => messages.push(JSON.parse(raw.toString()) as HostMessage));
