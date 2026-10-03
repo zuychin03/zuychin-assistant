@@ -2,7 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { EXECUTION_ID_PATTERN, parseExecutionRecord, type CouncilExecutionPage, type CouncilExecutionRecord } from "./execution-evidence";
 
 const PAGE_SIZE = 50;
-const COLUMNS = "id,connector_kind,identity_assurance,provider,adapter_version,requested_model,effective_model,requested_reasoning_effort,effective_reasoning_effort,model_source,started_at,ended_at,predecessor_execution_id,participant:council_participants!participant_id(name,session_id)";
+const COLUMNS = "id,connector_kind,identity_assurance,provider,adapter_version,requested_model,effective_model,requested_reasoning_effort,effective_reasoning_effort,model_source,host_generation,policy_version,started_at,ended_at,predecessor_execution_id,participant:council_participants!participant_id(name,session_id)";
 
 export function parseExecutionCursor(cursor: string | null): { startedAt: string; id: string } | null {
     if (!cursor) return null;
@@ -25,6 +25,7 @@ function mapRecord(value: unknown, sessionId: string): CouncilExecutionRecord | 
         requestedModel: row.requested_model, effectiveModel: row.effective_model,
         requestedReasoningEffort: row.requested_reasoning_effort, effectiveReasoningEffort: row.effective_reasoning_effort,
         modelSource: row.model_source, startedAt: row.started_at, endedAt: row.ended_at,
+        hostGeneration: row.host_generation, policyVersion: row.policy_version,
         predecessorExecutionId: row.predecessor_execution_id,
     });
 }

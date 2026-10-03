@@ -648,6 +648,22 @@ reviewable; the owner can copy an exact-SHA comparison command and decide how to
 Legacy command arguments and output are withheld when no redaction version was recorded.
 Run `npm run council:integration:test` for the offline attempt, host, Git, privacy and owner UI checks.
 
+**Execution policy boundary.** After the owner review migration, apply the complete
+[`council-execution-policy.sql`](scripts/migrations/council-execution-policy.sql), followed by
+[`council-runtime-inventory.sql`](scripts/migrations/council-runtime-inventory.sql), before deploying
+the matching server. A version-aware host requires the exact supported `policyVersion` in both
+the lease-claim and execution-start schemas. The first acknowledged execution pins the Council's
+host generation and policy. Later starts and reconnects must match that boundary. Existing runs
+with unrecorded policy stay unknown and cannot be adopted by a version-aware host in place.
+The owner-only `/api/council/runtime-inventory` endpoint lists active boundaries in bounded pages;
+it preserves unknown values and includes unfinished work after debate closure.
+
+`npm run council:contracts:test` checks strict V1 envelopes, a language-neutral fixture corpus,
+the reference authorisation matrix, lifecycle replays, immutable policy evidence and actual MCP
+handler parity. Council wire protocol remains 3; the native supervisor has its own V1 contract.
+The pure reference evaluator is a conformance target for future hosts, not a deployed permission
+broker. Offline fixtures do not establish Rust parity, native acceptance or database concurrency.
+
 **Run the whole script or a complete standalone migration, never an extracted fragment.**
 Several functions are defined more than once across the
 waves, so re-running an earlier block alone silently reverts a later definition. That happened once:

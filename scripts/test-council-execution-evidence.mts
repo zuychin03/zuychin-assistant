@@ -7,6 +7,7 @@ const evidence = {
     connectorKind: "acp", identityAssurance: "host_verified", provider: "fixture",
     adapterVersion: "1.2.3", requestedModel: "requested", effectiveModel: "observed",
     requestedReasoningEffort: "high", effectiveReasoningEffort: "medium", modelSource: "adapter_config",
+    hostGeneration: "typescript-node", policyVersion: "typescript-node-v3-2026-09-30",
 };
 
 test("evidence parser explicitly strips private and lifecycle metadata", () => {
@@ -18,6 +19,14 @@ test("unknown effective fields remain unknown even when a requested model exists
     assert.equal(parsed?.effectiveModel, null);
     assert.equal(parsed?.effectiveReasoningEffort, null);
     assert.equal(parsed?.requestedModel, "requested");
+});
+
+test("historical policy evidence remains unknown instead of inheriting the current Node policy", () => {
+    const historical = { ...evidence, hostGeneration: undefined, policyVersion: undefined };
+    const parsed = parseExecutionEvidence(historical);
+    assert.equal(parsed?.hostGeneration, null);
+    assert.equal(parsed?.policyVersion, null);
+    assert.equal(parseExecutionEvidence({ ...evidence, policyVersion: {} }), null);
 });
 
 test("historical unbound messages never acquire the current or latest execution", () => {

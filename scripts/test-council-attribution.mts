@@ -145,7 +145,15 @@ type ToolResult = { isError?: boolean; content: { text: string }[] };
 type ToolHandler = (args: Record<string, unknown>, extra: { authInfo: AuthInfo }) => Promise<ToolResult>;
 let protocolVersion = 3;
 const calls: { kind: string; args: Record<string, unknown> }[] = [];
-beforeEach(() => { calls.length = 0; protocolVersion = 3; });
+beforeEach(t => {
+    calls.length = 0; protocolVersion = 3;
+    assert("mock" in t);
+    t.mock.method(supabaseAdmin, "from", (table: string) => {
+        assert.equal(table, "council_participants");
+        const query = { select: () => query, eq: () => query, order: async () => ({ data: [{ name: "seat", kind: "agent" }], error: null }) };
+        return query;
+    });
+});
 
 function registeredTools() {
     const handlers = new Map<string, ToolHandler>();
@@ -162,6 +170,7 @@ function registeredTools() {
         "@/lib/council/host-contracts": hostContracts, "@/lib/agents/scopes": scopes,
         "@/lib/council/write-identity": identityModule,
         "@/lib/council/store": {
+            CouncilSpeakProtocolError: store.CouncilSpeakProtocolError,
             getSessionByCode: async () => ({ id: SESSION, code: "CN-TEST", round: 1, lastSeq: 0, protocolVersion }),
             listParticipants: async () => [participant], getParticipant: async () => participant,
             appendMessage: async (args: Record<string, unknown>) => { calls.push({ kind: "message", args }); return { ok: true, round: 1 }; },

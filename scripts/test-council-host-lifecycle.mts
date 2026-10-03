@@ -14,6 +14,12 @@ import { killTree } from "./council-host-paths.mts";
 const source = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const name = "alpha-seat";
 const code = "CN-ABCD";
+const policyVersion = "typescript-node-v3-2026-09-30";
+type PolicyCase = "claim-schema-missing" | "start-schema-missing" | "claim-schema-wrong" | "start-schema-wrong"
+    | "start-schema-malformed"
+    | "boundary-missing" | "boundary-unknown-history" | "boundary-partial" | "boundary-policy" | "boundary-generation"
+    | "journal-policy" | "journal-generation" | "journal-missing-policy" | "journal-pending-ack" | "journal-pending-wrong-intent"
+    | "fresh" | "ack-policy" | "ack-generation" | "ack-missing";
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|PROGRAMFILES|PROGRAMFILES\(X86\)|SYSTEMDRIVE)$/i.test(key)));
 type Mode = "stable" | "reject" | "slow-execution" | "hang-initialize" | "hang-session" | "hang-selection" | "wrong-protocol"
@@ -46,7 +52,7 @@ async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 async function scenario(mode: Mode, savedModel: string | null = "beta",
     journalFault?: "code" | "base" | "path" | "duplicate" | "missing" | "empty-model" | "seat-missing",
     freshInvite = false, savedReasoning: string | null = null,
-    releaseMode?: "reject" | "error" | "hang") {
+    releaseMode?: "reject" | "error" | "hang", policyCase?: PolicyCase) {
     const root = mkdtempSync(join(tmpdir(), "council-host-lifecycle-"));
     const repo = join(root, "repo");
     const home = join(root, "home");
@@ -81,6 +87,7 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
     let listRequests = 0;
     const issuedTokens: string[] = [];
     let spawnedBeforeBinding = false;
+    let journalBeforeExecution: Record<string, unknown> | null = null;
     const mcp = createServer(async (request, response) => {
         try {
             assert.equal(request.headers.authorization?.startsWith("Bearer fixture-"), true);
@@ -96,8 +103,12 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                             mode === "status-schema-unsupported" ? {} : { statusOnly: { type: "boolean" } } } },
                         { name: "council_host_issue_seat", inputSchema: { properties:
                             mode === "binding-old-issue" ? {} : { bindExecution: { type: "boolean" } } } },
+                        { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string",
+                            ...(policyCase === "claim-schema-missing" ? {} : { const: policyCase === "claim-schema-wrong" ? "future-policy" : policyVersion }) } } } },
                         { name: "council_execution_start", inputSchema: { properties:
-                            mode === "binding-old-start" ? {} : { seatTokenHash: { type: "string" } } } },
+                            mode === "binding-old-start" ? {} : { seatTokenHash: { type: "string" }, policyVersion: { type: "string",
+                                ...(policyCase === "start-schema-missing" ? {} : { enum: policyCase === "start-schema-malformed" ? policyVersion
+                                    : [policyCase === "start-schema-wrong" ? "future-policy" : policyVersion] }) } } } },
                         { name: "council_integration_begin", inputSchema: { properties: { attemptId: { type: "string" } } } },
                         { name: "council_integration_finish", inputSchema: { properties: { evidence: { type: "object" } } } },
                     ],
@@ -111,6 +122,13 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
             let toolError = false;
             switch (call.name) {
                 case "council_host_claim": result = { ok: true, leaseEpoch: 2, leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+                    ...(policyCase === "boundary-missing" ? {} : {
+                        hostGeneration: policyCase === "fresh" || policyCase === "boundary-unknown-history" ? null
+                            : policyCase === "boundary-generation" ? "rust-native" : "typescript-node",
+                        policyVersion: ["fresh", "boundary-unknown-history", "boundary-partial"].includes(policyCase ?? "") ? null
+                            : policyCase === "boundary-policy" ? "future-policy" : policyVersion,
+                        hasExecutionHistory: policyCase !== "fresh",
+                    }),
                     session: { id: "11111111-1111-4111-8111-111111111111", protocolVersion: 3, baseSha,
                         repoPath: repo, baseBranch: "main", topic: "fixture", status: "open" } }; break;
                 case "council_dispatch": result = { topic: "fixture", statusOnly: mode !== "status-unsupported" && call.arguments.statusOnly === true,
@@ -132,6 +150,7 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                     result = { ok: true, token: issuedTokens.at(-1), executionBindingRequired: mode !== "binding-issue-unconfirmed" };
                     break;
                 case "council_execution_start":
+                    journalBeforeExecution ??= JSON.parse(readFileSync(join(runDir, "campaign-run.json"), "utf8"));
                     executionRecorded = true;
                     if (mode === "binding-shell") {
                         await new Promise((settle) => setTimeout(settle, 1_000));
@@ -147,7 +166,11 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                     }
                     result = mode === "binding-refused" ? { ok: false, reason: "fixture binding rejected" }
                         : { ok: true, executionId: integrationMode ? `fixture-execution-${issuedTokens.length}` : "fixture-execution",
-                            seatBound: mode !== "binding-unconfirmed" && !(mode === "binding-integration-unconfirmed" && issuedTokens.length === 2) };
+                            seatBound: mode !== "binding-unconfirmed" && !(mode === "binding-integration-unconfirmed" && issuedTokens.length === 2),
+                            ...(policyCase === "ack-missing" ? {} : {
+                                hostGeneration: policyCase === "ack-generation" ? "rust-native" : "typescript-node",
+                                policyVersion: policyCase === "ack-policy" ? "future-policy" : policyVersion,
+                            }) };
                     break;
                 case "council_delivery_state":
                     break;
@@ -202,7 +225,18 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         const shell = mode === "expired-shell" || mode === "binding-shell";
         const savedSeat = { name, dir: join(root, "repo-cn-abcd-alpha-seat"), branch: "council/cn-abcd/alpha-seat", mode: shell ? "shell" : "acp",
             requestedModel: savedModel, requestedReasoningEffort: savedReasoning };
-        const journal = { code, baseSha, agents: [savedSeat] };
+        const journal: Record<string, unknown> & { code: string; baseSha: string; agents: typeof savedSeat[] } = {
+            code, baseSha, agents: [savedSeat],
+            ...(policyCase === "fresh" || policyCase === "journal-missing-policy" ? {} : {
+                hostGeneration: policyCase === "journal-generation" ? "rust-native" : "typescript-node",
+                policyVersion: policyCase === "journal-policy" ? "future-policy" : policyVersion,
+            }),
+        };
+        if (policyCase?.startsWith("journal-pending-")) Object.assign(journal, {
+            sessionId: "11111111-1111-4111-8111-111111111111", repo,
+            hostGeneration: null, policyVersion: null,
+            executionBoundaryIntent: { hostGeneration: "typescript-node", policyVersion: policyCase === "journal-pending-wrong-intent" ? "future-policy" : policyVersion },
+        });
         if (journalFault === "code") journal.code = "CN-WXYZ";
         if (journalFault === "base") journal.baseSha = "0".repeat(40);
         if (journalFault === "path") savedSeat.dir = join(root, "unrelated");
@@ -244,6 +278,10 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         } else if (mode === "binding-shell") {
             await until(() => executionRecorded && records().some((record) => record.pid), "bound shell spawn");
             await new Promise((settle) => setTimeout(settle, 1_200));
+        } else if (policyCase && policyCase !== "fresh") {
+            await until(() => messages.some((message) => message.type === "error")
+                || (policyCase === "journal-pending-ack" ? records().some((record) => record.method === "session/prompt") : executionRecorded), "policy outcome");
+            if (policyCase.startsWith("ack-")) await new Promise((settle) => setTimeout(settle, 3_500));
         } else if (mode.startsWith("binding-")) {
             await until(() => messages.some((message) => message.type === "error") || executionRecorded, "binding outcome");
             await new Promise((settle) => setTimeout(settle, 3_500));
@@ -274,7 +312,8 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
             executionStopped, responseClosedBeforeAck, health, aliveDuringExpiryCleanup,
             worktreeRetained: existsSync(savedSeat.dir), transcript: readFileSync(transcriptPath, "utf8"), listRequests, spawnedBeforeBinding,
             issuedTokenHashes: issuedTokens.map((token) => createHash("sha256").update(token).digest("hex")),
-            originalJournal, journalText: existsSync(journalPath) ? readFileSync(journalPath, "utf8") : null,
+            originalJournal, journalBeforeExecution: journalBeforeExecution as Record<string, unknown> | null,
+            journalText: existsSync(journalPath) ? readFileSync(journalPath, "utf8") : null,
             adapterAlive: records().filter((record) => record.pid).some((record) => {
                 try { process.kill(record.pid!, 0); return true; } catch { return false; }
             }) };
@@ -294,6 +333,69 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
 }
+
+for (const policyCase of ["claim-schema-missing", "start-schema-missing", "claim-schema-wrong", "start-schema-wrong", "start-schema-malformed"] as const) {
+    await test(`policy ${policyCase} is rejected before any lease mutation`, async () => {
+        const result = await scenario("stable", "beta", undefined, false, null, undefined, policyCase);
+        assert.deepEqual(result.errors, []);
+        assert.deepEqual(result.calls, []);
+        assert.deepEqual(result.records, []);
+        assert.equal(result.journalText, result.originalJournal);
+    });
+}
+
+for (const policyCase of ["boundary-missing", "boundary-unknown-history", "boundary-partial", "boundary-policy", "boundary-generation",
+    "journal-policy", "journal-generation", "journal-missing-policy", "journal-pending-wrong-intent"] as const) {
+    await test(`policy ${policyCase} releases the captured lease without changing the journal or starting a seat`, async () => {
+        const result = await scenario("stable", "beta", undefined, false, null, undefined, policyCase);
+        assert.deepEqual(result.errors, []);
+        assert.deepEqual(result.records, []);
+        assert.equal(result.journalText, result.originalJournal);
+        assert.equal(result.calls.some((call) => call.name === "council_host_issue_seat"), false);
+        const claim = result.calls.find((call) => call.name === "council_host_claim")!;
+        assert.equal(claim.arguments.policyVersion, policyVersion);
+        assert.deepEqual(result.calls.filter((call) => call.name === "council_host_release").map((call) => call.arguments), [
+            { sessionCode: code, hostId: claim.arguments.hostId, leaseEpoch: 2 },
+        ]);
+        assert.equal(result.health.leaseEpoch, null);
+    });
+}
+
+for (const policyCase of ["ack-policy", "ack-generation", "ack-missing"] as const) {
+    await test(`policy ${policyCase} stops the exact execution without joining or prompting`, async () => {
+        const result = await scenario("stable", "beta", undefined, false, null, undefined, policyCase);
+        assert.deepEqual(result.errors, []);
+        assert.equal(result.calls.some((call) => call.name === "council_join"), false);
+        assert.equal(result.records.some((record) => record.method === "session/prompt"), false);
+        assert.equal(result.executionStopped, true);
+        assert.equal(result.adapterAlive, false);
+        assert.equal((result.health.agents[0] as Record<string, unknown>).policyVersion, null);
+    });
+}
+
+await test("policy fresh execution-free Council records the acknowledged boundary before prompting", async () => {
+    const result = await scenario("stable", "beta", undefined, false, null, undefined, "fresh");
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.calls.find((call) => call.name === "council_host_claim")?.arguments.policyVersion, policyVersion);
+    assert.equal(result.calls.find((call) => call.name === "council_execution_start")?.arguments.policyVersion, policyVersion);
+    assert.equal(result.journalBeforeExecution?.policyVersion, null);
+    assert.equal(result.journalBeforeExecution?.hostGeneration, null);
+    assert.deepEqual(result.journalBeforeExecution?.executionBoundaryIntent, { hostGeneration: "typescript-node", policyVersion });
+    assert.equal(JSON.parse(result.journalText!).policyVersion, policyVersion);
+    assert.equal(JSON.parse(result.journalText!).hostGeneration, "typescript-node");
+    assert.equal((result.health.agents[0] as Record<string, unknown>).policyVersion, policyVersion);
+    assert.equal((result.health.agents[0] as Record<string, unknown>).hostGeneration, "typescript-node");
+    assert.equal(result.records.some((record) => record.method === "session/prompt"), true);
+});
+
+await test("policy reconnect recovers a pinned execution whose first acknowledgement was lost", async () => {
+    const result = await scenario("stable", "beta", undefined, false, null, undefined, "journal-pending-ack");
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.records.some((record) => record.method === "session/prompt"), true);
+    assert.equal(result.calls.find((call) => call.name === "council_execution_start")?.arguments.requestedModel, "beta");
+    assert.equal(JSON.parse(result.journalText!).policyVersion, policyVersion);
+    assert.equal(JSON.parse(result.journalText!).hostGeneration, "typescript-node");
+});
 
 for (const mode of ["binding-refused", "binding-unconfirmed"] as const) {
     await test(`${mode} never joins or prompts and closes any acknowledged execution`, async () => {

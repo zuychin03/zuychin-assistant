@@ -13,11 +13,11 @@ import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
 import { getFile, getVaultConfig } from "@/lib/vault/github";
 import { ingestToVault, writeVaultPage, VAULT_CATEGORIES } from "@/lib/vault/ingest";
 import {
-    INTENTS_REQUIRING_REPLY_TO, INTENTS_REQUIRING_TARGET, MAX_BODY_CHARS, MAX_OPEN_COUNCILS,
-    MODERATOR_NAME, COUNCIL_CODE_PATTERN, clampWaitMs, type CouncilIntent,
+    MAX_BODY_CHARS, MAX_OPEN_COUNCILS,
+    MODERATOR_NAME, COUNCIL_CODE_PATTERN, clampWaitMs,
 } from "@/lib/council/protocol";
 import {
-    appendMessage, createCouncilSession, getParticipant, getSessionByCode, joinCouncil,
+    appendMessage, CouncilSpeakProtocolError, createCouncilSession, getParticipant, getSessionByCode, joinCouncil,
     leaveCouncil, listOpenCouncils, listParticipants, readTranscript,
 } from "@/lib/council/store";
 import {
@@ -40,7 +40,7 @@ import {
 import { requireKnowledgeRead as assertKnowledgeRead, requireCouncilObserver as assertCouncilObserver } from "@/lib/agents/read-access";
 import { councilHostService } from "@/lib/council/service";
 import {
-    exactVerificationSchema, integrationBeginSchema, integrationFinishSchema, integrationReportSchema, requireCouncilHost,
+    claimLeaseSchema, exactVerificationSchema, integrationBeginSchema, integrationFinishSchema, integrationReportSchema, requireCouncilHost,
     startExecutionSchema, stopExecutionSchema,
 } from "@/lib/council/host-contracts";
 import { promptDigest } from "@/lib/council/v3";
@@ -729,19 +729,7 @@ const handler = createMcpHandler(
                         return { content: [{ type: "text", text: renderNotAParticipant(session.code, agentName) }] };
                     }
 
-                    // Validated before the append, so a malformed call records
-                    // nothing rather than a message nobody is obliged to answer.
                     const target = addressedTo ?? "all";
-                    const validTargets = [...roster.map((p) => p.name), "all"];
-                    if (!validTargets.includes(target)) {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\naddressedTo "${target}" is not on the roster. Valid values: ${validTargets.join(", ")}.\n\nNEXT → repeat your council_speak call with a valid addressedTo.` }] };
-                    }
-                    if (INTENTS_REQUIRING_TARGET.includes(intent as CouncilIntent) && target === "all") {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\nintent "${intent}" must name one participant in addressedTo. Valid values: ${validTargets.filter((n) => n !== "all").join(", ")}.\n\nNEXT → repeat your council_speak call with addressedTo set.` }] };
-                    }
-                    if (INTENTS_REQUIRING_REPLY_TO.includes(intent as CouncilIntent) && replyToSeq === undefined) {
-                        return { content: [{ type: "text", text: `PROTOCOL_ERROR - nothing was recorded.\nintent "${intent}" must set replyToSeq to the seq you are responding to; that is what clears the obligation.\n\nNEXT → repeat your council_speak call with replyToSeq set.` }] };
-                    }
 
                     const post = await appendMessage({
                         sessionId: session.id, speaker: agentName, intent, body: message,
@@ -782,6 +770,7 @@ const handler = createMcpHandler(
                         }],
                     };
                 } catch (error) {
+                    if (error instanceof CouncilSpeakProtocolError) return { content: [{ type: "text", text: error.message }] };
                     return { content: [{ type: "text", text: `Speak failed: ${errMsg(error)}. This is not the council closing - check council_transcript before retrying with the SAME clientKey.` }] };
                 }
             },
@@ -875,14 +864,14 @@ const handler = createMcpHandler(
             "council_host_claim",
             {
                 description: "[COUNCIL V3 HOST] Atomically claim or retake an expired host lease.",
-                inputSchema: { sessionCode: z.string().min(1), hostId: z.string().uuid() },
+                inputSchema: { sessionCode: z.string().min(1), hostId: z.string().uuid(), policyVersion: claimLeaseSchema.shape.policyVersion },
             },
-            async ({ sessionCode, hostId }, extra) => {
+            async ({ sessionCode, hostId, policyVersion }, extra) => {
                 const denied = requireHost(extra); if (denied) return denied;
                 try {
                     const session = await getSessionByCode(sessionCode);
                     if (!session) return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "unknown_session" }) }] };
-                    const lease = await councilHostService.claimLease({ sessionId: session.id, hostId }, extra.authInfo);
+                    const lease = await councilHostService.claimLease({ sessionId: session.id, hostId, ...(policyVersion === undefined ? {} : { policyVersion }) }, extra.authInfo);
                     return { content: [{ type: "text", text: JSON.stringify({ ...lease, session: {
                         id: session.id, code: session.code, topic: session.topic, status: session.status,
                         protocolVersion: session.protocolVersion, baseSha: session.baseSha,

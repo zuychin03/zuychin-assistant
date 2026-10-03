@@ -215,4 +215,8 @@ for (const [source, sql] of baselineOnly ? [["baseline", ""]] : [["migration", m
         });
     });
 }
-if (!baselineOnly) test("setup includes the exact owner package migration", () => { assert(migration); assert.equal(setup.slice(setup.indexOf(marker)).trim(), migration.trim()); });
+if (!baselineOnly) test("setup includes the exact owner package migration", () => {
+    assert(migration);
+    const ownerBlock = setup.slice(setup.indexOf(marker)).split("-- ===== Council execution policy version =====")[0];
+    assert.equal(ownerBlock.trim(), migration.trim());
+});

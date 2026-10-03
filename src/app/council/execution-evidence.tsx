@@ -25,6 +25,8 @@ export function ExecutionEvidence({ executionId, records = [], snapshot, label =
                 <div><dt>Adapter version</dt><dd>{evidence.adapterVersion ?? "Not reported"}</dd></div>
                 <div><dt>Provider / connector</dt><dd>{evidence.provider ?? "Not reported"} / {evidence.connectorKind}</dd></div>
                 <div><dt>Seat identity</dt><dd>{executionIdentityLabel(evidence.identityAssurance)}</dd></div>
+                <div><dt>Host generation</dt><dd>{evidence.hostGeneration ?? "Not recorded"}</dd></div>
+                <div><dt>Policy version</dt><dd>{evidence.policyVersion ?? "Not recorded"}</dd></div>
                 <div className={ui.evidenceWide}><dt>Execution</dt><dd><code>{evidence.executionId}</code></dd></div>
             </dl>
             {evidence.modelSource === "adapter_legacy_set_model" && <p className={ui.evidenceNote}>The adapter acknowledged this selection without independent model readback.</p>}

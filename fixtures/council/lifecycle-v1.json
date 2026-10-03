@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "id": "lease-takeover-fences-old-host",
+      "category": "lease",
+      "initial": { "protocolVersion": 3, "status": "open", "leaseEpoch": 1 },
+      "input": { "event": "lease_expires_then_successor_claims" },
+      "expected": { "nextEpoch": 2, "oldRenewalAllowed": false, "reason": "stale_epoch" },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "lease-takeover-fences-old-host", "level": "embedded_postgres", "limitation": "Single connection, no live lease race." }
+    },
+    {
+      "id": "crash-during-delivery-retains-turn",
+      "category": "crash",
+      "initial": { "deliveryStatus": "in_flight", "leaseEpoch": 1 },
+      "input": { "event": "host_disappears_and_lease_expires", "fromSeq": 0, "throughSeq": 3, "prompt": "Synthetic retained turn" },
+      "expected": { "sameDelivery": true, "redelivered": true, "attempt": 2, "deliveryRows": 1, "oldAcknowledgementAllowed": false },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "crash-during-delivery-retains-turn", "level": "embedded_postgres", "limitation": "Replays durable state after host loss; does not kill a native process." }
+    },
+    {
+      "id": "redelivery-requires-send-before-ack",
+      "category": "redelivery",
+      "initial": { "deliveryStatus": "in_flight", "leaseEpoch": 1 },
+      "input": { "event": "release_then_successor_claims", "fromSeq": 0, "throughSeq": 3, "prompt": "Synthetic retained turn" },
+      "expected": { "sameDelivery": true, "redelivered": true, "earlyAcknowledgementAllowed": false, "earlyReason": "not_in_flight", "sentAcknowledgementAllowed": true, "cursor": 3 },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "redelivery-requires-send-before-ack", "level": "embedded_postgres", "limitation": "No transport disconnect or multi-connection race." }
+    },
+    {
+      "id": "model-ack-mismatch-rejected",
+      "category": "model_mismatch",
+      "initial": { "currentModel": "alpha", "availableModels": ["alpha", "beta"] },
+      "input": { "requestedModel": "beta", "acknowledgedModel": "alpha" },
+      "expected": { "accepted": false, "setterCalls": 1 },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "model-ack-mismatch-rejected", "level": "direct_typescript", "limitation": "Synthetic ACP response, no model calls." }
+    },
+    {
+      "id": "exact-commit-ignores-later-branch-content",
+      "category": "exact_commit",
+      "initial": { "baseText": "base\n", "acceptedText": "accepted\n" },
+      "input": { "path": "content.txt", "laterPath": "later.txt", "laterText": "not submitted\n" },
+      "expected": { "accepted": true, "files": ["content.txt"], "verifiedOriginalSha": true },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "exact-commit-ignores-later-branch-content", "level": "local_git", "limitation": "Temporary synthetic repository and no external verifier commands." }
+    },
+    {
+      "id": "integration-conflict-retains-protected-ref",
+      "category": "integration_conflict",
+      "initial": { "baseText": "base\n", "acceptedText": "accepted\n" },
+      "input": { "path": "content.txt", "conflictingText": "conflicting\n" },
+      "expected": { "accepted": false, "protectedRefUnchanged": true, "failedMergeReceipt": true },
+      "coverage": { "script": "scripts/test-council-lifecycle-corpus.mts", "test": "integration-conflict-retains-protected-ref", "level": "local_git", "limitation": "Temporary synthetic repository; owner approval and native UI remain separate." }
+    }
+  ]
+}

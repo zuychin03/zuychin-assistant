@@ -28,6 +28,8 @@ export interface HostAgent {
     executionId?: string | null;
     modelSource?: string | null;
     adapterVersion?: string | null;
+    hostGeneration?: string | null;
+    policyVersion?: string | null;
     capabilities: Record<string, unknown>;
 }
 

@@ -10,6 +10,8 @@ export interface CouncilExecutionEvidence {
     requestedReasoningEffort: string | null;
     effectiveReasoningEffort: string | null;
     modelSource: string | null;
+    hostGeneration: string | null;
+    policyVersion: string | null;
 }
 
 export interface CouncilExecutionRecord extends CouncilExecutionEvidence {
@@ -36,7 +38,7 @@ export function parseExecutionEvidence(value: unknown): CouncilExecutionEvidence
     const row = object(value);
     if (!row || typeof row.executionId !== "string" || !EXECUTION_ID_PATTERN.test(row.executionId)) return null;
     if (![row.agentName, row.connectorKind, row.identityAssurance].every(v => typeof v === "string" && v.length > 0)) return null;
-    const fields = ["provider", "adapterVersion", "requestedModel", "effectiveModel", "requestedReasoningEffort", "effectiveReasoningEffort", "modelSource"] as const;
+    const fields = ["provider", "adapterVersion", "requestedModel", "effectiveModel", "requestedReasoningEffort", "effectiveReasoningEffort", "modelSource", "hostGeneration", "policyVersion"] as const;
     if (fields.some(key => row[key] != null && typeof row[key] !== "string")) return null;
     return {
         executionId: row.executionId, agentName: row.agentName as string,
@@ -46,6 +48,7 @@ export function parseExecutionEvidence(value: unknown): CouncilExecutionEvidence
         requestedReasoningEffort: row.requestedReasoningEffort as string ?? null,
         effectiveReasoningEffort: row.effectiveReasoningEffort as string ?? null,
         modelSource: row.modelSource as string ?? null,
+        hostGeneration: row.hostGeneration as string ?? null, policyVersion: row.policyVersion as string ?? null,
     };
 }
 

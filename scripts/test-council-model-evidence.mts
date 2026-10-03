@@ -85,7 +85,8 @@ async function scenario(mode: Mode) {
                     { name: "council_convene", inputSchema: { properties: { requestedCode: { type: "string" } } } },
                     { name: "council_dispatch", inputSchema: { properties: { statusOnly: { type: "boolean" } } } },
                     { name: "council_host_issue_seat", inputSchema: { properties: { bindExecution: { type: "boolean" } } } },
-                    { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" } } } },
+                    { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
+                    { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" }, policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
                 ] };
             } else if (rpc.method === "tools/call") {
                 const args = rpc.params?.arguments ?? {};
@@ -95,6 +96,7 @@ async function scenario(mode: Mode) {
                         break;
                     case "council_host_claim":
                         payload = { ok: true, leaseEpoch: 1, leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+                            hostGeneration: null, policyVersion: null, hasExecutionHistory: false,
                             session: { id: "11111111-1111-4111-8111-111111111111", protocolVersion: 3, baseSha,
                                 repoPath: repo, baseBranch: "main", topic: "fixture", status: "open" } };
                         break;
@@ -103,7 +105,8 @@ async function scenario(mode: Mode) {
                         payload = { ok: true, token: "fixture-only-seat-key", executionBindingRequired: true }; break;
                     case "council_execution_start":
                         assert.match(String(args.seatTokenHash), /^[0-9a-f]{64}$/);
-                        payload = { ok: true, executionId: `fixture-${args.agentName}`, seatBound: true }; break;
+                        payload = { ok: true, executionId: `fixture-${args.agentName}`, seatBound: true,
+                            hostGeneration: "typescript-node", policyVersion: "typescript-node-v3-2026-09-30" }; break;
                     case "council_dispatch":
                         if (args.statusOnly === true) assert.equal(args.ackDeliveryIds, undefined);
                         payload = { status: "open", pausedAt: null, round: 1, maxRounds: 3, floorHolder: null, agents: {},

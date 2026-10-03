@@ -1,0 +1,2096 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "cases": [
+    {
+      "name": "accept principal",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept connector_snapshot",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept launch",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ]
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept delivery",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept action",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "propose",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept tool_request",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "src/a.ts",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept work_submission",
+      "kind": "work_submission",
+      "input": {
+        "schemaVersion": 1,
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentReport": "Ran the focused regression."
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept integration_report",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "principal rejects a future version",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 2,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "principal rejects unknown authority",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        },
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "connector_snapshot rejects a future version",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 2,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "connector_snapshot rejects unknown authority",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        },
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "launch rejects a future version",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 2,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "launch rejects unknown authority",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ],
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "delivery rejects a future version",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 2,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "delivery rejects unknown authority",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        },
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "action rejects a future version",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 2,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "propose",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all"
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "action rejects unknown authority",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "propose",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all",
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "tool_request rejects a future version",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 2,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "src/a.ts",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "tool_request rejects unknown authority",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "src/a.ts",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        },
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "work_submission rejects a future version",
+      "kind": "work_submission",
+      "input": {
+        "schemaVersion": 2,
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentReport": "Ran the focused regression."
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "work_submission rejects unknown authority",
+      "kind": "work_submission",
+      "input": {
+        "schemaVersion": 1,
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentReport": "Ran the focused regression.",
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "integration_report rejects a future version",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 2,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unsupported_version"
+      }
+    },
+    {
+      "name": "integration_report rejects unknown authority",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        },
+        "ownerApproved": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "accept authenticated owner description",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "owner",
+        "ownerId": "22222222-2222-4222-8222-222222222222"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept fenced host description",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "host",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "seat refuses bearer material",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        },
+        "token": "synthetic-never-a-real-key"
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "unknown assurance cannot become an authenticated seat",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "trusted_by_name",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "unknown seat role is invalid",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "administrator",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "nested fence rejects authority fields",
+      "kind": "principal",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "seat",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "identityAssurance": "host_bound",
+        "hostFence": {
+          "hostId": "33333333-3333-4333-8333-333333333333",
+          "leaseEpoch": 1,
+          "ownerApproved": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "unknown connector does not inherit ACP support",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "new_connector",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "legacy ACK is not declared independent readback",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": "legacy_ack",
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "capability snapshot cannot contain policy grants",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true,
+          "allowedActions": [
+            "commit_branch"
+          ]
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "duplicate supported actions are invalid",
+      "kind": "connector_snapshot",
+      "input": {
+        "schemaVersion": 1,
+        "kind": "acp",
+        "source": "probed",
+        "streaming": true,
+        "cancellation": true,
+        "sessionResume": false,
+        "modelSelection": true,
+        "structuredActions": true,
+        "toolCalls": true,
+        "permissionCallbacks": true,
+        "filesystemMediated": true,
+        "terminalMediated": true,
+        "networkMediated": false,
+        "observedAt": "2026-09-30T00:00:00.000Z",
+        "adapterVersion": "2.0.0",
+        "supportedActions": [
+          "discuss",
+          "read_repo",
+          "write_worktree",
+          "run_approved_command",
+          "commit_branch",
+          "review_submission",
+          "integrate_accepted_commits",
+          "conclude",
+          "discuss"
+        ],
+        "evidence": {
+          "effectiveModelReadback": false,
+          "toolReceipts": true,
+          "commandReceipts": true,
+          "commitReceipts": true
+        },
+        "reliability": {
+          "healthProbe": true,
+          "idempotency": true,
+          "maxPromptBytes": 65536,
+          "maxResultBytes": 65536
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "launch refuses arbitrary executable",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ],
+        "command": "fixture.exe"
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "launch refuses arbitrary environment",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ],
+        "env": {
+          "TOKEN": "synthetic"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "workspace name cannot be an absolute path",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "C:/private/repo",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "base branch cannot contain revision operators",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main~1",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "duplicate seats do not start two runtimes",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          },
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null
+          }
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "nested selection cannot carry CLI arguments",
+      "kind": "launch",
+      "input": {
+        "schemaVersion": 1,
+        "workspace": "assistant",
+        "baseBranch": "main",
+        "attach": null,
+        "seats": [
+          {
+            "seatName": "codex-a",
+            "instanceName": "codex",
+            "modelId": null,
+            "reasoningEffort": null,
+            "args": [
+              "--unsafe"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "delivery rejects reversed cursor range",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 2,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "transcript sequence cannot exceed cursor",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 2,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "transcript rejects repeated sequence",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          },
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "delivery forbids arbitrary response schema",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "type": "object"
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "delivery cannot allow a tool action",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input",
+          "write_worktree"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "delivery budget cannot be infinite",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "propose",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "agent",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 0,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "challenge requires a specific target",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "challenge",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all"
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "answer requires a reply sequence",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "answer",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all"
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "speak cannot claim another execution",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "speak",
+        "clientKey": "turn-1",
+        "intent": "propose",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all",
+        "executionId": "55555555-5555-4555-8555-555555555555"
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "unknown managed action is invalid",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "shell",
+        "clientKey": "turn-1",
+        "intent": "propose",
+        "body": "Inspecting the agreed file.",
+        "targetSeat": "all"
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "accept pass action",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "pass",
+        "clientKey": "pass-1",
+        "body": "Nothing further.",
+        "done": false
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept conclude action",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "conclude",
+        "clientKey": "close-1",
+        "verdict": "Use the reviewed implementation.",
+        "openQuestions": []
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "accept needs_input action",
+      "kind": "action",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "needs_input",
+        "clientKey": "input-1",
+        "body": "The required owner approval is missing."
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "tool request refuses raw command arguments",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "src/a.ts",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        },
+        "command": [
+          "node",
+          "-e",
+          "fixture"
+        ]
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "tool request refuses parent traversal",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "../secret",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "tool request refuses Windows absolute paths",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "C:/secret",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "tool request refuses UNC paths",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "\\\\server\\share",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "tool request refuses branch claims for file writes",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "write_worktree",
+        "resource": {
+          "kind": "branch",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "ref": "main",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": "66666666-6666-4666-8666-666666666666"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "submission needs a complete exact SHA",
+      "kind": "work_submission",
+      "input": {
+        "schemaVersion": 1,
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "commitSha": "abc123",
+        "agentReport": "Ran the focused regression."
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "submission cannot attest host verification",
+      "kind": "work_submission",
+      "input": {
+        "schemaVersion": 1,
+        "itemId": "66666666-6666-4666-8666-666666666666",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentReport": "Ran the focused regression.",
+        "verified": true
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "verified integration requires an exact tip",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": null,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "verified integration requires successful receipts",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 1,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "verified integration forbids changed protected refs",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "cccccccccccccccccccccccccccccccccccccccc"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "invalid_contract"
+      }
+    },
+    {
+      "name": "nested receipts cannot carry private host fields",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "verified",
+        "branch": "council/cn-4c65/integration",
+        "tipSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [
+            {
+              "command": [
+                "git",
+                "diff",
+                "--stat"
+              ],
+              "exitCode": 0,
+              "durationMs": 12,
+              "outputDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "outputTail": "1 file changed",
+              "timedOut": false,
+              "tokenHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "changedPaths": [
+            "src/a.ts"
+          ],
+          "diffSummary": "1 file changed",
+          "protectedRefs": {
+            "before": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "after": {
+              "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "conflictNotes": null,
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "unknown_field"
+      }
+    },
+    {
+      "name": "failed attempt may lack early evidence",
+      "kind": "integration_report",
+      "input": {
+        "schemaVersion": 1,
+        "attemptId": "77777777-7777-4777-8777-777777777777",
+        "hostId": "33333333-3333-4333-8333-333333333333",
+        "leaseEpoch": 1,
+        "status": "failed",
+        "branch": null,
+        "tipSha": null,
+        "executionId": null,
+        "evidence": {
+          "version": 1,
+          "redactionVersion": 1,
+          "receipts": [],
+          "changedPaths": null,
+          "diffSummary": null,
+          "protectedRefs": {
+            "before": null,
+            "after": null
+          },
+          "conflictNotes": "Stopped before assembly.",
+          "manualChecks": null
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "delivery preserves moderate transcript evidence",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "moderate",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "moderator",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "delivery preserves verdict transcript evidence",
+      "kind": "delivery",
+      "input": {
+        "schemaVersion": 1,
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "councilCode": "CN-4C65",
+        "participantId": "22222222-2222-4222-8222-222222222222",
+        "seatName": "codex-a",
+        "role": "member",
+        "fromSeq": 0,
+        "throughSeq": 1,
+        "transcriptSlice": [
+          {
+            "seq": 1,
+            "speaker": "claude-a",
+            "intent": "verdict",
+            "body": "Check the exact submitted commit.",
+            "executionId": null,
+            "round": 1,
+            "role": "system",
+            "addressedTo": "all",
+            "replyToSeq": null,
+            "answered": false,
+            "createdAt": "2026-09-30T00:00:00.000Z"
+          }
+        ],
+        "obligations": [],
+        "allowedActions": [
+          "speak",
+          "pass",
+          "needs_input"
+        ],
+        "responseSchema": {
+          "contract": "action",
+          "schemaVersion": 1
+        },
+        "budgets": {
+          "deadlineMs": 30000,
+          "maxInputTokens": 10000,
+          "maxOutputTokens": 2000
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "read request may use a seat repository grant before an implementation item",
+      "kind": "tool_request",
+      "input": {
+        "schemaVersion": 1,
+        "executionId": "55555555-5555-4555-8555-555555555555",
+        "deliveryId": "44444444-4444-4444-8444-444444444444",
+        "action": "read_repo",
+        "resource": {
+          "kind": "file",
+          "id": "88888888-8888-4888-8888-888888888888",
+          "workspace": "assistant",
+          "scopeId": "implementation",
+          "relativePath": "src/a.ts",
+          "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "workItemId": null
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    }
+  ]
+}

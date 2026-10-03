@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createLivenessServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -39,6 +40,12 @@ async function scenario(mode: Mode) {
     };
     const calls: Call[] = [];
     const errors: string[] = [];
+    const adapters = new Map<Socket, string>();
+    const liveness = createLivenessServer((adapter) => {
+        adapters.set(adapter, ""); adapter.setEncoding("utf8"); adapter.on("error", () => {});
+        adapter.on("data", (pid: string) => adapters.set(adapter, adapters.get(adapter) + pid));
+        adapter.on("close", () => adapters.delete(adapter));
+    });
     const states: { type: string; detail?: string; code?: string | null }[] = [];
     let child: ChildProcess | undefined;
     let socket: WebSocket | undefined;
@@ -65,7 +72,8 @@ async function scenario(mode: Mode) {
                 const tools = [
                     { name: "council_dispatch", inputSchema: { properties: { statusOnly: { type: "boolean" } } } },
                     { name: "council_host_issue_seat", inputSchema: { properties: { bindExecution: { type: "boolean" } } } },
-                    { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" } } } },
+                    { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
+                    { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" }, policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
                     ...(mode === "old-schema" ? [] : [
                         { name: "council_integration_begin", inputSchema: { properties: { attemptId: { type: "string" }, expectedIntegrator: { type: ["string", "null"] } } } },
                         { name: "council_integration_finish", inputSchema: { properties: { attemptId: { type: "string" }, evidence: { type: "object" } } } },
@@ -77,12 +85,14 @@ async function scenario(mode: Mode) {
             let result: unknown = { ok: true };
             switch (call.name) {
                 case "council_host_claim": result = { ok: true, leaseEpoch: 2, leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+                    hostGeneration: "typescript-node", policyVersion: "typescript-node-v3-2026-09-30", hasExecutionHistory: true,
                     session: { id: "66666666-6666-4666-8666-666666666666", protocolVersion: 3, baseSha, repoPath: repo, baseBranch: "main", topic: "fixture", status: "closed" } }; break;
                 case "council_dispatch": result = { topic: "fixture", statusOnly: call.arguments.statusOnly === true, status: expired ? "expired" : "closed",
                     pausedAt: expired ? "2026-09-01T00:00:00.000Z" : null, round: 1, maxRounds: 3, floorHolder: seat,
                     participants: [{ name: seat, status: "joined", dispatchMode: true }], agents: {} }; break;
                 case "council_host_issue_seat": result = { ok: true, token: `fixture-seat-${executions + 1}`, executionBindingRequired: true }; break;
-                case "council_execution_start": result = { ok: true, executionId: `execution-${++executions}`, seatBound: true }; break;
+                case "council_execution_start": result = { ok: true, executionId: `execution-${++executions}`, seatBound: true,
+                    hostGeneration: "typescript-node", policyVersion: "typescript-node-v3-2026-09-30" }; break;
                 case "council_execution_stop": case "council_join": case "council_delivery_state": break;
                 case "council_host_release": releases++; break;
                 case "council_host_renew": result = { ok: !expired, leaseExpiresAt: new Date(Date.now() + 90_000).toISOString() }; break;
@@ -128,16 +138,21 @@ async function scenario(mode: Mode) {
         if (mode === "overflow") for (let index = 0; index < 500; index++) writeFileSync(join(repo, `added-${index}.txt`), "fixture\n");
         git("add", "."); git("commit", "-m", "accepted"); acceptedSha = git("rev-parse", "HEAD");
         if (mode === "conflict") { git("switch", "-c", "conflict", baseSha); writeFileSync(join(repo, "content.txt"), "conflicting\n"); git("add", "."); git("commit", "-m", "conflict"); conflictingSha = git("rev-parse", "HEAD"); }
-        writeFileSync(join(runDir, "campaign-run.json"), JSON.stringify({ code, baseSha, agents: [{ name: seat,
+        writeFileSync(join(runDir, "campaign-run.json"), JSON.stringify({ code, baseSha,
+            hostGeneration: "typescript-node", policyVersion: "typescript-node-v3-2026-09-30", agents: [{ name: seat,
             dir: join(root, "repo-cn-abcd-alpha-seat"), branch: "council/cn-abcd/alpha-seat", mode: "acp", requestedModel: null, requestedReasoningEffort: null }] }));
         mcp.listen(0, "127.0.0.1"); await once(mcp, "listening"); const address = mcp.address(); assert.ok(address && typeof address === "object");
+        liveness.listen(0, "127.0.0.1"); await once(liveness, "listening"); const livenessAddress = liveness.address(); assert.ok(livenessAddress && typeof livenessAddress === "object");
         const config = join(root, "agents.json"); writeFileSync(config, JSON.stringify({ mcpUrl: `http://127.0.0.1:${address.port}/mcp`, host: { port: 0, autoAdopt: false },
-            agents: { fixture: { mode: "acp", command: process.execPath, args: [join(source, "scripts/fixtures/council-integration-agent.mjs"), trace], env: { VENDOR_API_KEY: "arbitrary-private-value-123" } } },
+            agents: { fixture: { mode: "acp", command: process.execPath, args: [join(source, "scripts/fixtures/council-integration-agent.mjs"), trace, String(livenessAddress.port)], env: { VENDOR_API_KEY: "arbitrary-private-value-123" } } },
             instances: { [seat]: { provider: "fixture" } } }));
         child = spawn(process.execPath, ["--import", "tsx", join(hostSource, "scripts/council-host.mts"), "--repo", repo, "--config", config], { cwd: hostSource, env, stdio: ["pipe", "pipe", "pipe"] });
         child.stdout!.resume(); child.stderr!.resume();
-        const identityPath = join(root, ".council-host", "host-repo.json"); await until(() => existsSync(identityPath), "host identity", 10_000);
-        const identity = JSON.parse(readFileSync(identityPath, "utf8")); socket = new WebSocket(`ws://127.0.0.1:${identity.port}/ws`, identity.token);
+        // The host writes this file in place, so it can exist before it holds JSON.
+        const identityPath = join(root, ".council-host", "host-repo.json");
+        const readIdentity = () => { try { return JSON.parse(readFileSync(identityPath, "utf8")) as { port: number; token: string }; } catch { return null; } };
+        await until(() => readIdentity() !== null, "host identity", 10_000);
+        const identity = readIdentity()!; socket = new WebSocket(`ws://127.0.0.1:${identity.port}/ws`, identity.token);
         socket.on("message", (raw) => states.push(JSON.parse(raw.toString()))); await once(socket, "open"); socket.send(JSON.stringify({ type: "attach", code }));
         await until(() => calls.filter((call) => call.name === "council_integration_finish").length >= (mode.startsWith("renominate-") ? 2 : 1)
             || calls.some((call) => call.name === "council_integration_report" && call.arguments.status !== "running")
@@ -148,17 +163,25 @@ async function scenario(mode: Mode) {
             records: existsSync(trace) ? readFileSync(trace, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [],
             branches: git("for-each-ref", "--format=%(refname:short)", "refs/heads/council/cn-abcd/integration"), root };
     } finally {
-        socket?.terminate();
-        if (child && child.exitCode === null && child.signalCode === null) {
-            const closed = once(child, "close"); child.stdin?.end();
-            await Promise.race([closed, wait(7_000)]); if (child.exitCode === null) killTree(child);
-            await Promise.race([closed, wait(5_000)]);
-        }
-        await until(() => !existsSync(trace) || readFileSync(trace, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
-            .filter((record) => record.pid).every((record) => { try { process.kill(record.pid, 0); return false; } catch { return true; } }), "adapter cleanup", 10_000);
+        // A failed check must still close both listeners, or the open handles keep
+        // the runner alive and it never prints which assertion failed.
+        let cleanupError: unknown;
+        try {
+            socket?.terminate();
+            if (child && child.exitCode === null && child.signalCode === null) {
+                const closed = once(child, "close"); child.stdin?.end();
+                await Promise.race([closed, wait(7_000)]); if (child.exitCode === null) killTree(child);
+                await Promise.race([closed, wait(5_000)]);
+            }
+            await until(() => adapters.size === 0, "adapter cleanup", 10_000)
+                .catch((error: Error) => { throw new Error(`${error.message}; adapter pid(s) still running: ${[...adapters.values()].join(", ")}`); });
+        } catch (error) { cleanupError = error; }
         mcp.closeAllConnections(); if (mcp.listening) await new Promise<void>((settle) => mcp.close(() => settle()));
+        for (const adapter of adapters.keys()) adapter.destroy();
+        if (liveness.listening) await new Promise<void>((settle) => liveness.close(() => settle()));
         assert.ok(resolve(root).startsWith(join(resolve(tmpdir()), "council-integration-host-")));
-        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (error) { cleanupError ??= error; }
+        if (cleanupError) throw cleanupError;
     }
 }
 

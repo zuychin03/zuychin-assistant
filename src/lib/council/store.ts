@@ -3,12 +3,14 @@ import type { CouncilType } from "./templates";
 import { COUNCIL_PROTOCOL_VERSION } from "./v3";
 import { requireCouncilHost, type CouncilCaller } from "./host-contracts";
 import { councilWriteIdentitySchema, type CouncilWriteIdentity } from "./write-identity";
+import { CouncilSpeakProtocolError, validateSpeakMessage } from "./speak-validation";
+export { CouncilSpeakProtocolError } from "./speak-validation";
 import {
-    MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
+    AGENT_INTENTS, MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES, PAUSE_TTL_MS,
     SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
     CODE_ALPHABET, COUNCIL_CODE_PATTERN, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
-    type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
+    type CouncilIntent, type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
 } from "./protocol";
 
 export type { CouncilStatus, CouncilStatusKeyword };
@@ -387,6 +389,9 @@ export async function appendMessage(params: {
 }> {
     try {
         const identity = params.identity === undefined ? undefined : councilWriteIdentitySchema.parse(params.identity);
+        if ((params.role ?? "agent") === "agent" && AGENT_INTENTS.includes(params.intent as CouncilIntent)) {
+            validateSpeakMessage(params, await listParticipants(params.sessionId));
+        }
         const { data, error } = await supabase.rpc(identity ? "append_council_message_attributed" : "append_council_message", {
             p_session_id: params.sessionId,
             p_speaker: params.speaker,
@@ -408,6 +413,7 @@ export async function appendMessage(params: {
             cleared?: boolean; status?: CouncilStatus;
         };
     } catch (err) {
+        if (err instanceof CouncilSpeakProtocolError) throw err;
         return throwWrite("appendMessage", err);
     }
 }

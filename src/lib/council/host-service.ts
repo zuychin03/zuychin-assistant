@@ -1,4 +1,5 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { z } from "zod";
 import {
     claimLeaseSchema, deliveryFenceSchema, failDeliverySchema, prepareDeliverySchema,
     renewLeaseSchema, requireCouncilHost, sessionFenceSchema, startExecutionSchema,
@@ -7,6 +8,7 @@ import {
 import type {
     ConnectorCapabilitySnapshot, IdentityAssurance,
 } from "./v3";
+import { COUNCIL_HOST_GENERATION } from "./v3";
 
 export interface HostLease {
     ok: boolean;
@@ -14,7 +16,18 @@ export interface HostLease {
     hostId?: string;
     leaseEpoch?: number;
     leaseExpiresAt?: string;
+    hostGeneration?: string | null;
+    policyVersion?: string | null;
+    hasExecutionHistory?: boolean;
+    cleanupConfirmed?: boolean;
 }
+
+const executionBoundarySchema = z.object({
+    ok: z.literal(true),
+    hostGeneration: z.string().min(1).max(100).nullable(),
+    policyVersion: z.string().min(1).max(100).nullable(),
+    hasExecutionHistory: z.boolean(),
+}).strict();
 
 export interface CouncilDelivery {
     id: string;
@@ -29,7 +42,7 @@ export interface CouncilDelivery {
 }
 
 export async function claimHostLease(params: {
-    sessionId: string; hostId: string; durationSeconds?: number;
+    sessionId: string; hostId: string; durationSeconds?: number; policyVersion?: string;
 }, caller: CouncilCaller | undefined): Promise<HostLease> {
     requireCouncilHost(caller);
     params = claimLeaseSchema.parse(params);
@@ -39,7 +52,25 @@ export async function claimHostLease(params: {
         p_duration_seconds: params.durationSeconds ?? 45,
     });
     if (error) throw new Error(error.message);
-    return (data ?? { ok: false, reason: "no_result" }) as HostLease;
+    const lease = (data ?? { ok: false, reason: "no_result" }) as HostLease;
+    if (!params.policyVersion || !lease.ok) return lease;
+    if (!Number.isSafeInteger(lease.leaseEpoch) || lease.leaseEpoch! <= 0) {
+        return { ok: false, reason: "execution_policy_unavailable", cleanupConfirmed: false };
+    }
+    const fence = { sessionId: params.sessionId, hostId: params.hostId, leaseEpoch: lease.leaseEpoch! };
+    try {
+        const result = await supabase.rpc("get_council_execution_boundary", {
+            p_session_id: fence.sessionId, p_host_id: fence.hostId, p_lease_epoch: fence.leaseEpoch,
+        });
+        if (!result.error) {
+            const boundary = executionBoundarySchema.safeParse(result.data);
+            if (boundary.success) return { ...lease, ...boundary.data };
+        }
+    } catch { /* The acquired lease still needs cleanup. */ }
+    let cleanupConfirmed = false;
+    try { cleanupConfirmed = await releaseHostLease(fence, caller); }
+    catch { /* Lease expiry remains the fallback. */ }
+    return { ok: false, reason: "execution_policy_unavailable", cleanupConfirmed };
 }
 
 export async function renewHostLease(params: {
@@ -169,6 +200,7 @@ export async function startAgentExecution(params: {
     hostId: string;
     leaseEpoch: number;
     hostGeneration: string;
+    policyVersion?: string;
     capabilities: ConnectorCapabilitySnapshot;
     identityAssurance: IdentityAssurance;
     provider: string;
@@ -181,10 +213,16 @@ export async function startAgentExecution(params: {
     branch?: string;
     worktree?: string;
     baseSha?: string;
-}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; executionId?: string; seatBound?: boolean }> {
+}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; executionId?: string; seatBound?: boolean; policyVersion?: string | null; hostGeneration?: string }> {
     requireCouncilHost(caller);
     params = startExecutionSchema.parse(params);
-    const { data, error } = await supabase.rpc(params.seatTokenHash ? "start_council_bound_agent_execution" : "start_council_agent_execution", {
+    if (params.policyVersion && (!params.seatTokenHash || params.hostGeneration !== COUNCIL_HOST_GENERATION)) {
+        throw new Error("Versioned executions require a bound seat and the supported host generation.");
+    }
+    const operation = params.policyVersion ? "start_council_versioned_bound_execution"
+        : params.seatTokenHash ? "start_council_bound_agent_execution" : "start_council_agent_execution";
+    const { data, error } = await supabase.rpc(operation, {
+        ...(params.policyVersion ? { p_policy_version: params.policyVersion } : {}),
         ...(params.seatTokenHash ? { p_seat_token_hash: params.seatTokenHash } : {}),
         p_session_id: params.sessionId,
         p_agent_name: params.agentName,
@@ -208,7 +246,7 @@ export async function startAgentExecution(params: {
     });
     if (error) throw new Error(error.message);
     return (data ?? { ok: false, reason: "no_result" }) as {
-        ok: boolean; reason?: string; executionId?: string; seatBound?: boolean;
+        ok: boolean; reason?: string; executionId?: string; seatBound?: boolean; policyVersion?: string | null; hostGeneration?: string;
     };
 }
 

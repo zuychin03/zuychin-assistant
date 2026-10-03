@@ -72,7 +72,8 @@ function sanitiseExecution(record: NonNullable<ReturnType<typeof parseExecutionE
         identityAssurance: displayText(record.identityAssurance, 100)!, provider: displayText(record.provider),
         adapterVersion: displayText(record.adapterVersion), requestedModel: displayText(record.requestedModel),
         effectiveModel: displayText(record.effectiveModel), requestedReasoningEffort: displayText(record.requestedReasoningEffort),
-        effectiveReasoningEffort: displayText(record.effectiveReasoningEffort), modelSource: displayText(record.modelSource, 100) };
+        effectiveReasoningEffort: displayText(record.effectiveReasoningEffort), modelSource: displayText(record.modelSource, 100),
+        hostGeneration: displayText(record.hostGeneration, 100), policyVersion: displayText(record.policyVersion, 100) };
 }
 
 function verificationReceipts(value: unknown): OwnerVerificationReceipt[] | null {

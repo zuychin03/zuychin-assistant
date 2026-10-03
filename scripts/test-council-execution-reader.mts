@@ -12,6 +12,7 @@ const row = (n: number, session = "session") => ({
     effective_reasoning_effort: null, model_source: "adapter_config", started_at: "2026-09-30T00:00:00.000000+00:00",
     ended_at: null, predecessor_execution_id: null, participant: { name: "reviewer", session_id: session },
     token_hash: "must-not-leak", host_id: "must-not-leak", worktree_path: "must-not-leak",
+    host_generation: n === 1 ? null : "typescript-node", policy_version: n === 1 ? null : "typescript-node-v3-2026-09-30",
 });
 let rows = Array.from({ length: 60 }, (_, i) => row(60 - i));
 let failHistory = false, failReferences = false;
@@ -40,6 +41,10 @@ test("bounded keyset history and old referenced records are read separately with
     const page = await readExecutionEvidence("session", { referencedIds: [id(1), id(60), id(99), null] });
     assert.equal(page.records.length, 50);
     assert.equal(page.records[0].executionId, id(60));
+    assert.equal(page.records[0].hostGeneration, "typescript-node");
+    assert.equal(page.records[0].policyVersion, "typescript-node-v3-2026-09-30");
+    assert.equal(page.referencedRecords[0].hostGeneration, null);
+    assert.equal(page.referencedRecords[0].policyVersion, null);
     assert.deepEqual(page.referencedRecords.map(row => row.executionId), [id(1)]);
     assert.equal(page.referencesStatus, "unavailable");
     assert.equal(requests.length, 2);

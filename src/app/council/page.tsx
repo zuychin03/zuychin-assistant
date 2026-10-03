@@ -495,6 +495,7 @@ export default function CouncilPage() {
                                                 adapterVersion: a.adapterVersion ?? null, requestedModel: a.requestedModel,
                                                 effectiveModel: a.effectiveModel, requestedReasoningEffort: a.requestedReasoningEffort,
                                                 effectiveReasoningEffort: a.effectiveReasoningEffort, modelSource: a.modelSource ?? null,
+                                                hostGeneration: a.hostGeneration ?? null, policyVersion: a.policyVersion ?? null,
                                             } : null} />
                                         </div>
                                         <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isCouncilHost } from "../agents/scopes";
 import { integrationEvidenceSchema } from "./integration-evidence";
+import { NODE_POLICY_VERSION } from "./policy-versions";
 
 export interface CouncilCaller {
     readonly scopes: readonly string[];
@@ -23,6 +24,7 @@ export const claimLeaseSchema = z.object({
     sessionId: z.string().uuid(),
     hostId: hostFenceShape.hostId,
     durationSeconds: z.number().int().positive().optional(),
+    policyVersion: z.literal(NODE_POLICY_VERSION).optional(),
 });
 export const renewLeaseSchema = claimLeaseSchema.extend({ leaseEpoch: hostFenceShape.leaseEpoch });
 export const sessionFenceSchema = z.object({ sessionId: z.string().uuid(), ...hostFenceShape });
@@ -54,6 +56,7 @@ export const startExecutionSchema = sessionFenceSchema.extend({
     agentName: z.string().min(1),
     seatTokenHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     hostGeneration: z.string().min(1),
+    policyVersion: z.literal(NODE_POLICY_VERSION).optional(),
     capabilities: capabilitySchema,
     identityAssurance: z.enum(["verified_seat", "host_bound", "owner_relay", "unverified_declaration"]),
     provider: z.string().min(1),

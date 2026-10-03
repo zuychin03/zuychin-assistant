@@ -38,6 +38,7 @@ import {
 import { parseKickoffBlocks, renderDispatchKickoff } from "../src/lib/council/render.ts";
 import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
 import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, type CouncilAgentSelection, type ConnectorCapabilitySnapshot } from "../src/lib/council/v3.ts";
+import { NODE_POLICY_VERSION } from "../src/lib/council/policy-versions.ts";
 import { exactIntegrationDiff, integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest, type VerificationReceipt } from "./council-git.mts";
 import { sanitiseIntegrationEvidence, sanitiseIntegrationText, sanitiseVerificationReceipts, type IntegrationEvidence, type IntegrationRedactionContext } from "../src/lib/council/integration-evidence.ts";
 import { configureAcpSession } from "./council-models.mts";
@@ -225,26 +226,39 @@ async function callTool(name: string, args: Record<string, unknown>, bearer = mc
 
 async function requireHostRuntimeProtocol(): Promise<void> {
     await requireToolProperties(new Map([
-        ["council_dispatch", { property: "statusOnly", type: "boolean", label: "status-only host probes" }],
-        ["council_host_issue_seat", { property: "bindExecution", type: "boolean", label: "execution-bound seat issuance" }],
-        ["council_execution_start", { property: "seatTokenHash", type: "string", label: "execution-bound registration" }],
+        ["council_dispatch", [{ property: "statusOnly", type: "boolean", label: "status-only host probes" }]],
+        ["council_host_issue_seat", [{ property: "bindExecution", type: "boolean", label: "execution-bound seat issuance" }]],
+        ["council_host_claim", [{ property: "policyVersion", type: "string", literal: NODE_POLICY_VERSION, label: "versioned host claims" }]],
+        ["council_execution_start", [
+            { property: "seatTokenHash", type: "string", label: "execution-bound registration" },
+            { property: "policyVersion", type: "string", literal: NODE_POLICY_VERSION, label: "versioned execution registration" },
+        ]],
     ]));
 }
 
-async function requireToolProperties(required: Map<string, { property: string; type: string; label: string }>): Promise<void> {
+interface ToolProperty { property: string; type: string; label: string; literal?: string }
+
+async function requireToolProperties(required: Map<string, ToolProperty[]>): Promise<void> {
     let cursor: string | undefined;
     const visited = new Set<string>();
     const signal = AbortSignal.timeout(CLEANUP_TIMEOUT_MS);
     do {
         const result = await callMcp("tools/list", cursor ? { cursor } : {}, mcpHostKey, signal) as {
-            tools?: { name: string; inputSchema?: { properties?: Record<string, { type?: string }> } }[];
+            tools?: { name: string; inputSchema?: { properties?: Record<string, { type?: string; const?: unknown; enum?: unknown[] }> } }[];
             nextCursor?: string;
         };
         for (const tool of result.tools ?? []) {
-            const contract = required.get(tool.name);
-            if (!contract) continue;
-            if (tool.inputSchema?.properties?.[contract.property]?.type !== contract.type) {
-                throw new Error(`Council server does not support ${contract.label}; update it before starting a Council`);
+            const contracts = required.get(tool.name);
+            if (!contracts) continue;
+            for (const contract of contracts) {
+                const property = tool.inputSchema?.properties?.[contract.property];
+                const literalSupported = property?.const !== undefined
+                    ? property.const === contract.literal
+                    : Array.isArray(property?.enum) && property.enum.includes(contract.literal);
+                if (property?.type !== contract.type || (contract.literal !== undefined
+                    && !literalSupported)) {
+                    throw new Error(`Council server does not support ${contract.label}; update it before starting a Council`);
+                }
             }
             required.delete(tool.name);
         }
@@ -253,7 +267,7 @@ async function requireToolProperties(required: Map<string, { property: string; t
         if (cursor && visited.has(cursor)) break;
         if (cursor) visited.add(cursor);
     } while (cursor);
-    throw new Error(`Council server does not support ${[...required.values()].map((contract) => contract.label).join(", ")}; update it before starting a Council`);
+    throw new Error(`Council server does not support ${[...required.values()].flat().map((contract) => contract.label).join(", ")}; update it before starting a Council`);
 }
 
 /**
@@ -358,6 +372,8 @@ interface AgentRuntime {
     lastDelivered: string | null;
     seatToken: string | null;
     executionId: string | null;
+    hostGeneration: string | null;
+    policyVersion: string | null;
     executionFence?: { sessionCode: string; hostId: string; leaseEpoch: number };
     executionCleanup?: Promise<void>;
     requestedModel: string | null;
@@ -387,6 +403,9 @@ interface PendingPermission {
 
 interface HostState {
     hostId: string;
+    hostGeneration: string | null;
+    policyVersion: string | null;
+    hasExecutionHistory: boolean;
     sessionId: string | null;
     leaseEpoch: number | null;
     leaseExpiresAt: string | null;
@@ -490,6 +509,9 @@ function listBranches(repo: string): string[] {
 
 const state: HostState = {
     hostId: randomUUID(),
+    hostGeneration: null,
+    policyVersion: null,
+    hasExecutionHistory: false,
     sessionId: null,
     leaseEpoch: null,
     leaseExpiresAt: null,
@@ -581,6 +603,8 @@ function agentView(agent: AgentRuntime) {
         requestedReasoningEffort: agent.requestedReasoningEffort,
         effectiveReasoningEffort: agent.effectiveReasoningEffort,
         executionId: agent.executionId,
+        hostGeneration: agent.hostGeneration,
+        policyVersion: agent.policyVersion,
         modelSource: agent.modelSource,
         adapterVersion: agent.adapterVersion,
         identityAssurance: agent.seatToken ? "verified_seat" : "unverified_declaration",
@@ -1303,6 +1327,8 @@ function makeRuntime(name: string, code: string, selection: CouncilAgentSelectio
         lastDelivered: null,
         seatToken: null,
         executionId: null,
+        hostGeneration: null,
+        policyVersion: null,
         requestedModel,
         effectiveModel: null,
         adapterVersion: null,
@@ -1353,7 +1379,7 @@ async function recordAgentExecution(agent: AgentRuntime, signal?: AbortSignal): 
     const fence = { sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch };
     // A cancelled startup still needs the eventual ID to close this write.
     const result = JSON.parse(await callTool("council_execution_start", {
-        ...fence, agentName: agent.name, hostGeneration: COUNCIL_HOST_GENERATION,
+        ...fence, agentName: agent.name, hostGeneration: COUNCIL_HOST_GENERATION, policyVersion: NODE_POLICY_VERSION,
         seatTokenHash: createHash("sha256").update(agent.seatToken).digest("hex"),
         capabilities: agent.capabilities, identityAssurance: "verified_seat",
         provider: agent.provider, adapterVersion: agent.adapterVersion ?? undefined,
@@ -1362,7 +1388,7 @@ async function recordAgentExecution(agent: AgentRuntime, signal?: AbortSignal): 
         effectiveReasoningEffort: agent.effectiveReasoningEffort ?? undefined,
         modelSource: agent.modelSource,
         branch: agent.branch, worktree: agent.treeDir, baseSha: state.baseSha ?? undefined,
-    })) as { ok?: boolean; reason?: string; executionId?: string; seatBound?: boolean };
+    })) as { ok?: boolean; reason?: string; executionId?: string; seatBound?: boolean; hostGeneration?: string; policyVersion?: string };
     if (!result.ok || !result.executionId) throw new Error(`execution evidence rejected: ${result.reason ?? "unknown"}`);
     agent.executionId = result.executionId;
     agent.executionFence = fence;
@@ -1371,6 +1397,18 @@ async function recordAgentExecution(agent: AgentRuntime, signal?: AbortSignal): 
         signal.throwIfAborted();
     }
     if (result.seatBound !== true) throw new Error("execution registration did not confirm runtime credential binding");
+    if (result.hostGeneration !== COUNCIL_HOST_GENERATION || result.policyVersion !== NODE_POLICY_VERSION) {
+        throw new Error("execution registration did not confirm the host generation and policy version");
+    }
+    if (state.code !== fence.sessionCode || state.leaseEpoch !== fence.leaseEpoch || state.stopping) {
+        throw new Error("host ownership changed before execution acknowledgement");
+    }
+    state.hostGeneration = result.hostGeneration;
+    state.policyVersion = result.policyVersion;
+    state.hasExecutionHistory = true;
+    agent.hostGeneration = result.hostGeneration;
+    agent.policyVersion = result.policyVersion;
+    persistRunJournal();
 }
 
 async function stopRecordedExecution(agent: AgentRuntime, reason: string): Promise<void> {
@@ -1492,6 +1530,14 @@ function restoreAgents(code: string, names: string[], resumedNames: string[]): A
         || (journal.sessionId !== undefined && journal.sessionId !== state.sessionId)) {
         throw new Error(`${code}: saved campaign journal does not match this Council and frozen repository`);
     }
+    const journalUnversioned = journal.hostGeneration == null && journal.policyVersion == null;
+    const intended = journal.executionBoundaryIntent as Record<string, unknown> | undefined;
+    const pendingAcknowledgement = journalUnversioned && journal.sessionId === state.sessionId && journal.repo === state.repo
+        && intended?.hostGeneration === state.hostGeneration && intended?.policyVersion === state.policyVersion;
+    if (!(journalUnversioned && !state.hasExecutionHistory) && !pendingAcknowledgement
+        && (journal.hostGeneration !== state.hostGeneration || journal.policyVersion !== state.policyVersion)) {
+        throw new Error(`${code}: saved campaign host generation and policy version do not match this Council`);
+    }
     return names.map((name) => {
         const entries = journal.agents as Record<string, unknown>[];
         const matching = entries.filter((entry) => entry && entry.name === name);
@@ -1519,9 +1565,16 @@ function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime
     state.runDir = join(state.repo, "..", `.council-run-${code.toLowerCase()}`);
     mkdirSync(state.runDir, { recursive: true });
     for (const agent of preparedAgents ?? names.map((name) => makeRuntime(name, code))) state.agents.set(agent.name, agent);
+    persistRunJournal();
+}
+
+function persistRunJournal(): void {
+    if (!state.runDir || !state.code) throw new Error("cannot persist campaign selections without an active Council");
     writeFileSync(join(state.runDir, "campaign-run.json"), JSON.stringify({
-        code, configPath, port: hostPort, repo: state.repo, sessionId: state.sessionId,
+        code: state.code, configPath, port: hostPort, repo: state.repo, sessionId: state.sessionId,
         hostId: state.hostId, leaseEpoch: state.leaseEpoch, baseSha: state.baseSha,
+        hostGeneration: state.hostGeneration, policyVersion: state.policyVersion,
+        executionBoundaryIntent: { hostGeneration: COUNCIL_HOST_GENERATION, policyVersion: NODE_POLICY_VERSION },
         agents: [...state.agents.values()].map((a) => ({
             name: a.name, dir: a.treeDir, branch: a.branch, mcpFile: a.mcpFile, mode: a.mode,
             requestedModel: a.requestedModel, requestedReasoningEffort: a.requestedReasoningEffort,
@@ -1531,16 +1584,36 @@ function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime
 
 interface HostClaimPayload {
     ok: boolean; reason?: string; hostId?: string; leaseEpoch?: number; leaseExpiresAt?: string;
+    hostGeneration?: string | null; policyVersion?: string | null; hasExecutionHistory?: boolean;
     session?: { id: string; protocolVersion: number; baseSha: string | null; repoPath: string | null; baseBranch: string | null; topic: string; status: string };
 }
 
 async function claimLease(code: string): Promise<HostClaimPayload> {
     const claim = JSON.parse(await callTool("council_host_claim", {
-        sessionCode: code, hostId: state.hostId,
+        sessionCode: code, hostId: state.hostId, policyVersion: NODE_POLICY_VERSION,
     })) as HostClaimPayload;
     if (!claim.ok || !claim.leaseEpoch || !claim.session) throw new Error(`host lease rejected: ${claim.reason ?? "unknown"}`);
-    if (claim.session.protocolVersion !== 3) throw new Error(`Council ${code} is protocol V${claim.session.protocolVersion}; this host requires V3`);
+    try {
+        if (claim.session.protocolVersion !== 3) throw new Error(`Council ${code} is protocol V${claim.session.protocolVersion}; this host requires V3`);
+        const fresh = claim.hasExecutionHistory === false && claim.hostGeneration === null && claim.policyVersion === null;
+        const matching = typeof claim.hasExecutionHistory === "boolean"
+            && claim.hostGeneration === COUNCIL_HOST_GENERATION && claim.policyVersion === NODE_POLICY_VERSION;
+        if (!fresh && !matching) throw new Error(`Council ${code} has an unknown or incompatible host generation and policy boundary`);
+    } catch (error) {
+        try {
+            const released = JSON.parse(await callTool("council_host_release", {
+                sessionCode: code, hostId: state.hostId, leaseEpoch: claim.leaseEpoch,
+            }, mcpHostKey, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))) as { ok?: boolean };
+            if (released.ok !== true) throw new Error("server did not confirm lease release");
+        } catch {
+            throw new Error(`${error instanceof Error ? error.message : String(error)}; lease release unconfirmed for ${code}`);
+        }
+        throw error;
+    }
     state.sessionId = claim.session.id;
+    state.hostGeneration = claim.hostGeneration!;
+    state.policyVersion = claim.policyVersion!;
+    state.hasExecutionHistory = claim.hasExecutionHistory!;
     state.leaseEpoch = claim.leaseEpoch;
     state.leaseExpiresAt = claim.leaseExpiresAt ?? null;
     state.leaseHealthy = true;
@@ -1685,6 +1758,7 @@ async function attachCouncil(code: string): Promise<void> {
         sessionId: state.sessionId, leaseEpoch: state.leaseEpoch, leaseExpiresAt: state.leaseExpiresAt,
         leaseHealthy: state.leaseHealthy, baseSha: state.baseSha, repo: state.repo,
         baseBranch: state.baseBranch, protectedRefs: state.protectedRefs,
+        hostGeneration: state.hostGeneration, policyVersion: state.policyVersion, hasExecutionHistory: state.hasExecutionHistory,
     };
     const claim = await claimLease(upper);
     const fence = { sessionCode: upper, hostId: state.hostId, leaseEpoch: state.leaseEpoch };
@@ -2198,8 +2272,8 @@ async function integrationTick(): Promise<void> {
         if (!ownsIntegration(run)) return;
         if (!run.attempt) {
             await requireToolProperties(new Map([
-                ["council_integration_begin", { property: "attemptId", type: "string", label: "immutable integration attempts" }],
-                ["council_integration_finish", { property: "evidence", type: "object", label: "integration attempt evidence" }],
+                ["council_integration_begin", [{ property: "attemptId", type: "string", label: "immutable integration attempts" }]],
+                ["council_integration_finish", [{ property: "evidence", type: "object", label: "integration attempt evidence" }]],
             ]));
             if (run.nomination === undefined) {
                 const frozen = JSON.parse(await integrationRequest(run, "council_integration_manifest", {
@@ -2318,6 +2392,9 @@ async function releaseOwnedCouncil(reason: string, code: string, leaseEpoch: num
     delivered.clear();
     state.code = null;
     state.sessionId = null;
+    state.hostGeneration = null;
+    state.policyVersion = null;
+    state.hasExecutionHistory = false;
     state.leaseEpoch = null;
     state.leaseExpiresAt = null;
     state.leaseHealthy = false;

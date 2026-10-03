@@ -14,7 +14,7 @@ jobs:
   offline:
     name: lint, types and offline suites
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +42,9 @@ jobs:
 
       - name: council protocol, model and git contracts
         run: npm run council:v3:test
+
+      - name: language-neutral contracts and policy boundary
+        run: npm run council:contracts:test
 
       - name: supervision contract and host singleton
         run: npm run council:supervisor:test
