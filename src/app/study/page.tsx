@@ -7,11 +7,12 @@ import { WorkspaceShell } from "@/components/workspace-shell";
 import { Dropdown } from "@/components/dropdown";
 import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import type { KnowledgeEvidence } from "@/lib/knowledge/revision-types";
-import { type StudyCard, type StudyKind, type StudyReport } from "@/lib/study/contracts";
+import { type StudyCard, type StudyDraft, type StudyFeedback, type StudyKind, type StudyReport } from "@/lib/study/contracts";
 import { clearStudyPending, readStudyPending, writeStudyPending, type PendingReview } from "@/lib/study/pending-review";
 import { OFFLINE_PRIVACY_EVENT } from "@/lib/offline/storage";
 import { studyDraft } from "@/lib/study/scheduler";
-import { studyReviewState } from "./review-attempt";
+import { linkedFeedback, studyReviewState } from "./review-attempt";
+import { applyGeneratedDraft } from "./generated-draft";
 import { refreshStudySettings, studySettingsChanged } from "./settings-draft";
 import styles from "./study.module.css";
 
@@ -47,6 +48,8 @@ export default function StudyPage() {
     const [revealed, setRevealed] = useState(false);
     const [pending, setPending] = useState<PendingReview | null>(null);
     const [conflict, setConflict] = useState(false);
+    const [feedback, setFeedback] = useState<(StudyFeedback & { response: string }) | null>(null);
+    const [drafting, setDrafting] = useState(false);
     const [newCard, setNewCard] = useState(false);
     const [documentId, setDocumentId] = useState("");
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -68,7 +71,7 @@ export default function StudyPage() {
         const defaults = { dailyLimit: 20, timezone: "Australia/Sydney", version: 1 };
         settingsBaseline.current = defaults; setSettings(defaults);
         try { clearStudyPending(sessionStorage); } catch { /* Storage may be unavailable. */ }
-        setReport(null); setPending(null); setAttempt(null); setResponse(""); setReflection(""); setRevealed(false); setConflict(false);
+        setReport(null); setPending(null); setAttempt(null); setResponse(""); setReflection(""); setRevealed(false); setConflict(false); setFeedback(null);
         editBaseline.current = null; draftBaseline.current = null; setEditing(null); setDraft(null); setSnapshot(null); setDocumentId(""); setNewCard(false); setNotice(""); setError(""); setLoading(false);
         setLoadError("Your session changed. Sign in and reload your study records.");
     }, []);
@@ -129,11 +132,11 @@ export default function StudyPage() {
         try { await fn(); } catch (cause) { if (boundary === privacy.current) setError(cause instanceof Error ? cause.message : "The change was not confirmed. Please retry."); }
         finally { lock.current = false; setBusy(false); }
     }
-    function clearAttempt() { setAttempt(null); setResponse(""); setReflection(""); setRevealed(false); setPending(null); setConflict(false); }
+    function clearAttempt() { setAttempt(null); setResponse(""); setReflection(""); setRevealed(false); setPending(null); setConflict(false); setFeedback(null); }
     function grade(rating: 1 | 2 | 3 | 4) {
         if (!current || !revealed || !response.trim() || reviewBlocked) return;
         void act(async () => {
-            const request = pending || { id: crypto.randomUUID(), cardId: current.id, version: current.version, rating, response: response.trim(), reflection: reflection.trim() };
+            const request = pending || { id: crypto.randomUUID(), cardId: current.id, version: current.version, rating, response: response.trim(), reflection: reflection.trim(), ...linkedFeedback(feedback, current, response) };
             writeStudyPending(sessionStorage, privacy.current.profileId, request); setPending(request);
             try {
                 const result = await api("/api/study", { action: "review", ...request });
@@ -141,6 +144,27 @@ export default function StudyPage() {
                 setNotice(result.reused ? "Your previous review was already saved. It was counted once." : "Review saved. The next review time has been updated.");
                 await load();
             } catch (cause) { if (cause && typeof cause === "object" && "status" in cause && cause.status === 409) setConflict(true); throw cause; }
+        });
+    }
+    function askFeedback() {
+        if (!current || !revealed || !response.trim() || reviewBlocked || pending) return;
+        const answer = response.trim(), card = current;
+        void act(async () => {
+            const result = await api("/api/study", { action: "feedback", id: crypto.randomUUID(), cardId: card.id, version: card.version, response: answer });
+            setFeedback({ ...result.feedback, response: answer });
+        });
+    }
+    function writeDraft(base: Draft) {
+        if (!snapshot) return;
+        const source = { documentId: snapshot.documentId, commitSha: snapshot.commitSha, path: snapshot.path };
+        void act(async () => {
+            setDrafting(true);
+            try {
+                const result: StudyDraft = await api("/api/study", { action: "draft", kind: base.kind, quote: base.quote, startOffset: base.startOffset, ...source });
+                setDraft(value => applyGeneratedDraft(value, base, result));
+                draftBaseline.current = applyGeneratedDraft(draftBaseline.current, base, result);
+                if (!result.generated && result.notice) setNotice(result.notice);
+            } finally { setDrafting(false); }
         });
     }
     function replaceCardDraft(textOnly = false) {
@@ -160,6 +184,7 @@ export default function StudyPage() {
         const kind = draft?.kind || "recall";
         const next = { id: crypto.randomUUID(), deck: draft?.deck || title, kind, ...studyDraft(kind, quote, title), quote, startOffset };
         draftBaseline.current = { ...next, deck: draftBaseline.current?.deck ?? next.deck }; setDraft(next);
+        writeDraft(next);
     }
     function snapshotPassages(value: Snapshot) {
         let offset = 0;
@@ -176,16 +201,18 @@ export default function StudyPage() {
             <div className={styles.summary}><span>{report.reviewedToday} of {report.settings.dailyLimit} reviews today · {report.settings.timezone}</span><details><summary>Daily limit</summary><form onSubmit={event => { event.preventDefault(); void act(async () => { await api("/api/study", { action: "settings", ...settings }); settingsBaseline.current = settings; setNotice("Study settings saved."); await load(); }); }} className={styles.settings}><label>Reviews per day<input disabled={busy || Boolean(pending)} type="number" min={1} max={200} value={settings.dailyLimit} onChange={event => setSettings({ ...settings, dailyLimit: Number(event.target.value) })} /></label><label>Timezone<input disabled={busy || Boolean(pending)} value={settings.timezone} onChange={event => setSettings({ ...settings, timezone: event.target.value })} /></label><button disabled={blocked || Boolean(pending) || settings.version !== report.settings.version}>Save settings</button>{settings.version !== report.settings.version && <div className={styles.settingsConflict}><p>Settings changed elsewhere. Your edits are kept.</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => setSettings({ ...settings, version: report.settings.version })}>Keep my edits</button><button type="button" disabled={busy} onClick={() => { settingsBaseline.current = report.settings; setSettings(report.settings); }}>Use saved settings</button></div></div>}</form></details></div>
             {tab === "review" && <section>
                 <div className={styles.sectionHead}><h2>Due for review</h2><Dropdown ariaLabel="Review deck" className={styles.select} value={deck} disabled={Boolean(pending) || busy} onChange={value => { if (attempt && (response.trim() || reflection.trim()) && !window.confirm("Discard your current answer and reflection to switch review decks?")) return; setDeck(value); clearAttempt(); }} options={[{ value: "", label: "All decks" }, ...[...new Set(report.cards.map(card => card.deck))].map(name => ({ value: name }))]} /></div>
-                <p className={styles.muted}>Write an answer before revealing the reference. Ratings are your self-assessment, not AI grading. FSRS sets your next review time.</p>
+                <p className={styles.muted}>Write an answer before revealing the reference. Ratings are your self-assessment; optional feedback explains but never grades. FSRS sets your next review time.</p>
                 {pending && <p className={styles.warning}>A review request is unconfirmed. Its answer and rating are retained for a safe retry.</p>}
                 {pending && !current && <button disabled={blocked} onClick={() => void act(async () => { const result = await api("/api/study", { action: "review", ...pending }); clearStudyPending(sessionStorage); clearAttempt(); setNotice(result.reused ? "Previous review recovered." : "Review saved."); await load(); })}>Recover saved review request</button>}
                 {dailyDone && !pending && !attempt ? <div className={styles.empty}><h3>Today’s review limit is reached</h3><p>Return tomorrow in {report.settings.timezone}, or change your daily limit above.</p></div> : current ? <article className={styles.practice} key={current.id}>
                     <p className={styles.muted}>{current.deck} · {current.kind}</p><h3>{current.prompt}</h3>
                     {attemptChanged && <div className={styles.warning} role="status"><p>This card changed or left your review queue. Your answer is kept below. Start the next review to discard this attempt.</p><button disabled={blocked} onClick={clearAttempt}>Start next review</button></div>}
                     {dailyDone && attempt && !pending && !attemptChanged && <div className={styles.warning} role="status"><p>Today’s review limit is reached. Your answer is kept below.</p><button disabled={blocked} onClick={clearAttempt}>Discard this attempt</button></div>}
-                    <label>Your answer<textarea rows={5} maxLength={20000} value={response} disabled={reviewBlocked || Boolean(pending)} onChange={event => { if (!attempt) setAttempt(current); setResponse(event.target.value); }} placeholder="Recall the idea or show your reasoning…" /></label>
+                    <label>Your answer<textarea rows={5} maxLength={20000} value={response} disabled={reviewBlocked || Boolean(pending)} onChange={event => { if (!attempt) setAttempt(current); if (feedback && event.target.value.trim() !== feedback.response) setFeedback(null); setResponse(event.target.value); }} placeholder="Recall the idea or show your reasoning…" /></label>
                     {!revealed ? <button className={styles.primary} disabled={reviewBlocked || !response.trim()} onClick={() => setRevealed(true)}>Reveal reference answer</button> : <>
                         <h4>Reference answer</h4><p className={styles.prose}>{current.answer}</p><Source evidence={current.evidence} />
+                        {feedback ? <section className={styles.feedback} aria-label="Feedback on your answer"><h4>Feedback</h4><p className={styles.prose}>{feedback.text}</p><p className={styles.muted}>Saved · {feedback.model}</p></section>
+                            : !pending && <div className={styles.actions}><button disabled={reviewBlocked || !response.trim()} onClick={askFeedback}>Get feedback</button></div>}
                         <label>What would you correct or improve? (optional)<textarea rows={3} maxLength={20000} value={reflection} disabled={reviewBlocked || Boolean(pending)} onChange={event => setReflection(event.target.value)} /></label>
 
                         {pending ? <div className={styles.actions}><button disabled={blocked} onClick={() => grade(pending.rating)}>Retry same review</button>{conflict && <button disabled={blocked} onClick={() => void act(async () => { clearStudyPending(sessionStorage); clearAttempt(); await load(); })}>Load latest card</button>}</div> : <div className={styles.ratings}>{ratings.map(([rating, label, description]) => <button key={rating} disabled={reviewBlocked || !response.trim()} onClick={() => grade(rating)}><strong>{label}</strong><span>{description}</span></button>)}</div>}
@@ -193,14 +220,15 @@ export default function StudyPage() {
                 </article> : !pending && <div className={styles.empty}><h3>No cards due now</h3><p>{report.cards.length ? "Your next review will appear when it is due. Refresh to check again." : "Create a card from a saved source to begin."}</p><button onClick={() => { setTab("cards"); setNewCard(true); }}>Create study card</button></div>}
             </section>}
             {tab === "cards" && <section><div className={styles.sectionHead}><h2>Your cards ({report.cards.length})</h2><button disabled={blocked} aria-expanded={newCard} aria-controls="study-card-editor" onClick={() => setNewCard(value => !value)}><Plus size={16} /> {newCard ? "Close new card" : "New card"}</button></div>
-                {newCard && <div id="study-card-editor" className={styles.editor}><h3>Create from a saved passage</h3><p className={styles.muted}>Draft prompts use fixed templates. Edit them to make the practice useful for your source.</p><label>Saved source<Dropdown autoFocus ariaLabel="Saved source" className={styles.select} value={documentId} disabled={busy} onChange={value => { if (!replaceCardDraft()) return; setDocumentId(value); setSnapshot(null); setDraft(null); draftBaseline.current = null; }} options={[{ value: "", label: "Choose a document" }, ...report.documents.map(doc => ({ value: doc.id, label: doc.title || doc.path }))]} /></label><button disabled={blocked || !documentId} onClick={() => { if (!replaceCardDraft()) return; void act(async () => { setSnapshot(await api(`/api/study?documentId=${encodeURIComponent(documentId)}`)); setDraft(null); draftBaseline.current = null; }); }}>Load source revision</button>
+                {newCard && <div id="study-card-editor" className={styles.editor}><h3>Create from a saved passage</h3><p className={styles.muted}>Choose a passage and the model drafts a question and reference answer from it. Edit both before saving.</p><label>Saved source<Dropdown autoFocus ariaLabel="Saved source" className={styles.select} value={documentId} disabled={busy} onChange={value => { if (!replaceCardDraft()) return; setDocumentId(value); setSnapshot(null); setDraft(null); draftBaseline.current = null; }} options={[{ value: "", label: "Choose a document" }, ...report.documents.map(doc => ({ value: doc.id, label: doc.title || doc.path }))]} /></label><button disabled={blocked || !documentId} onClick={() => { if (!replaceCardDraft()) return; void act(async () => { setSnapshot(await api(`/api/study?documentId=${encodeURIComponent(documentId)}`)); setDraft(null); draftBaseline.current = null; }); }}>Load source revision</button>
                     {snapshot && <><p className={styles.muted}>Choose a passage from revision {snapshot.commitSha.slice(0, 12)}.</p><div className={styles.passages}>{snapshotPassages(snapshot).map(part => <button key={part.startOffset} aria-pressed={draft?.startOffset === part.startOffset} onClick={() => choosePassage(part.quote, part.startOffset)} disabled={busy}>{part.quote}</button>)}</div>{!snapshotPassages(snapshot).length && <p>No passage of 21 to 20,000 characters was found in this source.</p>}</>}
-                    {draft && snapshot && <form onSubmit={event => { event.preventDefault(); void act(async () => { await api("/api/study", { action: "create", ...draft, documentId: snapshot.documentId, commitSha: snapshot.commitSha, path: snapshot.path }); setDraft(null); setNewCard(false); setSnapshot(null); setNotice("Study card saved."); await load(); }); }}><fieldset disabled={busy}><label>Deck<input maxLength={120} required value={draft.deck} onChange={event => setDraft({ ...draft, deck: event.target.value })} /></label><label>Practice type<Dropdown ariaLabel="Practice type" className={styles.select} value={draft.kind} disabled={busy} onChange={value => { if (!replaceCardDraft(true)) return; const kind = value as StudyKind; const next = { ...draft, kind, ...studyDraft(kind, draft.quote, draft.deck) }; draftBaseline.current = { ...next, deck: draftBaseline.current?.deck ?? next.deck }; setDraft(next); }} options={[{ value: "recall", label: "Recall question" }, { value: "exercise", label: "Worked exercise" }, { value: "explain", label: "Explain in your words" }]} /></label><label>Question or exercise<textarea required rows={3} maxLength={20000} value={draft.prompt} onChange={event => setDraft({ ...draft, prompt: event.target.value })} /></label><label>Reference answer<textarea required rows={5} maxLength={20000} value={draft.answer} onChange={event => setDraft({ ...draft, answer: event.target.value })} /></label><p className={styles.muted}>Your answer is editable. The selected source quotation is retained separately.</p><button type="submit" className={styles.primary} disabled={blocked}>Save card</button></fieldset></form>}
+                    {drafting && <p role="status" className={styles.muted}>Writing a question from this passage…</p>}
+                    {draft && snapshot && <form onSubmit={event => { event.preventDefault(); void act(async () => { await api("/api/study", { action: "create", ...draft, documentId: snapshot.documentId, commitSha: snapshot.commitSha, path: snapshot.path }); setDraft(null); setNewCard(false); setSnapshot(null); setNotice("Study card saved."); await load(); }); }}><fieldset disabled={busy}><label>Deck<input maxLength={120} required value={draft.deck} onChange={event => setDraft({ ...draft, deck: event.target.value })} /></label><label>Practice type<Dropdown ariaLabel="Practice type" className={styles.select} value={draft.kind} disabled={busy} onChange={value => { if (!replaceCardDraft(true)) return; const kind = value as StudyKind; const next = { ...draft, kind, ...studyDraft(kind, draft.quote, draft.deck) }; draftBaseline.current = { ...next, deck: draftBaseline.current?.deck ?? next.deck }; setDraft(next); writeDraft(next); }} options={[{ value: "recall", label: "Recall question" }, { value: "exercise", label: "Worked exercise" }, { value: "explain", label: "Explain in your words" }]} /></label><label>Question or exercise<textarea required rows={3} maxLength={20000} value={draft.prompt} onChange={event => setDraft({ ...draft, prompt: event.target.value })} /></label><label>Reference answer<textarea required rows={5} maxLength={20000} value={draft.answer} onChange={event => setDraft({ ...draft, answer: event.target.value })} /></label><p className={styles.muted}>Your answer is editable. The selected source quotation is retained separately.</p><button type="submit" className={styles.primary} disabled={blocked}>Save card</button></fieldset></form>}
                 </div>}
                 {!report.cards.length && !newCard && <p className={styles.empty}>No study cards yet.</p>}
                 {report.cards.map(card => <article className={styles.card} key={card.id}><div className={styles.sectionHead}><div><h3>{card.prompt}</h3><p className={styles.muted}>{card.deck} · {card.kind} · {card.active ? `Due ${localTime(card.schedule.due)}` : "Paused"}</p></div><button disabled={blocked || Boolean(pending)} onClick={() => editCard(card)}>Edit</button></div><Source evidence={card.evidence} />{editing?.id === card.id && <form onSubmit={event => { event.preventDefault(); void act(async () => { await api("/api/study", { action: "edit", id: editing.id, version: editing.version, deck: editing.deck, prompt: editing.prompt, answer: editing.answer, active: editing.active }); setEditing(null); setNotice("Card updated."); await load(); }); }}><fieldset disabled={busy}>{editing.version !== card.version && <div className={styles.warning}><p>This card changed. Your draft is retained below. Compare it with the latest saved version before saving.</p><details><summary>Latest saved version</summary><p>Deck: {card.deck}</p><h4>{card.prompt}</h4><p className={styles.prose}>{card.answer}</p></details><button type="button" onClick={() => setEditing({ ...editing, version: card.version })}>Keep my draft against this version</button><button type="button" onClick={() => setEditing({ ...card })}>Replace draft with latest saved card</button></div>}<label>Deck<input autoFocus required maxLength={120} value={editing.deck} onChange={event => setEditing({ ...editing, deck: event.target.value })} /></label><label>Question<textarea required maxLength={20000} rows={3} value={editing.prompt} onChange={event => setEditing({ ...editing, prompt: event.target.value })} /></label><label>Reference answer<textarea required maxLength={20000} rows={4} value={editing.answer} onChange={event => setEditing({ ...editing, answer: event.target.value })} /></label><label className={styles.check}><input type="checkbox" checked={editing.active} onChange={event => setEditing({ ...editing, active: event.target.checked })} /> Active in review queue</label><div className={styles.actions}><button disabled={blocked || editing.version !== card.version} type="submit">Save changes</button><button type="button" onClick={() => setEditing(null)}>Cancel</button></div></fieldset></form>}</article>)}
             </section>}
-            {tab === "mistakes" && <section><h2>Recent learning notes</h2><p className={styles.muted}>Again and Hard ratings from your latest 200 reviews, with the answer and source that were current at the time.</p>{!report.reviews.some(item => item.rating <= 2) && <p className={styles.empty}>No Again or Hard reviews recorded yet.</p>}{report.reviews.filter(item => item.rating <= 2).map(item => <article key={item.id} className={styles.card}><h3>{item.prompt}</h3><p className={styles.muted}>{item.rating === 1 ? "Again" : "Hard"} · {localTime(item.reviewedAt)}</p><h4>Your answer</h4><p className={styles.prose}>{item.response}</p><h4>Reference at review time</h4><p className={styles.prose}>{item.answer}</p>{item.reflection && <><h4>Your correction or reflection</h4><p className={styles.prose}>{item.reflection}</p></>}<Source evidence={item.evidence} /></article>)}</section>}
+            {tab === "mistakes" && <section><h2>Recent learning notes</h2><p className={styles.muted}>Again and Hard ratings from your latest 200 reviews, with the answer and source that were current at the time.</p>{!report.reviews.some(item => item.rating <= 2) && <p className={styles.empty}>No Again or Hard reviews recorded yet.</p>}{report.reviews.filter(item => item.rating <= 2).map(item => <article key={item.id} className={styles.card}><h3>{item.prompt}</h3><p className={styles.muted}>{item.rating === 1 ? "Again" : "Hard"} · {localTime(item.reviewedAt)}</p><h4>Your answer</h4><p className={styles.prose}>{item.response}</p><h4>Reference at review time</h4><p className={styles.prose}>{item.answer}</p>{item.reflection && <><h4>Your correction or reflection</h4><p className={styles.prose}>{item.reflection}</p></>}{item.feedback && <><h4>Feedback at review time</h4><p className={styles.prose}>{item.feedback.text}</p></>}<Source evidence={item.evidence} /></article>)}</section>}
         </>}
         </div>
     </WorkspaceShell>;

@@ -36,6 +36,8 @@
 .source p { color: var(--color-text-muted); font-size: 11px; }
 .source a { text-decoration: underline; text-underline-offset: 3px; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.feedback { margin: 16px 0; padding: 14px 16px; border: 1px solid var(--color-border); border-left: 3px solid var(--color-primary); border-radius: var(--radius-sm); background: var(--color-surface); }
+.feedback h4 { margin: 0 0 6px; }
 .card { padding: 20px 0; border-bottom: 1px solid var(--color-border); }
 .card .sectionHead { align-items: flex-start; }
 .card .sectionHead>div { min-width: 0; }

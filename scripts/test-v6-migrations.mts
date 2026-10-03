@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 
 const db = new PGlite();
@@ -19,7 +19,11 @@ try {
     }
     await db.exec("alter table conversations add column project_id uuid references projects(id); grant select,insert,update,delete on all tables in schema public to service_role;");
     const directory = new URL("./migrations/", import.meta.url);
-    const files = (await readdir(directory)).filter(file => file.startsWith("v6-") && file.endsWith(".sql"));
+    // Setup's order. Directory listing order is not guaranteed, and study feedback needs study and model health first.
+    const files = ["v6-capture-inbox.sql", "v6-conversation-branches.sql", "v6-conversation-context.sql", "v6-model-health.sql", "v6-reply-trace.sql",
+        "v6-research-workbench.sql", "v6-scheduled-actions.sql", "v6-study.sql", "v6-study-feedback.sql"];
+    assert.deepEqual((await readdir(directory)).filter(file => file.startsWith("v6-") && file.endsWith(".sql")).sort(), [...files].sort(), "Every V6 migration must be listed here");
+    for (const file of files) assert.ok(setup.includes(`-- ${file}\n${(await readFile(new URL(file, directory), "utf8")).trimEnd()}`), `supabase-setup.sql must embed ${file} verbatim`);
     for (const file of files) await db.exec(await readFile(new URL(file, directory), "utf8"));
     await check("all V6 migrations execute and are rerunnable", async () => {
         for (const file of files) await db.exec(await readFile(new URL(file, directory), "utf8"));
@@ -177,6 +181,32 @@ try {
         await assert.rejects(db.query("update study_reviews set response='replacement' where id=$1",[review]));
         await assert.rejects(db.query("delete from study_reviews where id=$1",[review]));
     });
+    await check("study feedback is owned, version-bound, immutable and linked only to the same answer", async () => {
+        assert.ok((await study("settings",{version:2,dailyLimit:20,timezone:"Australia/Sydney"})).settings);
+        const cardId=randomUUID(), feedbackId=randomUUID(), answer="Feedback fixture answer";
+        await study("create",{...cardBody,id:cardId});
+        const give=(body:Record<string,unknown>,user=owner)=>scalar<{error?:string;reused?:boolean}>("select assistant_study_feedback($1,$2) as value",[user,JSON.stringify(body)]);
+        const note={id:feedbackId,cardId,version:1,responseHash:createHash("sha256").update(answer).digest("hex"),feedback:"Right about the passage; add its condition.",model:"gemini/fixture"};
+        assert.equal((await give(note)).reused,false);
+        assert.equal((await give(note)).reused,true);
+        assert.equal((await give({...note,responseHash:"0".repeat(64)})).error,"conflict");
+        assert.equal((await give({...note,id:randomUUID()},other)).error,"missing");
+        assert.equal((await give({...note,id:randomUUID(),version:9})).error,"conflict");
+        const submit=(body:Record<string,unknown>)=>scalar<{error?:string;review?:{feedback_id:string|null}}>("select assistant_study_review($1,$2) as value",[owner,JSON.stringify(body)]);
+        const payload={id:randomUUID(),cardId,version:1,requestHash:"a".repeat(64),rating:2,response:answer,reflection:"",schedule:{due:new Date(Date.now()+86400000).toISOString()},log:{rating:2},feedbackId};
+        assert.equal((await submit({...payload,response:"A different answer"})).error,"feedback");
+        assert.equal((await submit({...payload,feedbackId:randomUUID()})).error,"feedback");
+        assert.equal((await submit(payload)).review?.feedback_id,feedbackId);
+        const report=await scalar<{reviews:{id:string;feedback:string|null;feedback_model:string|null}[]}>("select assistant_study_report($1) as value",[owner]);
+        const linked=report.reviews.find(item=>item.id===payload.id)!;
+        assert.equal(linked.feedback,note.feedback); assert.equal(linked.feedback_model,note.model);
+        assert.ok(report.reviews.filter(item=>item.id!==payload.id).every(item=>item.feedback===null));
+        await db.query("insert into model_call_observations(id,provider_id,model_id,purpose,started_at,duration_ms,status,http_status,usage_completeness) values ($1,'gemini','study-fixture','study',now(),20,'success',200,'unavailable')",[randomUUID()]);
+        await db.exec("reset role");
+        await assert.rejects(db.query("update study_feedback set feedback='replacement' where id=$1",[feedbackId]),/immutable/);
+        await assert.rejects(db.query("delete from study_feedback where id=$1",[feedbackId]),/immutable/);
+        await db.exec("set role service_role");
+    });
     await check("capture keys are scoped to profile and reject invalid payloads",async()=>{
         const id=randomUUID();
         await db.query("insert into capture_inbox(profile_id,id,source,source_hash) values ($1,$3,'{}',$4),($2,$3,'{}',$4)",[owner,other,id,"a".repeat(64)]);
@@ -192,7 +222,7 @@ try {
     await check("anonymous and signed-in client roles cannot call V6 privileged RPCs or read tables", async () => {
         for(const role of ["anon","authenticated"]) {
             await db.exec(`reset role; set role ${role}`);
-            for (const sql of ["select * from study_reviews", "select * from study_cards", "select * from capture_inbox", "select assistant_capture_claim('00000000-0000-4000-8000-000000000000','00000000-0000-4000-8000-000000000000','{}')", "select assistant_study_report('00000000-0000-4000-8000-000000000000')", "select * from assistant_task_runs", "select * from research_questions", "select * from model_call_observations", "select * from assistant_conversation_summaries", "select * from assistant_conversation_branches", "select assistant_model_health()", "select assistant_start_task_run('00000000-0000-4000-8000-000000000000')", "select assistant_claim_task_delivery('00000000-0000-4000-8000-000000000000')", "select assistant_finish_task_run('00000000-0000-4000-8000-000000000000','ok','test')"])
+            for (const sql of ["select * from study_reviews", "select * from study_cards", "select * from study_feedback", "select assistant_study_feedback('00000000-0000-4000-8000-000000000000','{}')", "select * from capture_inbox", "select assistant_capture_claim('00000000-0000-4000-8000-000000000000','00000000-0000-4000-8000-000000000000','{}')", "select assistant_study_report('00000000-0000-4000-8000-000000000000')", "select * from assistant_task_runs", "select * from research_questions", "select * from model_call_observations", "select * from assistant_conversation_summaries", "select * from assistant_conversation_branches", "select assistant_model_health()", "select assistant_start_task_run('00000000-0000-4000-8000-000000000000')", "select assistant_claim_task_delivery('00000000-0000-4000-8000-000000000000')", "select assistant_finish_task_run('00000000-0000-4000-8000-000000000000','ok','test')"])
                 await assert.rejects(db.query(sql),/permission denied/);
         }
         await db.exec("reset role");

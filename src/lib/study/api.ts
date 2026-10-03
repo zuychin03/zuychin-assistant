@@ -37,6 +37,8 @@ export function createStudyHandlers(service: ReturnType<typeof createStudyServic
             if (action === "review") return service.review(body, owner);
             if (action === "edit") return service.edit(body, owner);
             if (action === "settings") return service.settings(body, owner);
+            if (action === "draft") return service.draft(body, owner);
+            if (action === "feedback") return service.feedback(body, owner);
             throw new StudyError("Choose a supported study action.");
         }),
     };

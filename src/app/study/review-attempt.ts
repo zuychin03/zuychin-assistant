@@ -1,4 +1,8 @@
-import type { StudyCard } from "@/lib/study/contracts";
+import type { StudyCard, StudyFeedback } from "@/lib/study/contracts";
+
+export function linkedFeedback(feedback: (StudyFeedback & { response: string }) | null, card: StudyCard, response: string): { feedbackId?: string } {
+    return feedback && feedback.cardId === card.id && feedback.version === card.version && feedback.response === response.trim() ? { feedbackId: feedback.id } : {};
+}
 
 export function studyReviewState(cards: readonly StudyCard[], attempt: StudyCard | null, pendingCardId: string | undefined, deck: string, now: number) {
     if (pendingCardId) return { current: cards.find(card => card.id === pendingCardId), changed: false };

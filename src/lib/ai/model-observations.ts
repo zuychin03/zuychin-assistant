@@ -4,7 +4,7 @@ import type { GoogleGenAI } from "@google/genai";
 import { requestUsage, type CompatUsage } from "@/lib/ai/stream-usage";
 import { assessDataRoute, assertDataRouteAllowed, mergeDataClasses, type ModelDataClass, type DataRouteAssessment } from "@/lib/ai/data-policy";
 
-export type ModelCallPurpose = "chat" | "embedding" | "routing" | "worker" | "orchestration" | "compaction" | "continuation" | "extraction" | "summary" | "title" | "search" | "speech";
+export type ModelCallPurpose = "chat" | "embedding" | "routing" | "worker" | "orchestration" | "compaction" | "continuation" | "extraction" | "summary" | "title" | "search" | "speech" | "study";
 export type ModelCallStatus = "success" | "auth" | "rate_limit" | "transient" | "unavailable" | "retired" | "aborted" | "unknown";
 export type ModelErrorClass = "http" | "abort" | "timeout" | "transport" | "unknown";
 export interface ModelCallObservation {

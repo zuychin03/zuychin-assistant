@@ -2,7 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { listProvidersPublic } from "@/lib/ai/providers";
 import type { ModelCallObservation } from "@/lib/ai/model-observations";
 
-const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech"] as const;
+const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech", "study"] as const;
 const STATUSES = ["success", "auth", "rate_limit", "transient", "unavailable", "retired", "aborted", "unknown"] as const;
 const ERROR_CLASSES = ["http", "abort", "timeout", "transport", "unknown"] as const;
 const CAPABILITIES = ["streaming", "tools", "vision", "grounding"] as const;

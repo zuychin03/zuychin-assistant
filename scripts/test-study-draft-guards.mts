@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { studyDraft } from "../src/lib/study/scheduler";
 import { studySettingsChanged } from "../src/app/study/settings-draft";
+import { applyGeneratedDraft } from "../src/app/study/generated-draft";
 
 const source = readFileSync(new URL("../src/app/study/page.tsx", import.meta.url), "utf8");
 const tree = ts.createSourceFile("study.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -57,6 +58,7 @@ function setup({ accept = false, response = "", reflection = "", draft = null, b
         setDeck: (deck: string) => changes.push(["deck", deck]),
         clearAttempt: () => changes.push(["clearAttempt", null]),
         setDraft: (value: Draft) => { environment.draft = value; changes.push(["draft", value]); },
+        writeDraft: (value: Draft) => changes.push(["writeDraft", value]),
     };
     const transitions = runInNewContext(compiled, environment) as Transitions;
     return { transitions, changes, prompts, draftBaseline };
@@ -117,4 +119,28 @@ test("changing an untouched generated card does not create a false dirty flag", 
     f.transitions.changeKind("explain");
     assert.equal(f.prompts.length, 0);
     assert.equal(f.transitions.isDirty(), false);
+});
+
+test("choosing a passage shows the template, then asks the model to draft that same card", () => {
+    const f = setup();
+    f.transitions.choosePassage("A newly chosen passage of sufficient length.", 40);
+    assert.deepEqual(f.changes.map(([kind]) => kind), ["draft", "writeDraft"]);
+    assert.equal(f.changes[1][1], f.changes[0][1]);
+    assert.equal((f.changes[0][1] as Draft).prompt, studyDraft("recall", "A newly chosen passage of sufficient length.", "Saved source").prompt);
+});
+
+test("a cancelled passage or practice-type switch never asks the model", () => {
+    const draft = { ...baseline, prompt: "My authored question" };
+    const f = setup({ draft, baseline });
+    f.transitions.choosePassage("A different saved passage of sufficient length.", 100);
+    f.transitions.changeKind("explain");
+    assert.equal(f.prompts.length, 2);
+    assert.deepEqual(f.changes, []);
+});
+
+test("a generated draft replaces only the untouched template it was asked for", () => {
+    const generated = { prompt: "Which passage detail matters?", answer: "The exact detail." };
+    assert.deepEqual(applyGeneratedDraft(baseline, baseline, generated), { ...baseline, ...generated });
+    for (const current of [{ ...baseline, prompt: "My edit" }, { ...baseline, kind: "explain" }, { ...baseline, id: "draft-b" }, null])
+        assert.equal(applyGeneratedDraft(current, baseline, generated), current);
 });
