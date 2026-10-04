@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -32,24 +34,43 @@ const blocked = {
 };
 interface Observation { argv: string[]; execPath: string; execArgv: string[]; cwd: string; env: Record<string, string>; pid: number }
 
+// The synthetic Next child holds a loopback socket for its lifetime, so its exit
+// is proven by the socket closing rather than by a PID that can be recycled.
+// Connections are counted, not identified: a child that terminates itself resets
+// its socket, and Windows discards whatever it sent while spawnSync held the loop.
+let livenessConnections = 0;
+const openLiveness = new Set<Socket>();
+const liveness = createServer((socket) => {
+    livenessConnections++; openLiveness.add(socket);
+    socket.unref(); socket.resume(); socket.on("error", () => {});
+    socket.on("close", () => openLiveness.delete(socket));
+});
+liveness.listen(0, "127.0.0.1"); await once(liveness, "listening"); liveness.unref();
+const livenessPort = (liveness.address() as AddressInfo).port;
+
 function fixture(mode: "ok" | "nonzero" | "signal" | "hold" = "ok", cli = true) {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "council-build-check-"));
     const command = join(root, "node_modules", "next", "dist", "bin", "next");
     const record = join(root, "invocation.json");
+    const connectionsBefore = livenessConnections;
     if (cli) {
         mkdirSync(dirname(command), { recursive: true });
         writeFileSync(command, `const fs = require('node:fs');
+const liveness = require('node:net').connect(${livenessPort}, '127.0.0.1', () => {
+liveness.on('error', () => {});
+liveness.unref();
 fs.writeFileSync('invocation.json', JSON.stringify({argv:process.argv.slice(2),execPath:process.execPath,execArgv:process.execArgv,cwd:process.cwd(),env:process.env,pid:process.pid}));
 for (const value of Object.values(process.env)) if (value.includes('inherited-')) process.stdout.write(value + '\\n');
 process.stdout.write('synthetic build completed\\n');
 ${mode === "nonzero" ? "process.exitCode = 23;" : mode === "signal" ? "process.kill(process.pid, 'SIGTERM');" : mode === "hold" ? "setInterval(() => {}, 100);" : ""}
+});
 `);
     }
     const runtimeEnv: NodeJS.ProcessEnv = { NODE_ENV: "test", ...Object.fromEntries(Object.entries(process.env)
         .filter(([key, value]) => value !== undefined && /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|SYSTEMDRIVE|PROGRAMFILES|PROGRAMFILES\(X86\)|TEMP|TMP)$/i.test(key))) };
     Object.assign(runtimeEnv, { HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, NO_COLOR: "1" });
     return {
-        root, command, record,
+        root, command, record, connectionsBefore,
         run: (args: string[] = [], env: Record<string, string | undefined> = {}) => spawnSync(process.execPath, [entry, ...args], {
             cwd: root, env: { ...runtimeEnv, ...env }, encoding: "utf8", shell: false, timeout: 15_000,
         }),
@@ -62,17 +83,15 @@ ${mode === "nonzero" ? "process.exitCode = 23;" : mode === "signal" ? "process.k
     };
 }
 
-async function assertStopped(pid: number) {
+async function assertStopped(f: { connectionsBefore: number }) {
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
-        try { process.kill(pid, 0); }
-        catch (error) {
-            assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
-            return;
-        }
+        if (livenessConnections > f.connectionsBefore && openLiveness.size === 0) return;
         await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.fail("The synthetic Next child survived its completed wrapper.");
+    assert.fail(livenessConnections > f.connectionsBefore
+        ? "The synthetic Next child survived its completed wrapper."
+        : "The synthetic Next child never connected its liveness socket.");
 }
 
 await test("verification build executes only the local Next CLI with fixed synthetic configuration", async t => {
@@ -87,7 +106,7 @@ await test("verification build executes only the local Next CLI with fixed synth
     assert.deepEqual(observed.execArgv, []);
     for (const [name, value] of Object.entries(synthetic)) assert.equal(observed.env[name], value, name);
     assert.match(result.stdout, /synthetic build completed/);
-    await assertStopped(observed.pid);
+    await assertStopped(f);
 });
 
 for (const lowerCase of [false, true]) {
@@ -106,7 +125,7 @@ for (const lowerCase of [false, true]) {
         }
         assert(!JSON.stringify(observed).includes("inherited-"));
         assert(!(result.stdout + result.stderr).includes("inherited-"));
-        await assertStopped(observed.pid);
+        await assertStopped(f);
     });
 }
 
@@ -116,7 +135,7 @@ await test("the harmless dotenv example does not block a verification build", as
     const result = f.run();
     assert.equal(result.status, 0);
     assert(!JSON.stringify(f.observed()).includes("inherited-example-marker"));
-    await assertStopped(f.observed().pid);
+    await assertStopped(f);
 });
 
 for (const name of [".env", ".env.local", ".env.production", ".env.production.local"]) {
@@ -177,14 +196,14 @@ await test("the exact failing build exit code is propagated and its child ends",
     const f = fixture("nonzero"); t.after(f.cleanup);
     const result = f.run();
     assert.equal(result.error, undefined); assert.equal(result.status, 23);
-    await assertStopped(f.observed().pid);
+    await assertStopped(f);
 });
 
 await test("a signalled build cannot report success or leave its child running", async t => {
     const f = fixture("signal"); t.after(f.cleanup);
     const result = f.run();
     assert.equal(result.error, undefined); assert.notEqual(result.status, 0);
-    await assertStopped(f.observed().pid);
+    await assertStopped(f);
 });
 
 await test("the standard verification profile uses the isolated wrapper and preserves the production build command", () => {
@@ -205,9 +224,12 @@ await test("POSIX parent termination is forwarded and waits for the synthetic Ne
     t.after(async () => {
         wrapper.kill("SIGKILL");
         if (childPid) {
-            try { process.kill(childPid, "SIGKILL"); }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-            await assertStopped(childPid);
+            // Only an open liveness socket proves the PID still belongs to the child.
+            if (openLiveness.size > 0) {
+                try { process.kill(childPid, "SIGKILL"); }
+                catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+            }
+            await assertStopped(f);
         }
         f.cleanup();
     });
@@ -232,7 +254,7 @@ await test("POSIX parent termination is forwarded and waits for the synthetic Ne
         const result = await exited;
         assert.notEqual(result.code, 0);
         assert.equal(result.signal, null, "The wrapper must wait for its child before exiting.");
-        await assertStopped(childPid);
+        await assertStopped(f);
         childPid = undefined;
     } finally { clearTimeout(timeout); }
 });

@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createLivenessServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -18,14 +19,6 @@ type Mode = "legacy" | "legacy-set" | "legacy-error" | "legacy-malformed" | "leg
 type Rpc = { id?: unknown; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
 type Trace = { pid?: number; cwd?: string; method?: string; configId?: string; value?: string; modelId?: string };
 type HostMessage = { type: string; agent?: string; detail?: string; agents?: { name: string; state: string }[] };
-
-function alive(pid: number): boolean {
-    try { process.kill(pid, 0); return true; }
-    catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-        throw error;
-    }
-}
 
 async function until(predicate: () => boolean, description: string, timeoutMs = 15_000, child?: ChildProcess): Promise<void> {
     const limit = Date.now() + timeoutMs;
@@ -64,6 +57,17 @@ async function scenario(mode: Mode) {
     };
     const readTraces = (): Trace[][] => readdirSync(traces).map((name) => readFileSync(join(traces, name), "utf8")
         .split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line) as Trace));
+    const adapters = new Map<Socket, string>();
+    let adapterConnections = 0;
+    const liveness = createLivenessServer((adapter) => {
+        adapterConnections++;
+        adapters.set(adapter, ""); adapter.setEncoding("utf8"); adapter.on("error", () => {});
+        adapter.on("data", (pid: string) => adapters.set(adapter, adapters.get(adapter) + pid));
+        adapter.on("close", () => adapters.delete(adapter));
+    });
+    // Every adapter connects before it records its pid, so a recorded pid without
+    // an accepted connection still counts as running.
+    const adapterRunning = () => adapters.size > 0 || adapterConnections < readTraces().filter((records) => records[0]?.pid).length;
     const calls: Rpc[] = [];
     const unexpected: string[] = [];
     let child: ChildProcess | undefined;
@@ -137,6 +141,10 @@ async function scenario(mode: Mode) {
         await bounded(once(mcp, "listening"), "fixture MCP listener", 5_000);
         const address = mcp.address();
         assert.ok(address && typeof address === "object");
+        liveness.listen(0, "127.0.0.1");
+        await bounded(once(liveness, "listening"), "fixture liveness listener", 5_000);
+        const livenessAddress = liveness.address();
+        assert.ok(livenessAddress && typeof livenessAddress === "object");
         const configPath = join(root, "agents.json");
         writeFileSync(configPath, JSON.stringify({
             mcpUrl: `http://127.0.0.1:${address.port}/mcp`,
@@ -144,7 +152,7 @@ async function scenario(mode: Mode) {
             agents: Object.fromEntries(names.map((name, index) => [name, {
                 command: process.execPath, mode: "acp", version: "wrong-configured-version",
                 args: [join(source, "scripts/fixtures/council-model-evidence-agent.mjs"), traces,
-                    mode === "legacy-timeout" && index === 1 ? "legacy-error" : mode],
+                    mode === "legacy-timeout" && index === 1 ? "legacy-error" : mode, String(livenessAddress.port)],
             }])),
             instances: Object.fromEntries(names.map((name) => [name, { provider: name,
                 allowedModels: mode.startsWith("legacy") ? ["default", "sonnet", "unadvertised"] : ["alpha", "beta"], allowedReasoningEfforts: ["medium", "high"],
@@ -187,18 +195,28 @@ async function scenario(mode: Mode) {
         assert.ok(result.traces.every((records) => records[0].cwd?.startsWith(root)));
         return result;
     } finally {
-        socket?.terminate();
-        if (child && child.exitCode === null && child.signalCode === null) {
-            child.stdin?.end();
-            try { await bounded(closed!, "fixture host cleanup", 5_000); }
-            catch { killTree(child); await bounded(closed!, "forced fixture host cleanup", 5_000); }
-        }
-        const adapterPids = readTraces().flatMap((records) => records[0]?.pid ? [records[0].pid] : []);
-        await until(() => adapterPids.every((pid) => !alive(pid)), "fixture adapter exit deadline", 65_000);
-        mcp.closeAllConnections();
-        if (mcp.listening) await bounded(new Promise<void>((settle) => mcp.close(() => settle())), "fixture MCP shutdown", 5_000);
+        // A failed check must still close both listeners, or the open handles keep
+        // the runner alive and it never prints which assertion failed.
+        let cleanupError: unknown;
+        try {
+            socket?.terminate();
+            if (child && child.exitCode === null && child.signalCode === null) {
+                child.stdin?.end();
+                try { await bounded(closed!, "fixture host cleanup", 5_000); }
+                catch { killTree(child); await bounded(closed!, "forced fixture host cleanup", 5_000); }
+            }
+            await until(() => !adapterRunning(), "fixture adapter exit deadline", 65_000)
+                .catch((error: Error) => { throw new Error(`${error.message}; adapter pid(s) still running: ${[...adapters.values()].join(", ")}`); });
+        } catch (error) { cleanupError = error; }
+        try {
+            mcp.closeAllConnections();
+            if (mcp.listening) await bounded(new Promise<void>((settle) => mcp.close(() => settle())), "fixture MCP shutdown", 5_000);
+        } catch (error) { cleanupError ??= error; }
+        for (const adapter of adapters.keys()) adapter.destroy();
+        if (liveness.listening) await new Promise<void>((settle) => liveness.close(() => settle()));
         assert.ok(resolve(root).startsWith(join(resolve(tmpdir()), "council-model-evidence-")));
-        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (error) { cleanupError ??= error; }
+        if (cleanupError) throw cleanupError;
     }
 }
 

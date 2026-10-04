@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Script } from "node:vm";
@@ -136,8 +136,21 @@ async function waitFor<T>(description: string, probe: () => Promise<T | null>, t
     throw new Error(`Timed out waiting for ${description}`);
 }
 
-function alive(pid: number): boolean {
-    try { process.kill(pid, 0); return true; } catch { return false; }
+// Node keeps its child's process handle until the exit is reaped, so the app's
+// PID cannot be recycled while this still reports it running.
+function exited(child: ChildProcess): boolean {
+    return child.exitCode !== null || child.signalCode !== null;
+}
+
+// Windows recycles PIDs, so an owned host counts as running only while its PID
+// belongs to a process whose command line names this run's scratch root.
+async function runningHosts(root: string): Promise<Set<number>> {
+    const query = "Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%council-host.mts%'\""
+        + " | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine.IndexOf($env:COUNCIL_SMOKE_ROOT, [StringComparison]::OrdinalIgnoreCase) -ge 0 }"
+        + " | ForEach-Object { $_.ProcessId }";
+    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", query],
+        { windowsHide: true, timeout: 10_000, env: { ...process.env, COUNCIL_SMOKE_ROOT: basename(root) } });
+    return new Set(stdout.split(/\s+/).filter(Boolean).map(Number));
 }
 
 async function freeHostPort(): Promise<number> {
@@ -288,12 +301,17 @@ async function main(): Promise<void> {
         }, 120_000);
         assert.deepEqual(reports.map((report) => report.stage), ["initial-idle", "capability-denied", "started", "duplicate-start-refused", "loopback-paired-websocket", "restarted", "clean-stop", "ready-to-close"]);
         assert.equal(ownedPids.size, 3, "Start, restart and final start must own distinct host processes");
-        for (const pid of ownedPids) if (pid !== closing.pid) assert(!alive(pid), "An earlier owned host survived replacement or stop");
+        const running = await runningHosts(root);
+        assert(closing.pid !== undefined && running.has(closing.pid), "The running owned host was not found by its command line");
+        for (const pid of ownedPids) if (pid !== closing.pid) assert(!running.has(pid), "An earlier owned host survived replacement or stop");
         assert(app.pid);
         await closeNativeWindow(app.pid);
         await waitFor("native app shutdown", async () => app?.exitCode !== null ? true : null, 20_000);
         assert.equal(app.exitCode, 0, "Native app did not exit cleanly");
-        await waitFor("owned host processes to exit", async () => [...ownedPids].every((pid) => !alive(pid)) ? true : null, 10_000);
+        await waitFor("owned host processes to exit", async () => {
+            const remaining = await runningHosts(root);
+            return [...ownedPids].every((pid) => !remaining.has(pid)) ? true : null;
+        }, 10_000);
         await waitFor("owned host port to close", async () => {
             try { await fetch(`http://127.0.0.1:${closing.port}/health`, { signal: AbortSignal.timeout(500) }); return null; }
             catch { return true; }
@@ -303,12 +321,13 @@ async function main(): Promise<void> {
         console.log("  ok    repeated-window-close-cleanup");
         console.log("Native desktop smoke passed: lifecycle, IPC denial, pairing/WebSocket and owned-process cleanup. No Council sessions created.");
     } finally {
-        if (app?.pid && alive(app.pid)) {
+        if (app?.pid && !exited(app)) {
             await closeNativeWindow(app.pid).catch(() => {});
-            await waitFor("cleanup close", async () => app?.pid && !alive(app.pid) ? true : null, 10_000).catch(() => {});
-            if (alive(app.pid)) await execute("taskkill.exe", ["/PID", String(app.pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 }).catch(() => {});
+            await waitFor("cleanup close", async () => app && exited(app) ? true : null, 10_000).catch(() => {});
+            if (!exited(app)) await execute("taskkill.exe", ["/PID", String(app.pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 }).catch(() => {});
         }
-        for (const pid of ownedPids) if (alive(pid)) {
+        const leftover = await runningHosts(root).catch(() => new Set<number>());
+        for (const pid of ownedPids) if (leftover.has(pid)) {
             await execute("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 }).catch(() => {});
         }
         server.closeAllConnections();

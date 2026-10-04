@@ -4,6 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createLivenessServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -70,6 +71,17 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         return result.stdout.trim();
     };
     const records = (): Trace[] => existsSync(trace) ? readFileSync(trace, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    const adapters = new Map<Socket, string>();
+    let adapterConnections = 0;
+    const liveness = createLivenessServer((adapter) => {
+        adapterConnections++;
+        adapters.set(adapter, ""); adapter.setEncoding("utf8"); adapter.on("error", () => {});
+        adapter.on("data", (pid: string) => adapters.set(adapter, adapters.get(adapter) + pid));
+        adapter.on("close", () => adapters.delete(adapter));
+    });
+    // Every adapter connects before it records its pid, so a recorded pid without
+    // an accepted connection still counts as running.
+    const adapterRunning = () => adapters.size > 0 || adapterConnections < records().filter((record) => record.pid).length;
     const calls: Call[] = [];
     const errors: string[] = [];
     const messages: Message[] = [];
@@ -181,9 +193,7 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                 case "council_execution_stop":
                     if (mode.startsWith("expired-")) {
                         await new Promise((settle) => setTimeout(settle, mode === "expired-busy" ? 3_500 : 500));
-                        aliveDuringExpiryCleanup = records().filter((record) => record.pid).some((record) => {
-                            try { process.kill(record.pid!, 0); return true; } catch { return false; }
-                        });
+                        aliveDuringExpiryCleanup = adapterRunning();
                         await new Promise((settle) => setTimeout(settle, 500));
                     }
                     if (mode === "stop-hang") return;
@@ -250,11 +260,13 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         if (journalFault !== "missing") writeFileSync(journalPath, originalJournal);
         mcp.listen(0, "127.0.0.1"); await bounded(once(mcp, "listening"), 5_000);
         const address = mcp.address(); assert.ok(address && typeof address === "object");
+        liveness.listen(0, "127.0.0.1"); await bounded(once(liveness, "listening"), 5_000);
+        const livenessAddress = liveness.address(); assert.ok(livenessAddress && typeof livenessAddress === "object");
         const configPath = join(root, "agents.json");
         writeFileSync(configPath, JSON.stringify({ mcpUrl: `http://127.0.0.1:${address.port}/mcp`, host: { port: 0, autoAdopt: false },
             agents: { fixture: { mode: shell ? "shell" : "acp", command: process.execPath,
                 ...(shell ? { version: "fixture-cli-1.0" } : {}),
-                args: [join(source, "scripts/fixtures/council-lifecycle-agent.mjs"), trace, mode, ...(shell ? ["{model}", "{reasoningEffort}"] : [])] } },
+                args: [join(source, "scripts/fixtures/council-lifecycle-agent.mjs"), trace, mode, String(livenessAddress.port), ...(shell ? ["{model}", "{reasoningEffort}"] : [])] } },
             instances: { [name]: { provider: "fixture", allowedModels: ["alpha", "beta"],
                 allowedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium",
                 defaultModel: mode === "reject" || mode.startsWith("hang-") ? "beta" : "alpha" } } }));
@@ -316,23 +328,30 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
             issuedTokenHashes: issuedTokens.map((token) => createHash("sha256").update(token).digest("hex")),
             originalJournal, journalBeforeExecution: journalBeforeExecution as Record<string, unknown> | null,
             journalText: existsSync(journalPath) ? readFileSync(journalPath, "utf8") : null,
-            adapterAlive: records().filter((record) => record.pid).some((record) => {
-                try { process.kill(record.pid!, 0); return true; } catch { return false; }
-            }) };
+            adapterAlive: adapterRunning() };
     } finally {
-        socket?.terminate();
-        if (child && child.exitCode === null && child.signalCode === null) {
-            child.stdin?.end();
-            try { await bounded(closed!, 7_000); }
-            catch { killTree(child); await bounded(closed!, 5_000); }
-        }
-        await until(() => records().filter((record) => record.pid).every((record) => {
-            try { process.kill(record.pid!, 0); return false; } catch { return true; }
-        }), "adapter cleanup", 47_000);
-        mcp.closeAllConnections();
-        if (mcp.listening) await bounded(new Promise<void>((settle) => mcp.close(() => settle())), 5_000);
+        // A failed check must still close both listeners, or the open handles keep
+        // the runner alive and it never prints which assertion failed.
+        let cleanupError: unknown;
+        try {
+            socket?.terminate();
+            if (child && child.exitCode === null && child.signalCode === null) {
+                child.stdin?.end();
+                try { await bounded(closed!, 7_000); }
+                catch { killTree(child); await bounded(closed!, 5_000); }
+            }
+            await until(() => !adapterRunning(), "adapter cleanup", 47_000)
+                .catch((error: Error) => { throw new Error(`${error.message}; adapter pid(s) still running: ${[...adapters.values()].join(", ")}`); });
+        } catch (error) { cleanupError = error; }
+        try {
+            mcp.closeAllConnections();
+            if (mcp.listening) await bounded(new Promise<void>((settle) => mcp.close(() => settle())), 5_000);
+        } catch (error) { cleanupError ??= error; }
+        for (const adapter of adapters.keys()) adapter.destroy();
+        if (liveness.listening) await new Promise<void>((settle) => liveness.close(() => settle()));
         assert.ok(resolve(root).startsWith(join(resolve(tmpdir()), "council-host-lifecycle-")));
-        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (error) { cleanupError ??= error; }
+        if (cleanupError) throw cleanupError;
     }
 }
 

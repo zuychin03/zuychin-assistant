@@ -1,11 +1,22 @@
+import { once } from "node:events";
 import { appendFileSync } from "node:fs";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-const [directory, mode] = process.argv.slice(2);
+const [directory, mode, livenessPort] = process.argv.slice(2);
 const trace = join(directory, `${process.pid}.jsonl`);
 const record = (value) => appendFileSync(trace, JSON.stringify(value) + "\n");
 const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
+// Held open for the process lifetime: the suite proves this adapter exited by
+// the socket closing, because a recorded PID can be recycled by another process.
+if (livenessPort) {
+    const liveness = connect(Number(livenessPort), "127.0.0.1");
+    await once(liveness, "connect");
+    liveness.on("error", () => {});
+    liveness.write(String(process.pid));
+    liveness.unref();
+}
 record({ pid: process.pid, cwd: process.cwd() });
 setTimeout(() => process.exit(93), 60_000).unref();
 
