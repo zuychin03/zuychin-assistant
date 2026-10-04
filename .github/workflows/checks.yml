@@ -58,6 +58,11 @@ jobs:
       - name: launch preflight
         run: npm run council:preflight:test
 
+      # Linux only: its POSIX signal-forwarding case is skipped on Windows.
+      - name: verification build wrapper
+        if: runner.os == 'Linux'
+        run: npm run council:build:test
+
       - name: host process faults and harness guards
         run: npm run council:fault:options:test
 
