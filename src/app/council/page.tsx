@@ -376,7 +376,7 @@ export default function CouncilPage() {
                         title="Local host"
                         description={
                             hostState === "connected"
-                                ? `${host?.agents.length ?? 0} agents · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
+                                ? `${host?.agents.length ?? 0} ${host?.agents.length === 1 ? "agent" : "agents"} · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
                                 : hostState === "unpaired"
                                     ? `a host is running on port ${hostPort} but this browser is not paired with it`
                                     : hostState === "probing"
@@ -749,7 +749,7 @@ export default function CouncilPage() {
                                         </div>
                                         <div style={styles.railTopic}>{c.topic}</div>
                                         <div style={styles.railMeta}>
-                                            {c.messages} msgs · quiet {ago(c.lastMessageAt)}
+                                            {c.messages} {c.messages === 1 ? "msg" : "msgs"} · quiet {ago(c.lastMessageAt)}
                                             {/* expires_at stops governing once a verdict is proposed;
                                                 standby_expires_at does, and it is not in this payload.
                                                 For a campaign the debate clock is long irrelevant. */}
@@ -792,7 +792,7 @@ export default function CouncilPage() {
                                         <span style={{ ...styles.smallPill, ...styles.pillMuted }}>{c.status}</span>
                                     </div>
                                     <div style={styles.railTopic}>{c.topic}</div>
-                                    <div style={styles.railMeta}>{c.messages} msgs · {c.round} rounds</div>
+                                    <div style={styles.railMeta}>{c.messages} {c.messages === 1 ? "msg" : "msgs"} · {c.round} {c.round === 1 ? "round" : "rounds"}</div>
                                 </button>
                             ))}
                         </section>
@@ -807,7 +807,7 @@ export default function CouncilPage() {
                                 <section style={styles.panel}>
                                     <PanelHeader
                                         title={`${s.code} - ${s.topic}`}
-                                        description={`${s.paused ? "stalled" : s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} messages · closer ${s.closerName}`}
+                                        description={`${s.paused ? "stalled" : s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} ${s.messages === 1 ? "message" : "messages"} · closer ${s.closerName}`}
                                         icon={<Users size={16} />}
                                     />
                                     <div style={styles.brief}><strong>{s.councilType} council</strong><br />{s.brief}</div>
@@ -978,7 +978,7 @@ export default function CouncilPage() {
                             <div style={styles.monitorTitle}>{s ? `${s.code} · ${s.topic}` : "Council monitor"}</div>
                             {s && (
                                 <div style={styles.monitorMeta}>
-                                    {s.status} · round {s.round} of {s.maxRounds} · {s.messages} messages
+                                    {s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"}
                                     {isRunning ? ` · quiet ${ago(s.lastMessageAt)}` : ""}
                                     {s.floorHolder ? ` · floor ${s.floorHolder}` : ""}
                                 </div>

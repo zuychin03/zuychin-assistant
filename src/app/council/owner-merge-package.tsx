@@ -116,7 +116,7 @@ export function AttemptReview({ code, attempt }: { code: string; attempt: OwnerA
             <p className={ui.evidenceNote} role="status">{copyStatus}</p>
         </div>}
         {attempt.manifest ? <details className={ui.executionHistory}>
-            <summary>Accepted commits <span className={ui.evidenceSummary}>{attempt.manifest.items.length} tasks</span></summary>
+            <summary>Accepted commits <span className={ui.evidenceSummary}>{attempt.manifest.items.length} {attempt.manifest.items.length === 1 ? "task" : "tasks"}</span></summary>
             {attempt.manifest.items.map(item => <div key={item.itemId} className={ui.executionRecord}>
                 <div className={ui.evidenceNote}>Task {item.sequence} · {item.agentName} · <code>{item.commitSha}</code></div>
                 <ExecutionEvidence executionId={item.acceptedExecutionId} snapshot={item.executionEvidence} label="Accepted submission run" />

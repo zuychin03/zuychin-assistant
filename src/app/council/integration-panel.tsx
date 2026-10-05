@@ -96,7 +96,7 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
             )}
 
             {frozenItems.length > 0 && <details className={ui.executionHistory}>
-                <summary>Accepted submission evidence <span className={ui.evidenceSummary}>{frozenItems.length} tasks</span></summary>
+                <summary>Accepted submission evidence <span className={ui.evidenceSummary}>{frozenItems.length} {frozenItems.length === 1 ? "task" : "tasks"}</span></summary>
                 {frozenItems.map(item => <div key={item.itemId} className={ui.executionRecord}>
                     <div className={ui.evidenceNote}>Task {item.sequence} · {item.agentName} · <code>{item.commitSha}</code></div>
                     <ExecutionEvidence executionId={item.acceptedExecutionId} snapshot={item.executionEvidence} label="Frozen model details" />

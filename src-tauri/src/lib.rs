@@ -161,6 +161,7 @@ pub fn run() {
 
             WebviewWindow::builder(app, "main", tauri::WebviewUrl::External(config.app_url))
                 .title("Zuychin Council: host stopped").inner_size(1200.0, 820.0).min_inner_size(640.0, 480.0)
+                .zoom_hotkeys_enabled(true)
                 .on_navigation(move |url| config::same_origin(&config.origin, url))
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
                 .on_download(|_, _| false)

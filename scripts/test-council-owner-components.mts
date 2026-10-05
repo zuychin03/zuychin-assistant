@@ -34,6 +34,11 @@ test("comparison requires a verified attempt and valid literal SHAs", () => {
     assert(!render({ status: "failed" }).includes("Copy comparison command"));
     assert(!render({ tipSha: "main;whoami" }).includes("Copy comparison command"));
 });
+test("accepted commit counts read naturally", () => {
+    const item = { itemId: "task", sequence: 1, agentName: "reviewer", commitSha: "d".repeat(40), acceptedExecutionId: null, executionEvidence: null, verificationRunId: id };
+    assert(render({ manifest: { items: [item] } }).includes(">1 task<"));
+    assert(render({ manifest: { items: [item, { ...item, itemId: "second", sequence: 2 }] } }).includes(">2 tasks<"));
+});
 test("protected refs present only after integration remain visible", () => {
     const html = render({ evidence: { receipts: [], changedPaths: [], diffSummary: null, protectedRefs: { before: {}, after: { "refs/heads/new": attempt.tipSha } }, conflictNotes: null, manualChecks: null } });
     assert(html.includes("refs/heads/new"));

@@ -15,7 +15,7 @@ export function ExecutionEvidence({ executionId, records = [], snapshot, label =
     if (!evidence) return <span className={ui.evidenceState}>{label}: {result.status === "not_recorded" ? "not recorded" : "evidence unavailable"}</span>;
     return (
         <details className={ui.evidence}>
-            <summary>{label}<span className={ui.evidenceSummary}>{evidence.effectiveModel ?? "Effective model not reported"}</span></summary>
+            <summary>{label} <span className={ui.evidenceSummary}>{evidence.effectiveModel ?? "Effective model not reported"}</span></summary>
             <dl className={ui.evidenceGrid}>
                 <div><dt>Requested model</dt><dd>{evidence.requestedModel ?? "Not specified"}</dd></div>
                 <div><dt>Effective model</dt><dd>{evidence.effectiveModel ?? "Not reported"}</dd></div>

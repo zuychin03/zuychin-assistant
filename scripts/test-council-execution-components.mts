@@ -36,6 +36,11 @@ test("real evidence JSX shows both requested and observed values and honest ackn
     for (const text of ["<details", "<summary", "Requested model", "Effective model", "requested-model", "observed-model", "high", "medium", "1.2.3", "Selection acknowledged", "without independent model readback", "Host generation", "Policy version", "typescript-node-v3-2026-09-30"]) assert(html.includes(text), text);
 });
 
+test("a summary keeps its label and model apart in its text", () => {
+    const html = renderToStaticMarkup(createElement(components.ExecutionEvidence, { executionId: evidence.executionId, snapshot: evidence, label: "Latest recorded run" }));
+    assert(html.replace(/<[^>]+>/g, "").includes("Latest recorded run observed-model"));
+});
+
 test("real JSX keeps historical unknown and unavailable references distinct", () => {
     const unbound = renderToStaticMarkup(createElement(components.ExecutionEvidence, { records: [evidence], executionId: null }));
     const missing = renderToStaticMarkup(createElement(components.ExecutionEvidence, { records: [evidence], executionId: "missing" }));
@@ -63,7 +68,9 @@ test("integration JSX uses only the exact frozen accepted snapshot", () => {
         itemId: "task", sequence: 1, agentName: "reviewer", commitSha: "exact-accepted-sha", acceptedExecutionId: evidence.executionId, executionEvidence: evidence,
     }, { itemId: "old-task", sequence: 2, agentName: "reviewer", commitSha: "old-sha" }] } };
     const html = renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign, agentNames: [], onChange: () => {} }));
-    for (const text of ["Accepted submission evidence", "exact-accepted-sha", "observed-model", "old-sha", "not recorded"]) assert(html.includes(text), text);
+    for (const text of ["Accepted submission evidence", ">2 tasks<", "exact-accepted-sha", "observed-model", "old-sha", "not recorded"]) assert(html.includes(text), text);
+    const single = { ...campaign, integrationManifest: { items: campaign.integrationManifest.items.slice(0, 1) } };
+    assert(renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign: single, agentNames: [], onChange: () => {} })).includes(">1 task<"));
     const wrong = structuredClone(campaign);
     wrong.integrationManifest.items[0].executionEvidence = { ...evidence, executionId: "00000000-0000-4000-8000-000000000099", effectiveModel: "wrong-run" };
     const unavailable = renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign: wrong, agentNames: [], onChange: () => {} }));
