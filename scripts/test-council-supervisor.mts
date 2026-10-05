@@ -6,7 +6,8 @@
 // against a temporary directory rather than the real ~/.zuychin, so this is safe
 // to run while a host is up.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -16,6 +17,7 @@ import {
     SUPERVISION_SCHEMA_VERSION, formatSupervisionLine, isValidBranchName, isValidWorkspaceName,
     parseControl, parseLaunch, parseSupervisionLine, safeToRestart, type HostHealthV1,
 } from "../src/lib/council/supervisor.ts";
+import { createFileExclusive, writeFileAtomic } from "./council-host-files.mts";
 import { acquireHostLockAt, releaseHostLockAt } from "./council-host-lock.mts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -133,9 +135,12 @@ function lockChecks(): void {
     console.log("\nmachine-level singleton");
     const dir = mkdtempSync(join(tmpdir(), "zch-lock-"));
     const path = join(dir, "council-host.lock");
+    // A live process that is not a host, standing in for a recycled pid.
+    const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
     try {
         const first = acquireHostLockAt(path, { pid: process.pid, hostId: "host-a", port: 8787, repo: "R" });
         check("the first host takes the lock", first.ok && !first.tookOverStale, first);
+        check("taking the lock leaves no temporary file", readdirSync(dir).join() === "council-host.lock", readdirSync(dir));
 
         // A live pid the caller is not: the whole point of the file.
         const second = acquireHostLockAt(path, { pid: process.pid + 1, hostId: "host-b", port: 8788, repo: "R" });
@@ -162,6 +167,47 @@ function lockChecks(): void {
         const corrupt = acquireHostLockAt(path, { pid: process.pid, hostId: "host-f", port: 8787, repo: "R" });
         check("a corrupt lock does not wedge the host forever", corrupt.ok, corrupt);
         releaseHostLockAt(path, "host-f");
+
+        writeFileSync(path, JSON.stringify({ pid: bystander.pid, hostId: "recycled", port: 8787, repo: "R", startedAt: "" }));
+        const recycled = acquireHostLockAt(path, { pid: process.pid, hostId: "host-g", port: 8787, repo: "R" });
+        check("a holder whose port the caller holds is stale despite a live pid", recycled.ok && recycled.tookOverStale, recycled);
+        releaseHostLockAt(path, "host-g");
+
+        writeFileSync(path, JSON.stringify({ pid: bystander.pid, hostId: "elsewhere", port: 8789, repo: "R", startedAt: "" }));
+        const elsewhere = acquireHostLockAt(path, { pid: process.pid, hostId: "host-h", port: 8787, repo: "R" });
+        check("a live holder on another port is still refused", !elsewhere.ok && elsewhere.holder.hostId === "elsewhere", elsewhere);
+    } finally {
+        bystander.kill();
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+function fileChecks(): void {
+    console.log("\ncrash-safe host files");
+    const dir = mkdtempSync(join(tmpdir(), "zch-files-"));
+    try {
+        const path = join(dir, "host-repo.json");
+        const payload = (n: number) => JSON.stringify({ n, token: "f".repeat(64) });
+        const read = (file: string) => (JSON.parse(readFileSync(file, "utf8")) as { n: number }).n;
+
+        // A new file identity proves a whole-file replace: rewriting in place,
+        // which is what a crash can tear, keeps the old one.
+        writeFileAtomic(path, payload(0));
+        const before = statSync(path).ino;
+        writeFileAtomic(path, payload(1));
+        check("an identity rewrite replaces the file rather than rewriting it", statSync(path).ino !== before && read(path) === 1);
+
+        const held = openSync(path, "r");
+        try { writeFileAtomic(path, payload(2)); } finally { closeSync(held); }
+        check("an identity rewrite still lands while the file is held open", read(path) === 2);
+
+        const lock = join(dir, "council-host.lock");
+        createFileExclusive(lock, payload(3));
+        let refused = "";
+        try { createFileExclusive(lock, payload(4)); } catch (error) { refused = (error as NodeJS.ErrnoException).code ?? ""; }
+        check("an exclusive create refuses an existing file", refused === "EEXIST", refused);
+        check("a refused create leaves the holder intact", read(lock) === 3);
+        check("no temporary file is left behind", !readdirSync(dir).some((name) => name.endsWith(".tmp")), readdirSync(dir));
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
@@ -170,5 +216,6 @@ function lockChecks(): void {
 fixtureChecks();
 contractChecks();
 lockChecks();
+fileChecks();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

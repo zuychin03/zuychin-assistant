@@ -27,6 +27,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { insideWorktree, killTree, onPath, spawnResolved } from "./council-host-paths.mts";
 import { buildCouncilAdapterEnv, credentialValues } from "./council-adapter-env.mts";
 import { acquireHostLock, releaseHostLock } from "./council-host-lock.mts";
+import { writeFileAtomic } from "./council-host-files.mts";
 import {
     formatSupervisionLine, parseControl, parseLaunch,
     type HostExitReason, type HostHealthV1, type HostLaunchV1, type HostLifecycle, type HostLogLevel,
@@ -2570,7 +2571,9 @@ const repoSlug = state.repo.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "repo
 const hostFile = join(hostDir, `host-${repoSlug}.json`);
 const legacyFile = join(hostDir, `host-${config.host?.port ?? HOST_PORT_FIRST}.json`);
 const reused = adoptIdentity(hostFile) || adoptIdentity(legacyFile);
-writeFileSync(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, hostId: state.hostId, token, pairingCode, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+// Replaced whole, never rewritten in place: a torn file fails adoptIdentity on the
+// next start, which then mints a new pairing code and strands paired browsers.
+writeFileAtomic(hostFile, JSON.stringify({ port: hostPort, pid: process.pid, hostId: state.hostId, token, pairingCode, startedAt: new Date().toISOString() }, null, 2));
 
 const wantedPort = config.host?.port ?? HOST_PORT_FIRST;
 hostSay(`\nCouncil host ${HOST_VERSION} on http://127.0.0.1:${hostPort} (loopback only)`);

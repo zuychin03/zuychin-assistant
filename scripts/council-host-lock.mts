@@ -11,9 +11,10 @@
  * because .council-host lives beside a repo and two clones in different parents
  * would each get their own.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { createFileExclusive } from "./council-host-files.mts";
 
 export interface HostLockRecord {
     pid: number;
@@ -64,7 +65,8 @@ function readLock(path: string): HostLockRecord | null {
 /**
  * Exclusive create, then one stale takeover. Two hosts racing from cold both
  * miss the file; the loser gets EEXIST from the winner's write rather than
- * silently sharing the machine.
+ * silently sharing the machine. `record.port` must be a port the caller has
+ * already bound, which the host does before it takes the lock.
  */
 export function acquireHostLock(record: Omit<HostLockRecord, "startedAt">): LockResult {
     return acquireHostLockAt(hostLockPath(), record);
@@ -77,16 +79,19 @@ export function acquireHostLockAt(path: string, record: Omit<HostLockRecord, "st
 
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            writeFileSync(path, payload, { flag: "wx", mode: 0o600 });
+            createFileExclusive(path, payload);
             return { ok: true, path, tookOverStale: attempt > 0 };
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         }
         const holder = readLock(path);
-        // An unreadable or truncated lock is treated as stale: it can only come
-        // from a host that died mid-write, and refusing forever on a corrupt
-        // file would need a manual delete nobody would know to do.
-        if (holder && holder.pid !== record.pid && pidAlive(holder.pid)) {
+        // An unreadable or truncated lock is treated as stale: the lock is never
+        // visible half-written, so it can only be corrupt, and refusing forever on
+        // a corrupt file would need a manual delete nobody would know to do.
+        // A holder keeps its port bound for as long as it holds the lock, so one
+        // whose port we now hold is not serving, whatever its recycled pid says.
+        const portReleased = holder !== null && holder.port !== null && holder.port === record.port;
+        if (holder && holder.pid !== record.pid && !portReleased && pidAlive(holder.pid)) {
             return { ok: false, path, holder };
         }
         rmSync(path, { force: true });
