@@ -97,8 +97,18 @@ export interface HostActivity {
 }
 
 const STORAGE_KEY = "zuychin.councilHost";
-const MAX_ACTIVITY = 40;
+const MAX_ACTIVITY = 150;
+const MAX_ENTRY_CHARS = 6000;
 const PROBE_TIMEOUT_MS = 1500;
+
+// Adapters stream a reply a word at a time; consecutive chunks join one entry.
+const STREAMED = new Set(["agent_message_chunk", "agent_thought_chunk"]);
+// The host forwards only an id for tool_call_update, and the rest describe the
+// session rather than the work.
+const QUIET = new Set([
+    "tool_call_update", "usage_update", "session_info_update", "available_commands_update",
+    "current_mode_update", "config_option_update", "plan",
+]);
 
 interface Stored { port: number; token: string }
 
@@ -229,7 +239,9 @@ export class HostClient {
                     this.handlers.onActivity({
                         agent: String(message.agent ?? "host"),
                         kind: String(message.kind ?? message.type),
-                        detail: String(message.detail ?? (message.type === "turn" ? `turn pushed (${message.chars} chars)` : "")),
+                        detail: message.type === "turn" ? `turn pushed (${message.chars} chars)`
+                            : message.type === "agent_exit" ? `exited (${String(message.code ?? "unknown")})`
+                            : String(message.detail ?? ""),
                         at: new Date().toISOString(),
                     });
                     break;
@@ -301,8 +313,18 @@ export class HostClient {
     }
 }
 
-export function trimActivity(list: HostActivity[]): HostActivity[] {
+function trimActivity(list: HostActivity[]): HostActivity[] {
     return list.length > MAX_ACTIVITY ? list.slice(list.length - MAX_ACTIVITY) : list;
+}
+
+export function appendActivity(list: HostActivity[], item: HostActivity): HostActivity[] {
+    const streamed = STREAMED.has(item.kind);
+    if (QUIET.has(item.kind) || (!streamed && !item.detail.trim())) return list;
+    const last = list[list.length - 1];
+    if (streamed && last?.agent === item.agent && last.kind === item.kind) {
+        return [...list.slice(0, -1), { ...last, detail: (last.detail + item.detail).slice(-MAX_ENTRY_CHARS), at: item.at }];
+    }
+    return trimActivity([...list, item]);
 }
 
 // Cloning a repo per agent and starting three vendor CLIs is slow, and the code

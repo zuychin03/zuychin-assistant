@@ -8,9 +8,10 @@ import {
     Laptop, Users, XCircle,
 } from "lucide-react";
 import {
-    fetchBranches, findHost, forgetHost, pair, trimActivity, HostClient,
+    appendActivity, fetchBranches, findHost, forgetHost, pair, HostClient,
     type HostActivity, type HostConnection, type HostSnapshot,
 } from "./host-client";
+import { ActivityFeed } from "./activity-feed";
 import { remoteAgentSetup } from "./remote-setup";
 import { OwnerChannelPanel } from "./owner-channel-panel";
 import { DecisionPanel } from "./decision-panel";
@@ -159,7 +160,7 @@ export default function CouncilPage() {
                 setHostState("connected");
                 if (snapshot.code) { setAdopting(null); setConvening(false); }
             },
-            onActivity: (item) => setActivity((list) => trimActivity([...list, item])),
+            onActivity: (item) => setActivity((list) => appendActivity(list, item)),
             onError: (detail) => { setHostError(detail); setAdopting(null); setConvening(false); },
             onClose: () => { setHostState("observing"); setHost(null); },
         });
@@ -513,17 +514,7 @@ export default function CouncilPage() {
                             </div>
                         )}
 
-                        {activity.length > 0 && (
-                            <div style={styles.activityFeed}>
-                                {activity.slice().reverse().map((item, i) => (
-                                    <div key={`${item.at}-${i}`} style={styles.activityRow}>
-                                        <span style={styles.activityAgent}>{item.agent}</span>
-                                        <span style={styles.activityKind}>{item.kind}</span>
-                                        <span style={styles.activityDetail}>{item.detail.slice(0, 240)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                        <ActivityFeed activity={activity} agents={host.agents} />
 
                         {!host.code && (
                             <div style={styles.conveneForm}>
@@ -1177,14 +1168,6 @@ const styles: Record<string, React.CSSProperties> = {
     },
     busyLabel: { flex: 1, minWidth: 0, overflowWrap: "anywhere" },
     busySince: { color: "var(--color-text-muted)", flexShrink: 0, fontVariantNumeric: "tabular-nums" },
-    activityFeed: {
-        marginTop: 14, maxHeight: 190, overflowY: "auto", display: "flex",
-        flexDirection: "column", gap: 4,
-    },
-    activityRow: { display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5 },
-    activityAgent: { fontWeight: 750, flexShrink: 0 },
-    activityKind: { color: "var(--color-text-muted)", flexShrink: 0 },
-    activityDetail: { color: "var(--color-text-muted)", minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" },
     loadingCard: {
         minHeight: "30vh", display: "flex", alignItems: "center", justifyContent: "center",
         gap: 10, color: "var(--color-text-muted)",
