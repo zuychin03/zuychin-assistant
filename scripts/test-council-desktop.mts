@@ -126,13 +126,29 @@ const browserScript = String.raw`
 })();
 `;
 
+class FatalProbe extends Error {
+    constructor(cause: unknown) {
+        super("Fatal probe failure", { cause });
+    }
+}
+
 async function waitFor<T>(description: string, probe: () => Promise<T | null>, timeout = 30_000): Promise<T> {
     const until = Date.now() + timeout;
+    let hadError = false;
+    let lastError: unknown;
     while (Date.now() < until) {
-        const value = await probe();
+        let value: T | null = null;
+        try {
+            value = await probe();
+        } catch (error) {
+            if (error instanceof FatalProbe) throw error.cause;
+            hadError = true;
+            lastError = error;
+        }
         if (value !== null) return value;
         await delay(100);
     }
+    if (hadError) throw new Error(`Timed out waiting for ${description}; last error: ${String(lastError)}`, { cause: lastError });
     throw new Error(`Timed out waiting for ${description}`);
 }
 
@@ -294,9 +310,9 @@ async function main(): Promise<void> {
         app = spawn(EXE, [], { cwd: root, env: { ...environment, ZUYCHIN_DESKTOP_CONFIG: ownerConfig }, windowsHide: true, stdio: "ignore" });
         app.once("error", (error) => { appError = error; });
         const closing = await waitFor("native webview lifecycle checks", async () => {
-            if (failure) throw failure;
-            if (appError) throw appError;
-            if (app?.exitCode !== null || app?.signalCode !== null) throw new Error("Native app exited before completing the smoke checks");
+            if (failure) throw new FatalProbe(failure);
+            if (appError) throw new FatalProbe(appError);
+            if (app?.exitCode !== null || app?.signalCode !== null) throw new FatalProbe(new Error("Native app exited before completing the smoke checks"));
             return reports.find((report) => report.stage === "ready-to-close") ?? null;
         }, 120_000);
         assert.deepEqual(reports.map((report) => report.stage), ["initial-idle", "capability-denied", "started", "duplicate-start-refused", "loopback-paired-websocket", "restarted", "clean-stop", "ready-to-close"]);
