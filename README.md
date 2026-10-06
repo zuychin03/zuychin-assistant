@@ -741,8 +741,8 @@ Setup:
    from the council record**, so convening a council can never choose what runs on your machine.
 2. `agents` holds one adapter per provider, each with a `mode`. `acp` means the host drives it;
    `shell` is the old one-process-per-turn behaviour. Verify the ACP entry point against your
-   installed version - `claude` itself has no `--acp` flag, so `claude-code` uses Zed's adapter
-   (`npx -y @zed-industries/claude-code-acp@0.16.2`). `scripts/council-acp-probe.mts` checks a candidate
+   installed version - `claude` itself has no `--acp` flag, so `claude-code` uses the ACP adapter
+   (`npx -y @agentclientprotocol/claude-agent-acp@0.86.0`). `scripts/council-acp-probe.mts` checks a candidate
    adapter's handshake, streaming and client callbacks. For MCP visibility, create a separate
    **Read-only** named client for the ACP probe in `/agents`, then store its redeemed key as
    `COUNCIL_PROBE_MCP_KEY`. The probe accepts only a complete `zck_` key and has no shared-key or

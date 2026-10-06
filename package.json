@@ -72,7 +72,8 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@agentclientprotocol/codex-acp": "2.0.0",
+    "@agentclientprotocol/claude-agent-acp": "0.86.0",
+    "@agentclientprotocol/codex-acp": "2.1.1",
     "@electric-sql/pglite": "0.5.8",
     "@tailwindcss/postcss": "^4",
     "@tauri-apps/cli": "2.11.4",
@@ -83,7 +84,6 @@
     "@types/three": "^0.185.0",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1",
-    "@zed-industries/claude-code-acp": "0.16.2",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",

@@ -1,13 +1,17 @@
 # Council adapter compatibility
 
-Checked on 30/09/2026 with host ACP SDK `1.3.0` and protocol version `1`.
+Checked on 06/10/2026 with host ACP SDK `1.3.0` and protocol version `1`.
 The manifest pins the tested direct dependencies; `npm ci` preserves their locked dependencies.
 These are compatibility observations, not a claim that every vendor tool is contained by the host.
 
 | Adapter | Version | Model evidence | Explicit selection |
 |---|---|---|---|
-| `@agentclientprotocol/codex-acp` | `2.0.0` | Stable `configOptions` | Model and reasoning selections require matching returned configuration |
-| `@zed-industries/claude-code-acp` | `0.16.2` | Legacy `models.currentModelId`, preserved verbatim | `session/set_model` acknowledgement, labelled separately from independent readback |
+| `@agentclientprotocol/codex-acp` | `2.1.1` | Stable `configOptions` | Model and reasoning selections require matching returned configuration |
+| `@agentclientprotocol/claude-agent-acp` | `0.86.0` | Stable `configOptions` (`model`, `effort`) | Model and effort selections require matching returned configuration |
+
+`claude-agent-acp` replaced Zed's `@zed-industries/claude-code-acp` `0.16.2` on 06/10/2026. That adapter
+reported a legacy `models.currentModelId` and confirmed selections only by `session/set_model`
+acknowledgement; the legacy handling below remains for adapters that still work that way.
 
 No-override launches record the adapter's reported default and its source. An alias such as
 `default` is not expanded into a guessed provider model. Missing model/version metadata remains
@@ -42,8 +46,12 @@ explicit endpoint and the dedicated probe key. See the README for that setup.
 ## Evidence and limits
 
 Installed-adapter checks covered handshake, metadata discovery and explicit session selection
-without prompts or MCP servers. Codex returned matching model/reasoning configuration; Claude
-acknowledged an advertised legacy model identifier. Neither check changed vendor configuration.
+without prompts or MCP servers. Codex (`gpt-6.1-sol`, `high`) and Claude (`opus`, `high`) both
+returned matching model and reasoning configuration. Neither check changed vendor configuration.
+An `--edit` probe found that both adapters write files without `fs/write_text_file`. Codex asks no
+permission for the write; Claude's permission requests carry `toolCall.locations`, which the host
+path-checks. Neither probe exercised a terminal: Claude is configured as terminal-unmediated until
+one does, and Codex keeps the terminal finding recorded for `2.0.0`.
 Synthetic adapter/host tests cover default provenance, model and reasoning confirmation, changed
 reasoning options, malformed responses and rejection before kickoff. They do not prove a vendor's
 inference model or persistence after reconnect. Configured live selection and reconnect acceptance
