@@ -49,6 +49,32 @@ try {
     assert.equal(scoped.ok, false);
     assert.ok(scoped.lines.some((line) => line.includes("outside declared scope")));
 
+    // A seat's second task stacks on its accepted first one, so scoping it from the
+    // frozen base would charge it with the first task's files (CN-JJNS).
+    git(repo, "switch", "-c", "council/cn-test/other", baseSha);
+    writeFileSync(join(repo, "other.txt"), "other\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "other seat");
+    const otherSha = git(repo, "rev-parse", "HEAD");
+    git(repo, "switch", "-c", "council/cn-test/agent-stack", commitSha);
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(join(repo, "docs", "second.txt"), "second\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "second task");
+    const stacked = { repo, commitSha: git(repo, "rev-parse", "HEAD"), baseSha, branch: "council/cn-test/agent-stack", declaredPaths: ["docs"], profile };
+    const fromBase = await verifyExactCommit(stacked);
+    assert.ok(fromBase.lines.some((line) => line.includes("outside declared scope: src/feature.txt")), fromBase.lines.join("\n"));
+    const fromAccepted = await verifyExactCommit({ ...stacked, acceptedCommits: [commitSha] });
+    assert.equal(fromAccepted.ok, true, fromAccepted.lines.join("\n"));
+    const unrelated = await verifyExactCommit({ ...stacked, acceptedCommits: [otherSha] });
+    assert.equal(unrelated.ok, false, "an accepted commit the task does not build on must not move the scope");
+    writeFileSync(join(repo, "src", "extra.txt"), "extra\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-m", "second task with a stray file");
+    const strayed = await verifyExactCommit({ ...stacked, commitSha: git(repo, "rev-parse", "HEAD"), acceptedCommits: [commitSha] });
+    assert.ok(strayed.lines.some((line) => line.includes("outside declared scope: src/extra.txt")), strayed.lines.join("\n"));
+    git(repo, "switch", "council/cn-test/agent-a");
+
     const integrated = await integrateAcceptedManifest({
         repo, code: "CN-TEST", profile,
         manifest: {

@@ -2033,7 +2033,7 @@ interface UnverifiedPayload {
     verificationProfile?: string;
     items?: {
         id: string; agentName: string; commitHash: string | null; declaredPaths?: string[];
-        branchName?: string | null; verificationProfile?: string;
+        branchName?: string | null; verificationProfile?: string; acceptedCommits?: string[];
     }[];
 }
 
@@ -2078,6 +2078,7 @@ async function hostVerifyTick(): Promise<void> {
             result = await verifyExactCommit({
                 repo: state.repo, commitSha: item.commitHash, baseSha, branch,
                 declaredPaths: item.declaredPaths ?? [], profile: loadVerificationProfile(state.repo, profileId),
+                acceptedCommits: item.acceptedCommits ?? [],
                 onProgress: (p) => setBusy(`verifying ${shortSha} - step ${p.step}/${p.steps}: ${p.command.join(" ")}`),
             });
         } catch (error) {

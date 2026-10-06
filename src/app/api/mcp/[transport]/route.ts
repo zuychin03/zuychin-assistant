@@ -1224,12 +1224,17 @@ const handler = createMcpHandler(
                     // A failed check leaves host_verified false and requeues the item, and
                     // resubmission does not clear it. Matching only null would strand every
                     // resubmitted item: never acceptable, never re-checked.
-                    const items = (await listCampaignWorkItems(campaign.id))
+                    const all = await listCampaignWorkItems(campaign.id);
+                    const items = all
                         .filter((i) => i.status === "awaiting_review" && i.hostVerified !== true)
                         .map((i) => ({
                             id: i.id, agentName: i.agentName, status: i.status,
                             commitHash: i.commitHash, declaredPaths: i.declaredPaths,
                             branchName: i.branchName, verificationProfile: i.verificationProfile,
+                            // The host scopes a seat's later task from these, not the frozen base.
+                            acceptedCommits: all
+                                .filter((o) => o.id !== i.id && o.agentName === i.agentName && o.status === "verified" && o.commitHash)
+                                .map((o) => o.commitHash),
                         }));
                     return { content: [{ type: "text", text: JSON.stringify({
                         campaignId: campaign.id, baseSha: campaign.baseSha,

@@ -205,9 +205,24 @@ export function exactIntegrationDiff(repo: string, baseSha: string, tipSha: stri
     return { files: paths.stdout.split("\0").filter(Boolean), diffSummary: summary.out };
 }
 
+// A seat's later task is committed on top of its own accepted tasks, so its scope
+// starts at the newest accepted commit it builds on rather than the frozen base.
+function scopeBaseFor(repo: string, baseSha: string, commitSha: string, acceptedCommits: string[]): string {
+    let scopeBase = baseSha;
+    for (const candidate of acceptedCommits) {
+        const resolved = git(repo, ["rev-parse", "--verify", `${candidate}^{commit}`]);
+        const sha = resolved.ok ? resolved.out.split(/\s/)[0] : null;
+        if (!sha || sha === commitSha) continue;
+        if (!git(repo, ["merge-base", "--is-ancestor", scopeBase, sha]).ok) continue;
+        if (git(repo, ["merge-base", "--is-ancestor", sha, commitSha]).ok) scopeBase = sha;
+    }
+    return scopeBase;
+}
+
 export async function verifyExactCommit(params: {
     repo: string; commitSha: string; baseSha: string; branch: string;
     declaredPaths: string[]; profile: VerificationProfile;
+    acceptedCommits?: string[];
     onProgress?: (progress: VerificationProgress) => void;
 }): Promise<ExactVerificationResult> {
     const repo = resolve(params.repo);
@@ -232,7 +247,14 @@ export async function verifyExactCommit(params: {
     const secretPaths = files.filter((file) => SECRET_PATHS.test(file));
     if (secretPaths.length) fail(`secret-looking files: ${secretPaths.join(", ")}`); else pass("no secret-looking filenames");
     if (params.declaredPaths.length) {
-        const outside = files.filter((file) => !params.declaredPaths.some((scope) => file === scope || file.startsWith(scope.replace(/\/?$/, "/"))));
+        const scopeBase = scopeBaseFor(repo, params.baseSha, commitSha, params.acceptedCommits ?? []);
+        let scoped = files;
+        if (scopeBase !== params.baseSha) {
+            const own = git(repo, ["diff", "--name-only", `${scopeBase}...${commitSha}`]);
+            scoped = own.ok ? own.out.split(/\r?\n/).map((file) => file.trim()).filter(Boolean) : files;
+            pass(`scope measured from accepted ${scopeBase.slice(0, 12)}`);
+        }
+        const outside = scoped.filter((file) => !params.declaredPaths.some((scope) => file === scope || file.startsWith(scope.replace(/\/?$/, "/"))));
         if (outside.length) fail(`outside declared scope: ${outside.slice(0, 20).join(", ")}`); else pass("diff stays inside declared scope");
     }
     const raw = git(repo, ["diff", "--raw", `${params.baseSha}...${commitSha}`]).out;
