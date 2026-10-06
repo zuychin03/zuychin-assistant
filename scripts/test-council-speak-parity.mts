@@ -40,10 +40,16 @@ const dependencies: Record<string, unknown> = {
     "@/lib/council/render": { renderDispatchSpeakResult: () => "Recorded" },
     "@/lib/vault/ingest": { VAULT_CATEGORIES: ["study"] },
 };
-const source = readFileSync(new URL("../src/app/api/mcp/[transport]/route.ts", import.meta.url), "utf8");
-runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
-    exports: {}, process: { env: { COUNCIL_V2_ASSERTED_IDENTITY: "true" } }, require: (id: string) => dependencies[id] ?? new Proxy({}, { get: () => () => undefined }),
-});
+function load(path: string): Record<string, unknown> {
+    const exports = {};
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+        exports, process: { env: { COUNCIL_V2_ASSERTED_IDENTITY: "true" } }, require: (id: string) => dependencies[id] ?? new Proxy({}, { get: () => () => undefined }),
+    });
+    return exports;
+}
+dependencies["@/lib/council/operations"] = load("../src/lib/council/operations.ts");
+load("../src/app/api/mcp/[transport]/route.ts");
 const speak = (params: Record<string, unknown>) => handlers.get("council_speak")!({ sessionCode: "CN-TEST", agentName: "seat", message: message.body, clientKey: message.clientKey, ...params }, { authInfo: { clientId: "agent:owner", scopes: ["council:owner"] } });
 const invalid = [
     { intent: "propose", addressedTo: "unknown" },

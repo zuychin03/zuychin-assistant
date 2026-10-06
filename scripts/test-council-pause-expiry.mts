@@ -185,15 +185,21 @@ function registeredDispatch() {
         "@/lib/agents/mcp-auth": { verifyMcpToken: () => { throw new Error("No authentication calls in this fixture"); } },
         "@/lib/vault/ingest": { VAULT_CATEGORIES: ["study"] },
     };
-    const source = readFileSync(new URL("../src/app/api/mcp/[transport]/route.ts", import.meta.url), "utf8");
-    runInNewContext(ts.transpileModule(source, {
-        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    }).outputText, {
-        exports: {}, process: { env: {} },
-        require: (id: string) => dependencies[id] ?? new Proxy({}, {
-            get: (_target, key) => { throw new Error(`Unexpected boundary ${id}.${String(key)}`); },
-        }),
-    });
+    const load = (path: string) => {
+        const exports = {};
+        const source = readFileSync(new URL(path, import.meta.url), "utf8");
+        runInNewContext(ts.transpileModule(source, {
+            compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+        }).outputText, {
+            exports, process: { env: {} },
+            require: (id: string) => dependencies[id] ?? new Proxy({}, {
+                get: (_target, key) => { throw new Error(`Unexpected boundary ${id}.${String(key)}`); },
+            }),
+        });
+        return exports;
+    };
+    dependencies["@/lib/council/operations"] = load("../src/lib/council/operations.ts");
+    load("../src/app/api/mcp/[transport]/route.ts");
     const handler = handlers.get("council_dispatch"); assert(handler);
     return handler;
 }

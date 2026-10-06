@@ -105,6 +105,7 @@ function loadSource(path: string): unknown {
         exports, process: { env: {} },
         require: (id: string) => {
             if (id === "@/lib/agents/read-access") return loadSource("../src/lib/agents/read-access.ts");
+            if (id === "@/lib/council/operations") return loadSource("../src/lib/council/operations.ts");
             if (id === "./scopes") return scopes;
             assert(Object.hasOwn(dependencies, id), `Unexpected dependency: ${id}`);
             return dependencies[id];

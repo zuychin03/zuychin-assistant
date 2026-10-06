@@ -15,6 +15,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { isolateBranchRecall } from "@/lib/conversations/branches";
 import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
+import type { ConveneRejection } from "@/lib/council/operations";
 
 export interface McpToolParam {
     type: "string" | "number" | "integer" | "boolean" | "array" | "object";
@@ -1533,8 +1534,25 @@ function readParticipants(args: Record<string, unknown>): { name: string; expert
         .map((p) => ({ name: p.name!.trim(), expertise: (p.expertise ?? "").trim() || "unspecified" }));
 }
 
+function conveneRefusal(rejection: ConveneRejection, closerName: string, outcome: "proposed" | "created"): string {
+    switch (rejection.reason) {
+        case "participant_count":
+            return rejection.count < 2
+                ? `A council needs at least 2 participants. Nothing was ${outcome}.`
+                : `A council takes at most 5 participants. Nothing was ${outcome}.`;
+        case "closer_not_participant":
+            return `closerName "${closerName}" is not one of ${rejection.names.join(", ")}. Nothing was ${outcome}.`;
+        case "duplicate_names":
+            return `Participant names must be unique; got ${rejection.names.join(", ")}. Nothing was ${outcome}.`;
+        case "reserved_name":
+            return `"${rejection.name}" is reserved for the moderator. Nothing was ${outcome}.`;
+        case "open_limit":
+            return `${rejection.open.length} councils are already open (${rejection.open.map((s) => s.code).join(", ")}). Close one first.`;
+    }
+}
+
 async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
-    const { MODERATOR_NAME } = await import("@/lib/council/protocol");
+    const { conveneRejection } = await import("@/lib/council/operations");
     const { COUNCIL_TYPES } = await import("@/lib/council/templates");
 
     if (!ctx?.onCouncilProposal) {
@@ -1552,11 +1570,8 @@ async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolCo
     // but it does so after he has clicked, with no way back to the model.
     if (!topic) return "A council needs a topic. Nothing was proposed.";
     if (!brief) return "A council needs a brief. Nothing was proposed.";
-    if (participants.length < 2) return "A council needs at least 2 participants. Nothing was proposed.";
-    if (participants.length > 5) return "A council takes at most 5 participants. Nothing was proposed.";
-    if (new Set(names).size !== names.length) return `Participant names must be unique; got ${names.join(", ")}. Nothing was proposed.`;
-    if (names.includes(MODERATOR_NAME)) return `"${MODERATOR_NAME}" is reserved for the moderator. Nothing was proposed.`;
-    if (!names.includes(closerName)) return `closerName "${closerName}" is not one of ${names.join(", ")}. Nothing was proposed.`;
+    const rejection = conveneRejection(participants, closerName);
+    if (rejection) return conveneRefusal(rejection, closerName, "proposed");
     if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) {
         return `councilType must be one of ${COUNCIL_TYPES.join(", ")}. Nothing was proposed.`;
     }
@@ -1570,36 +1585,22 @@ async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolCo
 }
 
 async function executeCouncilConvene(args: Record<string, unknown>): Promise<string> {
-    const {
-        createCouncilSession, listOpenCouncils, listParticipants,
-    } = await import("@/lib/council/store");
+    const { conveneCouncil } = await import("@/lib/council/operations");
     const { renderConveneResult } = await import("@/lib/council/render");
-    const { MAX_OPEN_COUNCILS, MODERATOR_NAME } = await import("@/lib/council/protocol");
+    const { OWNER_SCOPES } = await import("@/lib/agents/scopes");
 
-    const participants = readParticipants(args);
     const closerName = String(args.closerName ?? "").trim();
-    const names = participants.map((p) => p.name);
-
-    if (participants.length < 2) return "A council needs at least 2 participants. Nothing was created.";
-    if (participants.length > 5) return "A council takes at most 5 participants. Nothing was created.";
-    if (new Set(names).size !== names.length) return `Participant names must be unique; got ${names.join(", ")}. Nothing was created.`;
-    if (names.includes(MODERATOR_NAME)) return `"${MODERATOR_NAME}" is reserved for the moderator. Nothing was created.`;
-    if (!names.includes(closerName)) return `closerName "${closerName}" is not one of ${names.join(", ")}. Nothing was created.`;
-
-    const open = await listOpenCouncils();
-    if (open.length >= MAX_OPEN_COUNCILS) {
-        return `${open.length} councils are already open (${open.map((s) => s.code).join(", ")}). Close one first.`;
-    }
-
-    const session = await createCouncilSession({
+    // The assistant convenes on its owner's behalf.
+    const result = await conveneCouncil({
         topic: String(args.topic ?? "").trim(),
         brief: String(args.brief ?? "").trim(),
         closerName,
-        participants,
+        participants: readParticipants(args),
         maxRounds: typeof args.maxRounds === "number" ? args.maxRounds : undefined,
-    });
-    const roster = await listParticipants(session.id);
-    return renderConveneResult(session, roster);
+    }, { scopes: OWNER_SCOPES });
+    if (result.kind === "denied") return result.message;
+    if (result.kind === "rejected") return conveneRefusal(result.rejection, closerName, "created");
+    return renderConveneResult(result.session, result.roster);
 }
 
 function quietFor(iso: string): string {

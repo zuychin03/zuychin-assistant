@@ -181,11 +181,17 @@ function registeredTools() {
         "@/lib/agents/mcp-auth": { verifyMcpToken },
         "@/lib/vault/ingest": { VAULT_CATEGORIES: ["study"] },
     };
-    const source = readFileSync(new URL("../src/app/api/mcp/[transport]/route.ts", import.meta.url), "utf8");
-    runInNewContext(ts.transpileModule(source, {
-        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    }).outputText, { exports: {}, process: { env: { COUNCIL_V2_ASSERTED_IDENTITY: "true" } },
-        require: (id: string) => dependencies[id] ?? new Proxy({}, { get: (_target, key) => { throw new Error(`Unexpected boundary ${id}.${String(key)}`); } }) });
+    const load = (path: string) => {
+        const exports = {};
+        const source = readFileSync(new URL(path, import.meta.url), "utf8");
+        runInNewContext(ts.transpileModule(source, {
+            compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+        }).outputText, { exports, process: { env: { COUNCIL_V2_ASSERTED_IDENTITY: "true" } },
+            require: (id: string) => dependencies[id] ?? new Proxy({}, { get: (_target, key) => { throw new Error(`Unexpected boundary ${id}.${String(key)}`); } }) });
+        return exports;
+    };
+    dependencies["@/lib/council/operations"] = load("../src/lib/council/operations.ts");
+    load("../src/app/api/mcp/[transport]/route.ts");
     return { handlers, schemas };
 }
 const tools = registeredTools();

@@ -12,38 +12,32 @@ import {
 import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
 import { getFile, getVaultConfig } from "@/lib/vault/github";
 import { ingestToVault, writeVaultPage, VAULT_CATEGORIES } from "@/lib/vault/ingest";
+import { COUNCIL_CODE_PATTERN, clampWaitMs } from "@/lib/council/protocol";
 import {
-    MAX_BODY_CHARS, MAX_OPEN_COUNCILS,
-    MODERATOR_NAME, COUNCIL_CODE_PATTERN, clampWaitMs,
-} from "@/lib/council/protocol";
-import {
-    appendMessage, CouncilSpeakProtocolError, createCouncilSession, getParticipant, getSessionByCode, joinCouncil,
-    leaveCouncil, listOpenCouncils, listParticipants, readTranscript,
+    CouncilSpeakProtocolError, getSessionByCode, listOpenCouncils, listParticipants, readTranscript,
 } from "@/lib/council/store";
 import {
     renderConveneResult, renderDispatchSpeakResult, renderDispatchWaitNote,
     renderLeft, renderNotAParticipant, renderPassed, renderRosterRejection, renderRulebook,
-    renderSpeakResult, renderTranscript, renderTurn, renderUnknownSession, renderWaitResult,
+    renderSpeakResult, renderTranscript, renderUnknownSession, renderWaitResult,
 } from "@/lib/council/render";
-import { dispatchCouncil, pollCouncil } from "@/lib/council/wait";
-import { proposeCouncilVerdict } from "@/lib/council/close";
 import { moderateRound } from "@/lib/council/moderator";
-import { COUNCIL_TYPES, getCouncilTemplate } from "@/lib/council/templates";
-import { beginIntegrationAttempt, blockWorkItem, claimNextWorkItem, completeWorkItem, finishIntegrationAttempt, freezeIntegrationManifest, getCampaignForSession, heartbeatWorkItem, listCampaignWorkItems, recordExactVerification, recordV3Integration, reviewWorkItem } from "@/lib/council/campaign";
+import { COUNCIL_TYPES } from "@/lib/council/templates";
+import { beginIntegrationAttempt, finishIntegrationAttempt, freezeIntegrationManifest, getCampaignForSession, recordExactVerification, recordV3Integration } from "@/lib/council/campaign";
 import { issueHostSeatKey } from "@/lib/council/seat-keys";
 import { verifyMcpToken } from "@/lib/agents/mcp-auth";
-import { getCouncilWriteIdentity } from "@/lib/council/write-identity";
-import {
-    canOwnCouncil, canParticipateInCouncil, canWriteNotes,
-    canWriteVault, isCouncilOwner,
-} from "@/lib/agents/scopes";
+import { canWriteNotes, canWriteVault } from "@/lib/agents/scopes";
 import { requireKnowledgeRead as assertKnowledgeRead, requireCouncilObserver as assertCouncilObserver } from "@/lib/agents/read-access";
 import { councilHostService } from "@/lib/council/service";
 import {
     claimLeaseSchema, exactVerificationSchema, integrationBeginSchema, integrationFinishSchema, integrationReportSchema, requireCouncilHost,
     startExecutionSchema, stopExecutionSchema,
 } from "@/lib/council/host-contracts";
-import { promptDigest } from "@/lib/council/v3";
+import {
+    blockWorkAsSeat, claimWorkAsSeat, completeWorkAsSeat, concludeAsSeat, conveneCouncil, heartbeatWorkAsSeat,
+    joinAsSeat, listUnverifiedWork, passAsSeat, prepareHostDispatch, reviewWorkAsSeat, speakAsSeat,
+    superviseCampaign, waitAsSeat, type ConveneRejection,
+} from "@/lib/council/operations";
 
 export const maxDuration = 300;
 
@@ -77,15 +71,6 @@ function requireVaultWrite(extra: ToolExtra) {
     return denied("This tool needs a key with vault write access; the key you used does not have it.");
 }
 
-// Coarse gate for council tools. Tools that act AS an agent must ALSO call
-// requireSeat once they have resolved what they are acting on - a seat key is
-// valid for one council and one name, and this check knows neither yet.
-// Read-only keys observe through the Council read gate.
-function requireCouncil(extra: ToolExtra) {
-    if (canParticipateInCouncil(extra.authInfo?.scopes)) return null;
-    return denied("This tool needs an owner API key or a council seat key; the key you used has neither.");
-}
-
 function requireHost(extra: ToolExtra) {
     try {
         requireCouncilHost(extra.authInfo);
@@ -95,48 +80,23 @@ function requireHost(extra: ToolExtra) {
     }
 }
 
-function requireOwnerOrHost(extra: ToolExtra) {
-    if (canOwnCouncil(extra.authInfo?.scopes)) return null;
-    return denied("This tool requires an owner or Council host credential.");
-}
-
 function denied(text: string) {
     return { isError: true, content: [{ type: "text" as const, text }] };
 }
 
-function seatIdentity(extra: ToolExtra): { sessionId: string; seatName: string } | null {
-    const id = extra.authInfo?.clientId ?? "";
-    const marker = "council-seat:";
-    if (!id.startsWith(marker)) return null;
-    // Split on the FIRST colon only: a seat name may contain one, a uuid may not.
-    const rest = id.slice(marker.length);
-    const idx = rest.indexOf(":");
-    if (idx < 0) return null;
-    return { sessionId: rest.slice(0, idx), seatName: rest.slice(idx + 1) };
-}
-
-// Seat credentials bind an agent to one council and participant name.
-function requireSeat(extra: ToolExtra, opts: { sessionId?: string; agentName?: string; protocolVersion?: number }) {
-    // Owner scope retains V2 compatibility; V3 always requires a seat.
-    if (isCouncilOwner(extra.authInfo?.scopes)) {
-        if (opts.protocolVersion === 3) return denied("Council V3 requires the participant's seat credential.");
-        if (opts.protocolVersion === undefined && process.env.COUNCIL_V2_ASSERTED_IDENTITY !== "true") {
-            return denied("Agent work requires a Council seat credential.");
-        }
-        return null;
+function conveneRejectionText(rejection: ConveneRejection, closerName: string): string {
+    switch (rejection.reason) {
+        case "participant_count":
+            return `A council needs 2 to 5 participants; got ${rejection.count}. Nothing was created.`;
+        case "closer_not_participant":
+            return `closerName "${closerName}" is not one of the participants (${rejection.names.join(", ")}). Nothing was created.`;
+        case "duplicate_names":
+            return `Participant names must be unique; got ${rejection.names.join(", ")}. Nothing was created.`;
+        case "reserved_name":
+            return `"${rejection.name}" is reserved for the moderator and cannot be a participant. Nothing was created.`;
+        case "open_limit":
+            return `${rejection.open.length} councils are already open (${rejection.open.map((s) => s.code).join(", ")}). Close one before convening another.`;
     }
-    const seat = seatIdentity(extra);
-    if (!seat) return denied("This tool needs a read-write API key.");
-    if (extra.authInfo?.extra?.councilExecutionBindingRequired === true && !extra.authInfo.extra.councilExecutionId) {
-        return denied("This seat is waiting for its execution binding.");
-    }
-    if (opts.sessionId && opts.sessionId !== seat.sessionId) {
-        return denied("That seat key belongs to a different council.");
-    }
-    if (opts.agentName && opts.agentName !== seat.seatName) {
-        return denied(`That seat key is for the seat "${seat.seatName}", not "${opts.agentName}".`);
-    }
-    return null;
 }
 
 // after() runs once the response stream closes, so the moderator's note lands on
@@ -547,40 +507,18 @@ const handler = createMcpHandler(
                 },
             },
             async ({ topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace, requestedCode }, extra) => {
-                // Master key only: a guest may take part in a council, never
-                // create one.
-                const denied = requireOwnerOrHost(extra);
-                if (denied) return denied;
                 try {
-                    if (requestedCode !== undefined) requireCouncilHost(extra.authInfo);
-                    const names = participants.map((p) => p.name);
-                    if (!names.includes(closerName)) {
-                        return { content: [{ type: "text", text: `closerName "${closerName}" is not one of the participants (${names.join(", ")}). Nothing was created.` }] };
-                    }
-                    if (new Set(names).size !== names.length) {
-                        return { content: [{ type: "text", text: `Participant names must be unique; got ${names.join(", ")}. Nothing was created.` }] };
-                    }
-                    if (names.includes(MODERATOR_NAME)) {
-                        return { content: [{ type: "text", text: `"${MODERATOR_NAME}" is reserved for the moderator and cannot be a participant. Nothing was created.` }] };
-                    }
-                    const open = await listOpenCouncils();
-                    if (open.length >= MAX_OPEN_COUNCILS) {
-                        return { content: [{ type: "text", text: `${open.length} councils are already open (${open.map((s) => s.code).join(", ")}). Close one before convening another.` }] };
-                    }
-
-                    const template = getCouncilTemplate(councilType);
-                    const session = await createCouncilSession({
-                        topic, brief, closerName, participants, councilType, requestedCode,
-                        maxRounds: maxRounds ?? template.defaults.maxRounds,
-                        maxMessages: maxMessages ?? template.defaults.maxMessages,
-                        ttlMinutes: ttlMinutes ?? template.defaults.ttlMinutes,
-                        workspace: workspace ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main", baseSha: workspace.baseSha } : undefined,
+                    const result = await conveneCouncil({
+                        topic, brief, participants, closerName, councilType, maxRounds, maxMessages, ttlMinutes, workspace, requestedCode,
                     }, extra.authInfo);
-                    const roster = await listParticipants(session.id);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "rejected") {
+                        return { content: [{ type: "text", text: conveneRejectionText(result.rejection, closerName) }] };
+                    }
                     const ws = workspace
                         ? { repoPath: workspace.repoPath, baseBranch: workspace.baseBranch ?? "main" }
                         : undefined;
-                    return { content: [{ type: "text", text: renderConveneResult(session, roster, ws) }] };
+                    return { content: [{ type: "text", text: renderConveneResult(result.session, result.roster, ws) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Convene failed: ${errMsg(error)}` }] };
                 }
@@ -600,22 +538,16 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentName, expertise, dispatchMode }, extra) => {
-                const denied = requireCouncil(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
+                    const result = await joinAsSeat({ sessionCode, agentName, expertise, dispatchMode }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    const result = await joinCouncil({ sessionId: session.id, agentName, expertise, dispatchMode });
-                    const roster = await listParticipants(session.id);
-                    if (!result.ok) {
-                        return { content: [{ type: "text", text: renderRosterRejection({ session, participants: roster, attempted: agentName }) }] };
+                    if (result.kind === "rejected") {
+                        return { content: [{ type: "text", text: renderRosterRejection({ session: result.session, participants: result.roster, attempted: agentName }) }] };
                     }
-                    const transcript = await readTranscript({ sessionId: session.id, limit: 20 });
-                    return { content: [{ type: "text", text: renderRulebook({ session, participants: roster, agentName, transcript }) }] };
+                    return { content: [{ type: "text", text: renderRulebook({ session: result.session, participants: result.roster, agentName, transcript: result.transcript }) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Join failed: ${errMsg(error)}` }] };
                 }
@@ -666,30 +598,18 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentName, sinceSeq, waitSeconds }, extra) => {
-                const denied = requireCouncil(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
+                    const result = await waitAsSeat({
+                        sessionCode, agentName, sinceSeq, waitMs: clampWaitMs(waitSeconds), signal: extra.signal,
+                    }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    // Enforcement, not instruction: a host-dispatched agent that
-                    // also polled would have its cursor acked twice, once by the
-                    // host and once by itself, and would silently skip messages.
-                    const me = await getParticipant(session.id, agentName);
-                    if (me?.dispatchMode) {
-                        return { content: [{ type: "text", text: renderDispatchWaitNote(session.code, agentName, sinceSeq ?? me.cursorSeq) }] };
+                    if (result.kind === "dispatched") {
+                        return { content: [{ type: "text", text: renderDispatchWaitNote(result.session.code, agentName, result.cursor) }] };
                     }
-                    const result = await pollCouncil({
-                        session,
-                        agentName,
-                        sinceSeq,
-                        waitMs: clampWaitMs(waitSeconds),
-                        signal: extra.signal,
-                    });
-                    return { content: [{ type: "text", text: renderWaitResult(result, { sessionCode: session.code, agentName }) }] };
+                    return { content: [{ type: "text", text: renderWaitResult(result.result, { sessionCode: result.session.code, agentName }) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: `Wait failed: ${errMsg(error)}. This is not the council closing - call council_wait again.` }] };
                 }
@@ -714,59 +634,32 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentName, intent, message, clientKey, addressedTo, replyToSeq, sinceSeq, waitSeconds }, extra) => {
-                const denied = requireCouncil(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
+                    const result = await speakAsSeat({
+                        sessionCode, agentName, intent, message, clientKey, addressedTo, replyToSeq, sinceSeq,
+                        waitMs: clampWaitMs(waitSeconds), signal: extra.signal, onRoundAdvanced: scheduleModeration,
+                    }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    const roster = await listParticipants(session.id);
-                    const me = roster.find((p) => p.name === agentName && p.kind === "agent");
-                    if (!me) {
-                        return { content: [{ type: "text", text: renderNotAParticipant(session.code, agentName) }] };
+                    if (result.kind === "not_participant") {
+                        return { content: [{ type: "text", text: renderNotAParticipant(result.session.code, agentName) }] };
                     }
-
-                    const target = addressedTo ?? "all";
-
-                    const post = await appendMessage({
-                        sessionId: session.id, speaker: agentName, intent, body: message,
-                        clientKey, addressedTo: target, replyToSeq, ackSeq: sinceSeq,
-                        identity: getCouncilWriteIdentity(extra.authInfo),
-                    });
-                    if (post.advanced) scheduleModeration(session.id, post.round);
-                    const receipt = {
-                        ...post, intent, addressedTo: target, replyToSeq,
-                        truncatedChars: message.length > MAX_BODY_CHARS ? message.length - MAX_BODY_CHARS : undefined,
-                    };
-
-                    // waitSeconds is ignored for a dispatched agent: it posts and
-                    // ends its turn, and the host delivers what arrives next.
-                    if (me.dispatchMode) {
+                    if (result.kind === "dispatched") {
                         return {
                             content: [{
                                 type: "text",
                                 text: renderDispatchSpeakResult({
-                                    post: receipt, session, agentName, cursor: sinceSeq ?? me.cursorSeq,
+                                    post: result.post, session: result.session, agentName, cursor: result.cursor,
                                 }),
                             }],
                         };
                     }
-
-                    // The cursor for the block that follows is what the agent had
-                    // READ, never the seq it just wrote: acking its own seq would
-                    // silently drop every peer message below it.
-                    const result = await pollCouncil({
-                        session, agentName, sinceSeq: sinceSeq ?? undefined,
-                        waitMs: clampWaitMs(waitSeconds), countWait: false, signal: extra.signal,
-                    });
-
                     return {
                         content: [{
                             type: "text",
-                            text: renderSpeakResult({ post: receipt, result, session, agentName }),
+                            text: renderSpeakResult({ post: result.post, result: result.result, session: result.session, agentName }),
                         }],
                     };
                 } catch (error) {
@@ -796,24 +689,17 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentName, verdict, openQuestions, workItems }, extra) => {
-                const denied = requireCouncil(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
+                    const result = await concludeAsSeat({ sessionCode, agentName, verdict, openQuestions, workItems }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    if (agentName !== session.closerName) {
+                    const { session } = result;
+                    if (result.kind === "not_closer") {
                         return { content: [{ type: "text", text: `NOT_YOUR_TURN - only ${session.closerName} may conclude ${session.code}. Nothing was changed.\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
                     }
-                    // The closer PROPOSES; it does not close. Nothing is filed
-                    // and no campaign exists until the owner accepts.
-                    const outcome = await proposeCouncilVerdict({
-                        session, closer: agentName, verdict, openQuestions: openQuestions ?? [],
-                        workItems: workItems?.map((item) => ({ ...item })),
-                    });
+                    const { outcome } = result;
                     if (!outcome.changed) {
                         return { content: [{ type: "text", text: `COUNCIL_CLOSED - ${session.code} was already resolved (${outcome.status}).\n\nVERDICT (${outcome.closer}):\n${outcome.verdict || "(none recorded)"}\n\nNEXT → nothing. You are done with this council.` }] };
                     }
@@ -1005,123 +891,11 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentNames, hostId, leaseEpoch, ackDeliveryIds, statusOnly }, extra) => {
-                // The host drives other agents' turns; a guest seat drives only
-                // itself.
                 const denied = requireHost(extra);
                 if (denied) return denied;
                 try {
-                    if (statusOnly && ackDeliveryIds?.length) {
-                        return { content: [{ type: "text", text: JSON.stringify({ error: "status_only_cannot_acknowledge" }) }] };
-                    }
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
-                        return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session", sessionCode }) }] };
-                    }
-                    if (session.protocolVersion !== 3) {
-                        return { content: [{ type: "text", text: JSON.stringify({ error: "not_v3", sessionCode: session.code }) }] };
-                    }
-                    if (statusOnly) {
-                        const participants = await listParticipants(session.id);
-                        return { content: [{ type: "text", text: JSON.stringify({
-                            statusOnly: true,
-                            sessionCode: session.code, topic: session.topic, status: session.status,
-                            pausedAt: session.pausedAt, round: session.round, maxRounds: session.maxRounds,
-                            lastSeq: session.lastSeq, lastMessageAt: session.lastMessageAt,
-                            closerName: session.closerName, verdict: session.verdict,
-                            openQuestions: session.openQuestions, vaultPath: session.vaultPath,
-                            floorHolder: session.floorHolder,
-                            participants: participants.map(p => ({
-                                name: p.name, kind: p.kind, status: p.status, postsTotal: p.postsTotal,
-                                cursorSeq: p.cursorSeq, dispatchMode: p.dispatchMode, lastSeenAt: p.lastSeenAt,
-                            })),
-                            agents: {},
-                        }) }] };
-                    }
-                    for (const deliveryId of ackDeliveryIds ?? []) {
-                        const ack = await councilHostService.acknowledgeDelivery({ deliveryId, hostId, leaseEpoch }, extra.authInfo);
-                        if (!ack.ok) return { content: [{ type: "text", text: JSON.stringify({ error: ack.reason ?? "ack_failed", deliveryId }) }] };
-                    }
-                    const outcome = await dispatchCouncil({ session, agentNames, durable: true });
-                    if (outcome.kind === "degraded") {
-                        return { content: [{ type: "text", text: JSON.stringify({ error: "degraded", sessionCode: session.code }) }] };
-                    }
-                    // No agents key at all: the host must push nothing while the
-                    // owner has the room stopped, and an empty roster is the
-                    // shape it already treats as "no turns this tick".
-                    if (outcome.kind === "paused") {
-                        return {
-                            content: [{
-                                type: "text",
-                                text: JSON.stringify({
-                                    sessionCode: session.code, paused: true,
-                                    pausedAt: outcome.session.pausedAt,
-                                    status: outcome.session.status, round: outcome.session.round,
-                                    agents: {},
-                                }),
-                            }],
-                        };
-                    }
-                    const { session: latest, floorHolder, view } = outcome;
-                    // The slice is what the host BRANCHES on; prompt is the same
-                    // turn already rendered, non-null exactly when there is a
-                    // turn to push. Rendering here keeps one copy of the
-                    // agent-facing prose instead of a second one in the host.
-                    const overdue = view.participants
-                        .filter((p) => p.kind === "agent" && p.status !== "left")
-                        .map((p) => p.name);
-                    const agentEntries = await Promise.all(Object.entries(view.agents).map(async ([name, slice]) => {
-                        const turnDue = slice.fresh.length > 0
-                            || slice.hasFloor;
-                        if (!turnDue) return [name, { ...slice, prompt: null }] as const;
-                        const prompt = renderTurn({
-                                    session: latest, agentName: name, fresh: slice.fresh,
-                                    openToYou: slice.openToYou, cursor: slice.cursor,
-                                    omittedBefore: slice.omittedBefore, hasFloor: slice.hasFloor,
-                                    moreRemain: slice.moreRemain,
-                                    overdue: overdue.filter((n) => n !== name),
-                                });
-                        const prepared = await councilHostService.prepareDelivery({
-                            sessionId: latest.id, agentName: name, hostId, leaseEpoch,
-                            fromSeq: Math.max(0, view.participants.find((p) => p.name === name)?.cursorSeq ?? 0),
-                            throughSeq: slice.delivered, promptHash: promptDigest(prompt), promptBody: prompt,
-                        }, extra.authInfo);
-                        if (!prepared.ok || !prepared.delivery) {
-                            throw new Error(`delivery for ${name} rejected: ${prepared.reason ?? "unknown"}`);
-                        }
-                        const delivery = prepared.delivery;
-                        return [name, {
-                            ...slice, prompt: delivery.promptBody, deliveryId: delivery.id,
-                            promptHash: delivery.promptHash, attempt: delivery.attempt,
-                            redelivered: delivery.redelivered,
-                        }] as const;
-                    }));
-                    const agents = Object.fromEntries(agentEntries);
-                    return {
-                        content: [{
-                            type: "text",
-                            text: JSON.stringify({
-                                sessionCode: latest.code,
-                                topic: latest.topic,
-                                status: latest.status,
-                                pausedAt: latest.pausedAt,
-                                round: latest.round,
-                                maxRounds: latest.maxRounds,
-                                lastSeq: latest.lastSeq,
-                                lastMessageAt: latest.lastMessageAt,
-                                closerName: latest.closerName,
-                                verdict: latest.verdict,
-                                openQuestions: latest.openQuestions,
-                                vaultPath: latest.vaultPath,
-                                floorHolder,
-                                participants: view.participants.map((p) => ({
-                                    name: p.name, kind: p.kind, status: p.status,
-                                    postsTotal: p.postsTotal, cursorSeq: p.cursorSeq,
-                                    dispatchMode: p.dispatchMode, lastSeenAt: p.lastSeenAt,
-                                })),
-                                agents,
-                            }),
-                        }],
-                    };
+                    const payload = await prepareHostDispatch({ sessionCode, agentNames, hostId, leaseEpoch, ackDeliveryIds, statusOnly }, extra.authInfo);
+                    return { content: [{ type: "text", text: JSON.stringify(payload) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: JSON.stringify({ error: errMsg(error) }) }] };
                 }
@@ -1132,17 +906,14 @@ const handler = createMcpHandler(
             "council_work_next",
             { description: "[COUNCIL WORK CAMPAIGN] Claim or resume your assigned task after the council closes. Work only in your worktree, heartbeat at milestones, then commit, verify and submit it for review.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1) } },
             async ({ sessionCode, agentName }, extra) => {
-                const coarse = requireCouncil(extra); if (coarse) return coarse;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    if (session.status !== "closed") return { content: [{ type: "text", text: "WORK_NOT_READY - the council has not closed yet. Continue the council protocol." }] };
-                    const campaign = await getCampaignForSession(session.id);
-                    if (!campaign) return { content: [{ type: "text", text: "NO_WORK_CAMPAIGN - no implementation tasks were recorded for this council. Stop here and wait for human direction." }] };
-                    const item = await claimNextWorkItem(session.id, agentName);
-                    if (!item) return { content: [{ type: "text", text: "WORK_IDLE - campaign " + campaign.status + ". You have no runnable task. Do not take another agent's work." }] };
+                    const result = await claimWorkAsSeat({ sessionCode, agentName }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    if (result.kind === "not_ready") return { content: [{ type: "text", text: "WORK_NOT_READY - the council has not closed yet. Continue the council protocol." }] };
+                    if (result.kind === "no_campaign") return { content: [{ type: "text", text: "NO_WORK_CAMPAIGN - no implementation tasks were recorded for this council. Stop here and wait for human direction." }] };
+                    if (result.kind === "idle") return { content: [{ type: "text", text: "WORK_IDLE - campaign " + result.campaign.status + ". You have no runnable task. Do not take another agent's work." }] };
+                    const { item } = result;
                     // A requeued item is indistinguishable from a fresh one without this,
                     // so the agent resubmits the same rejected commit indefinitely.
                     const rejected = item.hostVerified === false && item.hostVerification
@@ -1157,8 +928,11 @@ const handler = createMcpHandler(
             "council_work_heartbeat",
             { description: "[COUNCIL WORK CAMPAIGN] Record progress on your assigned in-progress task at meaningful milestones.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), progress: z.string().min(1).max(1000).optional() } },
             async ({ itemId, agentName, progress }, extra) => {
-                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
-                try { const ok = await heartbeatWorkItem({ itemId, agentName, progress }); return { content: [{ type: "text", text: ok ? "WORK_HEARTBEAT_RECORDED" : "WORK_HEARTBEAT_REJECTED - this is not your active task." }] }; }
+                try {
+                    const result = await heartbeatWorkAsSeat({ itemId, agentName, progress }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    return { content: [{ type: "text", text: result.ok ? "WORK_HEARTBEAT_RECORDED" : "WORK_HEARTBEAT_REJECTED - this is not your active task." }] };
+                }
                 catch (error) { return { content: [{ type: "text", text: "Heartbeat failed: " + errMsg(error) }] }; }
             },
         );
@@ -1167,8 +941,11 @@ const handler = createMcpHandler(
             "council_work_complete",
             { description: "[COUNCIL WORK CAMPAIGN] Submit a committed, verified task for closer review. This never self-approves the work.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), commitHash: z.string().min(1).max(120), verification: z.string().min(1).max(4000) } },
             async ({ itemId, agentName, commitHash, verification }, extra) => {
-                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
-                try { const ok = await completeWorkItem({ itemId, agentName, commitHash, verification, identity: getCouncilWriteIdentity(extra.authInfo) }); return { content: [{ type: "text", text: ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] }; }
+                try {
+                    const result = await completeWorkAsSeat({ itemId, agentName, commitHash, verification }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    return { content: [{ type: "text", text: result.ok ? "WORK_AWAITING_REVIEW - stop here until the designated closer reviews this task." : "WORK_COMPLETE_REJECTED - this is not your active task." }] };
+                }
                 catch (error) { return { content: [{ type: "text", text: "Completion failed: " + errMsg(error) }] }; }
             },
         );
@@ -1177,8 +954,11 @@ const handler = createMcpHandler(
             "council_work_block",
             { description: "[COUNCIL WORK CAMPAIGN] Mark your task blocked when it needs a human decision, missing access or an external dependency.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), reason: z.string().min(1).max(2000) } },
             async ({ itemId, agentName, reason }, extra) => {
-                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
-                try { const ok = await blockWorkItem({ itemId, agentName, reason }); return { content: [{ type: "text", text: ok ? "WORK_BLOCKED - stop the task and report the recorded blocker." : "WORK_BLOCK_REJECTED - this is not your active task." }] }; }
+                try {
+                    const result = await blockWorkAsSeat({ itemId, agentName, reason }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    return { content: [{ type: "text", text: result.ok ? "WORK_BLOCKED - stop the task and report the recorded blocker." : "WORK_BLOCK_REJECTED - this is not your active task." }] };
+                }
                 catch (error) { return { content: [{ type: "text", text: "Block failed: " + errMsg(error) }] }; }
             },
         );
@@ -1187,9 +967,10 @@ const handler = createMcpHandler(
             "council_work_review",
             { description: "[COUNCIL WORK CAMPAIGN] Designated closer only: accept a submitted task after reviewing its diff and verification, or return it to its owner with specific feedback. The campaign completes only after every task is accepted.", inputSchema: { itemId: z.string().uuid(), agentName: z.string().min(1), accepted: z.boolean(), note: z.string().min(1).max(3000) } },
             async ({ itemId, agentName, accepted, note }, extra) => {
-                const denied = requireCouncil(extra) ?? requireSeat(extra, { agentName }); if (denied) return denied;
                 try {
-                    const res = await reviewWorkItem({ itemId, reviewer: agentName, accepted, note });
+                    const reviewed = await reviewWorkAsSeat({ itemId, agentName, accepted, note }, extra.authInfo);
+                    if (reviewed.kind === "denied") return denied(reviewed.message);
+                    const res = reviewed.result;
                     if (res.ok) {
                         return { content: [{ type: "text", text: accepted ? "WORK_VERIFIED" : "WORK_RETURNED_TO_OWNER" }] };
                     }
@@ -1217,29 +998,7 @@ const handler = createMcpHandler(
                 const denied = requireHost(extra);
                 if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) return { content: [{ type: "text", text: JSON.stringify({ error: "unknown_session" }) }] };
-                    const campaign = await getCampaignForSession(session.id);
-                    if (!campaign) return { content: [{ type: "text", text: JSON.stringify({ items: [] }) }] };
-                    // A failed check leaves host_verified false and requeues the item, and
-                    // resubmission does not clear it. Matching only null would strand every
-                    // resubmitted item: never acceptable, never re-checked.
-                    const all = await listCampaignWorkItems(campaign.id);
-                    const items = all
-                        .filter((i) => i.status === "awaiting_review" && i.hostVerified !== true)
-                        .map((i) => ({
-                            id: i.id, agentName: i.agentName, status: i.status,
-                            commitHash: i.commitHash, declaredPaths: i.declaredPaths,
-                            branchName: i.branchName, verificationProfile: i.verificationProfile,
-                            // The host scopes a seat's later task from these, not the frozen base.
-                            acceptedCommits: all
-                                .filter((o) => o.id !== i.id && o.agentName === i.agentName && o.status === "verified" && o.commitHash)
-                                .map((o) => o.commitHash),
-                        }));
-                    return { content: [{ type: "text", text: JSON.stringify({
-                        campaignId: campaign.id, baseSha: campaign.baseSha,
-                        verificationProfile: campaign.verificationProfile, items,
-                    }) }] };
+                    return { content: [{ type: "text", text: JSON.stringify(await listUnverifiedWork({ sessionCode }, extra.authInfo)) }] };
                 } catch (error) {
                     return { content: [{ type: "text", text: JSON.stringify({ error: errMsg(error) }) }] };
                 }
@@ -1349,23 +1108,12 @@ const handler = createMcpHandler(
             "council_work_status",
             { description: "[COUNCIL WORK CAMPAIGN] Read campaign progress and assigned task states without changing them. Use for supervision and recovery.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1).optional() } },
             async ({ sessionCode, agentName }, extra) => {
-                const denied = requireCouncilObserver(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
-                    const seatDenied = requireCouncilObserver(extra, session.id);
-                    if (seatDenied) return seatDenied;
-                    const campaign = await getCampaignForSession(session.id);
-                    // Distinct from idle, which an agent with nothing to do right now
-                    // also returns. The host releases a Council on this and must never
-                    // release one whose campaign is merely quiet.
-                    if (!campaign) return { content: [{ type: "text", text: "SUPERVISE: no_campaign\nNo work campaign exists." }] };
-                    const items = await listCampaignWorkItems(campaign.id);
-                    const owned = agentName ? items.filter((item) => item.agentName === agentName) : [];
-                    const hasReview = agentName === session.closerName && items.some((item) => item.status === "awaiting_review");
-                    const supervise = hasReview ? "review" : owned.some((item) => item.status === "queued" || item.status === "in_progress") ? "active" : "idle";
-                    const state = campaign.status === "complete" ? "complete" : campaign.status === "blocked" ? "blocked" : supervise;
+                    const status = await superviseCampaign({ sessionCode, agentName }, extra.authInfo);
+                    if (status.kind === "denied") return denied(status.message);
+                    if (status.kind === "unknown_session") return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
+                    if (status.kind === "no_campaign") return { content: [{ type: "text", text: "SUPERVISE: no_campaign\nNo work campaign exists." }] };
+                    const { campaign, items, state } = status;
                     // The id is what council_work_review takes, and the closer owns no
                     // work item of its own, so this listing is the only place it can
                     // ever learn it. Without it the campaign cannot be closed at all.
@@ -1392,44 +1140,26 @@ const handler = createMcpHandler(
                 },
             },
             async ({ sessionCode, agentName, reason, done }, extra) => {
-                const denied = requireCouncil(extra);
-                if (denied) return denied;
                 try {
-                    const session = await getSessionByCode(sessionCode);
-                    if (!session) {
+                    const result = await passAsSeat({ sessionCode, agentName, reason, done }, extra.authInfo);
+                    if (result.kind === "denied") return denied(result.message);
+                    if (result.kind === "unknown_session") {
                         return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     }
-                    const wrongSeat = requireSeat(extra, { sessionId: session.id, agentName, protocolVersion: session.protocolVersion });
-                    if (wrongSeat) return wrongSeat;
-                    const me = await getParticipant(session.id, agentName);
-                    if (!me) {
+                    const { session } = result;
+                    if (result.kind === "not_participant") {
                         return { content: [{ type: "text", text: renderNotAParticipant(session.code, agentName) }] };
                     }
-
-                    const result = await appendMessage({
-                        sessionId: session.id,
-                        speaker: agentName,
-                        intent: "pass",
-                        body: reason,
-                        clientKey: `${agentName}-pass-r${session.round}-${done ? "done" : "round"}`,
-                        identity: getCouncilWriteIdentity(extra.authInfo),
-                    });
-                    if (!result.ok) {
+                    if (result.kind === "refused") {
                         return { content: [{ type: "text", text: `NOT_YOUR_TURN - nothing was recorded (${result.reason}).\n\nNEXT → council_wait({"sessionCode":"${session.code}","agentName":"${agentName}"})` }] };
                     }
-
-                    if (done) {
-                        await leaveCouncil(session.id, agentName);
+                    if (result.kind === "left") {
                         return { content: [{ type: "text", text: renderLeft(session, agentName, reason) }] };
                     }
                     return {
                         content: [{
                             type: "text",
-                            text: renderPassed({
-                                session, agentName,
-                                cursor: result.seq ?? session.lastSeq,
-                                advanced: result.advanced === true,
-                            }),
+                            text: renderPassed({ session, agentName, cursor: result.cursor, advanced: result.advanced }),
                         }],
                     };
                 } catch (error) {
