@@ -213,9 +213,33 @@ function fileChecks(): void {
     }
 }
 
+function journalWriteChecks(): void {
+    console.log("\njournal writer regressions");
+    const source = readFileSync(join(HERE, "council-host.mts"), "utf8").replaceAll("\r\n", "\n");
+    const lines = source.split("\n");
+    for (const [name, journal] of [
+        ["persistDeliveryJournal", "delivery-state.json"],
+        ["persistRunJournal", "campaign-run.json"],
+    ]) {
+        const target = journal.replaceAll(".", "\\.");
+        check(`${journal} has no in-place write elsewhere`,
+            !new RegExp(`\\bwriteFileSync\\s*\\([^;]*${target}`).test(source));
+        const start = lines.findIndex((line) => line.startsWith(`function ${name}(`));
+        check(`${journal} writer exists`, start !== -1);
+        if (start === -1) continue;
+        const end = lines.indexOf("}", start + 1);
+        check(`${journal} writer has a closing boundary`, end !== -1);
+        const body = end === -1 ? "" : lines.slice(start, end + 1).join("\n");
+        check(`${journal} uses whole-file replacement`,
+            new RegExp(`^[ \\t]*writeFileAtomic\\s*\\(\\s*join\\s*\\(\\s*state\\.runDir\\s*,\\s*["']${target}["']\\s*\\)\\s*,`, "m").test(body));
+        check(`${journal} writer avoids in-place writes`, !/\bwriteFileSync\s*\(/.test(body));
+    }
+}
+
 fixtureChecks();
 contractChecks();
 lockChecks();
 fileChecks();
+journalWriteChecks();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

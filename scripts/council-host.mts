@@ -1245,7 +1245,7 @@ const delivered = new Map<string, string>();
 
 function persistDeliveryJournal(): void {
     if (!state.runDir) return;
-    writeFileSync(join(state.runDir, "delivery-state.json"), JSON.stringify({
+    writeFileAtomic(join(state.runDir, "delivery-state.json"), JSON.stringify({
         version: 1, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
         pendingAcknowledgements: Object.fromEntries(delivered),
     }, null, 2));
@@ -1571,7 +1571,7 @@ function prepareRun(code: string, names: string[], preparedAgents?: AgentRuntime
 
 function persistRunJournal(): void {
     if (!state.runDir || !state.code) throw new Error("cannot persist campaign selections without an active Council");
-    writeFileSync(join(state.runDir, "campaign-run.json"), JSON.stringify({
+    writeFileAtomic(join(state.runDir, "campaign-run.json"), JSON.stringify({
         code: state.code, configPath, port: hostPort, repo: state.repo, sessionId: state.sessionId,
         hostId: state.hostId, leaseEpoch: state.leaseEpoch, baseSha: state.baseSha,
         hostGeneration: state.hostGeneration, policyVersion: state.policyVersion,
