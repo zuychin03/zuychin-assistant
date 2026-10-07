@@ -141,6 +141,9 @@ for (const [source, sql] of baselineOnly ? [["baseline", ""]] : [["migration", m
         for (const fault of ["missing", "other-seat", "other-council", "old-runtime", "wrong-branch", "unbound", "host-mode"]) await t.test(`delegated runtime rejects ${fault}`, async () => {
             const f = await fixture(fault === "host-mode" ? null : "seat");
             let execution: string | null = fault === "old-runtime" ? await f.execute() : null;
+            // PGlite's clock ticks in whole milliseconds. An attempt begun in the same
+            // tick would tie with this runtime, and a tie counts as fresh.
+            if (fault === "old-runtime") await new Promise((settle) => setTimeout(settle, 5));
             const a = (await f.begin()).attempt!;
             if (fault === "other-council") execution = await (await fixture("seat")).execute();
             else if (fault !== "missing" && fault !== "old-runtime") execution = await f.execute(fault === "other-seat" ? "other" : "seat", fault === "wrong-branch" ? "other-branch" : branch, fault !== "unbound");
