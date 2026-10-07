@@ -216,6 +216,13 @@ await check("host work status preserves no_campaign release signal", async () =>
     assert.match(result.content[0].text, /^SUPERVISE: no_campaign\n/);
     assert.deepEqual(io.map(call => call.name), ["getSessionByCode", "getCampaignForSession"]);
 });
+await check("host work status reports only the state as JSON when asked", async () => {
+    const text = async (args: Record<string, unknown>) => (await invoke("council_work_status", host, { ...args, json: true })).content[0].text;
+    assert.deepEqual(JSON.parse(await text({ sessionCode: "CN-ABCD", agentName: "other-seat" })), { state: "active" });
+    assert.deepEqual(JSON.parse(await text({ sessionCode: "CN-ZZZZ" })), { error: "unknown_session", sessionCode: "CN-ZZZZ" });
+    campaignExists = false;
+    assert.deepEqual(JSON.parse(await text({ sessionCode: "CN-ABCD" })), { state: "no_campaign" });
+});
 
 console.log(`MCP read-access handler tests: ${passed} passed, ${failed} failed.`);
 if (failed) process.exitCode = 1;

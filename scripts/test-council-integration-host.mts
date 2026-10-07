@@ -74,6 +74,7 @@ async function scenario(mode: Mode) {
                     { name: "council_host_issue_seat", inputSchema: { properties: { bindExecution: { type: "boolean" } } } },
                     { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
                     { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" }, policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
+                    { name: "council_work_status", inputSchema: { properties: { json: { type: "boolean" } } } },
                     ...(mode === "old-schema" ? [] : [
                         { name: "council_integration_begin", inputSchema: { properties: { attemptId: { type: "string" }, expectedIntegrator: { type: ["string", "null"] } } } },
                         { name: "council_integration_finish", inputSchema: { properties: { attemptId: { type: "string" }, evidence: { type: "object" } } } },
@@ -97,7 +98,7 @@ async function scenario(mode: Mode) {
                 case "council_host_release": releases++; break;
                 case "council_host_renew": result = { ok: !expired, leaseExpiresAt: new Date(Date.now() + 90_000).toISOString() }; break;
                 case "council_work_unverified": result = { items: [] }; break;
-                case "council_work_status": result = "SUPERVISE: complete"; break;
+                case "council_work_status": assert.equal(call.arguments.json, true); result = { state: "complete" }; break;
                 case "council_integration_manifest": result = { ok: true, integratorAgent: agentMode ? seat : null,
                     integrationStatus, manifest: { ...manifest(), items: [] } }; break;
                 case "council_integration_begin":

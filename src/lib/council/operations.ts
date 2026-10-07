@@ -435,6 +435,12 @@ export async function listUnverifiedWork(params: { sessionCode: string }, caller
 
 export type SupervisionState = "review" | "active" | "idle" | "complete" | "blocked";
 
+// What a supervising host branches on, in place of the SUPERVISE: prose that
+// council_work_status writes for agents.
+export type SupervisionReport =
+    | { state: SupervisionState | "no_campaign" }
+    | { error: "unknown_session"; sessionCode: string };
+
 export function supervisionState(params: {
     session: CouncilSession; campaign: CouncilCampaign; items: CouncilWorkItem[]; agentName?: string;
 }): SupervisionState {

@@ -91,6 +91,7 @@ async function scenario(mode: Mode) {
                     { name: "council_host_issue_seat", inputSchema: { properties: { bindExecution: { type: "boolean" } } } },
                     { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
                     { name: "council_execution_start", inputSchema: { properties: { seatTokenHash: { type: "string" }, policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
+                    { name: "council_work_status", inputSchema: { properties: { json: { type: "boolean" } } } },
                 ] };
             } else if (rpc.method === "tools/call") {
                 const args = rpc.params?.arguments ?? {};

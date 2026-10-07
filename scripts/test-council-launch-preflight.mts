@@ -124,6 +124,7 @@ try {
                 { name: "council_host_issue_seat", inputSchema: { properties: oldBinding === "issue" ? {} : { bindExecution: { type: "boolean" } } } },
                 { name: "council_host_claim", inputSchema: { properties: { policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
                 { name: "council_execution_start", inputSchema: { properties: oldBinding === "start" ? {} : { seatTokenHash: { type: "string" }, policyVersion: { type: "string", const: "typescript-node-v3-2026-09-30" } } } },
+                { name: "council_work_status", inputSchema: { properties: { json: { type: "boolean" } } } },
             ] };
         } else if (rpc.params?.name === "council_convene") {
             const createdCode = wrongCode ? "CN-3333" : rpc.params.arguments?.requestedCode;

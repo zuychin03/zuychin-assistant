@@ -36,7 +36,7 @@ import {
 import {
     blockWorkAsSeat, claimWorkAsSeat, completeWorkAsSeat, concludeAsSeat, conveneCouncil, heartbeatWorkAsSeat,
     joinAsSeat, listUnverifiedWork, passAsSeat, prepareHostDispatch, reviewWorkAsSeat, speakAsSeat,
-    superviseCampaign, waitAsSeat, type ConveneRejection,
+    superviseCampaign, waitAsSeat, type ConveneRejection, type SupervisionReport,
 } from "@/lib/council/operations";
 
 export const maxDuration = 300;
@@ -986,8 +986,7 @@ const handler = createMcpHandler(
         );
 
         // Host-only, and JSON rather than prose: council_work_status is written
-        // for an agent to read and the supervise loop branches on its wording,
-        // so the machine-readable view is a separate tool.
+        // for an agent to read, so the machine-readable view is a separate tool.
         server.registerTool(
             "council_work_unverified",
             {
@@ -1106,11 +1105,23 @@ const handler = createMcpHandler(
 
         server.registerTool(
             "council_work_status",
-            { description: "[COUNCIL WORK CAMPAIGN] Read campaign progress and assigned task states without changing them. Use for supervision and recovery.", inputSchema: { sessionCode: z.string().min(1), agentName: z.string().min(1).optional() } },
-            async ({ sessionCode, agentName }, extra) => {
+            {
+                description: "[COUNCIL WORK CAMPAIGN] Read campaign progress and assigned task states without changing them. Use for supervision and recovery.",
+                inputSchema: {
+                    sessionCode: z.string().min(1), agentName: z.string().min(1).optional(),
+                    json: z.boolean().optional().describe("For a supervising host: return only the state, as JSON."),
+                },
+            },
+            async ({ sessionCode, agentName, json }, extra) => {
                 try {
                     const status = await superviseCampaign({ sessionCode, agentName }, extra.authInfo);
                     if (status.kind === "denied") return denied(status.message);
+                    if (json) {
+                        const report: SupervisionReport = status.kind === "unknown_session"
+                            ? { error: "unknown_session", sessionCode }
+                            : { state: status.kind === "no_campaign" ? "no_campaign" : status.state };
+                        return { content: [{ type: "text", text: JSON.stringify(report) }] };
+                    }
                     if (status.kind === "unknown_session") return { content: [{ type: "text", text: renderUnknownSession(sessionCode) }] };
                     if (status.kind === "no_campaign") return { content: [{ type: "text", text: "SUPERVISE: no_campaign\nNo work campaign exists." }] };
                     const { campaign, items, state } = status;

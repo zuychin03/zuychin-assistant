@@ -40,6 +40,7 @@ import { parseKickoffBlocks, renderDispatchKickoff } from "../src/lib/council/re
 import { COUNCIL_TYPES } from "../src/lib/council/templates.ts";
 import { COUNCIL_HOST_GENERATION, V3_HOST_CAPABILITIES, configuredCapabilities, type CouncilAgentSelection, type ConnectorCapabilitySnapshot } from "../src/lib/council/v3.ts";
 import { NODE_POLICY_VERSION } from "../src/lib/council/policy-versions.ts";
+import type { SupervisionReport, SupervisionState } from "../src/lib/council/operations.ts";
 import { exactIntegrationDiff, integrateAcceptedManifest, loadVerificationProfile, protectedRefsUnchanged, snapshotProtectedRefs, verifyExactCommit, type IntegrationManifest, type VerificationReceipt } from "./council-git.mts";
 import { sanitiseIntegrationEvidence, sanitiseIntegrationText, sanitiseVerificationReceipts, type IntegrationEvidence, type IntegrationRedactionContext } from "../src/lib/council/integration-evidence.ts";
 import { configureAcpSession } from "./council-models.mts";
@@ -234,6 +235,7 @@ async function requireHostRuntimeProtocol(): Promise<void> {
             { property: "seatTokenHash", type: "string", label: "execution-bound registration" },
             { property: "policyVersion", type: "string", literal: NODE_POLICY_VERSION, label: "versioned execution registration" },
         ]],
+        ["council_work_status", [{ property: "json", type: "boolean", label: "structured campaign supervision" }]],
     ]));
 }
 
@@ -2445,30 +2447,33 @@ async function superviseTick(): Promise<void> {
         if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
         for (const agent of state.agents.values()) {
             if (agent.mode !== "acp" || !agent.ready || !agent.session || agent.inFlight) continue;
-            let text: string;
+            let supervision: SupervisionState | "no_campaign" | undefined;
             try {
-                text = await callTool("council_work_status", { sessionCode: code, agentName: agent.name });
+                const report = JSON.parse(await callTool("council_work_status", {
+                    sessionCode: code, agentName: agent.name, json: true,
+                })) as SupervisionReport | null;
+                supervision = report && "state" in report ? report.state : undefined;
             } catch {
                 continue;
             }
             if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
-            if (text.startsWith("SUPERVISE: complete")) {
+            if (supervision === "complete") {
                 log("Campaign complete.");
                 state.campaignComplete = true;
                 broadcast({ type: "state", ...snapshot() });
                 void integrationTick();
                 return;
             }
-            if (text.startsWith("SUPERVISE: blocked")) {
+            if (supervision === "blocked") {
                 broadcast({ type: "error", detail: "campaign blocked; resolve the recorded blocker" });
                 return;
             }
-            if (text.startsWith("SUPERVISE: no_campaign")) {
+            if (supervision === "no_campaign") {
                 if (++noCampaignSightings >= 2) await releaseCouncil("closed with no work campaign", code, leaseEpoch);
                 return;
             }
             noCampaignSightings = 0;
-            if (text.startsWith("SUPERVISE: active") || text.startsWith("SUPERVISE: review")) {
+            if (supervision === "active" || supervision === "review") {
                 void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
             }
         }

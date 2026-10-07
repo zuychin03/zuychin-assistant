@@ -26,7 +26,7 @@ const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
 type Mode = "stable" | "reject" | "slow-execution" | "hang-initialize" | "hang-session" | "hang-selection" | "wrong-protocol"
     | "join-reject" | "late-execution" | "late-join" | "stop-reject" | "stop-error" | "stop-hang"
     | "expired-ready" | "expired-busy" | "expired-attach" | "expired-failed" | "expired-shell" | "expired-unhealthy" | "expired-unpaused"
-    | "status-unsupported" | "status-schema-unsupported" | "binding-refused" | "binding-unconfirmed"
+    | "status-unsupported" | "status-schema-unsupported" | "supervision-schema-unsupported" | "binding-refused" | "binding-unconfirmed"
     | "binding-issue-unconfirmed" | "binding-old-issue" | "binding-old-start" | "binding-shell" | "binding-integration"
     | "binding-integration-unconfirmed" | "binding-integration-expired";
 type Call = { name: string; arguments: Record<string, unknown> };
@@ -123,6 +123,8 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                                     : [policyCase === "start-schema-wrong" ? "future-policy" : policyVersion] }) } } } },
                         { name: "council_integration_begin", inputSchema: { properties: { attemptId: { type: "string" } } } },
                         { name: "council_integration_finish", inputSchema: { properties: { evidence: { type: "object" } } } },
+                        { name: "council_work_status", inputSchema: { properties:
+                            mode === "supervision-schema-unsupported" ? {} : { json: { type: "boolean" } } } },
                     ],
                 } }));
                 return;
@@ -211,7 +213,7 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
                     else result = { ok: true, leaseExpiresAt: new Date(Date.now() + 90_000).toISOString() };
                     break;
                 case "council_work_unverified": result = { items: [] }; break;
-                case "council_work_status": result = "SUPERVISE: complete"; break;
+                case "council_work_status": assert.equal(call.arguments.json, true); result = { state: "complete" }; break;
                 case "council_integration_manifest":
                     result = { ok: true, integratorAgent: name, manifest: { baseSha, items: [] } }; break;
                 case "council_integration_begin":
@@ -299,7 +301,7 @@ async function scenario(mode: Mode, savedModel: string | null = "beta",
         } else if (mode.startsWith("binding-")) {
             await until(() => messages.some((message) => message.type === "error") || executionRecorded, "binding outcome");
             await new Promise((settle) => setTimeout(settle, 3_500));
-        } else if ((journalFault && !freshInvite) || mode === "expired-attach" || mode.startsWith("status-")) {
+        } else if ((journalFault && !freshInvite) || mode === "expired-attach" || mode.startsWith("status-") || mode === "supervision-schema-unsupported") {
             await until(() => messages.some((message) => message.type === "error") || executionRecorded, "journal outcome");
         } else if (["expired-failed", "expired-shell", "expired-unhealthy"].includes(mode)) {
             if (mode === "expired-failed") {
@@ -557,6 +559,19 @@ await test("attach fails closed when the server does not acknowledge status-only
     assert.deepEqual(result.calls.map((call) => call.name), ["council_host_claim", "council_dispatch", "council_host_release"]);
     assert.equal(result.calls[1].arguments.statusOnly, true);
     assert.ok(result.messages.some((message) => message.detail?.includes("does not support status-only")));
+    assert.equal(result.health.code, null);
+    assert.equal(result.health.leaseEpoch, null);
+    assert.equal(result.worktreeRetained, false);
+    assert.equal(result.journalText, result.originalJournal);
+});
+
+await test("attach checks advertised structured supervision before any mutating tool call", async () => {
+    const result = await scenario("supervision-schema-unsupported");
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.listRequests, 1);
+    assert.deepEqual(result.calls, []);
+    assert.deepEqual(result.records, []);
+    assert.ok(result.messages.some((message) => message.detail?.includes("does not support structured campaign supervision")));
     assert.equal(result.health.code, null);
     assert.equal(result.health.leaseEpoch, null);
     assert.equal(result.worktreeRetained, false);
