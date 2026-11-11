@@ -90,8 +90,14 @@ function repoPath(cfg: VaultConfig, suffix: string): string {
     return `/repos/${cfg.owner}/${cfg.repo}${suffix}`;
 }
 
+// fetch() resolves dot segments, so "../../other-repo/contents/x" would leave
+// this repo and reach anything else the token can read.
 function encodePath(path: string): string {
-    return path.split("/").map(encodeURIComponent).join("/");
+    const segments = path.split("/");
+    if (segments.some((segment) => segment === "." || segment === "..")) {
+        throw new Error("Vault paths cannot contain '.' or '..' segments.");
+    }
+    return segments.map(encodeURIComponent).join("/");
 }
 
 function toBase64(text: string): string {
