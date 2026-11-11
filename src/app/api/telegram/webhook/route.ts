@@ -6,6 +6,7 @@ import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
 import { getVoicePrefs, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
 import { getDefaultProfile } from "@/lib/db";
+import { allowedTelegramChats, telegramSecretMatches, updateChatId } from "@/lib/messaging/telegram-access";
 import type { FileAttachment } from "@/lib/types";
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -223,7 +224,7 @@ export async function POST(req: NextRequest) {
             console.error("[Telegram] TELEGRAM_WEBHOOK_SECRET is not set; refusing update.");
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-    } else if (secretHeader !== WEBHOOK_SECRET) {
+    } else if (!telegramSecretMatches(secretHeader, WEBHOOK_SECRET)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -231,6 +232,18 @@ export async function POST(req: NextRequest) {
     try {
         update = await req.json();
     } catch {
+        return NextResponse.json({ ok: true });
+    }
+
+    // 200, not 401: Telegram retries anything else, and the sender learns nothing.
+    const allowed = allowedTelegramChats();
+    if (allowed.size === 0 && process.env.NODE_ENV === "production") {
+        console.error("[Telegram] TELEGRAM_CHAT_ID is not set; ignoring update.");
+        return NextResponse.json({ ok: true });
+    }
+    const chatId = updateChatId(update);
+    if (allowed.size > 0 && (chatId === null || !allowed.has(chatId))) {
+        console.warn(`[Telegram] Ignoring update from unlisted chat ${chatId ?? "unknown"}.`);
         return NextResponse.json({ ok: true });
     }
 
