@@ -48,6 +48,7 @@ export function Dropdown({
 
     const [open, setOpen] = useState(false);
     const [activeValue, setActiveValue] = useState<string | null>(null);
+    const [keyboardNav, setKeyboardNav] = useState(false);
     const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
     const enabledSelectedIndex = selectedIndex >= 0 && !items[selectedIndex].disabled ? selectedIndex : -1;
     const requestedIndex = items.findIndex((item) => item.value === activeValue && !item.disabled);
@@ -160,6 +161,7 @@ export function Dropdown({
 
     const onKeyDown = (event: React.KeyboardEvent) => {
         if (disabled || triggerRef.current?.matches(":disabled") || event.nativeEvent.isComposing) return;
+        setKeyboardNav(true);
         const key = event.key;
         const now = event.timeStamp;
         const hasSearch = typeahead.current.buffer.length > 0 && now - typeahead.current.at <= TYPEAHEAD_RESET_MS;
@@ -243,14 +245,14 @@ export function Dropdown({
                 aria-label={accessibleLabel}
                 aria-disabled={disabled || undefined}
                 disabled={disabled}
-                onClick={() => (open ? closeMenu() : openMenu())}
+                onClick={() => { setKeyboardNav(false); if (open) closeMenu(); else openMenu(); }}
                 onKeyDown={onKeyDown}
                 className={[styles.trigger, className].filter(Boolean).join(" ")}
                 style={{ ...triggerStyle, ...(disabled ? disabledStyle : null), ...style }}
             >
                 <span style={valueStyle} title={triggerLabel}>{triggerLabel}</span>
                 <ChevronDown
-                    size={14}
+                    size={15}
                     aria-hidden
                     className={styles.chevron}
                 />
@@ -265,9 +267,11 @@ export function Dropdown({
                     tabIndex={-1}
                     onKeyDown={onKeyDown}
                     onMouseDown={(event) => event.preventDefault()}
+                    className={styles.menu}
+                    data-keyboard={keyboardNav || undefined}
                     style={menuStyle}
                 >
-                    {items.length === 0 && <div role="status" style={emptyStyle}>No options available</div>}
+                    {items.length === 0 && <div role="status" className={styles.empty}>No options available</div>}
                     {items.map((item, index) => {
                         const isSelected = item.value === value;
                         const isActive = index === activeIndex;
@@ -276,19 +280,16 @@ export function Dropdown({
                                 key={`${item.value}-${index}`}
                                 id={`${listId}-option-${index}`}
                                 data-index={index}
+                                data-active={isActive || undefined}
                                 role="option"
                                 aria-selected={isSelected}
                                 aria-disabled={item.disabled || undefined}
-                                onPointerMove={(event) => event.pointerType === "mouse" && !item.disabled && activate(index)}
+                                onPointerMove={(event) => { if (event.pointerType !== "mouse" || item.disabled) return; setKeyboardNav(false); activate(index); }}
                                 onClick={() => commit(index)}
-                                style={{
-                                    ...optionStyle,
-                                    ...(isActive ? optionActiveStyle : null),
-                                    ...(item.disabled ? optionDisabledStyle : null),
-                                }}
+                                className={styles.option}
                             >
-                                <span style={optionLabelStyle}>{labelOf(item)}</span>
-                                {isSelected && <Check size={13} aria-hidden style={{ flexShrink: 0, opacity: 0.8 }} />}
+                                <span className={styles.optionLabel}>{labelOf(item)}</span>
+                                {isSelected && <Check size={14} aria-hidden className={styles.check} />}
                             </div>
                         );
                     })}
@@ -299,13 +300,13 @@ export function Dropdown({
     );
 }
 
+// Inline so page-level `button` rules cannot restyle the trigger; callers override through `style`.
 const triggerStyle: React.CSSProperties = {
-    display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 6,
-    minWidth: 0, padding: "8px 10px",
-    borderRadius: "var(--radius-sm)",
-    background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-    color: "var(--color-text-primary)", fontFamily: "inherit", textAlign: "left",
-    cursor: "pointer", appearance: "none",
+    display: "inline-flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+    minWidth: 0, padding: "0 8px 0 10px",
+    borderRadius: "var(--radius-sm)", background: "var(--surface)", color: "var(--ink)",
+    fontFamily: "var(--font-family)", fontSize: 13.5, fontWeight: 500, lineHeight: 1.3,
+    textAlign: "left", cursor: "pointer", appearance: "none",
 };
 
 const disabledStyle: React.CSSProperties = { opacity: 0.55, cursor: "not-allowed" };
@@ -317,27 +318,4 @@ const valueStyle: React.CSSProperties = {
 const menuStyle: React.CSSProperties = {
     position: "fixed", zIndex: 1000, maxHeight: MENU_MAX_HEIGHT, overflowY: "auto",
     width: "max-content", boxSizing: "border-box", visibility: "hidden", overscrollBehavior: "contain",
-    padding: 4, borderRadius: "var(--radius-md)", border: "1px solid var(--color-border)",
-    background: "var(--color-background)", color: "var(--color-text-primary)",
-    boxShadow: "0 10px 30px rgba(0, 0, 0, 0.18)", fontSize: 13, fontFamily: "var(--font-family)",
-};
-
-const optionStyle: React.CSSProperties = {
-    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-    minHeight: 44, padding: "9px", borderRadius: "var(--radius-sm)", cursor: "pointer",
-};
-
-const optionActiveStyle: React.CSSProperties = {
-    background: "color-mix(in srgb, var(--color-surface) 85%, transparent)",
-    outline: "2px solid var(--color-primary)", outlineOffset: -2,
-};
-
-const optionDisabledStyle: React.CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
-
-const optionLabelStyle: React.CSSProperties = {
-    minWidth: 0, overflowWrap: "anywhere", whiteSpace: "normal",
-};
-
-const emptyStyle: React.CSSProperties = {
-    padding: "7px 9px", color: "var(--color-text-muted)",
 };

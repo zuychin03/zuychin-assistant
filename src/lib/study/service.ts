@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { knowledgeRevisions } from "../knowledge/revision-store";
 import { effectiveFreeOnly, ModelPolicyError } from "../ai/model-policy";
 import { cardInput, draftInput, editInput, feedbackInput, reviewInput, settingsInput, StudyError, type StudyCard, type StudyDocument, type StudyDraft, type StudyFeedback, type StudyReport, type StudyReview } from "./contracts";
-import { initialSchedule, nextReview, studyDraft } from "./scheduler";
+import { initialSchedule, nextReview, studyDayStart, studyDraft } from "./scheduler";
 import type { StudyWriter } from "./writer";
 
 type Row = Record<string, unknown>;
@@ -59,6 +59,18 @@ export function createStudyService(db: SupabaseClient, revisions: Revisions, clo
         return data;
     }
     return {
+        /** Reviews still available today: cards due now, capped by what is left of the daily limit. */
+        async due(userId: string): Promise<{ due: number }> {
+            const { data: settings, error } = await db.from("study_settings").select("daily_limit,timezone").eq("user_profile_id", userId).abortSignal(AbortSignal.timeout(5000)).maybeSingle();
+            databaseError(error);
+            const now = clock();
+            const [cards, reviews] = await Promise.all([
+                db.from("study_cards").select("id", { count: "exact", head: true }).eq("user_profile_id", userId).eq("active", true).lte("due_at", now.toISOString()).abortSignal(AbortSignal.timeout(5000)),
+                db.from("study_reviews").select("id", { count: "exact", head: true }).eq("user_profile_id", userId).gte("reviewed_at", studyDayStart(now, settings?.timezone ?? "Australia/Sydney").toISOString()).abortSignal(AbortSignal.timeout(5000)),
+            ]);
+            databaseError(cards.error); databaseError(reviews.error);
+            return { due: Math.min(cards.count ?? 0, Math.max(0, (settings?.daily_limit ?? 20) - (reviews.count ?? 0))) };
+        },
         async report(userId: string): Promise<StudyReport> {
             const [data, sources] = await Promise.all([mutate("assistant_study_report", { p_user_id: userId }), documents(userId)]);
             if (!Array.isArray(data.cards) || !Array.isArray(data.reviews) || !data.settings) throw new StudyError("Study records could not be read.", 503);

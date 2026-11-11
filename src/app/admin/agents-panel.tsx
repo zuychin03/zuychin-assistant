@@ -168,19 +168,20 @@ export default function AgentsPanel() {
 
     return (
         <div>
-            <div style={styles.header}>
-                <div style={styles.headerIcon}><Users size={16} /></div>
-                <div style={{ flex: 1 }}>
-                    <h2 style={styles.title}>Agents</h2>
-                    <p style={styles.description}>Per-agent credentials, their access level and last use</p>
+            <div className="panel-head">
+                <Users size={16} />
+                <div className="panel-heading">
+                    <h2>Agents</h2>
+                    <p>Per-agent credentials, their access level and last use</p>
                 </div>
-                <button style={styles.iconBtn} onClick={() => void load()} disabled={loading || busy} title="Refresh agents">
-                    <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
+                <button className="icon-btn" onClick={() => void load()} disabled={loading || busy} title="Refresh agents">
+                    <RefreshCw size={15} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
 
             <div style={styles.addRow}>
                 <input
+                    className="field"
                     style={styles.addInput}
                     disabled={busy}
                     value={name}
@@ -189,26 +190,27 @@ export default function AgentsPanel() {
                     aria-label="Agent name"
                     placeholder="Agent name, such as codex-laptop"
                 />
-                <Dropdown ariaLabel="Kind" style={styles.select} value={kind} disabled={busy}
+                <Dropdown ariaLabel="Kind" className="field" style={styles.select} value={kind} disabled={busy}
                     onChange={(v) => setKind(v as ClientKind)} options={KIND_OPTIONS} />
-                <Dropdown ariaLabel="Access level" style={styles.select} value={access} disabled={busy}
+                <Dropdown ariaLabel="Access level" className="field" style={styles.select} value={access} disabled={busy}
                     onChange={(v) => setAccess(v as AccessLevel)} options={ACCESS_OPTIONS} />
-                <button style={styles.iconBtn} onClick={add} disabled={busy || !name.trim()} title="Add agent">
-                    <Plus size={14} />
+                <button className="btn" style={styles.square} onClick={add} disabled={busy || !name.trim()} title="Add agent">
+                    <Plus size={15} />
                 </button>
             </div>
 
-            {error && <div role="alert" style={styles.error}>{error}</div>}
+            {error && <div role="alert" className="error" style={{ marginBottom: 10 }}>{error}</div>}
 
             {brief && (
-                <div style={styles.briefBox}>
+                <div className="inset" style={styles.briefBox}>
                     <div style={styles.briefHead}>
                         Setup brief for <strong>{brief.name}</strong>. The claim inside it expires in 15 minutes
                         and is exchanged for the durable key by the agent itself.
                     </div>
                     <button
                         type="button"
-                        style={styles.copyBtn}
+                        className="btn"
+                        style={{ alignSelf: "flex-start" }}
                         onClick={() => {
                             void navigator.clipboard.writeText(brief.text).then(() => {
                                 setCopied(true);
@@ -216,50 +218,50 @@ export default function AgentsPanel() {
                             }).catch(() => setError("Could not copy the setup brief. Check clipboard access and retry."));
                         }}
                     >
-                        {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy brief"}
+                        {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy brief"}
                     </button>
                 </div>
             )}
 
-            {loading && <p role="status" style={styles.muted}>Loading agents…</p>}
-            <div style={styles.list}>
+            {loading && <p role="status" className="empty">Loading agents…</p>}
+            <div className="list scroll" style={{ maxHeight: 340 }}>
                 {clients.length === 0 && !loading && !error && (
-                    <div style={styles.muted}>No agents yet. Add one to issue it a credential of its own.</div>
+                    <div className="empty">No agents yet. Add one to issue it a credential of its own.</div>
                 )}
                 {clients.map((c) => (
-                    <div key={c.id} style={styles.row}>
-                        <div style={styles.rowHead}>
-                            <span style={styles.rowName}>{c.displayName}</span>
-                            <span style={styles.chip}>{c.kind.replace("_", " ")}</span>
-                            <span style={styles.rowMeta}>{c.lastSeenAt ? ago(c.lastSeenAt) : "never seen"}</span>
-                            <button style={styles.iconBtn} onClick={() => reissue(c)} disabled={busy}
+                    <div key={c.id} className="row" style={styles.row}>
+                        <div className="row-head">
+                            <span className="row-title">{c.displayName}</span>
+                            <span className="pill">{c.kind.replace("_", " ")}</span>
+                            <span className="meta" style={styles.grow}>{c.lastSeenAt ? ago(c.lastSeenAt) : "never seen"}</span>
+                            <button className="icon-btn" onClick={() => reissue(c)} disabled={busy}
                                 title="Issue a fresh claim">
-                                <RefreshCw size={12} />
+                                <RefreshCw size={14} />
                             </button>
-                            <button style={styles.dangerBtn} onClick={() => { setRevokeError(""); setRevocation({ kind: "agent", id: c.id, name: c.displayName }); }} disabled={busy}
+                            <button className="icon-btn" data-tone="danger" onClick={() => { setRevokeError(""); setRevocation({ kind: "agent", id: c.id, name: c.displayName }); }} disabled={busy}
                                 aria-label={`Revoke agent ${c.displayName} and all its credentials`}
                                 title="Revoke this agent and every key it holds">
-                                <Trash2 size={12} />
+                                <Trash2 size={14} />
                             </button>
                         </div>
                         {c.keys.length === 0 && (
-                            <div style={styles.rowMeta}>No live credentials. Its claim has not been exchanged yet.</div>
+                            <div className="meta">No live credentials. Its claim has not been exchanged yet.</div>
                         )}
                         {c.keys.map((k) => (
-                            <div key={k.id} style={styles.keyRow}>
-                                <span style={styles.chip}>
+                            <div key={k.id} className="row-head" style={styles.keyRow}>
+                                <span className="pill">
                                     {k.purpose === "council_seat"
                                         ? `seat: ${k.seatName ?? "?"}`
                                         : ACCESS_LABELS[k.accessLevel ?? "read"]}
                                 </span>
-                                <span style={styles.rowMeta}>{ago(k.lastUsedAt)}</span>
-                                <span style={styles.rowMeta}>
+                                <span className="meta">{ago(k.lastUsedAt)}</span>
+                                <span className="meta" style={styles.grow}>
                                     {k.expiresAt ? `expires ${new Date(k.expiresAt).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}` : "no expiry"}
                                 </span>
-                                <button style={styles.dangerBtn} onClick={() => { setRevokeError(""); setRevocation({ kind: "key", id: k.id, name: c.displayName, credential: k.purpose === "council_seat" ? `seat key for ${k.seatName ?? "this council"}` : `${ACCESS_LABELS[k.accessLevel ?? "read"]} credential` }); }} disabled={busy}
+                                <button className="icon-btn" data-tone="danger" onClick={() => { setRevokeError(""); setRevocation({ kind: "key", id: k.id, name: c.displayName, credential: k.purpose === "council_seat" ? `seat key for ${k.seatName ?? "this council"}` : `${ACCESS_LABELS[k.accessLevel ?? "read"]} credential` }); }} disabled={busy}
                                     aria-label={`Revoke credential for ${c.displayName}`}
                                     title="Revoke this credential">
-                                    <Trash2 size={11} />
+                                    <Trash2 size={14} />
                                 </button>
                             </div>
                         ))}
@@ -276,66 +278,13 @@ export default function AgentsPanel() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-    header: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
-    headerIcon: {
-        width: 32, height: 32, borderRadius: 12, display: "flex", alignItems: "center",
-        justifyContent: "center", flexShrink: 0,
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-    },
-    title: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
-    description: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
-    iconBtn: {
-        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32,
-        borderRadius: 9, cursor: "pointer", flexShrink: 0, background: "transparent",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        color: "var(--color-text-muted)",
-    },
-    dangerBtn: {
-        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32,
-        borderRadius: 9, cursor: "pointer", flexShrink: 0, background: "transparent",
-        border: "1px solid color-mix(in srgb, var(--admin-danger) 40%, transparent)", color: "var(--admin-danger)",
-    },
     addRow: { display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" },
-    addInput: {
-        flex: "1 1 160px", minWidth: 0, padding: "7px 10px", borderRadius: 12, fontSize: 12.5,
-        outline: "none", color: "var(--color-text-primary)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-    },
-    select: {
-        flex: "0 1 140px", padding: "7px 8px", borderRadius: 12, fontSize: 12,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-    },
-    error: { fontSize: 12, color: "var(--admin-danger)", marginBottom: 10 },
-    briefBox: {
-        display: "flex", flexDirection: "column", gap: 8, padding: 11, borderRadius: 14, marginBottom: 12,
-        border: "1px solid color-mix(in srgb, var(--admin-success) 45%, transparent)",
-        background: "color-mix(in srgb, var(--admin-success) 8%, transparent)",
-    },
-    briefHead: { fontSize: 12, lineHeight: 1.5, color: "var(--color-text-primary)" },
-    copyBtn: {
-        alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "5px 11px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "transparent", color: "var(--color-text-primary)",
-    },
-    list: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 340, overflowY: "auto" },
-    row: {
-        display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 14,
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    rowHead: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7 },
-    rowName: { overflowWrap: "anywhere", minWidth: 0, fontSize: 12.5, fontWeight: 700, color: "var(--color-text-primary)" },
-    rowMeta: { flex: 1, fontSize: 11, color: "var(--color-text-muted)" },
-    keyRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, paddingLeft: 4 },
-    chip: {
-        padding: "2px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 750, maxWidth: "100%", overflowWrap: "anywhere",
-        color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    muted: { color: "var(--color-text-muted)", fontSize: 12.5, padding: 4 },
+    addInput: { flex: "1 1 160px" },
+    select: { flex: "0 1 150px", padding: "0 10px", background: "var(--surface)" },
+    square: { width: 34, height: 34, padding: 0 },
+    briefBox: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 },
+    briefHead: { fontSize: 13, lineHeight: 1.5, color: "var(--ink)" },
+    row: { display: "flex", flexDirection: "column", gap: 6 },
+    grow: { flex: 1, minWidth: 0 },
+    keyRow: { paddingLeft: 4 },
 };

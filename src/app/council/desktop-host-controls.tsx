@@ -137,7 +137,7 @@ export function DesktopHostControls({ externalHost, onHostAvailable }: {
                     <button type="button" onClick={() => void perform("start")} disabled={!canStart}>
                         <Play size={14} aria-hidden="true" /> {pending === "start" || status?.phase === "starting" ? "Starting…" : "Start host"}
                     </button>
-                    <button type="button" onClick={() => void perform("stop")} disabled={!canStop}>
+                    <button type="button" className="stop" onClick={() => void perform("stop")} disabled={!canStop}>
                         <Square size={14} aria-hidden="true" /> {pending === "stop" || status?.phase === "stopping" ? "Stopping…" : "Stop host"}
                     </button>
                     <button type="button" onClick={() => void perform("restart")} disabled={!canStop}>
@@ -178,28 +178,29 @@ export function DesktopHostControls({ externalHost, onHostAvailable }: {
                 </details>
             )}
             <style jsx>{`
-                .desktop-host-controls { display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--color-border); }
+                .desktop-host-controls { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
                 .head, .state, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
                 .head { justify-content: space-between; gap: 12px; }
-                h3 { margin: 0; font-size: 13px; font-weight: 700; }
-                .state > span, .metrics, .note { color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
+                .state { gap: 10px; }
+                h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 600; }
+                .state > span, .metrics, .note { color: var(--muted); font-size: 13px; line-height: 1.5; }
                 p { margin: 0; }
                 .note { max-width: 75ch; }
                 .metrics, time { font-variant-numeric: tabular-nums; }
-                button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 8px 11px; border: 1px solid var(--color-border); border-radius: 14px; font: inherit; font-size: 12.5px; font-weight: 650; color: var(--color-text-primary); background: color-mix(in srgb, var(--color-background) 58%, transparent); cursor: pointer; transition: background-color 160ms ease-out; }
-                button:hover:not(:disabled) { background: var(--color-background); }
-                button:active:not(:disabled) { background: var(--color-surface); }
-                button:disabled { color: var(--color-text-muted); opacity: 0.55; cursor: not-allowed; }
-                button:focus-visible, summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-                .error { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; color: var(--color-text-primary); background: var(--color-background); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-                .error :global(svg) { flex-shrink: 0; margin-top: 1px; }
-                summary { width: fit-content; color: var(--color-text-muted); font-size: 12px; cursor: pointer; }
-                summary:hover { color: var(--color-text-primary); }
-                ol { list-style: none; margin: 8px 0 0; padding: 0; max-height: 190px; overflow-y: auto; scrollbar-color: var(--color-border) transparent; }
-                li { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; font-size: 12px; line-height: 1.5; }
-                time { color: var(--color-text-muted); flex-shrink: 0; }
+                button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: 500 13.5px var(--font-family); white-space: nowrap; cursor: pointer; transition: border-color 120ms ease; }
+                button :global(svg) { flex-shrink: 0; color: var(--muted); }
+                .stop, .stop :global(svg) { color: var(--danger); }
+                button:hover:not(:disabled) { border-color: var(--faint); }
+                button:disabled { opacity: 0.5; cursor: not-allowed; }
+                .error { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--danger); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+                .error :global(svg) { flex-shrink: 0; margin-top: 2px; }
+                summary { width: fit-content; padding-block: 4px; color: var(--muted); font-size: 13px; cursor: pointer; }
+                summary:hover { color: var(--ink); }
+                ol { list-style: none; margin: 6px 0 0; padding: 8px 12px; max-height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); }
+                li { display: flex; align-items: baseline; gap: 10px; padding: 2px 0; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+                time { flex-shrink: 0; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
                 li > span { min-width: 0; overflow-wrap: anywhere; }
-                ::selection { color: var(--color-primary-foreground); background: var(--color-primary); }
+                @media (pointer: coarse) { button { min-height: 44px; } summary { padding-block: 12px; } }
                 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
             `}</style>
         </div>

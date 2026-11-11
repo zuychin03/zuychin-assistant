@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquare, Pause, Play, Send, Megaphone } from "lucide-react";
+import ui from "./council.module.css";
 
 interface OwnerMessage {
     id: string;
@@ -101,33 +102,33 @@ export function OwnerChannelPanel({ code, paused, onStateChange }: {
     }
 
     return (
-        <div style={styles.wrap}>
-            <div style={styles.head}>
-                <div style={styles.headTitle}>
+        <div className={ui.subBlock}>
+            <div className={`${ui.subHead} ${ui.subHeadSpread}`}>
+                <span className={ui.subTitle}>
                     <MessageSquare size={15} />
                     <span>You and Zuychin</span>
-                </div>
-                <button type="button" onClick={togglePause} disabled={busy} style={{ ...styles.action, ...(paused ? styles.resumeAction : {}) }}>
+                </span>
+                <button type="button" onClick={togglePause} disabled={busy} className={`${ui.btn} ${ui.small}`}>
                     {paused ? <Play size={14} /> : <Pause size={14} />}
                     {paused ? "Resume" : "Stall"}
                 </button>
             </div>
-            <div style={styles.note}>
+            <div className={ui.subNote}>
                 Private. The agents never see this — only what Zuychin decides to relay.
-                {paused && <strong style={styles.pausedNote}> The council is stalled.</strong>}
+                {paused && <strong> The council is stalled.</strong>}
             </div>
 
-            <div style={styles.thread}>
+            <div className={ui.thread}>
                 {thread.length === 0 && (
-                    <div style={styles.empty}>
+                    <div className={ui.emptyText}>
                         Ask what it makes of the debate, or tell it to stall the room while you think.
                     </div>
                 )}
                 {thread.map((m) => (
-                    <div key={m.id} style={{ ...styles.bubble, ...(m.role === "owner" ? styles.mine : styles.theirs) }}>
-                        <div style={styles.bubbleBody}>{m.body}</div>
+                    <div key={m.id} className={ui.bubble} data-role={m.role}>
+                        <div className={ui.bubbleBody}>{m.body}</div>
                         {m.relayedSeq !== null && (
-                            <div style={styles.relayed}>
+                            <div className={ui.relayed}>
                                 <Megaphone size={11} /> Relayed to the council as seq {m.relayedSeq}
                             </div>
                         )}
@@ -136,9 +137,9 @@ export function OwnerChannelPanel({ code, paused, onStateChange }: {
                 <div ref={endRef} />
             </div>
 
-            {error && <div style={styles.error} role="alert">{error}</div>}
+            {error && <div className={ui.errorText} role="alert">{error}</div>}
 
-            <div style={styles.composer}>
+            <div className={ui.composer}>
                 <textarea aria-label="Private message to Zuychin"
                     value={text}
                     onChange={(e) => setText(e.target.value)}
@@ -150,73 +151,12 @@ export function OwnerChannelPanel({ code, paused, onStateChange }: {
                     }}
                     placeholder="Tell Zuychin what you think…"
                     rows={2}
-                    style={styles.input}
+                    className={`${ui.input} ${ui.textarea}`}
                 />
-                <button type="button" aria-label="Send private message" onClick={send} disabled={busy || !text.trim()} style={styles.send}>
+                <button type="button" aria-label="Send private message" onClick={send} disabled={busy || !text.trim()} className={`${ui.btn} ${ui.iconOnly}`}>
                     <Send size={14} />
                 </button>
             </div>
         </div>
     );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-    wrap: {
-        display: "flex", flexDirection: "column", gap: 10, padding: 14,
-        borderRadius: 14,
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-secondary) 28%, transparent)",
-        background: "color-mix(in srgb, var(--color-secondary) 6%, var(--color-surface))",
-    },
-    head: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
-    headTitle: {
-        display: "flex", alignItems: "center", gap: 7,
-        fontSize: 13, fontWeight: 700, color: "var(--color-text-primary)",
-    },
-    action: {
-        display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px",
-        borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 35%, transparent)",
-        background: "transparent", color: "var(--color-text-primary)",
-    },
-    resumeAction: { color: "var(--council-good)", borderColor: "color-mix(in srgb, var(--council-good) 45%, transparent)" },
-    note: { fontSize: 11.5, color: "var(--color-text-muted)", lineHeight: 1.5 },
-    pausedNote: { color: "var(--council-caution)" },
-    thread: {
-        display: "flex", flexDirection: "column", gap: 8,
-        maxHeight: 300, overflowY: "auto", paddingRight: 4,
-    },
-    empty: { fontSize: 12.5, color: "var(--color-text-muted)", padding: "10px 2px", lineHeight: 1.5 },
-    bubble: { maxWidth: "88%", padding: "8px 11px", borderRadius: 12, fontSize: 13, lineHeight: 1.5 },
-    mine: {
-        alignSelf: "flex-end",
-        background: "color-mix(in srgb, var(--color-secondary) 20%, transparent)",
-    },
-    theirs: {
-        alignSelf: "flex-start",
-        background: "color-mix(in srgb, var(--color-text-muted) 12%, transparent)",
-    },
-    bubbleBody: { whiteSpace: "pre-wrap", wordBreak: "break-word" },
-    relayed: {
-        display: "flex", alignItems: "center", gap: 5, marginTop: 5,
-        fontSize: 11, color: "var(--color-text-muted)",
-    },
-    error: { fontSize: 12, color: "var(--council-error)" },
-    composer: { display: "flex", gap: 8, alignItems: "flex-end" },
-    input: {
-        flex: 1, resize: "none", padding: "8px 10px", borderRadius: 10, fontSize: 13,
-        fontFamily: "var(--font-family)", lineHeight: 1.5,
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 30%, transparent)",
-        background: "var(--color-background)", color: "var(--color-text-primary)",
-    },
-    send: {
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        width: 34, height: 34, borderRadius: 10, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-secondary) 45%, transparent)",
-        background: "color-mix(in srgb, var(--color-secondary) 18%, transparent)",
-        color: "var(--color-text-primary)",
-    },
-};

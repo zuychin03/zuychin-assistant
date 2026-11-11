@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { WorkspaceShell } from "@/components/workspace-shell";
 import { Dropdown } from "@/components/dropdown";
 import { useUnsavedChanges } from "@/components/use-unsaved-changes";
@@ -130,17 +130,18 @@ export default function TasksPage() {
     const pending = report?.approvals.filter(approval => approvalActionable(approval, now)).length || 0;
     const field = <K extends keyof TaskDraft>(key: K, value: TaskDraft[K]) => setEditor(previous => previous ? { ...previous, draft: { ...previous.draft, [key]: value } } : null);
 
-    return <WorkspaceShell current="tasks" title="Tasks" description="Manage recurring work and review actions that need your approval." actions={<button onClick={() => void load()} disabled={loading || Boolean(busy)}><RefreshCw size={15} /> {loading ? "Loading…" : "Refresh"}</button>}>
+    return <WorkspaceShell current="tasks" title="Tasks" description="Schedules, approvals and run history"
+        toolbar={<nav aria-label="Task views" className={styles.tabs}>
+            <button aria-pressed={tab === "schedules"} onClick={() => setTab("schedules")}>Schedules {report ? `(${report.tasks.length})` : ""}</button>
+            <button aria-pressed={tab === "approvals"} onClick={() => setTab("approvals")}>Approvals {pending ? `(${pending} pending)` : ""}</button>
+            <button aria-pressed={tab === "runs"} onClick={() => setTab("runs")}>Run history</button>
+        </nav>}
+        actions={<button onClick={() => void load()} disabled={loading || Boolean(busy)}><RefreshCw size={15} /> {loading ? "Loading…" : "Refresh"}</button>}>
         <div className={styles.page}>
         {loadError && <div role="alert" className={styles.error}>{loadError} {report && "The records below may be out of date."} <button onClick={() => void load()} disabled={loading}>Retry loading</button></div>}
         {report?.activationError && <div role="alert" className={styles.error}><strong>Task execution is unavailable.</strong><p>{report.activationError}</p><p>Apply the required migration, then refresh. Running tasks and approving actions are blocked.</p></div>}
         {actionError && <div role="alert" className={styles.error}>{actionError}</div>}
         {notice && <p role="status" className={styles.notice}>{notice}</p>}
-        <nav aria-label="Task views" className={styles.tabs}>
-            <button aria-pressed={tab === "schedules"} onClick={() => setTab("schedules")}>Schedules {report ? `(${report.tasks.length})` : ""}</button>
-            <button aria-pressed={tab === "approvals"} onClick={() => setTab("approvals")}>Approvals {pending ? `(${pending} pending)` : ""}</button>
-            <button aria-pressed={tab === "runs"} onClick={() => setTab("runs")}>Run history</button>
-        </nav>
         {loading && !report && <p role="status" className={styles.empty}>Loading tasks and approvals…</p>}
         {tab === "schedules" && report && <>
             <div className={styles.sectionHead}><h2>Your schedules</h2><button title="Uses paid models" disabled={blocked} onClick={() => openEditor({ draft: taskDraft() })}><Plus size={16} /> New task</button></div>
@@ -177,9 +178,9 @@ export default function TasksPage() {
                         <button title="Uses paid models" disabled={blocked || Boolean(report.activationError) || (active && !uncertain)} onClick={() => void run(task)}>{busy === `run:${task.id}` ? "Checking run…" : uncertain ? "Retry same run request" : "Run now"}</button>
                         <button disabled={blocked} onClick={() => void mutate(`toggle:${task.id}`, "/api/tasks", "PATCH", { id: task.id, enabled: !task.enabled }, task.enabled ? "Task paused." : "Task resumed.")}>{task.enabled ? "Pause" : "Resume"}</button>
                         <button disabled={blocked} onClick={() => openEditor({ id: task.id, draft: taskDraft(task) })}>Edit</button>
-                        <button disabled={blocked} onClick={() => setDeleteId(task.id)}>Delete</button>
+                        <button className={styles.danger} disabled={blocked} onClick={() => setDeleteId(task.id)}><Trash2 size={15} aria-hidden="true" /> Delete</button>
                     </div>
-                    {deleteId === task.id && <div className={styles.confirm} role="group" aria-label="Confirm task deletion"><p>Delete “{task.title}”? This removes its schedule.</p><div className={styles.actions}><button disabled={blocked} onClick={() => void mutate(`delete:${task.id}`, `/api/tasks?id=${encodeURIComponent(task.id)}`, "DELETE", undefined, "Task deleted.", () => setDeleteId(null))}>Confirm delete</button><button autoFocus disabled={Boolean(busy)} onClick={() => setDeleteId(null)}>Keep task</button></div></div>}
+                    {deleteId === task.id && <div className={styles.confirm} role="group" aria-label="Confirm task deletion"><p>Delete “{task.title}”? This removes its schedule.</p><div className={styles.actions}><button className={styles.danger} disabled={blocked} onClick={() => void mutate(`delete:${task.id}`, `/api/tasks?id=${encodeURIComponent(task.id)}`, "DELETE", undefined, "Task deleted.", () => setDeleteId(null))}><Trash2 size={15} aria-hidden="true" /> Confirm delete</button><button autoFocus disabled={Boolean(busy)} onClick={() => setDeleteId(null)}>Keep task</button></div></div>}
                 </article>;
             })}
         </>}

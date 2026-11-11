@@ -69,10 +69,8 @@ export function HealthPanel({ health, nodes, activeFindings, onToggleFinding, on
                             key={finding}
                             style={{
                                 ...styles.listRow,
+                                ...(active ? styles.listRowActive : {}),
                                 opacity: count === 0 ? 0.45 : 1,
-                                borderLeftWidth: 3,
-                                borderLeftStyle: "solid",
-                                borderLeftColor: active ? HEALTH_COLORS[finding] : "transparent",
                             }}
                             onClick={() => onToggleFinding(finding)}
                             disabled={count === 0}

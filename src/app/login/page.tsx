@@ -3,7 +3,10 @@
 import ui from "./login.module.css";
 import { useState } from "react";
 import { startAuthentication } from "@simplewebauthn/browser";
-import { Bot, KeyRound, Lock, Loader2, ShieldCheck } from "lucide-react";
+import { KeyRound, Lock, Loader2, ShieldCheck } from "lucide-react";
+import { ZuychinMark } from "@/components/app-sidebar";
+
+const spin = { animation: "spin 1s linear infinite" };
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
@@ -75,20 +78,19 @@ export default function LoginPage() {
   };
 
   return (
-    <main style={styles.page}>
-      <div style={styles.card} className={ui.card}>
-        <div style={styles.iconWrap}>
-          <Bot size={28} color="var(--color-primary-foreground)" />
-        </div>
+    <main className={ui.page}>
+      <div className={ui.card}>
+        <header className={ui.head}>
+          <ZuychinMark size={26} className={ui.mark} />
+          <h1 className={ui.title}>Sign in to Zuychin</h1>
+          <p id="login-hint" className={ui.hint}>{needsTotp ? "Enter the code from your authenticator app" : "Sign in with a passkey or recovery password"}</p>
+        </header>
 
-        <h1 style={styles.title}>Zuychin Assistant</h1>
-        <p id="login-hint" style={styles.subtitle}>{needsTotp ? "Enter the code from your authenticator app" : "Sign in with a passkey or recovery password"}</p>
-
-        {!needsTotp && <button type="button" onClick={handlePasskey} disabled={loading} style={{ ...styles.button, marginBottom: 12, opacity: loading ? 0.5 : 1 }}>{pending === "passkey" ? <Loader2 size={18} aria-hidden style={{ animation: "spin 1s linear infinite" }} /> : <KeyRound size={18} aria-hidden />} <span>{pending === "passkey" ? "Waiting for passkey…" : "Sign in with passkey"}</span></button>}
-        <form onSubmit={needsTotp ? handleTotp : handleSubmit} style={styles.form} aria-busy={loading}>
-          <label htmlFor="login-credential" style={{ fontSize: 14, fontWeight: 600, textAlign: "left" }}>{needsTotp ? "Authenticator code" : "Recovery password"}</label>
-          <div style={styles.inputWrap} className={ui.field}>
-            {needsTotp ? <ShieldCheck size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} /> : <Lock size={16} color="var(--color-text-muted)" style={{ flexShrink: 0 }} />}
+        {!needsTotp && <button type="button" onClick={handlePasskey} disabled={loading} className={ui.primary}>{pending === "passkey" ? <Loader2 size={17} aria-hidden style={spin} /> : <KeyRound size={17} aria-hidden />} <span>{pending === "passkey" ? "Waiting for passkey…" : "Sign in with passkey"}</span></button>}
+        <form onSubmit={needsTotp ? handleTotp : handleSubmit} className={ui.form} aria-busy={loading}>
+          <label htmlFor="login-credential" className={ui.label}>{needsTotp ? "Authenticator code" : "Recovery password"}</label>
+          <div className={ui.field}>
+            {needsTotp ? <ShieldCheck size={16} aria-hidden /> : <Lock size={16} aria-hidden />}
             <input
               key={needsTotp ? "totp" : "password"}
               id="login-credential"
@@ -104,118 +106,25 @@ export default function LoginPage() {
               onChange={(e) => needsTotp ? setTotp(e.target.value.replace(/\D/g, "").slice(0, 6)) : setPassword(e.target.value)}
               placeholder={needsTotp ? "123456" : "Password"}
               autoFocus
-              style={styles.input}
             />
           </div>
 
-          {error && <p id="login-error" role="alert" className={ui.error} style={styles.error}>{error}</p>}
+          {error && <p id="login-error" role="alert" className={ui.error}>{error}</p>}
 
           <button
             type="submit"
             disabled={needsTotp ? totp.length !== 6 || loading : !password.trim() || loading}
-            style={{
-              ...styles.button,
-              opacity: needsTotp ? (totp.length !== 6 || loading ? 0.5 : 1) : (!password.trim() || loading ? 0.5 : 1),
-            }}
+            className={needsTotp ? ui.primary : ui.secondary}
           >
             {pending === "password" || pending === "totp" ? (
-              <><Loader2 size={18} aria-hidden style={{ animation: "spin 1s linear infinite" }} /><span>{needsTotp ? "Verifying…" : "Signing in…"}</span></>
+              <><Loader2 size={17} aria-hidden style={spin} /><span>{needsTotp ? "Verifying…" : "Signing in…"}</span></>
             ) : (
               needsTotp ? "Verify code" : "Sign in with password"
             )}
           </button>
         </form>
-        {needsTotp && <button type="button" disabled={loading} onClick={() => { setNeedsTotp(false); setTotp(""); setError(""); }} style={{ ...styles.backButton }}>Back to sign-in methods</button>}
+        {needsTotp && <button type="button" disabled={loading} onClick={() => { setNeedsTotp(false); setTotp(""); setError(""); }} className={ui.linkButton}>Back to sign-in methods</button>}
       </div>
     </main>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: "100dvh",
-    padding: 20,
-    background: "var(--color-background)",
-  },
-  card: {
-    width: "100%",
-    maxWidth: 360,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: 6,
-  },
-  iconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: "50%",
-    background: "var(--color-primary)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 8,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: 700,
-    color: "var(--color-text-primary)",
-    letterSpacing: "-0.4px",
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "var(--color-text-muted)",
-    marginBottom: 20,
-  },
-  form: {
-    width: "100%",
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
-  inputWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    background: "var(--color-surface)",
-    borderRadius: "var(--radius-md)",
-    padding: "12px 14px",
-    border: "1px solid var(--color-border)",
-  },
-  input: {
-    flex: 1,
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    minWidth: 0,
-    fontSize: 16,
-    fontFamily: "var(--font-family)",
-    color: "var(--color-text-primary)",
-  },
-  error: {
-    fontSize: 13,
-    lineHeight: 1.5,
-    textAlign: "center",
-  },
-  backButton: { marginTop: 12, minHeight: 44, padding: "8px 12px", border: "none", background: "transparent", color: "var(--color-text-primary)", textDecoration: "underline", textUnderlineOffset: 4, font: "inherit", fontSize: 14, cursor: "pointer" },
-  button: {
-    width: "100%",
-    padding: "12px 0",
-    borderRadius: "var(--radius-md)",
-    background: "var(--color-primary)",
-    color: "var(--color-primary-foreground)",
-    border: "none",
-    fontSize: 15,
-    fontWeight: 600,
-    fontFamily: "var(--font-family)",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 44,
-    transition: "opacity 0.15s ease",
-  },
-};

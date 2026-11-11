@@ -42,7 +42,7 @@ export function Switch({ label, icon, on, onChange }: {
                 onClick={() => onChange(!on)}
                 style={{ ...styles.switch, ...(on ? styles.switchOn : {}) }}
             >
-                <span style={{ ...styles.switchKnob, transform: on ? "translateX(17px)" : "translateX(0)" }} />
+                <span style={{ ...styles.switchKnob, ...(on ? styles.switchKnobOn : {}), transform: on ? "translateX(17px)" : "translateX(0)" }} />
             </button>
         </div>
     );

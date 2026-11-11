@@ -2,7 +2,6 @@
 
 import { ArrowRight, Route, X } from "lucide-react";
 import { styles } from "../cosmos/styles";
-import { COSMOS } from "../cosmos/palette";
 import type { GraphNode } from "../cosmos/model";
 import { PanelShell } from "./ui";
 
@@ -69,7 +68,7 @@ export default function PathPanel({ from, to, path, titleOf, onFocus, onClear, o
             )}
 
             {complete && !found && (
-                <div style={{ ...styles.empty, color: COSMOS.muted }}>
+                <div style={styles.empty}>
                     No visible links connect these pages. Broaden the filters or return to the
                     overview to check the rest of the vault.
                 </div>

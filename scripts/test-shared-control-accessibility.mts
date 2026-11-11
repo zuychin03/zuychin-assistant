@@ -74,6 +74,8 @@ test("model picker Escape remains local and arrows still navigate", () => {
 
 const home = source("../src/app/page.tsx");
 const conversations = source("../src/app/home/conversation-list.tsx");
+const sidebar = source("../src/components/app-sidebar.tsx");
+const trapTab = find(sidebar, node => ts.isFunctionDeclaration(node) && node.name?.getText(sidebar) === "trapTab").getText(sidebar).replace(/^export\s+/, "");
 const menu = find(conversations, node => ts.isJsxOpeningElement(node) && node.attributes.properties.some(attribute => ts.isJsxAttribute(attribute) && attribute.name.getText(conversations) === "role" && attribute.initializer?.getText(conversations) === '"menu"')) as ts.JsxOpeningElement;
 const keyAttribute = menu.attributes.properties.find(attribute => ts.isJsxAttribute(attribute) && attribute.name.getText(conversations) === "onKeyDown") as ts.JsxAttribute;
 assert(keyAttribute.initializer && ts.isJsxExpression(keyAttribute.initializer) && keyAttribute.initializer.expression);
@@ -86,11 +88,12 @@ for (const shift of [false, true]) test(`closing a mobile drawer menu preserves 
     const event = { ...keyEvent("Tab", shift), target: new Element() };
     const handlers = execute<{ menu: (input: typeof event) => void; drawer: (input: typeof event) => void }>(`
         const closeMenu = ${variable(conversations, "closeMenu")};
-        ({ menu: ${menuKey}, drawer: ${variable(home, "onKeyDown")} });
+        ${trapTab}
+        ({ menu: ${menuKey}, drawer: ${variable(sidebar, "onKey")} });
     `, {
-        document, Element, panel: { querySelectorAll: () => [first, last] },
-        setMenuFor: () => undefined, setMoveFor: () => undefined, menuAnchorRef: { current: last },
-        setSidebarOpen: () => undefined, setNotesOpen: () => undefined,
+        document, Element,
+        panel: { current: { querySelectorAll: () => [first, last], contains: (node: unknown) => node === first || node === last } },
+        setMenuFor: () => undefined, setMoveFor: () => undefined, menuAnchorRef: { current: last }, onClose: () => undefined,
     });
     handlers.menu(event);
     handlers.drawer(event);

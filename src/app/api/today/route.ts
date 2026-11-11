@@ -4,7 +4,8 @@ import { listUpcomingEvents } from "@/lib/integrations/calendar-service";
 
 export async function GET() {
     const [dueTodos, todos, events] = await Promise.all([
-        listDueTodos().catch(() => []),
+        // Unlike the reminder cron, the panel also lists todos it has already nagged about.
+        listDueTodos(24, null).catch(() => []),
         listTodos("pending", 10).catch(() => []),
         listUpcomingEvents(48, 10).catch(() => []),
     ]);

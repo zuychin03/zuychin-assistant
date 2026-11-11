@@ -612,12 +612,14 @@ import {
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
 import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
+import { recordReplySources } from "@/lib/ai/reply-sources";
 
 export async function executeTool(
     toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
 ): Promise<string> {
     const pending = await gateUnattendedTool(toolName, args, proposeAction);
     if (pending) return pending;
+    recordReplySources([{ kind: toolName === "search_web" ? "web" : "tool", label: toolName, ref: toolName, weight: 0.5 }]);
     const knowledgeTool = ["search_knowledge", "vault_read", "vault_search", "vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
     const knowledgePayload = ["vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
     const result = await (knowledgePayload ? withModelDataClasses(["knowledge"], () => dispatchTool(toolName, args, embRef, ctx)) : dispatchTool(toolName, args, embRef, ctx));

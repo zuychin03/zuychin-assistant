@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceLink as Link } from "@/components/workspace-link";
-import { Download, Inbox, RefreshCw } from "lucide-react";
+import { Download, Inbox, RefreshCw, Trash2 } from "lucide-react";
 import { WorkspaceShell } from "@/components/workspace-shell";
 import { Dropdown } from "@/components/dropdown";
 import { ConfirmModal } from "../home/controls";
@@ -148,7 +148,7 @@ export default function CapturePage() {
         });
     }
     const opened = offline?.documents.find(document => document.documentId === reading);
-    return <WorkspaceShell current="capture" title="Capture & offline" description="Collect material, review where it belongs, and take selected documents with you.">
+    return <WorkspaceShell current="capture" title="Capture" description="Collect material, file it, read offline">
         <div className={styles.page}>
         {error && <p role="alert" className={styles.error}>{error}</p>}{notice && <p role="status" className={styles.notice}>{notice}</p>}
         <div className={styles.columns}>
@@ -194,7 +194,7 @@ export default function CapturePage() {
                     <div className={styles.actions}><button disabled={!!busy || !token || !offline.queue.length} onClick={() => void action("sync", async () => {
                         const current = identity(); const count = await offlineLibrary.sync(current, async entry => { const result = await request("/api/capture", { action: "capture", profileId: current.profileId, id: entry.id, source: entry.source }); return { id: result.item.id }; });
                         await load(); setNotice(`${count} notes sent to the inbox for review. Source documents were not changed.`);
-                    })}>Sync notes to inbox</button><button disabled={!!busy} onClick={requestOfflineClear}>Clear private offline data</button></div>
+                    })}>Sync notes to inbox</button><button className={styles.danger} disabled={!!busy} onClick={requestOfflineClear}><Trash2 size={15} aria-hidden="true" /> Clear private offline data</button></div>
                     <ul className={styles.list}>{documents.map(document => { const saved = offline.documents.find(value => value.documentId === document.id); return <li key={document.id}><div><strong>{document.title}</strong><span>{saved ? `Downloaded ${date(saved.downloadedAt)} · ${saved.commitSha.slice(0, 10)}${saved.originalPdf ? " · PDF included" : ""}` : "Not downloaded"}</span></div><button disabled={!!busy || !token} onClick={() => void action("download", () => download(document.id))}>{saved ? "Refresh download" : "Download"}</button>{saved && <button disabled={!!busy} aria-controls="capture-reader" onClick={() => chooseCopy(document.id)}>Read offline copy</button>}</li>; })}</ul>
                     {!documents.length && offline.documents.map(document => <button key={document.documentId} disabled={!!busy} aria-controls="capture-reader" onClick={() => chooseCopy(document.documentId)}>{document.path}</button>)}
                 </>}
@@ -203,7 +203,7 @@ export default function CapturePage() {
             <p>Saved {date(opened.downloadedAt)} · revision {opened.commitSha.slice(0, 10)}. External images are not loaded.</p><pre className={styles.reading} tabIndex={0} aria-label="Saved document content">{opened.markdown}</pre>
             {opened.originalPdf && <><button onClick={() => setPdfUrl(URL.createObjectURL(opened.originalPdf!))}>Prepare saved PDF</button>{pdfUrl && <a href={pdfUrl} download="saved-source.pdf">Download saved PDF</a>}</>}
             <label>Note on this saved revision<textarea value={note} disabled={!!busy} maxLength={20000} rows={4} onChange={event => setNote(event.target.value)} /></label><button disabled={!!busy || !note.trim()} onClick={() => void action("note", async () => { await offlineLibrary.queueNote(identity(), opened.documentId, note); setNote(""); await refreshOffline(); setNotice("Note queued on this device. Sync it to the inbox when connected."); })}>{busy === "note" ? "Saving note…" : "Queue note"}</button>
-            <button disabled={!!busy} onClick={() => { if (!leaveOfflineNote()) return; void action("remove", async () => { await offlineLibrary.remove(identity(), opened.documentId); readCopy(undefined); await refreshOffline(); }); }}>Remove offline copy</button>
+            <button className={styles.danger} disabled={!!busy} onClick={() => { if (!leaveOfflineNote()) return; void action("remove", async () => { await offlineLibrary.remove(identity(), opened.documentId); readCopy(undefined); await refreshOffline(); }); }}><Trash2 size={15} aria-hidden="true" /> Remove offline copy</button>
         </section>}
         </div>
         {clearRequest && <ConfirmModal title="Clear private offline data?"

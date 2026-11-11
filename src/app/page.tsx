@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
-import { WorkspaceLink as Link } from "@/components/workspace-link";
-import { Send, Bot, User, Plus, History, X, Paperclip, FileText, FileCode, FileArchive, Image as ImageIcon, Music, Video, File, Brain, Download, SlidersHorizontal, Cpu, Database, Sun, Moon, Info, ListTodo, Waypoints, Mail, CalendarDays, Globe, Code2, Lightbulb, ArrowDown, ChevronRight, RotateCcw, Reply, Square, Mic, Volume2, Gavel, ShieldCheck, BookOpen, CircleDollarSign } from "lucide-react";
+import { AppSidebar, SidebarToggle, ZuychinMark, useMediaQuery, useSidebarState, useStoredFlag } from "@/components/app-sidebar";
+import { TODAY_DOCKED_QUERY, TodayPanel, TodayToggle, useDueCount } from "@/components/today-panel";
+import { ArrowUp, Bot, Check, Circle, X, Paperclip, FileText, FileCode, FileArchive, Folder, Image as ImageIcon, LoaderCircle, Music, Video, File, Brain, Download, SlidersHorizontal, Database, Info, ArrowDown, ChevronRight, RotateCcw, Reply, Square, SquarePen, Mic, Volume2, BookOpen, CircleDollarSign } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, modelSearchTerms, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
 import chatModeStyles from "./home/chat-modes.module.css";
+import ui from "./home/chat.module.css";
 import { GenerationSettings, ModeToggle } from "./home/generation-settings";
 import { chatMarkdownComponents } from "./home/markdown";
 import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
@@ -20,7 +22,8 @@ import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, sameDraft, type Ch
 import { readChatDrafts, writeChatDraft } from "./home/chat-drafts";
 import { safeReturnTo, documentDestination, withReturnTo } from "@/lib/document-navigation";
 import { eligibleChatProviders, resolveChatSelection } from "./home/chat-policy";
-import ReplyTraceDetails from "./home/reply-trace";
+import { ReplyActivity, SourceChart } from "./home/reply-sources";
+import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
@@ -48,12 +51,6 @@ interface ChatMessage {
   replyTo?: { role: "user" | "assistant"; content: string };
 }
 
-interface TodayData {
-  dueTodos: { id: string; title: string; priority: string; dueDate: string | null }[];
-  todos: { id: string; title: string; priority: string; dueDate: string | null }[];
-  events: { id?: string; summary: string; start: string; end?: string; location?: string }[];
-}
-
 // Minimal surface of the (webkit-prefixed) SpeechRecognition API used for the
 // voice-loop stop phrase; lib.dom has no types for it.
 interface SpeechRecognitionLike {
@@ -64,15 +61,6 @@ interface SpeechRecognitionLike {
   onerror: (() => void) | null;
   start: () => void;
   stop: () => void;
-}
-
-// Date-only strings (all-day events, bare due dates) skip the time part.
-function fmtWhen(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const dayPart = d.toLocaleDateString("en-AU", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
-  if (!iso.includes("T")) return dayPart;
-  return `${dayPart}, ${d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}`;
 }
 
 interface OutgoingPayload {
@@ -113,16 +101,6 @@ const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
     replyTrace: m.metadata?.replyTrace,
   }));
 
-// Starter suggestions on the empty state. Each fills the input with a command
-// (trailing space keeps the slash menu closed so Enter sends right away).
-const STARTER_SUGGESTIONS: { icon: React.ReactNode; label: string; fill: string }[] = [
-  { icon: <CalendarDays size={15} />, label: "Plan my day", fill: "/plan_day " },
-  { icon: <Mail size={15} />, label: "Triage my inbox", fill: "/triage_emails " },
-  { icon: <Globe size={15} />, label: "Research a topic", fill: "/research " },
-  { icon: <Code2 size={15} />, label: "Write some code", fill: "/code " },
-  { icon: <Lightbulb size={15} />, label: "Explain a concept", fill: "/explain " },
-];
-
 interface AgentRun {
   status: string;
   steps: { title: string; status: string }[];
@@ -160,16 +138,6 @@ interface Conversation {
   title: string;
   updatedAt: string;
   projectId?: string | null;
-}
-
-interface NoteItem {
-  id: string;
-  title: string;
-  description: string;
-  status: "pending" | "in_progress" | "done";
-  priority: "low" | "medium" | "high";
-  dueDate: string | null;
-  createdAt: string;
 }
 
 interface GenParamsState {
@@ -229,16 +197,21 @@ export default function Home() {
   const setReplyTo = (reply: ChatDraft["replyTo"]) => chats.setDraft(chats.get(), { ...chats.get().draft, replyTo: reply });
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
-  const [notes, setNotes] = useState<NoteItem[]>([]);
-  const [notesLoaded, setNotesLoaded] = useState(false);
-  const [notesError, setNotesError] = useState("");
+  const sidebar = useSidebarState();
+  const [chatSearch, setChatSearch] = useState("");
+  const todayDocked = useMediaQuery(TODAY_DOCKED_QUERY, false);
+  const [todayHidden, setTodayHidden] = useStoredFlag("zuychin-today", "hidden");
+  const [todaySheetOpen, setTodaySheetOpen] = useState(false);
+  const [todayRefresh, setTodayRefresh] = useState(0);
+  const [dueCount, setDueCount] = useDueCount();
+  const closeToday = useCallback(() => {
+    if (todayDocked) setTodayHidden(true);
+    else setTodaySheetOpen(false);
+  }, [todayDocked, setTodayHidden]);
   const [cmdIndex, setCmdIndex] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const [today, setToday] = useState<TodayData | null>(null);
   // status: "confirm" shows the warning buttons; anything else is progress text.
   const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
@@ -256,7 +229,6 @@ export default function Home() {
   const [returnTo, setReturnTo] = useState<string | null>(null);
   const [documentLinks, setDocumentLinks] = useState({ knowledge: "/knowledge", graph: "/graph" });
   const [isDesktop, setIsDesktop] = useState(false);
-  const [compactHeader, setCompactHeader] = useState(true);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [providersLoaded, setProvidersLoaded] = useState(false);
@@ -269,7 +241,6 @@ export default function Home() {
   const generationTriggerRef = useRef<HTMLButtonElement>(null);
   const closeGeneration = useCallback(() => setGenerationOpen(false), []);
   const [genParams, setGenParams] = useState<GenParamsState>({ temperature: null, topP: null, maxTokens: null });
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   // Message id whose export formats (DOCX/PDF/MD) are expanded.
@@ -277,9 +248,6 @@ export default function Home() {
   const [convosLoaded, setConvosLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const notesRef = useRef<HTMLElement>(null);
-  const sidebarRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
@@ -339,39 +307,6 @@ export default function Home() {
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver(([entry]) => setCompactHeader(entry.contentRect.width < 1050));
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (isDesktop || (!sidebarOpen && !notesOpen)) return;
-    const panel = sidebarOpen ? sidebarRef.current : notesRef.current;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    panel?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !document.querySelector("dialog[open]")) {
-        event.preventDefault();
-        setSidebarOpen(false);
-        setNotesOpen(false);
-      }
-      if (event.defaultPrevented || event.key !== "Tab" || !panel) return;
-      const controls = Array.from(panel.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]'))
-        .filter((element) => element.getClientRects().length > 0);
-      const first = controls[0], last = controls.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-    };
-  }, [isDesktop, sidebarOpen, notesOpen]);
 
   useEffect(() => {
     const voiceRequest = voiceRequestRef;
@@ -434,17 +369,6 @@ export default function Home() {
     navigator.serviceWorker.register("/sw.js").catch((err) => console.warn("SW registration failed:", err));
   }, []);
 
-  // Today card on the empty state; dismissing it lasts for the browser session.
-  useEffect(() => {
-    if (sessionStorage.getItem("zuychin-today-dismissed") === "1") return;
-    fetch("/api/today")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: TodayData | null) => {
-        if (d && (d.dueTodos.length > 0 || d.todos.length > 0 || d.events.length > 0)) setToday(d);
-      })
-      .catch(() => { });
-  }, []);
-
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   };
@@ -495,72 +419,10 @@ export default function Home() {
     });
   }, [loadProjects]);
 
-  const loadNotes = useCallback(async () => {
-    try {
-      const data = await requestJson<{ todos: NoteItem[] }>("/api/todos");
-      if (!Array.isArray(data.todos)) throw new Error("Invalid notes response.");
-      const undated = data.todos.filter((n) => !n.dueDate);
-      const dated = data.todos.filter((n) => n.dueDate).sort((a, b) => a.dueDate!.localeCompare(b.dueDate!));
-      setNotes([...undated, ...dated]);
-      setNotesError("");
-    } catch {
-      setNotesError("Your notes could not be loaded. Try again.");
-    } finally {
-      setNotesLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadNotes();
-  }, [loadNotes]);
-
-  const completeNote = async (id: string) => {
-    setNotes((prev) => prev.filter((n) => n.id !== id));
-    try {
-      const res = await fetch("/api/todos", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status: "done" }),
-      });
-      if (!res.ok) throw new Error(`Request failed (${res.status})`);
-    } catch (err) {
-      console.error("Failed to complete note:", err);
-      setActionError({ message: "That note could not be marked as done. Please try again." });
-      loadNotes();
-    }
-  };
-
-  const toggleNotes = () => {
-    if (!isDesktop) setSidebarOpen(false);
-    setNotesOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem("zuychin-notes-open", String(next));
-      if (next) loadNotes();
-      return next;
-    });
-  };
-
   useEffect(() => {
     const saved = localStorage.getItem("zuychin-think-mode");
     if (saved === "true") setThinkingEnabled(true);
-    if (localStorage.getItem("zuychin-notes-open") === "true" && window.innerWidth >= 768) {
-      setNotesOpen(true);
-    }
   }, []);
-
-  useEffect(() => {
-    const current = document.documentElement.getAttribute("data-theme");
-    setTheme(current === "dark" ? "dark" : "light");
-  }, []);
-
-  const toggleTheme = () => {
-    setTheme((prev) => {
-      const next = prev === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
-      localStorage.setItem("zuychin-theme", next);
-      return next;
-    });
-  };
 
   const loadProviders = useCallback(async () => {
     const requestId = ++providerRequest.current;
@@ -715,7 +577,7 @@ export default function Home() {
   const selectSession = (target: Session) => {
     chats.select(target.key);
     conversationUrl(target.key === NEW_CHAT ? null : target.key);
-    setSidebarOpen(false);
+    if (!sidebar.docked) sidebar.setOpen(false);
     exitVoiceLoop();
     if (inputRef.current) inputRef.current.style.height = "auto";
   };
@@ -754,11 +616,6 @@ export default function Home() {
     if (id) void initialConversationLoader.current(id);
     else if (chats.activeKey !== NEW_CHAT) conversationUrl(chats.activeKey);
   }, []);
-
-  const dismissToday = () => {
-    sessionStorage.setItem("zuychin-today-dismissed", "1");
-    setToday(null);
-  };
 
   const refreshLists = async () => (await Promise.all([loadProjects(), loadConversations()])).every(Boolean);
   const runAction = async (key: string, label: string, write: () => Promise<void>, refresh: () => Promise<boolean>, retryInPlace = true, retryControl?: string): Promise<boolean> => {
@@ -1097,7 +954,7 @@ export default function Home() {
       }
       canDrain = true;
       void loadConversations();
-      void loadNotes();
+      setTodayRefresh((value) => value + 1);
     } catch (error: unknown) {
       // Full drop on cancel: the server deletes the errant user message and
       // saves no reply, so remove the optimistic user bubble (and any
@@ -1161,7 +1018,7 @@ export default function Home() {
   const msgClock = (iso?: string) => {
     if (!iso) return "";
     const d = new Date(iso);
-    return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return isNaN(d.getTime()) ? "" : d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false });
   };
 
   // Command suggestions show while the first token is being typed ("/dra…").
@@ -1206,19 +1063,6 @@ export default function Home() {
       e.preventDefault();
       handleSubmit(e);
     }
-  };
-
-  const formatTime = (dateStr: string) => {
-    const d = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return "now";
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
   };
 
   const stopSpeaking = () => {
@@ -1533,9 +1377,9 @@ export default function Home() {
   };
 
   const getArtifactIcon = (kind: ArtifactDescriptor["kind"]) => {
-    if (kind === "code") return <FileCode size={15} color="var(--color-primary)" />;
-    if (kind === "archive") return <FileArchive size={15} color="var(--color-primary)" />;
-    return <FileText size={15} color="var(--color-primary)" />;
+    if (kind === "code") return <FileCode size={15} />;
+    if (kind === "archive") return <FileArchive size={15} />;
+    return <FileText size={15} />;
   };
 
   const formatBytes = (bytes: number) => {
@@ -1589,40 +1433,39 @@ export default function Home() {
     }
   };
 
-  // On mobile these own a row of their own, so they share it evenly instead of
-  // being pushed off the edge by the model selectors.
-  const renderNavLinks = (compact: boolean) => {
-    const linkStyle: React.CSSProperties = compact
-      ? { ...styles.graphBtn, flex: 1, minWidth: 0, justifyContent: "center" }
-      : styles.graphBtn;
-    return (
-      <>
-        <Link href={withReturnTo(returnTo?.startsWith("/graph") ? returnTo : documentLinks.knowledge, activeConversationId ? `/?c=${encodeURIComponent(activeConversationId)}` : "/")} style={linkStyle} aria-label={returnTo?.startsWith("/graph") ? "Return to cosmos" : "Knowledge workspace"} title={returnTo?.startsWith("/graph") ? "Return to cosmos" : "Knowledge workspace"}>
-          <Waypoints size={14} color="var(--color-text-muted)" />
-          <span>{returnTo?.startsWith("/graph") ? "Cosmos" : "Knowledge"}</span>
-        </Link>
-        <Link href="/council" style={linkStyle} aria-label="Council" title="Council">
-          <Gavel size={14} color="var(--color-text-muted)" />
-          <span>Council</span>
-        </Link>
-        <Link href="/admin" style={linkStyle} aria-label="Dashboard" title="Dashboard">
-          <ShieldCheck size={14} color="var(--color-text-muted)" />
-          <span>Dashboard</span>
-        </Link>
-      </>
-    );
+  const chatHref = activeConversationId ? `/?c=${encodeURIComponent(activeConversationId)}` : "/";
+  const sidebarLinks = {
+    library: withReturnTo(documentLinks.knowledge, chatHref),
+    cosmos: withReturnTo(returnTo?.startsWith("/graph") ? returnTo : documentLinks.graph, chatHref),
   };
+  const vaultHref = (path: string) => withReturnTo(`/knowledge?path=${encodeURIComponent(path)}`, chatHref);
+  const cosmosHrefFor = (sources: NonNullable<ReplyTrace["sources"]>) => {
+    const page = sources.find((source) => source.kind === "vault" && source.ref)?.ref;
+    if (!page) return undefined;
+    const node = encodeURIComponent(page);
+    return withReturnTo(`/graph?node=${node}&root=${node}&local=1`, chatHref);
+  };
+  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
+  const activeProject = projects.find((project) => project.id === activeConversation?.projectId);
+  const chatTitle = activeConversation?.title ?? (activeConversationId ? "Conversation" : "New chat");
+  const todayOpen = todayDocked ? !todayHidden : todaySheetOpen;
+  const toggleToday = () => {
+    if (todayDocked) setTodayHidden(!todayHidden);
+    else setTodaySheetOpen((open) => !open);
+  };
+  const overlayOpen = (!sidebar.docked && sidebar.open) || (!todayDocked && todaySheetOpen);
+  const sendDisabled = sendBlocked || (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading;
 
   const renderModelSelectors = (compact: boolean) =>
     providers.length > 0 ? (
-      <div style={styles.modelControlCluster}>
+      <div className={ui.modelCluster}>
         <SelectMenu
           searchable
           compact={compact}
-          integrated
-          align="right"
+          dropUp={compact}
+          align={compact ? "left" : "right"}
           ariaLabel="Chat model"
-          icon={<Cpu size={14} color="var(--color-primary)" />}
+          icon={null}
           value={effectiveChatSel}
           onChange={handleChatSelChange}
           groups={chatProviders.map((p) => ({
@@ -1630,16 +1473,16 @@ export default function Home() {
             options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label, searchTerms: modelSearchTerms(m) })),
           }))}
         />
-        <button
+        {!compact && <button
           type="button"
           onClick={() => setModelInfoOpen(true)}
-          style={styles.modelClusterButton}
+          className={ui.iconButton}
           aria-label="Model details"
           title="Model details"
           disabled={!currentChatModel}
         >
-          <Info size={17} />
-        </button>
+          <Info size={16} aria-hidden="true" />
+        </button>}
         <button
           type="button"
           ref={generationTriggerRef}
@@ -1647,17 +1490,17 @@ export default function Home() {
           aria-expanded={generationOpen}
           aria-haspopup="dialog"
           aria-controls={generationOpen ? "generation-settings" : undefined}
-          style={{ ...styles.modelClusterButton, ...(generationOpen ? styles.modelClusterButtonActive : {}) }}
+          className={ui.iconButton}
           aria-label="Generation settings"
           title="Generation settings"
         >
-          <SlidersHorizontal size={16} />
+          <SlidersHorizontal size={16} aria-hidden="true" />
         </button>
         {generationOpen && (
           <GenerationSettings triggerRef={generationTriggerRef} onClose={closeGeneration}>
             <section className={chatModeStyles.modes} aria-label="Modes">
               <h3>Modes</h3>
-              <ModeToggle label="Agent mode" icon={<Brain size={15} aria-hidden="true" />} checked={agentEnabled && !knowledgeOnly} disabled={knowledgeOnly}
+              <ModeToggle label="Agent mode" icon={<Bot size={15} aria-hidden="true" />} checked={agentEnabled && !knowledgeOnly} disabled={knowledgeOnly}
                 onChange={toggleAgent} title={knowledgeOnly ? "Unavailable while Knowledge only is on" : "Plan and complete multi-step tasks"} />
               <ModeToggle label="Free only" icon={<CircleDollarSign size={15} aria-hidden="true" />} checked={freeOnly}
                 disabled={!preferencesLoaded || preferencesSaving || !!preferencesError} onChange={() => { void saveFreeOnly(!freeOnly); }}
@@ -1675,6 +1518,9 @@ export default function Home() {
               </div>}
               {noFreeChatModel && !knowledgeOnly && !providersError && !providersLoading && <p role="status" className={chatModeStyles.feedback}>No free model is available. Configure a free provider or turn Free only off.</p>}
             </section>
+            {compact && currentChatModel && <button type="button" className={ui.textButton} onClick={() => { setGenerationOpen(false); setModelInfoOpen(true); }}>
+              <Info size={14} aria-hidden="true" /> Model details
+            </button>}
             {!knowledgeOnly && <>
               <ParamRow label="Temperature" min={0} max={2} step={0.1} def={0.7} value={genParams.temperature} onChange={(v) => updateGenParams({ ...genParams, temperature: v })} />
               <ParamRow label="Top P" min={0} max={1} step={0.05} def={0.9} value={genParams.topP} onChange={(v) => updateGenParams({ ...genParams, topP: v })} />
@@ -1690,7 +1536,7 @@ export default function Home() {
                   wide
                   compact
                   ariaLabel="Embedding model"
-                  icon={<Database size={14} color="var(--color-text-muted)" />}
+                  icon={<Database size={14} aria-hidden="true" />}
                   value={embedSel}
                   onChange={handleEmbedSelChange}
                   groups={providers
@@ -1707,24 +1553,31 @@ export default function Home() {
       </div>
     ) : null;
 
+  const renderBubbleExtras = (quote: ChatMessage["replyTo"] | null, file?: { name?: string; mimeType?: string }) => <>
+    {quote && (
+      <div className={ui.replyQuote}>
+        <strong>{quote.role === "user" ? "You" : "Zuychin"}</strong>
+        <span>{quote.content}</span>
+      </div>
+    )}
+    {file?.name && (
+      <div className={ui.fileTag}>
+        {getFileIcon(file.mimeType)}
+        <span>{file.name}</span>
+      </div>
+    )}
+  </>;
+
+  const branchAction = (msg: ChatMessage) => <BranchMessageAction
+    conversationId={session.key} messageId={msg.id} disabled={isLoading}
+    onCreated={(branchId, parentId) => {
+      void loadConversations();
+      if (chats.get().key === parentId) void loadConversation(branchId);
+    }}
+  />;
+
   return (
-    <div style={styles.wrapper}>
-      {!isDesktop && sidebarOpen && (
-        <div
-          style={styles.overlay}
-          className="animate-overlay-in"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {!isDesktop && notesOpen && (
-        <div
-          style={styles.overlay}
-          className="animate-overlay-in"
-          onClick={() => setNotesOpen(false)}
-        />
-      )}
-
+    <div className={ui.app}>
       {modelInfoOpen && currentChatModel && (
         <ModelInfoModal
           model={currentChatModel}
@@ -1749,7 +1602,7 @@ export default function Home() {
           title={`Delete ${deleteConfirm.kind === "chat" ? "conversation" : "project"}?`}
           body={deleteConfirm.kind === "chat"
             ? `Delete “${deleteConfirm.title}” and its messages? This cannot be undone.`
-            : `Delete “${deleteConfirm.title}”? Its conversations will remain in Ungrouped.`}
+            : `Delete “${deleteConfirm.title}”? Its conversations will move to No project.`}
           confirmLabel="Delete"
           busyText={pendingActions.includes(`delete:${deleteConfirm.id}`) ? "Deleting…" : undefined}
           onConfirm={() => { void confirmDeletion(); }}
@@ -1757,723 +1610,401 @@ export default function Home() {
         />
       )}
 
-      <aside
-        ref={notesRef}
-        id="notes-panel"
-        role={isDesktop ? undefined : "dialog"}
-        aria-modal={!isDesktop && notesOpen && !sidebarOpen ? true : undefined}
-        aria-labelledby="notes-title"
-        aria-hidden={!notesOpen || (!isDesktop && sidebarOpen)}
-        inert={!notesOpen || (!isDesktop && sidebarOpen)}
-        style={{
-          ...(isDesktop ? {
-            ...styles.notesPanelDesktop,
-            width: notesOpen ? 280 : 0,
-            minWidth: notesOpen ? 280 : 0,
-          } : styles.notesPanel),
-          ...(!isDesktop && { transform: notesOpen ? "translateX(0)" : "translateX(100%)" }),
-        }}
+      <AppSidebar
+        current="chat"
+        hrefs={sidebarLinks}
+        onNewChat={() => { void handleNewChat(); }}
+        newChatDisabled={pendingActions.includes("new-chat")}
+        search={chatSearch}
+        onSearch={setChatSearch}
+        docked={sidebar.docked}
+        open={sidebar.open}
+        onClose={sidebar.close}
       >
-        <div style={styles.sidebarHeader}>
-          <h2 id="notes-title" style={styles.sidebarTitle}>Notes</h2>
-          <button
-            onClick={() => setNotesOpen(false)}
-            style={styles.closeBtn}
-            aria-label="Close notes"
-          >
-            <X size={18} color="var(--color-text-muted)" />
-          </button>
-        </div>
-
-        <div style={styles.notesList}>
-          {!notesLoaded && <p role="status" style={styles.noConversations}>Loading notes…</p>}
-          {notesError && <div role="alert" style={styles.noConversations}><p>{notesError}</p><button type="button" style={styles.exportBtn} onClick={() => void loadNotes()}>Retry</button></div>}
-          {notesLoaded && !notesError && notes.length === 0 && (
-            <p style={styles.noConversations}>
-              Nothing pending. Ask me to remember a task and it will show up here.
-            </p>
-          )}
-          {notes.map((note) => (
-            <div key={note.id} style={styles.noteItem}>
-              <button
-                onClick={() => completeNote(note.id)}
-                style={styles.noteCheckbox}
-                aria-label={`Mark "${note.title}" as done`}
-                title="Mark as done"
-              />
-              <div style={styles.noteInfo}>
-                <span style={styles.noteTitle}>{note.title}</span>
-                {note.description && (
-                  <span style={styles.noteDesc}>{note.description}</span>
-                )}
-                {note.dueDate && (
-                  <span style={styles.noteDue}>
-                    {new Date(note.dueDate).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </aside>
-
-      <aside
-        ref={sidebarRef}
-        id="chats-panel"
-        role={isDesktop ? undefined : "dialog"}
-        aria-modal={!isDesktop && sidebarOpen ? true : undefined}
-        aria-labelledby="chats-title"
-        aria-hidden={!sidebarOpen}
-        inert={!sidebarOpen}
-        style={{
-          ...(isDesktop ? {
-            ...styles.sidebarDesktop,
-            width: sidebarOpen ? 300 : 0,
-            minWidth: sidebarOpen ? 300 : 0,
-          } : styles.sidebar),
-          ...(!isDesktop && { transform: sidebarOpen ? "translateX(0)" : "translateX(100%)" }),
-        }}
-      >
-        <div style={styles.sidebarHeader}>
-          <h2 id="chats-title" style={styles.sidebarTitle}>Chats</h2>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            style={styles.closeBtn}
-            aria-label="Close sidebar"
-          >
-            <X size={18} color="var(--color-text-muted)" />
-          </button>
-        </div>
-
-        <NewProjectButton onCreate={handleCreateProject} />
-
-        <button onClick={() => handleNewChat()} disabled={pendingActions.includes("new-chat")} style={{ ...styles.newChatBtn, marginTop: 8 }}>
-          <Plus size={16} />
-          <span>New Chat</span>
-        </button>
-
         <ConversationList
           conversations={conversations}
           projects={projects}
           activeConversationId={activeConversationId}
           loaded={convosLoaded}
+          filter={chatSearch}
           runningConversationIds={chats.runningKeys()}
           deletingConversationIds={[...(deleteConfirm?.kind === "chat" ? [deleteConfirm.id] : []), ...pendingActions.filter((key) => key.startsWith("delete:")).map((key) => key.slice(7))]}
-          onSelect={loadConversation}
+          onSelect={(id) => { void loadConversation(id); }}
           onDelete={handleDeleteConversation}
-          onNewChat={handleNewChat}
+          onNewChat={(projectId) => { void handleNewChat(projectId); }}
           onUpdateProject={handleUpdateProject}
           onDeleteProject={handleDeleteProject}
           onMoveConversation={handleMoveConversation}
-          formatTime={formatTime}
         />
+        <NewProjectButton onCreate={handleCreateProject} />
+      </AppSidebar>
 
-      </aside>
-
-      <div ref={containerRef} inert={!isDesktop && (sidebarOpen || notesOpen)} style={isDesktop ? styles.containerDesktop : styles.container}>
-        <header style={styles.header}>
-          <div style={{ ...styles.headerContent, ...(!isDesktop ? { padding: "10px 12px", gap: 8 } : {}) }}>
-            <div style={styles.headerLeft}>
-              <span aria-hidden style={isDesktop ? styles.logoMark : styles.logoMarkMobile} />
-              <div style={isDesktop ? styles.brandText : styles.brandTextMobile}>
-                <h1 style={styles.title}>Zuychin</h1>
-                <span style={isDesktop ? styles.subtitle : styles.subtitleMobile}>Assistant</span>
-              </div>
-
-              {!compactHeader && (
-                <div style={styles.headerCenter}>
-                  {renderNavLinks(false)}
-                  {renderModelSelectors(false)}
-                </div>
-              )}
+      <div className={ui.main} inert={overlayOpen || undefined}>
+        {sidebar.docked ? (
+          <header className={ui.topbar} data-toggle={!sidebar.open || undefined}>
+            {!sidebar.open && <SidebarToggle open={false} onToggle={() => sidebar.setOpen(true)} />}
+            <div className={ui.crumbs}>
+              {activeProject && <>
+                <span className={ui.crumbProject}><Folder size={15} aria-hidden="true" /><span>{activeProject.name}</span></span>
+                <span className={ui.slash} aria-hidden="true">/</span>
+              </>}
+              <h1 className={ui.crumbTitle} data-new={!activeConversationId || undefined}>{chatTitle}</h1>
             </div>
-
-            <div style={styles.headerRight}>
-              <button type="button"
-                onClick={toggleTheme}
-                style={styles.iconBtn}
-                aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                title={theme === "dark" ? "Light mode" : "Dark mode"}
-              >
-                {theme === "dark"
-                  ? <Sun size={19} color="var(--color-text-primary)" />
-                  : <Moon size={19} color="var(--color-text-primary)" />}
-              </button>
+            <div className={ui.controls}>
+              {renderModelSelectors(false)}
               <button
-                onClick={toggleNotes}
-                style={{ ...styles.iconBtn, position: "relative" }}
-                aria-label={notesOpen ? "Close notes" : `Open notes (${notes.length} pending)`}
-                aria-expanded={notesOpen}
-                aria-controls="notes-panel"
-                title="Notes & tasks"
+                type="button"
+                role="switch"
+                className={ui.agent}
+                aria-checked={agentEnabled && !knowledgeOnly}
+                disabled={knowledgeOnly}
+                onClick={toggleAgent}
+                title={knowledgeOnly ? "Unavailable while Knowledge only is on" : "Agent mode plans and completes multi-step tasks"}
               >
-                <ListTodo size={19} color={notesOpen ? "var(--color-primary)" : "var(--color-text-primary)"} />
-                {!notesOpen && notes.length > 0 && (
-                  <span style={styles.noteBadge}>{notes.length > 9 ? "9+" : notes.length}</span>
-                )}
+                <Bot size={16} aria-hidden="true" /><span>Agent</span><span className={ui.switch} aria-hidden="true" />
               </button>
-              <button onClick={() => { if (!isDesktop) setNotesOpen(false); setSidebarOpen((prev) => !prev); }} style={styles.iconBtn} aria-label="Conversation history" aria-expanded={sidebarOpen} aria-controls="chats-panel" title="History">
-                <History size={19} color="var(--color-text-primary)" />
-              </button>
-              <button onClick={() => handleNewChat()} disabled={pendingActions.includes("new-chat")} style={styles.iconBtn} aria-label="New conversation" title="New conversation">
-                <Plus size={20} color="var(--color-text-primary)" />
-              </button>
+              <span className={ui.vsep} aria-hidden="true" />
+              <TodayToggle open={todayOpen} onToggle={toggleToday} due={dueCount} compact />
             </div>
-          </div>
-
-          {compactHeader && (
-            <div style={styles.headerNavRow}>
-              {renderNavLinks(true)}
+          </header>
+        ) : (
+          <header className={ui.topbar} data-toggle>
+            <SidebarToggle open={sidebar.open} onToggle={() => sidebar.setOpen(!sidebar.open)} />
+            <div className={ui.titles}>
+              <h1 className={ui.title} data-new={!activeConversationId || undefined}>{chatTitle}</h1>
+              {activeProject && <p className={ui.subtitle}>{activeProject.name}</p>}
             </div>
-          )}
-
-          {compactHeader && providers.length > 0 && (
-            <div style={styles.headerSelectorsRow}>
-              {renderModelSelectors(true)}
-            </div>
-          )}
-        </header>
+            <TodayToggle open={todayOpen} onToggle={toggleToday} due={dueCount} />
+            <button type="button" onClick={() => { void handleNewChat(); }} disabled={pendingActions.includes("new-chat")} className={ui.iconButton} aria-label="New chat" title="New chat">
+              <SquarePen size={18} aria-hidden="true" />
+            </button>
+          </header>
+        )}
 
         {actionError && (
-          <div role="alert" style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid var(--color-border)", color: "var(--color-text-primary)", fontSize: 13 }}>
-            <span style={{ flex: 1 }}>{actionError.message}</span>
-            {actionError.retry && <button type="button" onClick={actionError.retry} style={styles.exportBtn}>Retry</button>}
-            <button type="button" onClick={() => setActionError(null)} style={styles.iconBtn} aria-label="Dismiss error"><X size={15} /></button>
+          <div role="alert" className={ui.notice} data-tone="danger">
+            <span>{actionError.message}</span>
+            {actionError.retry && <button type="button" onClick={actionError.retry} className={ui.textButton}>Retry</button>}
+            <button type="button" onClick={() => setActionError(null)} className={ui.iconButton} aria-label="Dismiss error"><X size={15} aria-hidden="true" /></button>
           </div>
         )}
         {chats.storageError && (
-          <div role="alert" style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 16px", color: "var(--color-text-primary)", fontSize: 13 }}>
-            <span style={{ flex: 1 }}>{chats.storageError}</span>
-            <button type="button" onClick={() => { void retryDraftStorage(); }} style={styles.exportBtn}>Save again</button>
+          <div role="alert" className={ui.notice} data-tone="danger">
+            <span>{chats.storageError}</span>
+            <button type="button" onClick={() => { void retryDraftStorage(); }} className={ui.textButton}>Save again</button>
           </div>
         )}
         {chats.runningKeys().some((key) => key !== session.key) && (
-          <div role="status" style={{ padding: "6px 16px" }}>
-            <button type="button" style={styles.exportBtn} onClick={() => { const key = chats.runningKeys().find((id) => id !== session.key); if (key) void loadConversation(key); }}>
-              Reply running in another chat
+          <div role="status" className={ui.notice}>
+            <span>A reply is still running in another chat.</span>
+            <button type="button" className={ui.textButton} onClick={() => { const key = chats.runningKeys().find((id) => id !== session.key); if (key) void loadConversation(key); }}>
+              Open it
             </button>
           </div>
         )}
 
-        <main
-          onScroll={handleMessagesScroll}
-          style={isDesktop ? styles.messages : { ...styles.messages, padding: "16px 14px 8px" }}
-        >
-          <BranchNavigation conversationId={session.key === NEW_CHAT ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
-          {session.historyLoading && <p role="status" style={styles.emptySubtitle}>Loading conversation…</p>}
-          {!session.loaded && !session.historyLoading && <p role="status" style={styles.emptySubtitle}>Load this conversation before sending a message. Your draft is safe.</p>}
-          {messages.length === 0 && session.loaded && (
-            <div style={styles.emptyState} className="animate-fade-in-scale">
-              <div style={styles.emptyIcon} className="animate-float">
-                <Bot size={32} color="var(--color-primary-foreground)" />
-              </div>
-              <p style={styles.emptyTitle}>Hi, I&apos;m Zuychin</p>
-              <p style={styles.emptySubtitle}>
-                Your personal AI assistant for research, coding and planning.
-              </p>
-              {today ? (
-                <div style={styles.todayCard} className="animate-fade-in-scale">
-                  <div style={styles.todayHeader}>
-                    <span style={styles.todayTitle}>
-                      <CalendarDays size={15} color="var(--color-primary)" />
-                      Today
-                    </span>
-                    <button
-                      type="button"
-                      onClick={dismissToday}
-                      style={styles.todayDismiss}
-                      aria-label="Dismiss the Today card"
-                      title="Dismiss"
-                    >
-                      <X size={14} />
-                    </button>
+        <div className={ui.threadWrap}>
+          <main onScroll={handleMessagesScroll} className={ui.thread}>
+            <div className={ui.column}>
+              <BranchNavigation conversationId={session.key === NEW_CHAT ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
+              {session.historyLoading && <p role="status" className={ui.status}>Loading conversation…</p>}
+              {!session.loaded && !session.historyLoading && <p role="status" className={ui.status}>Load this conversation before sending a message. Your draft is safe.</p>}
+              {messages.length === 0 && session.loaded && (
+                <div className={ui.empty}>
+                  <ZuychinMark size={34} className={ui.emptyMark} />
+                  <h2>What should we work on?</h2>
+                  <p>Ask about your day, your notes or what you are studying. Zuychin can plan, research and keep track of things for you.</p>
+                  <DayStarters onFill={applySuggestion} />
+                  <p className={ui.hint}>Type <kbd>/</kbd> for commands. Attach files up to {MAX_FILE_SIZE_MB} MB.</p>
+                </div>
+              )}
+
+              {messages.map((msg) => msg.role === "user" ? (
+                <div key={msg.id} className={ui.userRow}>
+                  {msg.persisted && session.key !== NEW_CHAT && <span className={ui.hoverAction}>{branchAction(msg)}</span>}
+                  <button type="button" onClick={() => startReply(msg)} className={`${ui.iconButton} ${ui.hoverAction}`} aria-label="Reply to this message" title="Reply to this message">
+                    <Reply size={15} aria-hidden="true" />
+                  </button>
+                  <div className={ui.bubble}>
+                    {renderBubbleExtras(msg.replyTo, { name: msg.fileName, mimeType: msg.fileMimeType })}
+                    <p className={ui.bubbleText}>{msg.content}</p>
                   </div>
-                  {today.dueTodos.length > 0 && (
-                    <>
-                      <span style={styles.todaySectionLabel}>Due soon</span>
-                      {today.dueTodos.map((t) => (
-                        <div key={t.id} style={styles.todayItem}>
-                          <span style={styles.todayItemTitle}>⚠️ {t.title}</span>
-                          {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  {today.events.length > 0 && (
-                    <>
-                      <span style={styles.todaySectionLabel}>Next 48 hours</span>
-                      {today.events.map((e, i) => (
-                        <div key={e.id ?? i} style={styles.todayItem}>
-                          <span style={styles.todayItemTitle}>{e.summary}</span>
-                          <span style={styles.todayItemMeta}>{fmtWhen(e.start)}</span>
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  {today.todos.length > 0 && (
-                    <>
-                      <span style={styles.todaySectionLabel}>Pending</span>
-                      {today.todos.map((t) => (
-                        <div key={t.id} style={styles.todayItem}>
-                          <span style={styles.todayItemTitle}>• {t.title}</span>
-                          {t.dueDate && <span style={styles.todayItemMeta}>{fmtWhen(t.dueDate)}</span>}
-                        </div>
-                      ))}
-                    </>
-                  )}
                 </div>
               ) : (
-                <div style={styles.suggestionRow}>
-                  {STARTER_SUGGESTIONS.map((s) => (
-                    <button
-                      key={s.label}
-                      type="button"
-                      style={styles.suggestionChip}
-                      onClick={() => applySuggestion(s.fill)}
-                    >
-                      <span style={styles.suggestionIcon}>{s.icon}</span>
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <p style={styles.emptyHint}>
-                Type <code style={styles.hintKbd}>/</code> for {`all commands · attach files up to ${MAX_FILE_SIZE_MB} MB · switch models from the header`}
-              </p>
-            </div>
-          )}
-
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              style={{
-                ...styles.messageBubbleWrapper,
-                justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
-              }}
-              className={msg.role === "user" ? "animate-slide-right" : "animate-slide-left"}
-            >
-              {msg.role === "assistant" && (
-                <div style={styles.msgAvatar}>
-                  <Bot size={14} color="var(--color-primary-foreground)" />
-                </div>
-              )}
-              {msg.role === "user" && (
-                <button
-                  type="button"
-                  onClick={() => startReply(msg)}
-                  style={styles.replyMsgBtn}
-                  aria-label="Reply to this message"
-                  title="Reply to this message"
-                >
-                  <Reply size={15} />
-                </button>
-              )}
-              <div
-                style={{
-                  ...styles.bubble,
-                  ...(msg.role === "user" ? styles.userBubble : styles.aiBubble),
-                }}
-              >
-                {msg.replyTo && (
-                  <div style={styles.replyQuote}>
-                    <span style={styles.replyQuoteRole}>
-                      {msg.replyTo.role === "user" ? "You" : "Zuychin"}
-                    </span>
-                    <span style={styles.replyQuoteText}>{msg.replyTo.content}</span>
-                  </div>
-                )}
-                {msg.fileName && (
-                  <div style={styles.fileTag}>
-                    {getFileIcon(msg.fileMimeType)}
-                    <span style={styles.fileTagName}>{msg.fileName}</span>
-                  </div>
-                )}
-                {msg.role === "assistant" ? (
-                  <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>{msg.content}</ReactMarkdown>
-                  </div>
-                ) : (
-                  <p style={styles.bubbleText}>{msg.content}</p>
-                )}
-                {msg.role === "assistant" && msg.artifacts && msg.artifacts.length > 0 && (
-                  <div style={styles.artifactRow}>
-                    {msg.artifacts.map((art) => (
-                      <button
-                        key={art.id}
-                        type="button"
-                        onClick={() => downloadArtifact(art)}
-                        style={styles.artifactChip}
-                        title={`Download ${art.name}`}
-                      >
-                        {getArtifactIcon(art.kind)}
-                        <span style={styles.artifactName}>{art.name}</span>
-                        <span style={styles.artifactSize}>{formatBytes(art.size)}</span>
-                        <Download size={13} color="var(--color-primary)" />
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {msg.role === "assistant" && msg.councilProposal && (
-                  <CouncilProposalCard proposal={msg.councilProposal} />
-                )}
-                {msg.role === "assistant" && msg.resume && (
-                  <div style={styles.exportRow}>
-                    <button
-                      onClick={() => handleSubmit(null, msg.resume)}
-                      style={{ ...styles.exportBtn, opacity: isLoading ? 0.5 : 1 }}
-                      disabled={isLoading}
-                      title="Relaunch this run - the agent continues from its recorded progress"
-                    >
-                      <RotateCcw size={12} />
-                      <span>Resume run</span>
-                    </button>
-                  </div>
-                )}
-                {msg.role === "assistant" && msg.retry && (
-                  <div style={styles.exportRow}>
-                    <button
-                      onClick={() => void handleRetry(msg)}
-                      style={{ ...styles.exportBtn, opacity: isLoading ? 0.5 : 1 }}
-                      disabled={isLoading}
-                      title="Send this message again"
-                    >
-                      <RotateCcw size={12} />
-                      <span>Retry</span>
-                    </button>
-                  </div>
-                )}
-                {msg.role === "assistant" && !msg.retry && msg.content.length > 80 && (
-                  <div style={styles.exportRow}>
-                    <button
-                      onClick={() => setExportMenuFor(exportMenuFor === msg.id ? null : msg.id)}
-                      style={{
-                        ...styles.exportBtn,
-                        ...(exportMenuFor === msg.id ? styles.exportBtnActive : {}),
-                      }}
-                      title="Download this reply as a document"
-                      aria-expanded={exportMenuFor === msg.id}
-                    >
-                      <span>Generate</span>
-                      <ChevronRight
-                        size={12}
-                        style={{
-                          transform: exportMenuFor === msg.id ? "rotate(180deg)" : "none",
-                          transition: "transform 0.15s ease",
-                        }}
-                      />
-                    </button>
-                    {exportMenuFor === msg.id &&
-                      (["docx", "pdf", "md"] as const).map((fmt) => (
-                        <button
-                          key={fmt}
-                          onClick={() => {
-                            handleExport(msg.content, fmt);
-                            setExportMenuFor(null);
-                          }}
-                          style={styles.exportBtn}
-                          title={`Download as ${fmt.toUpperCase()}`}
-                        >
-                          <Download size={12} />
-                          <span>{fmt.toUpperCase()}</span>
-                        </button>
-                      ))}
-                  </div>
-                )}
-                {msg.role === "assistant" && (msg.modelLabel || msgClock(msg.at)) && (
-                  <div style={styles.msgMeta}>
-                    {[msg.modelLabel, msgClock(msg.at)].filter(Boolean).join(" · ")}
-                  </div>
-                )}
-                {msg.role === "assistant" && msg.replyTrace && <ReplyTraceDetails trace={msg.replyTrace} />}
-                {msg.persisted && session.key !== NEW_CHAT && !msg.retry && !msg.resume && <BranchMessageAction
-                  conversationId={session.key} messageId={msg.id} disabled={isLoading}
-                  onCreated={(branchId, parentId) => {
-                    void loadConversations();
-                    if (chats.get().key === parentId) void loadConversation(branchId);
-                  }}
-                />}
-              </div>
-              {msg.role === "assistant" && !msg.resume && !msg.retry && (
-                <button
-                  type="button"
-                  onClick={() => startReply(msg)}
-                  style={styles.replyMsgBtn}
-                  aria-label="Reply to this message"
-                  title="Reply to this message"
-                >
-                  <Reply size={15} />
-                </button>
-              )}
-              {msg.role === "user" && (
-                <div style={{ ...styles.msgAvatar, ...styles.userAvatar }}>
-                  <User size={14} color="var(--color-text-muted)" />
-                </div>
-              )}
-            </div>
-          ))}
-
-          {isLoading && (
-            <div style={styles.messageBubbleWrapper} className="animate-fade-in">
-              <div style={styles.msgAvatar}>
-                <Bot size={14} color="var(--color-primary-foreground)" />
-              </div>
-              <div style={{ ...styles.bubble, ...styles.aiBubble }}>
-                {agentRun ? (
-                  <div style={styles.agentTracker}>
-                    <div style={styles.agentHeader}>
-                      <Bot size={14} color="var(--color-primary)" />
-                      <span>{agentRun.status || "Working…"}</span>
+                <article key={msg.id} className={ui.aiRow} aria-label="Zuychin">
+                  <ZuychinMark size={18} className={ui.aiMark} />
+                  <div className={ui.aiBody}>
+                    {msg.replyTrace && <ReplyActivity trace={msg.replyTrace} />}
+                    {msg.replyTo && renderBubbleExtras(msg.replyTo)}
+                    <div className="markdown-body">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>{msg.content}</ReactMarkdown>
                     </div>
-                    {agentRun.steps.length > 0 && (
-                      <div style={styles.agentSteps}>
-                        {agentRun.steps.map((s, i) => (
-                          <div key={i} style={styles.agentStep}>
-                            <span style={styles.agentStepMark}>
-                              {s.status === "done" ? "✓" : s.status === "in_progress" ? "▸" : "○"}
-                            </span>
-                            <span style={{ opacity: s.status === "done" ? 0.6 : 1 }}>{s.title}</span>
-                          </div>
+                    {msg.artifacts && msg.artifacts.length > 0 && (
+                      <div className={ui.artifactRow}>
+                        {msg.artifacts.map((art) => (
+                          <button key={art.id} type="button" onClick={() => downloadArtifact(art)} className={ui.artifactChip} title={`Download ${art.name}`}>
+                            {getArtifactIcon(art.kind)}
+                            <span>{art.name}</span>
+                            <span className={ui.artifactSize}>{formatBytes(art.size)}</span>
+                            <Download size={14} aria-hidden="true" />
+                          </button>
                         ))}
                       </div>
                     )}
-                    {agentRun.lines.slice(-4).map((l, i) => (
-                      <div key={i} style={styles.agentLine}>{l}</div>
-                    ))}
+                    {msg.councilProposal && <CouncilProposalCard proposal={msg.councilProposal} />}
+                    {!!msg.replyTrace?.sources?.length && <SourceChart sources={msg.replyTrace.sources} vaultHref={vaultHref} cosmosHref={cosmosHrefFor(msg.replyTrace.sources)} />}
+                    <div className={ui.msgActions}>
+                      {msg.resume && (
+                        <button type="button" onClick={() => handleSubmit(null, msg.resume)} className={ui.textButton} disabled={isLoading} title="Relaunch this run. The agent continues from its recorded progress.">
+                          <RotateCcw size={14} aria-hidden="true" /> Resume run
+                        </button>
+                      )}
+                      {msg.retry && (
+                        <button type="button" onClick={() => void handleRetry(msg)} className={ui.textButton} disabled={isLoading} title="Send this message again">
+                          <RotateCcw size={14} aria-hidden="true" /> Retry
+                        </button>
+                      )}
+                      {!msg.resume && !msg.retry && (
+                        <button type="button" onClick={() => startReply(msg)} className={ui.iconButton} aria-label="Reply to this message" title="Reply to this message">
+                          <Reply size={15} aria-hidden="true" />
+                        </button>
+                      )}
+                      {!msg.retry && msg.content.length > 80 && <>
+                        <button
+                          type="button"
+                          onClick={() => setExportMenuFor(exportMenuFor === msg.id ? null : msg.id)}
+                          className={ui.iconButton}
+                          aria-label="Download this reply as a document"
+                          title="Download as a document"
+                          aria-expanded={exportMenuFor === msg.id}
+                        >
+                          <Download size={15} aria-hidden="true" />
+                        </button>
+                        {exportMenuFor === msg.id && <span className={ui.exportFormats}>
+                          {(["docx", "pdf", "md"] as const).map((fmt) => (
+                            <button key={fmt} type="button" onClick={() => { handleExport(msg.content, fmt); setExportMenuFor(null); }} title={`Download as ${fmt.toUpperCase()}`}>
+                              {fmt.toUpperCase()}
+                            </button>
+                          ))}
+                        </span>}
+                      </>}
+                      {msg.persisted && session.key !== NEW_CHAT && !msg.retry && !msg.resume && branchAction(msg)}
+                      {(msg.modelLabel || msgClock(msg.at)) && <span className={ui.msgMeta}>{[msg.modelLabel, msgClock(msg.at)].filter(Boolean).join(" · ")}</span>}
+                    </div>
                   </div>
-                ) : (
-                  <div style={styles.typingRow}>
-                    <span style={styles.typingDot} className="animate-bounce-dot" />
-                    <span style={styles.typingDot} className="animate-bounce-dot-2" />
-                    <span style={styles.typingDot} className="animate-bounce-dot-3" />
-                    {thinkingEnabled && (
-                      <span style={styles.typingLabel}>Thinking deeply...</span>
+                </article>
+              ))}
+
+              {isLoading && (
+                <article className={ui.aiRow} aria-label="Zuychin is replying">
+                  <ZuychinMark size={18} className={ui.aiMark} />
+                  <div className={ui.aiBody}>
+                    {agentRun ? (
+                      <div className={ui.agentRun} role="status">
+                        <div className={ui.agentHead}>
+                          <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+                          <span>{agentRun.status || "Working…"}</span>
+                        </div>
+                        {agentRun.steps.length > 0 && (
+                          <ol className={ui.agentSteps}>
+                            {agentRun.steps.map((s, i) => (
+                              <li key={i} data-status={s.status}>
+                                {s.status === "done" ? <Check size={14} aria-hidden="true" /> : s.status === "in_progress" ? <ChevronRight size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
+                                <span>{s.title}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                        {agentRun.lines.slice(-4).map((l, i) => (
+                          <div key={i} className={ui.agentLine}>{l}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={ui.typing} role="status" aria-label={thinkingEnabled ? "Thinking" : "Replying"}>
+                        <i className="animate-typing-dot" />
+                        <i className="animate-typing-dot-2" />
+                        <i className="animate-typing-dot-3" />
+                        {thinkingEnabled && <span>Thinking it through…</span>}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-            </div>
-          )}
+                </article>
+              )}
 
-          {queuedView.length > 0 && !isLoading && (
-            <div role="status" style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--color-text-secondary)" }}>
-              <span>Queued messages are paused.</span>
-              <button type="button" style={styles.exportBtn} disabled={preferencesBlocked} onClick={() => resumeQueue(chats.get())}>Send next</button>
-            </div>
-          )}
-          {queuedView.map((q) => (
-            <div
-              key={q.id}
-              style={{ ...styles.messageBubbleWrapper, justifyContent: "flex-end", opacity: 0.55 }}
-              className="animate-slide-right"
-            >
-              <button
-                type="button"
-                onClick={() => removeQueued(q.id)}
-                style={styles.replyMsgBtn}
-                aria-label="Remove queued message"
-                title="Remove queued message"
-              >
-                <X size={15} />
-              </button>
-              <div style={{ ...styles.bubble, ...styles.userBubble }}>
-                {q.payload.file && (
-                  <div style={styles.fileTag}>
-                    {getFileIcon(q.payload.file.mimeType)}
-                    <span style={styles.fileTagName}>{q.payload.file.name}</span>
+              {queuedView.length > 0 && !isLoading && (
+                <div role="status" className={ui.queuedNote}>
+                  <span>Queued messages are paused.</span>
+                  <button type="button" className={ui.textButton} disabled={preferencesBlocked} onClick={() => resumeQueue(chats.get())}>Send next</button>
+                </div>
+              )}
+              {queuedView.map((q) => (
+                <div key={q.id} className={ui.userRow} data-queued>
+                  <button type="button" onClick={() => removeQueued(q.id)} className={ui.iconButton} aria-label="Remove queued message" title="Remove queued message">
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                  <div className={ui.bubble}>
+                    {renderBubbleExtras(null, q.payload.file ? { name: q.payload.file.name, mimeType: q.payload.file.mimeType } : undefined)}
+                    <p className={ui.bubbleText}>{q.payload.text || (q.payload.file ? `[Sent ${q.payload.file.name}]` : "")}</p>
+                    <div className={ui.bubbleMeta}>Queued</div>
                   </div>
-                )}
-                <p style={styles.bubbleText}>{q.payload.text || (q.payload.file ? `[Sent ${q.payload.file.name}]` : "")}</p>
-                <div style={{ ...styles.msgMeta, color: "inherit", opacity: 0.75 }}>Queued</div>
-              </div>
-            </div>
-          ))}
-
-          <div ref={messagesEndRef} />
-        </main>
-
-        {showScrollBtn && (
-          <button
-            type="button"
-            onClick={scrollToBottom}
-            style={styles.scrollDownBtn}
-            className="animate-fade-in"
-            aria-label="Scroll to latest message"
-            title="Jump to latest"
-          >
-            <ArrowDown size={16} />
-          </button>
-        )}
-
-        <footer style={isDesktop ? styles.footer : { ...styles.footer, padding: "10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px)" }}>
-          {voiceLoop && (
-            <div style={styles.replyPreview} className="animate-fade-in">
-              {isRecording
-                ? <Mic size={14} color="#ef4444" style={{ flexShrink: 0 }} />
-                : <Volume2 size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
-              <span style={styles.replyPreviewLabel}>
-                Voice chat{isRecording ? " - listening" : speakingId ? " - speaking" : isLoading ? " - thinking" : ""}
-              </span>
-              <span style={styles.replyPreviewText}>say &ldquo;Zuychin, stop&rdquo; to end</span>
-              <button
-                onClick={exitVoiceLoop}
-                style={styles.filePreviewRemove}
-                aria-label="End voice chat"
-                title="End voice chat"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
-
-          {replyTo && (
-            <div style={styles.replyPreview} className="animate-fade-in">
-              <Reply size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />
-              <span style={styles.replyPreviewLabel}>
-                Replying to {replyTo.role === "user" ? "you" : "Zuychin"}
-              </span>
-              <span style={styles.replyPreviewText}>{replyTo.content}</span>
-              <button
-                onClick={() => setReplyTo(null)}
-                style={styles.filePreviewRemove}
-                aria-label="Cancel reply"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
-
-          {pendingFile && (
-            <div style={styles.filePreview} className="animate-fade-in">
-              <div style={styles.filePreviewInfo}>
-                {getFileIcon(pendingFile.mimeType)}
-                <span style={styles.filePreviewName}>{pendingFile.name}</span>
-                <span style={styles.filePreviewSize}>
-                  {(pendingFile.size / 1024).toFixed(0)} KB
-                </span>
-              </div>
-              <button
-                onClick={() => setPendingFile(null)}
-                style={styles.filePreviewRemove}
-                aria-label="Remove file"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
-
-          {slashMatches.length > 0 && (
-            <div id="chat-command-list" role="listbox" aria-label="Commands" style={styles.cmdMenu} className="animate-fade-in-scale">
-              {slashMatches.map((c, i) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  id={`chat-command-${i}`}
-                  role="option"
-                  aria-selected={i === cmdSel}
-                  tabIndex={-1}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => applyCommand(c)}
-                  onMouseEnter={() => setCmdIndex(i)}
-                  style={{ ...styles.cmdItem, ...(i === cmdSel ? styles.cmdItemActive : {}) }}
-                >
-                  <span style={styles.cmdUsage}>{c.usage}</span>
-                  <span style={styles.cmdDesc}>{c.description}</span>
-                </button>
+                </div>
               ))}
-            </div>
-          )}
 
-          {!knowledgeOnly && providersLoading && !providersLoaded && <p className={chatModeStyles.feedback} role="status">Loading chat models…</p>}
-          {!knowledgeOnly && providersError && <div className={chatModeStyles.composerError} role="alert">
-            <span>{providersError} {providersLoaded && "Previously loaded models are still available."}</span>
-            <button type="button" disabled={providersLoading} onClick={() => void loadProviders()}>Retry models</button>
-          </div>}
-          {(preferencesError || (noFreeChatModel && !knowledgeOnly && !providersError && !providersLoading)) && <div className={chatModeStyles.composerError} role="status">
-            <span>{preferencesError ? "Chat preferences need attention." : "No free chat model is available."}</span>
-            <button type="button" onClick={() => setGenerationOpen(true)}>Open settings</button>
-          </div>}
-          <form onSubmit={handleSubmit} style={styles.inputRow}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              onChange={handleFileSelect}
-              style={{ display: "none" }}
-              accept={UPLOAD_ACCEPT}
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              style={styles.attachBtn}
-              aria-label="Attach file"
-              disabled={knowledgeOnly}
-              title={knowledgeOnly ? "Turn Knowledge only off to attach files" : "Attach file"}
-            >
-              <Paperclip size={18} color="var(--color-text-muted)" />
+              <div ref={messagesEndRef} />
+            </div>
+          </main>
+
+          {showScrollBtn && (
+            <button type="button" onClick={scrollToBottom} className={`${ui.scrollDown} animate-fade-in`} aria-label="Scroll to latest message" title="Jump to latest">
+              <ArrowDown size={16} aria-hidden="true" />
             </button>
-            <button
-              type="button"
-              onClick={toggleRecording}
-              disabled={knowledgeOnly || freeOnly || preferencesBlocked || !session.loaded || session.historyLoading}
-              style={styles.attachBtn}
-              aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
-              title={freeOnly ? "Voice is unavailable with Free only" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat - replies are spoken, say “Zuychin, stop” to end"}
-              className={isRecording ? "animate-fade-in" : undefined}
-            >
-              <Mic size={18} color={isRecording ? "#ef4444" : "var(--color-text-muted)"} />
-            </button>
-            {canThink && !knowledgeOnly && (
-              <button
-                type="button"
-                onClick={toggleThinking}
-                style={{
-                  ...styles.attachBtn,
-                  opacity: thinkingEnabled ? 1 : 0.5,
-                }}
-                aria-label={thinkingEnabled ? "Disable deep thinking" : "Enable deep thinking"}
-                title={thinkingEnabled ? "Think mode ON" : "Think mode OFF"}
-              >
-                <Brain size={18} color={thinkingEnabled ? "var(--color-primary)" : "var(--color-text-muted)"} />
-              </button>
+          )}
+        </div>
+
+        <footer className={ui.composerWrap}>
+          <div className={ui.composerStack}>
+            {voiceLoop && (
+              <div className={ui.chip} data-tone="live">
+                {isRecording ? <Mic size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
+                <strong>Voice chat{isRecording ? ", listening" : speakingId ? ", speaking" : isLoading ? ", thinking" : ""}</strong>
+                <span>Say &ldquo;Zuychin, stop&rdquo; to end</span>
+                <button type="button" onClick={exitVoiceLoop} className={ui.iconButton} aria-label="End voice chat" title="End voice chat">
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
             )}
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={handleTextareaChange}
-              onKeyDown={handleKeyDown}
-              aria-label={knowledgeOnly ? "Search your saved sources" : "Message Zuychin"}
-              aria-autocomplete="list"
-              aria-controls={slashMatches.length ? "chat-command-list" : undefined}
-              aria-activedescendant={slashMatches.length ? `chat-command-${cmdSel}` : undefined}
-              placeholder={knowledgeOnly ? "Search your saved sources..." : "Message Zuychin..."}
-              rows={1}
-              style={styles.textarea}
-            />
-            {isLoading && (
-              <button
-                type="button"
-                onClick={handleCancel}
-                style={{ ...styles.sendButton, background: "var(--color-surface)" }}
-                aria-label={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
-                title={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
-              >
-                <Square size={15} color="var(--color-text-primary)" fill="var(--color-text-primary)" />
-              </button>
+
+            {replyTo && (
+              <div className={ui.chip}>
+                <Reply size={14} aria-hidden="true" />
+                <strong>Replying to {replyTo.role === "user" ? "you" : "Zuychin"}</strong>
+                <span>{replyTo.content}</span>
+                <button type="button" onClick={() => setReplyTo(null)} className={ui.iconButton} aria-label="Cancel reply">
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
             )}
-            <button
-              type="submit"
-              disabled={sendBlocked || (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading}
-              style={{
-                ...styles.sendButton,
-                opacity: sendBlocked || (!input.trim() && !pendingFile) || !session.loaded || session.historyLoading ? 0.3 : 1,
-              }}
-              aria-label={isLoading ? "Queue message" : "Send message"}
-              title={isLoading ? "Queue message (sends after the current reply)" : "Send message"}
-            >
-              <Send size={20} color="var(--color-primary-foreground)" />
-            </button>
-          </form>
+
+            {pendingFile && (
+              <div className={ui.chip}>
+                {getFileIcon(pendingFile.mimeType)}
+                <strong>{pendingFile.name}</strong>
+                <span>{(pendingFile.size / 1024).toFixed(0)} KB</span>
+                <button type="button" onClick={() => setPendingFile(null)} className={ui.iconButton} aria-label="Remove file">
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+
+            {slashMatches.length > 0 && (
+              <div id="chat-command-list" role="listbox" aria-label="Commands" className={`${ui.cmdMenu} animate-fade-in-scale`}>
+                {slashMatches.map((c, i) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    id={`chat-command-${i}`}
+                    role="option"
+                    aria-selected={i === cmdSel}
+                    tabIndex={-1}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => applyCommand(c)}
+                    onMouseEnter={() => setCmdIndex(i)}
+                    className={ui.cmdItem}
+                  >
+                    <span className={ui.cmdUsage}>{c.usage}</span>
+                    <span className={ui.cmdDesc}>{c.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {!knowledgeOnly && providersLoading && !providersLoaded && <p className={chatModeStyles.feedback} role="status">Loading chat models…</p>}
+            {!knowledgeOnly && providersError && <div className={chatModeStyles.composerError} role="alert">
+              <span>{providersError} {providersLoaded && "Previously loaded models are still available."}</span>
+              <button type="button" disabled={providersLoading} onClick={() => void loadProviders()}>Retry models</button>
+            </div>}
+            {(preferencesError || (noFreeChatModel && !knowledgeOnly && !providersError && !providersLoading)) && <div className={chatModeStyles.composerError} role="status">
+              <span>{preferencesError ? "Chat preferences need attention." : "No free chat model is available."}</span>
+              <button type="button" onClick={() => setGenerationOpen(true)}>Open settings</button>
+            </div>}
+
+            <form onSubmit={handleSubmit} className={ui.composer}>
+              <input ref={fileInputRef} type="file" onChange={handleFileSelect} hidden accept={UPLOAD_ACCEPT} />
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={handleTextareaChange}
+                onKeyDown={handleKeyDown}
+                aria-label={knowledgeOnly ? "Search your saved sources" : "Message Zuychin"}
+                aria-autocomplete="list"
+                aria-controls={slashMatches.length ? "chat-command-list" : undefined}
+                aria-activedescendant={slashMatches.length ? `chat-command-${cmdSel}` : undefined}
+                placeholder={knowledgeOnly ? "Search your saved sources" : "Message Zuychin"}
+                rows={1}
+              />
+              <div className={ui.tools}>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className={ui.iconButton}
+                  aria-label="Attach file"
+                  disabled={knowledgeOnly}
+                  title={knowledgeOnly ? "Turn Knowledge only off to attach files" : "Attach file"}
+                >
+                  <Paperclip size={18} aria-hidden="true" />
+                </button>
+                {canThink && !knowledgeOnly && (
+                  <button
+                    type="button"
+                    onClick={toggleThinking}
+                    className={ui.iconButton}
+                    aria-pressed={thinkingEnabled}
+                    aria-label="Deep thinking"
+                    title={thinkingEnabled ? "Deep thinking is on" : "Deep thinking is off"}
+                  >
+                    <Brain size={18} aria-hidden="true" />
+                  </button>
+                )}
+                {!sidebar.docked && <div className={ui.toolsModels}>{renderModelSelectors(true)}</div>}
+                <span className={ui.spacer} />
+                <button
+                  type="button"
+                  onClick={toggleRecording}
+                  disabled={knowledgeOnly || freeOnly || preferencesBlocked || !session.loaded || session.historyLoading}
+                  className={ui.iconButton}
+                  data-live={isRecording || undefined}
+                  aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
+                  title={freeOnly ? "Voice is unavailable with Free only" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat. Replies are spoken; say “Zuychin, stop” to end."}
+                >
+                  <Mic size={18} aria-hidden="true" />
+                </button>
+                {isLoading && (
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className={ui.stop}
+                    aria-label={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
+                    title={queuedView.length ? "Stop generating and clear queued messages" : "Stop generating"}
+                  >
+                    <Square size={12} fill="currentColor" aria-hidden="true" />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={sendDisabled}
+                  className={ui.send}
+                  aria-label={isLoading ? "Queue message" : "Send message"}
+                  title={isLoading ? "Queue message (sends after the current reply)" : "Send message"}
+                >
+                  <ArrowUp size={18} strokeWidth={2.25} aria-hidden="true" />
+                </button>
+              </div>
+            </form>
+          </div>
         </footer>
       </div>
+
+      {todayOpen && <TodayPanel variant={todayDocked ? "docked" : "sheet"} onClose={closeToday} refreshToken={todayRefresh} onDueCount={setDueCount} />}
     </div>
   );
 }

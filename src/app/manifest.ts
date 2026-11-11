@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
         description: "Personal AI assistant for research, coding and planning.",
         start_url: "/",
         display: "standalone",
-        background_color: "#0f172a",
-        theme_color: "#0f172a",
+        background_color: "#0f1115",
+        theme_color: "#0f1115",
         icons: [
             { src: "/icons/icon-192.png?v=b879353ceb1b", sizes: "192x192", type: "image/png" },
             { src: "/icons/icon-512.png?v=711679e99f1f", sizes: "512x512", type: "image/png" },

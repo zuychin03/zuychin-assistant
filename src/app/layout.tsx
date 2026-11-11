@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Azeret_Mono, Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 import { OfflinePrivacyBoundary } from "@/lib/offline/privacy-boundary";
 
-const geist = Geist({
-  variable: "--font-geist",
+const hanken = Hanken_Grotesk({
+  variable: "--font-hanken",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const azeret = Azeret_Mono({
+  variable: "--font-azeret",
   subsets: ["latin"],
 });
 
@@ -28,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${hanken.variable} ${azeret.variable}`} suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{

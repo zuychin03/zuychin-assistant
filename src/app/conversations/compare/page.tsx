@@ -28,7 +28,7 @@ function ComparisonView() {
         return () => controller.abort();
     }, [key, left, right, valid]);
     const result = state?.key === key ? state.result : undefined;
-    return <WorkspaceShell current="conversations" title="Compare approaches" description="Explore different prompts or models while keeping the original discussion." backHref={validConversationId(left) ? `/?c=${left}` : "/"}><div className={styles.page}>
+    return <WorkspaceShell current="conversations" title="Compare approaches" description="Two branches of one conversation, side by side" backHref={validConversationId(left) ? `/?c=${left}` : "/"}><div className={styles.page}>
         {!valid ? <p role="alert">Choose two different related conversations from a chat’s branch links.</p>
             : state?.key === key && state.error ? <div className={styles.error} role="alert"><p>{state.error}</p><button className={styles.button} onClick={() => window.location.reload()}>Retry comparison</button></div>
                 : !result ? <p role="status">Loading conversations…</p>
@@ -37,5 +37,5 @@ function ComparisonView() {
     </div></WorkspaceShell>;
 }
 export default function ConversationComparisonPage() {
-    return <Suspense fallback={<WorkspaceShell current="conversations" title="Compare approaches" description="Explore different prompts or models while keeping the original discussion."><div className={styles.page} role="status">Loading comparison…</div></WorkspaceShell>}><ComparisonView /></Suspense>;
+    return <Suspense fallback={<WorkspaceShell current="conversations" title="Compare approaches" description="Two branches of one conversation, side by side"><div className={styles.page} role="status">Loading comparison…</div></WorkspaceShell>}><ComparisonView /></Suspense>;
 }

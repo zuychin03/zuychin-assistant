@@ -1,50 +1,244 @@
-.shell {
+.app {
+    display: flex;
     min-height: 100dvh;
-    background: radial-gradient(ellipse at 12% -8%, color-mix(in srgb, var(--color-primary) 6%, transparent), transparent 42%), var(--color-background);
-    color: var(--color-text-primary);
+    background: var(--page);
+    color: var(--ink);
     font-family: var(--font-family);
 }
-.header {
-    min-height: 82px;
-    padding: 15px clamp(18px, 3vw, 42px);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px 24px;
-    border-bottom: 1px solid var(--color-border);
-    background: color-mix(in srgb, var(--color-background) 88%, transparent);
-}
-.titleGroup { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.titleGroup h1 { font-size: clamp(22px, 2.4vw, 27px); font-weight: 620; letter-spacing: -.035em; line-height: 1.15; }
-.titleGroup p { max-width: 70ch; margin-top: 5px; font-size: 12px; color: var(--color-text-muted); line-height: 1.5; }
-.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
-.actions :is(button, a) {
-    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-    min-height: 34px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--color-background) 86%, var(--color-surface));
-    color: var(--color-text-primary); font: 600 12px var(--font-family); text-decoration: none; cursor: pointer;
-}
-.iconButton, .actions .iconButton { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); cursor: pointer; }
-.actions :is(button, a):hover:not(:disabled), .iconButton:hover { background: var(--color-surface); color: var(--color-text-primary); }
-.actions button:disabled { opacity: .5; cursor: wait; }
-.navigation { display: flex; align-items: stretch; gap: 4px; min-height: 48px; overflow-x: auto; padding: 0 clamp(18px, 3vw, 42px); border-bottom: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-background) 94%, transparent); scrollbar-width: none; }
-.navigation a { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 7px; min-height: 48px; padding: 0 13px; border-bottom: 2px solid transparent; color: var(--color-text-muted); font-size: 12px; font-weight: 550; white-space: nowrap; text-decoration: none; }
-.navigation a:hover { color: var(--color-text-primary); background: color-mix(in srgb, var(--color-surface) 60%, transparent); }
-.navigation a[aria-current="page"] { color: var(--color-text-primary); border-bottom-color: var(--color-primary); font-weight: 650; }
-.content { min-width: 0; outline: none; }
-.shell ::selection { background: color-mix(in srgb, var(--color-primary) 20%, transparent); }
-.shell :is(a, button, input, textarea, select, summary):focus-visible, .navigation a:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-.navigation a:focus-visible { outline-offset: -4px; }
-.skip { position: absolute; left: 18px; top: 8px; z-index: 20; transform: translateY(-150%); padding: 10px 14px; border-radius: var(--radius-sm); background: var(--color-primary); color: var(--color-primary-foreground); font-size: 13px; }
-.skip:focus { transform: translateY(0); }
-@media (max-width: 720px) {
-    .header { align-items: flex-start; flex-wrap: wrap; gap: 12px; padding-block: 16px; }
-    .titleGroup { flex: 1 1 240px; }
-    .actions { margin-left: 54px; }
-    .actions :is(button, a), .iconButton, .actions .iconButton { min-height: 44px; }
-    .iconButton, .actions .iconButton { width: 44px; }
-    .navigation { padding-inline: 10px; }
-    .navigation a { padding-inline: 12px; }
+
+.app[data-fill] {
+    height: 100dvh;
+    overflow: hidden;
 }
 
-.navigation::-webkit-scrollbar { display: none; }
+.main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.app[data-fill] .main {
+    min-height: 0;
+}
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 12px;
+    min-height: 56px;
+    padding: 0 12px 0 24px;
+    border-bottom: 1px solid var(--line);
+    background: var(--page);
+    container: topbar / inline-size;
+}
+
+.topbar > button:first-child,
+.topbar > a:first-child {
+    margin-left: -12px;
+}
+
+.heading {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
+}
+
+.heading h1 {
+    flex: none;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+}
+
+.heading p {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.toolbar {
+    display: flex;
+    flex: 0 1 auto;
+    align-self: stretch;
+    min-width: 0;
+    margin-left: 16px;
+    margin-bottom: -1px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+}
+
+.toolbar::-webkit-scrollbar {
+    display: none;
+}
+
+.toolbar > * {
+    flex: none;
+}
+
+.actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.actions > :is(button, a) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 12px 0 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--ink);
+    font: 500 13.5px var(--font-family);
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.actions > :is(button, a) svg {
+    flex: none;
+    color: var(--muted);
+}
+
+.actions > :is(button, a):hover:not(:disabled) {
+    border-color: var(--faint);
+}
+
+.actions > button:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+/* Labelled actions (an icon followed by a <span> label) fold to icons when the bar runs short; the label becomes their tooltip and stays the accessible name. */
+@container topbar (max-width: 1080px) {
+    .actions > :is(button, a):has(> svg + span) {
+        position: relative;
+        width: 32px;
+        padding: 0;
+    }
+
+    .actions > :is(button, a):has(> svg + span) > span {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 50%;
+        z-index: 30;
+        padding: 4px 8px;
+        border-radius: var(--radius-xs);
+        background: var(--ink);
+        color: var(--page);
+        font-size: 12.5px;
+        line-height: 1.3;
+        white-space: nowrap;
+        box-shadow: var(--shadow-pop);
+        opacity: 0;
+        pointer-events: none;
+        translate: -50% 0;
+        transition: opacity 0.12s ease;
+    }
+
+    .actions > :last-child:has(> svg + span) > span {
+        left: auto;
+        right: 0;
+        translate: none;
+    }
+
+    .actions > :is(button, a):has(> svg + span):is(:hover, :focus-visible) > span {
+        opacity: 1;
+        transition-delay: 0.3s;
+    }
+}
+
+.iconButton {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.iconButton:hover {
+    background: var(--hover);
+    color: var(--ink);
+}
+
+.content {
+    flex: 1;
+    min-width: 0;
+    outline: none;
+}
+
+.app[data-fill] .content {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.sidebarNote {
+    margin: 0;
+    padding: 4px 10px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.skip {
+    position: absolute;
+    top: 8px;
+    left: 16px;
+    z-index: 100;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--ink);
+    color: var(--page);
+    font-size: 13px;
+    transform: translateY(-160%);
+}
+
+.skip:focus {
+    transform: none;
+}
+
+@media (max-width: 1100px) {
+    .heading p { display: none; }
+}
+
+@media (max-width: 720px) {
+    .topbar {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 6px 8px 0 16px;
+    }
+
+    .heading { flex: 1 1 auto; min-height: 44px; align-items: center; }
+    .toolbar { order: 10; flex-basis: 100%; margin: 0 -8px 0 -16px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
+    .toolbar::-webkit-scrollbar { display: none; }
+    .actions { gap: 4px; }
+    .actions > :is(button, a) { height: 40px; }
+}
+
+@media (pointer: coarse) {
+    .iconButton { width: 44px; height: 44px; }
+    .actions > :is(button, a) { height: 44px; min-width: 44px; }
+}

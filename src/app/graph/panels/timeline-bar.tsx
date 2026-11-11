@@ -3,7 +3,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Pause, Play, X } from "lucide-react";
 import { styles } from "../cosmos/styles";
-import { COSMOS } from "../cosmos/palette";
 
 // One sweep of the whole vault history takes roughly this long per year of content.
 const MS_PER_YEAR_OF_HISTORY = 4000;
@@ -95,7 +94,7 @@ export default function TimelineBar({ start, end, value, playing, bottom, onHeig
                 aria-valuetext={label}
             />
 
-            <span style={{ fontSize: 10.5, color: COSMOS.muted, whiteSpace: "nowrap" }}>
+            <span style={styles.timelineEnd}>
                 {new Date(end).getFullYear()}
             </span>
 

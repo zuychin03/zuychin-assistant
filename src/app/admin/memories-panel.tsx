@@ -108,20 +108,21 @@ export default function MemoriesPanel({ onDirtyChange }: { onDirtyChange?: (dirt
 
     return (
         <div>
-            <div style={panelStyles.header}>
-                <div style={panelStyles.headerIcon}><Brain size={16} /></div>
-                <div style={{ flex: 1 }}>
-                    <h2 style={panelStyles.title}>Long-Term Memory</h2>
-                    <p style={panelStyles.description}>Extracted facts the assistant remembers across conversations</p>
+            <div className="panel-head">
+                <Brain size={16} />
+                <div className="panel-heading">
+                    <h2>Long-term memory</h2>
+                    <p>Extracted facts the assistant remembers across conversations</p>
                 </div>
-                <button style={panelStyles.iconBtn} onClick={() => refresh()} disabled={loading || busy || adding} title="Refresh memories">
-                    <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
+                <button className="icon-btn" onClick={() => refresh()} disabled={loading || busy || adding} title="Refresh memories">
+                    <RefreshCw size={15} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
 
-            <div style={panelStyles.addRow}>
+            <div style={styles.addRow}>
                 <input
-                    style={panelStyles.addInput}
+                    className="field"
+                    style={styles.addInput}
                     disabled={loading || adding || busy}
                     value={newFact}
                     onChange={(e) => setNewFact(e.target.value)}
@@ -131,64 +132,66 @@ export default function MemoriesPanel({ onDirtyChange }: { onDirtyChange?: (dirt
                 />
                 <Dropdown
                     ariaLabel="Category"
-                    style={panelStyles.categorySelect}
+                    className="field"
+                    style={styles.categorySelect}
                     disabled={loading || adding || busy}
                     value={newCategory}
                     onChange={setNewCategory}
                     options={CATEGORIES as readonly string[]}
                 />
-                <button style={panelStyles.iconBtn} onClick={add} disabled={loading || adding || busy || !newFact.trim()} title="Save fact">
-                    <Plus size={14} />
+                <button className="btn" style={styles.square} onClick={add} disabled={loading || adding || busy || !newFact.trim()} title="Save fact">
+                    <Plus size={15} />
                 </button>
             </div>
 
-            {error && <p role="alert" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>{error}</p>}
-            {loading && <p role="status" style={panelStyles.muted}>Loading memories…</p>}
-            <div style={panelStyles.list}>
+            {error && <p role="alert" className="error" style={{ marginBottom: 12 }}>{error}</p>}
+            {loading && <p role="status" className="empty">Loading memories…</p>}
+            <div className="list scroll" style={{ maxHeight: 340 }}>
                 {memories.map((m) => (
-                    <div key={m.id} style={panelStyles.row}>
+                    <div key={m.id} className="row">
                         {editingId === m.id ? (
-                            <div style={panelStyles.editWrap}>
+                            <div style={styles.editWrap}>
                                 <textarea
                                     aria-label="Edit memory fact"
-                                    style={panelStyles.editArea}
+                                    className="field"
+                                    style={styles.editArea}
                                     disabled={loading || busy || adding}
                                     value={editText}
                                     onChange={(e) => setEditText(e.target.value)}
                                     rows={2}
                                     autoFocus
                                 />
-                                <div style={panelStyles.editActions}>
-                                    <button style={panelStyles.iconBtn} onClick={() => saveEdit(m.id)} disabled={loading || busy || adding || !editText.trim()} title="Save"><Check size={13} /></button>
-                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) setEditingId(null); }} disabled={loading || busy || adding} title="Cancel"><X size={13} /></button>
+                                <div style={styles.editActions}>
+                                    <button className="icon-btn" onClick={() => saveEdit(m.id)} disabled={loading || busy || adding || !editText.trim()} title="Save"><Check size={15} /></button>
+                                    <button className="icon-btn" onClick={() => { if (discardEdit()) setEditingId(null); }} disabled={loading || busy || adding} title="Cancel"><X size={15} /></button>
                                 </div>
                             </div>
                         ) : (
                             <>
-                                <div style={panelStyles.factText}>{m.fact}</div>
-                                <div style={panelStyles.rowFooter}>
-                                    <span style={panelStyles.categoryChip}>{m.category}</span>
+                                <div style={styles.factText}>{m.fact}</div>
+                                <div style={styles.rowFooter}>
+                                    <span className="pill">{m.category}</span>
                                     {m.status === "candidate" && (
-                                        <span style={{ ...panelStyles.categoryChip, borderStyle: "dashed" }} title="Unconfirmed work/study pattern - becomes a Known Fact when it repeats in another conversation">
+                                        <span className="pill" style={{ borderStyle: "dashed" }} title="Unconfirmed work/study pattern - becomes a Known Fact when it repeats in another conversation">
                                             pattern {m.evidenceCount ?? 1}/{PROMOTE_EVIDENCE_COUNT}
                                         </span>
                                     )}
-                                    <span style={panelStyles.rowMeta}>
+                                    <span className="meta">
                                         {m.projectId ? "project · " : ""}{new Date(m.updatedAt).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}
                                     </span>
                                     <span style={{ flex: 1 }} />
-                                    <button style={panelStyles.iconBtn} onClick={() => { if (discardEdit()) { setEditingId(m.id); setEditText(m.fact); setEditOriginal(m.fact); } }} disabled={loading || busy || adding} title="Edit fact">
-                                        <Pencil size={12} />
+                                    <button className="icon-btn" onClick={() => { if (discardEdit()) { setEditingId(m.id); setEditText(m.fact); setEditOriginal(m.fact); } }} disabled={loading || busy || adding} title="Edit fact">
+                                        <Pencil size={14} />
                                     </button>
-                                    <button style={panelStyles.iconBtn} onClick={() => setForgetting(m)} disabled={loading || busy || adding} title="Forget fact">
-                                        <Trash2 size={12} />
+                                    <button className="icon-btn" data-tone="danger" onClick={() => setForgetting(m)} disabled={loading || busy || adding} title="Forget fact">
+                                        <Trash2 size={14} />
                                     </button>
                                 </div>
                             </>
                         )}
                     </div>
                 ))}
-                {!loading && !error && memories.length === 0 && <div style={panelStyles.muted}>Nothing remembered yet - facts appear here as you chat.</div>}
+                {!loading && !error && memories.length === 0 && <div className="empty">Nothing remembered yet - facts appear here as you chat.</div>}
             </div>
             {forgetting && <ConfirmModal title="Forget this fact?" body={`“${forgetting.fact}” will be removed from long-term memory. This cannot be undone.${editingId === forgetting.id && editDirty ? " Its unsaved edit will also be discarded." : ""}`}
                 confirmLabel="Forget fact" busyText={busy ? "Forgetting fact…" : undefined}
@@ -197,88 +200,14 @@ export default function MemoriesPanel({ onDirtyChange }: { onDirtyChange?: (dirt
     );
 }
 
-const panelStyles: Record<string, React.CSSProperties> = {
-    header: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
-    headerIcon: {
-        width: 32,
-        height: 32,
-        borderRadius: 12,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        flexShrink: 0,
-    },
-    title: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
-    description: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
-    iconBtn: {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 32,
-        height: 32,
-        borderRadius: 9,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "transparent",
-        color: "var(--color-text-muted)",
-        cursor: "pointer",
-        flexShrink: 0,
-    },
+const styles: Record<string, React.CSSProperties> = {
     addRow: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 },
-    addInput: {
-        flex: "1 1 180px",
-        minWidth: 0,
-        padding: "7px 10px",
-        borderRadius: 12,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        color: "var(--color-text-primary)",
-        fontSize: 12.5,
-        outline: "none",
-    },
-    categorySelect: {
-        flex: "0 1 140px",
-        padding: "7px 8px",
-        borderRadius: 12,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        color: "var(--color-text-primary)",
-        fontSize: 12,
-        outline: "none",
-    },
-    list: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 340, overflowY: "auto" },
-    row: {
-        padding: "9px 11px",
-        borderRadius: 14,
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    factText: { overflowWrap: "anywhere", fontSize: 12.5, lineHeight: 1.45 },
-    rowFooter: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: 6 },
-    categoryChip: {
-        padding: "2px 7px",
-        borderRadius: 999,
-        fontSize: 10.5,
-        fontWeight: 750,
-        color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    rowMeta: { fontSize: 11, color: "var(--color-text-muted)" },
+    addInput: { flex: "1 1 180px" },
+    categorySelect: { flex: "0 1 140px", padding: "0 10px", background: "var(--surface)" },
+    square: { width: 34, height: 34, padding: 0 },
+    factText: { fontSize: 14, lineHeight: 1.5, overflowWrap: "anywhere" },
+    rowFooter: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 6 },
     editWrap: { display: "flex", flexDirection: "column", gap: 6 },
-    editArea: {
-        width: "100%",
-        padding: "7px 9px",
-        borderRadius: 10,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
-        color: "var(--color-text-primary)",
-        fontSize: 12.5,
-        resize: "vertical",
-        outline: "none",
-        fontFamily: "inherit",
-    },
-    editActions: { display: "flex", gap: 6, justifyContent: "flex-end" },
-    muted: { color: "var(--color-text-muted)", fontSize: 12.5, padding: 4 },
+    editArea: { width: "100%" },
+    editActions: { display: "flex", gap: 4, justifyContent: "flex-end" },
 };

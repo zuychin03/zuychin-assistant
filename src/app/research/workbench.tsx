@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { WorkspaceLink as Link } from "@/components/workspace-link";
 import { WorkspaceShell } from "@/components/workspace-shell";
 import { Dropdown } from "@/components/dropdown";
@@ -208,15 +209,15 @@ export function ResearchWorkbench() {
         setConflict(null); setError(""); setNotice(useSaved ? "Latest saved text loaded." : "Latest version loaded. Review your draft before saving again."); void reload();
     }
 
-    return <WorkspaceShell current="research" title="Research" description="Investigate a question, keep exact source passages and compare what the evidence supports."><div className={styles.page}>
+    return <WorkspaceShell current="research" title="Research" description="Questions, source passages and evidence"><div className={styles.page}>
         {error && <div role="alert" className={styles.error}><p>{error}</p>{(!index || (activeId && !current)) && <button disabled={!!busy} onClick={() => void retryLoad()}>Retry loading</button>}</div>}{notice && <p role="status" className={styles.notice}>{notice}</p>}
         {conflict && <section className={styles.conflict}><h2>A newer saved version is available</h2><p className={styles.pre}>{String(conflict.current.text ?? conflict.current.question ?? conflict.current.title ?? "")}</p>
             <div className={styles.actions}><button onClick={() => resolveConflict(false)}>Keep my draft, use latest version</button><button onClick={() => resolveConflict(true)}>Load saved text</button></div></section>}
         <div className={styles.layout}>
-            <aside className={styles.sidebar}><h2>Research questions</h2><button disabled={!index?.projects.length || !!busy} onClick={() => {
+            <aside className={styles.sidebar}><h2>Questions</h2><button disabled={!index?.projects.length || !!busy} onClick={() => {
                 if (researchDraftChanged && !window.confirm("Discard your unsaved research edits and start a new question?")) return;
                 setEntryDraft(null); setQuestionDraft({ id: crypto.randomUUID(), projectId: index!.projects[0].id, title: "", question: "", status: "active" });
-            }}>New question</button>
+            }}><Plus size={15} aria-hidden="true" /> New question</button>
                 {!index ? (!error && <p role="status">Loading research…</p>) : !index.projects.length ? <p>Create an owned project before starting research.</p> : null}
                 <ul>{index?.questions.map((question) => <li key={question.id}><button aria-current={activeId === question.id ? "page" : undefined} disabled={!!busy} onClick={() => chooseQuestion(question.id)}><strong>{question.title}</strong><small>{index.projects.find((project) => project.id === question.projectId)?.name}{question.status === "archived" ? " · Archived" : ""}</small></button></li>)}</ul>
             </aside>
@@ -226,7 +227,7 @@ export function ResearchWorkbench() {
                     <label>Short title<input autoFocus required maxLength={160} value={questionDraft.title} onChange={(event) => setQuestionDraft({ ...questionDraft, title: event.target.value })} /></label>
                     <label>Research question<textarea required maxLength={8000} rows={3} value={questionDraft.question} onChange={(event) => setQuestionDraft({ ...questionDraft, question: event.target.value })} /></label>
                     {questionDraft.version && <label>Status<Dropdown ariaLabel="Status" className={styles.select} value={questionDraft.status} disabled={!!busy} onChange={(status) => setQuestionDraft({ ...questionDraft, status: status as QuestionDraft["status"] })} options={[{ value: "active", label: "Active" }, { value: "archived", label: "Archived" }]} /></label>}
-                    <div className={styles.actions}><button type="submit">{busy === "question" ? "Saving…" : "Save question"}</button><button type="button" onClick={() => setQuestionDraft(null)}>Cancel</button></div>
+                    <div className={styles.actions}><button type="submit" className={styles.primary}>{busy === "question" ? "Saving…" : "Save question"}</button><button type="button" onClick={() => setQuestionDraft(null)}>Cancel</button></div>
                 </fieldset></form>}
                 {activeId && !current ? (!error && <p role="status">Loading question…</p>) : current ? <>
                     <header className={styles.questionHeader}><div><h2>{current.question.title}</h2><p className={styles.pre}>{current.question.question}</p></div><button disabled={!!busy} onClick={editQuestion}>Edit question</button></header>
@@ -242,7 +243,7 @@ export function ResearchWorkbench() {
                         <div className={styles.editorColumns}>
                             <section className={styles.editorPanel}><h3>Source passage reader</h3>{selected ? <>
                                 <label>Source label<input maxLength={160} value={sourceTitle} disabled={!!busy || archived || !!selected.removedAt} onChange={(event) => setSourceTitle(event.target.value)} /></label>
-                                <div className={styles.actions}><button disabled={!!busy || archived || !!selected.removedAt || !sourceTitle.trim()} onClick={() => void editSource()}>Save label</button><button disabled={!!busy || archived || !!selected.removedAt} onClick={() => void editSource(true)}>Remove source</button><Link href={`/knowledge?${new URLSearchParams({ document: selected.documentId, path: selected.path })}`}>Open Library page</Link></div>
+                                <div className={styles.actions}><button disabled={!!busy || archived || !!selected.removedAt || !sourceTitle.trim()} onClick={() => void editSource()}>Save label</button><button className={styles.danger} disabled={!!busy || archived || !!selected.removedAt} onClick={() => void editSource(true)}><Trash2 size={15} aria-hidden="true" /> Remove source</button><Link href={`/knowledge?${new URLSearchParams({ document: selected.documentId, path: selected.path })}`}>Open Library page</Link></div>
                                 <p className={styles.hint}>Reading saved revision {selected.commitSha.slice(0, 8)}. Select text, then choose Use selected passage.</p>
                                 {snapshot?.sourceId === sourceId ? <textarea className={styles.reader} ref={reader} aria-label="Immutable source Markdown" value={snapshot.markdown} readOnly spellCheck={false} /> : <p role="status">{snapshotError || "Loading saved source…"}</p>}
                                 <button disabled={!!busy || archived || !!selected.removedAt || snapshot?.sourceId !== sourceId} onClick={selectPassage}>Use selected passage</button>
@@ -251,12 +252,12 @@ export function ResearchWorkbench() {
                                 <label>Note type<Dropdown ariaLabel="Note type" className={styles.select} value={entryDraft.kind} disabled={!!busy || archived} onChange={(value) => { const kind = value as ResearchKind; setEntryDraft({ ...entryDraft, kind, ...(kind === "interpretation" ? { quote: undefined, startOffset: undefined } : {}) }); }} options={researchKinds.map((kind) => ({ value: kind, label: labels[kind] }))} /></label>
                                 {entryDraft.kind === "interpretation" ? <p className={styles.hint}>Your interpretation, kept separate from source evidence.</p> : entryDraft.quote ? <blockquote className={styles.selectedQuote} tabIndex={0} aria-label="Selected source passage">{entryDraft.quote}</blockquote> : <p className={styles.error}>Select a source passage before saving this note type.</p>}
                                 <label>Your note<textarea autoFocus required maxLength={20000} rows={7} value={entryDraft.text} onChange={(event) => setEntryDraft({ ...entryDraft, text: event.target.value })} /></label>
-                                <div className={styles.actions}><button type="submit" disabled={entryDraft.kind !== "interpretation" && !entryDraft.quote}>{busy === "entry" ? "Saving…" : "Save note"}</button><button type="button" onClick={() => setEntryDraft(null)}>Cancel</button></div>
+                                <div className={styles.actions}><button type="submit" className={styles.primary} disabled={entryDraft.kind !== "interpretation" && !entryDraft.quote}>{busy === "entry" ? "Saving…" : "Save note"}</button><button type="button" onClick={() => setEntryDraft(null)}>Cancel</button></div>
                             </fieldset></form>}</section>
                         </div>
                         <section className={styles.notes}><h3>Research notes</h3>{!current.entries.length && <p className={styles.hint}>Your annotations, claims and interpretations will appear here.</p>}{current.entries.map((entry) => <article className={styles.note} key={entry.id}>
                             <header><strong>{labels[entry.kind]}</strong><span>{entry.sourceId ? current.sources.find((source) => source.id === entry.sourceId)?.title : "No source claim"}</span></header><EvidenceNote entry={entry} />
-                            <div className={styles.actions}><button disabled={!!busy || archived} onClick={() => editEntry(entry)}>Edit note</button><button disabled={!!busy || archived} onClick={() => void deleteEntry(entry)}>Delete note</button></div>
+                            <div className={styles.actions}><button disabled={!!busy || archived} onClick={() => editEntry(entry)}>Edit note</button><button className={styles.danger} disabled={!!busy || archived} onClick={() => void deleteEntry(entry)}><Trash2 size={15} aria-hidden="true" /> Delete note</button></div>
                         </article>)}</section>
                     </>}
                 </> : index && !activeId && !questionDraft && <section className={styles.empty}><h2>Start with a question</h2><p>Choose a project and record what you want to investigate. Source-backed claims and personal interpretations stay clearly separated.</p></section>}

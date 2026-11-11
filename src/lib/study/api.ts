@@ -24,7 +24,12 @@ export function createStudyHandlers(service: ReturnType<typeof createStudyServic
     };
     return {
         GET: wrap((req, owner) => {
-            if ([...req.nextUrl.searchParams.keys()].some(key => key !== "documentId")) throw new StudyError("Unsupported study query.");
+            const params = req.nextUrl.searchParams;
+            if (params.has("view")) {
+                if (params.get("view") !== "due" || [...params.keys()].length !== 1) throw new StudyError("Unsupported study query.");
+                return service.due(owner);
+            }
+            if ([...params.keys()].some(key => key !== "documentId")) throw new StudyError("Unsupported study query.");
             const id = req.nextUrl.searchParams.get("documentId");
             if (id !== null && (!id || id.length > 200)) throw new StudyError("Select a valid source.");
             return id ? service.snapshot(id, owner) : service.report(owner);

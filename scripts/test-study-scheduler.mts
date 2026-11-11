@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { initialSchedule, nextReview, studyDraft, studyDay } from "../src/lib/study/scheduler";
+import { initialSchedule, nextReview, studyDraft, studyDay, studyDayStart } from "../src/lib/study/scheduler";
 import { cardInput, reviewInput } from "../src/lib/study/contracts";
 
 const now = new Date("2026-09-28T00:00:00Z");
@@ -16,6 +16,11 @@ for (const rating of [1, 2, 3, 4] as const) {
 assert.throws(() => nextReview({ ...empty, stability: NaN }, 3, now), /schedule/i);
 assert.equal(studyDay(new Date("2026-09-28T15:00:00Z"), "Australia/Sydney"), "2026-09-29");
 assert.equal(studyDay(new Date("2026-09-28T15:00:00Z"), "UTC"), "2026-09-28");
+assert.equal(studyDayStart(new Date("2026-09-28T00:00:00Z"), "Australia/Sydney").toISOString(), "2026-09-27T14:00:00.000Z");
+assert.equal(studyDayStart(new Date("2026-09-28T15:00:00Z"), "UTC").toISOString(), "2026-09-28T00:00:00.000Z");
+// Sydney moves to daylight time at 02:00 on 4 October 2026; that day still starts at standard-time midnight.
+assert.equal(studyDayStart(new Date("2026-10-04T05:00:00Z"), "Australia/Sydney").toISOString(), "2026-10-03T14:00:00.000Z");
+assert.equal(studyDayStart(new Date("2026-10-05T05:00:00Z"), "Australia/Sydney").toISOString(), "2026-10-04T13:00:00.000Z");
 for (const kind of ["recall", "exercise", "explain"] as const) {
     const draft = studyDraft(kind, "A source passage", "Example source");
     assert.equal(draft.answer, "A source passage");
@@ -24,4 +29,4 @@ for (const kind of ["recall", "exercise", "explain"] as const) {
 assert.throws(() => cardInput.parse({}), /./);
 assert.throws(() => reviewInput.parse({ id: crypto.randomUUID(), cardId: crypto.randomUUID(), version: 1, rating: 3, response: "", reflection: "" }), /./);
 assert.throws(() => reviewInput.parse({ id: crypto.randomUUID(), cardId: crypto.randomUUID(), version: 1, rating: 5, response: "answer", reflection: "" }), /./);
-console.log("Study scheduler: 30 assertions passed.");
+console.log("Study scheduler: 34 assertions passed.");

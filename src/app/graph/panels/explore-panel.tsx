@@ -1,8 +1,8 @@
 "use client";
 
 import { Loader2, Search, Sparkles, Telescope, X } from "lucide-react";
-import { CATEGORIES, CATEGORY_COLORS, COSMOS } from "../cosmos/palette";
-import { styles } from "../cosmos/styles";
+import { CATEGORIES, CATEGORY_COLORS } from "../cosmos/palette";
+import { CHROME, styles } from "../cosmos/styles";
 import type { PhysicsSettings, Quality } from "../cosmos/scene";
 import { PanelShell, Slider, Switch } from "./ui";
 
@@ -49,7 +49,7 @@ export default function ExplorePanel(props: {
             title="Explore"
             subtitle="Search meaning, not just titles"
         >
-            <div style={styles.searchRow}>
+            <div style={styles.searchRow} className="cosmos-field">
                 {searching ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} style={{ opacity: 0.65 }} />}
                 <input
                     ref={searchInputRef}
@@ -107,7 +107,7 @@ export default function ExplorePanel(props: {
                             style={{ ...styles.chip, ...(on ? styles.chipActive : {}) }}
                             aria-pressed={on}
                         >
-                            <span style={{ ...styles.chipDot, background: on ? CATEGORY_COLORS[category] : COSMOS.dust }} />
+                            <span style={{ ...styles.chipDot, background: on ? CATEGORY_COLORS[category] : CHROME.faint }} />
                             {category}
                         </button>
                     );

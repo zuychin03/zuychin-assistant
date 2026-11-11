@@ -389,9 +389,9 @@ export function createCosmos(
     const tooltip = document.createElement("div");
     tooltip.style.cssText =
         "position:absolute;left:0;top:0;z-index:6;pointer-events:none;opacity:0;"
-        + "padding:4px 9px;border-radius:9px;white-space:nowrap;font-size:11.5px;"
-        + "font-weight:650;color:#eaf0ff;background:rgba(9,12,20,0.93);"
-        + "border:1px solid rgba(126,141,184,0.34);box-shadow:0 10px 26px rgba(0,0,0,0.55);"
+        + "padding:4px 8px;border-radius:6px;white-space:nowrap;font:600 12px/1.4 var(--font-family,system-ui);"
+        + "color:#f2f3f5;background:#24272e;"
+        + "border:1px solid #484c54;box-shadow:0 2px 4px -1px rgba(0,0,0,.4),0 14px 36px -10px rgba(0,0,0,.7);"
         + "transform:translate(-50%,-100%);transition:opacity 0.12s ease;";
     element.appendChild(tooltip);
 

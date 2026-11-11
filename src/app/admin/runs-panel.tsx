@@ -36,11 +36,11 @@ interface RunDetail extends RunSummary {
     error: string | null;
 }
 
-const STATUS_COLORS: Record<RunSummary["status"], string> = {
-    running: "var(--admin-info)",
-    done: "var(--admin-success)",
-    error: "var(--admin-danger)",
-    timeout: "var(--admin-warning)",
+const STATUS_TONES: Record<RunSummary["status"], string | undefined> = {
+    running: undefined,
+    done: "success",
+    error: "danger",
+    timeout: "warning",
 };
 
 async function loadRuns(): Promise<RunSummary[]> {
@@ -147,149 +147,86 @@ export default function RunsPanel() {
 
     return (
         <div>
-            <div style={panelStyles.header}>
-                <div style={panelStyles.headerIcon}><Workflow size={16} /></div>
-                <div style={{ flex: 1 }}>
-                    <h2 style={panelStyles.title}>Agent Runs</h2>
-                    <p style={panelStyles.description}>Recent agent executions with steps, tools and token usage</p>
+            <div className="panel-head">
+                <Workflow size={16} />
+                <div className="panel-heading">
+                    <h2>Agent runs</h2>
+                    <p>Recent agent executions with steps, tools and token usage</p>
                 </div>
-                <button style={panelStyles.refreshBtn} onClick={refresh} disabled={loading} title="Refresh runs">
-                    <RefreshCw size={13} className={loading ? "animate-spin" : undefined} />
+                <button className="icon-btn" onClick={refresh} disabled={loading} title="Refresh runs">
+                    <RefreshCw size={15} className={loading ? "animate-spin" : undefined} />
                 </button>
             </div>
-            {error && <p role="alert" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>{error}</p>}
-            {loading && <p role="status" style={panelStyles.muted}>Loading runs…</p>}
-            <div style={panelStyles.list}>
+            {error && <p role="alert" className="error" style={{ marginBottom: 12 }}>{error}</p>}
+            {loading && <p role="status" className="empty">Loading runs…</p>}
+            {/* Runs accumulate without bound; taller than the skills/memories lists because rows expand. */}
+            <div className="list scroll" style={{ maxHeight: 420 }}>
                 {runs.map((run) => {
                     const isOpen = expanded === run.id;
                     const detail = details[run.id];
                     return (
-                        <div key={run.id} style={panelStyles.row}>
-                            <button style={panelStyles.rowHead} aria-expanded={isOpen} aria-controls={"run-" + run.id} onClick={() => toggle(run.id)} disabled={loading}>
-                                <span style={{ ...panelStyles.dot, background: STATUS_COLORS[run.status] }} />
-                                <span style={panelStyles.rowMessage}>{run.message}</span>
-                                {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        <div key={run.id} className="row">
+                            <button className="row-toggle" style={styles.rowHead} aria-expanded={isOpen} aria-controls={"run-" + run.id} onClick={() => toggle(run.id)} disabled={loading}>
+                                <span className="dot" data-tone={STATUS_TONES[run.status]} />
+                                <span style={styles.rowMessage}>{run.message}</span>
+                                {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                             </button>
-                            <div style={panelStyles.rowMeta}>
+                            <div className="meta" style={styles.rowMeta}>
                                 {run.status} · {formatDuration(run.startedAt, run.finishedAt)} · {formatTokens(run.usage?.totalTokens)}
                                 {run.model ? ` · ${run.model}` : ""}
                             </div>
                             {isOpen && (
-                                <div id={"run-" + run.id} style={panelStyles.detail}>
+                                <div id={"run-" + run.id} style={styles.detail}>
                                     {run.plan.length > 0 && (
-                                        <div style={panelStyles.detailBlock}>
+                                        <div className="inset" style={styles.detailBlock}>
                                             {run.plan.map((s, i) => (
-                                                <div key={i} style={panelStyles.planLine}>
-                                                    <span>{s.status === "done" ? "✓" : s.status === "in_progress" ? "▸" : "○"}</span>
-                                                    <span style={s.status === "done" ? panelStyles.planDone : undefined}>{s.title}</span>
+                                                <div key={i} style={styles.planLine}>
+                                                    <span style={styles.planMark}>{s.status === "done" ? "✓" : s.status === "in_progress" ? "▸" : "○"}</span>
+                                                    <span style={s.status === "done" ? styles.planDone : undefined}>{s.title}</span>
                                                 </div>
                                             ))}
                                         </div>
                                     )}
                                     {detail ? (
                                         <>
-                                            <div style={panelStyles.detailBlock}>
+                                            <div className="inset" style={styles.detailBlock}>
                                                 {buildTimeline(detail.events).map((line, i) => (
-                                                    <div key={i} style={panelStyles.timelineLine}>
-                                                        <span style={panelStyles.timelineLabel}>
-                                                            {line.label.startsWith("artifact:") && <FileText size={11} style={{ marginRight: 4, verticalAlign: -1 }} />}
+                                                    <div key={i} style={styles.timelineLine}>
+                                                        <span style={styles.timelineLabel}>
+                                                            {line.label.startsWith("artifact:") && <FileText size={12} style={{ marginRight: 4, verticalAlign: -1 }} />}
                                                             {line.label}
                                                         </span>
-                                                        {line.duration && <span style={panelStyles.timelineDuration}>{line.duration}</span>}
+                                                        {line.duration && <span className="meta" style={{ flexShrink: 0 }}>{line.duration}</span>}
                                                     </div>
                                                 ))}
-                                                {detail.events.length === 0 && <div style={panelStyles.muted}>No events recorded.</div>}
+                                                {detail.events.length === 0 && <div className="meta">No events recorded.</div>}
                                             </div>
-                                            {detail.error && <div style={panelStyles.errorText}>{detail.error}</div>}
+                                            {detail.error && <div className="error" style={styles.errorText}>{detail.error}</div>}
                                         </>
                                     ) : (
-                                        <div style={panelStyles.muted}>{detailErrors[run.id] ? <><p role="alert">{detailErrors[run.id]}</p><button type="button" onClick={() => void loadDetail(run.id)}>Retry details</button></> : <span role="status">Loading details…</span>}</div>
+                                        <div className="meta">{detailErrors[run.id] ? <><p role="alert">{detailErrors[run.id]}</p><button type="button" className="link-btn" style={{ marginTop: 4 }} onClick={() => void loadDetail(run.id)}>Retry details</button></> : <span role="status">Loading details…</span>}</div>
                                     )}
                                 </div>
                             )}
                         </div>
                     );
                 })}
-                {!loading && !error && runs.length === 0 && <div style={panelStyles.muted}>No agent runs yet.</div>}
+                {!loading && !error && runs.length === 0 && <div className="empty">No agent runs yet.</div>}
             </div>
         </div>
     );
 }
 
-const panelStyles: Record<string, React.CSSProperties> = {
-    header: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
-    headerIcon: {
-        width: 32,
-        height: 32,
-        borderRadius: 12,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        flexShrink: 0,
-    },
-    title: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
-    description: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
-    refreshBtn: {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 32,
-        height: 32,
-        borderRadius: 10,
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        background: "transparent",
-        color: "var(--color-text-muted)",
-        cursor: "pointer",
-        flexShrink: 0,
-    },
-    // Runs accumulate without bound, so the column grew far past its neighbours.
-    // Taller than the skills/memories lists because rows are two-line and expand.
-    list: { display: "flex", flexDirection: "column", gap: 9, maxHeight: 420, overflowY: "auto" },
-    row: {
-        padding: "10px 12px",
-        borderRadius: 16,
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    rowHead: {
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        width: "100%",
-        padding: 0,
-        border: "none",
-        background: "transparent",
-        color: "var(--color-text-primary)",
-        cursor: "pointer",
-        textAlign: "left",
-        fontSize: 13,
-        fontWeight: 650,
-    },
-    dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
-    rowMessage: {
-        flex: 1,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        minWidth: 0,
-    },
-    rowMeta: { overflowWrap: "anywhere", marginTop: 4, marginLeft: 16, fontSize: 11.5, color: "var(--color-text-muted)" },
-    detail: { marginTop: 10, display: "flex", flexDirection: "column", gap: 10 },
-    detailBlock: {
-        padding: "9px 10px",
-        borderRadius: 12,
-        background: "color-mix(in srgb, var(--color-background) 62%, transparent)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 5,
-    },
-    planLine: { display: "flex", gap: 7, fontSize: 12.5, alignItems: "baseline" },
-    planDone: { color: "var(--color-text-muted)", textDecoration: "line-through" },
-    timelineLine: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 },
-    timelineLabel: { color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 },
-    timelineDuration: { color: "var(--color-text-muted)", flexShrink: 0, fontVariantNumeric: "tabular-nums" },
-    errorText: { fontSize: 12, color: "var(--admin-danger)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
-    muted: { color: "var(--color-text-muted)", fontSize: 12.5, padding: 4 },
+const styles: Record<string, React.CSSProperties> = {
+    rowHead: { fontSize: 14, fontWeight: 500 },
+    rowMessage: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+    rowMeta: { marginTop: 2, marginLeft: 16, overflowWrap: "anywhere" },
+    detail: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 },
+    detailBlock: { display: "flex", flexDirection: "column", gap: 5 },
+    planLine: { display: "flex", alignItems: "baseline", gap: 8, fontSize: 13 },
+    planMark: { flexShrink: 0, color: "var(--muted)" },
+    planDone: { color: "var(--muted)", textDecoration: "line-through" },
+    timelineLine: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 },
+    timelineLabel: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+    errorText: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
 };

@@ -1,6 +1,6 @@
 .control:focus-visible,
 .search:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 
@@ -30,6 +30,9 @@
 }
 
 .modelDialog::backdrop {
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(3px);
+  background: rgba(10, 11, 13, 0.45);
+}
+
+@media (pointer: coarse) {
+  .control { min-height: 44px; }
 }

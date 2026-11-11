@@ -18,6 +18,7 @@ let failure = "", evidenceCalls = 0, freeOnlyPreference = false;
 let savedFeedback: Record<string, unknown> | null = null, reportReviews: Record<string, unknown>[] = [];
 const writes: { kind: "question" | "feedback"; input: Record<string, unknown>; freeOnly: boolean }[] = [];
 let writerFailure: Error | null = null;
+let dueFixture: { settings: { daily_limit: number; timezone: string } | null; cards: number; reviews: number } = { settings: null, cards: 0, reviews: 0 };
 const writer: StudyWriter = {
     async question(input, freeOnly) { writes.push({ kind: "question", input, freeOnly }); if (writerFailure) throw writerFailure; return { prompt: "Which evidence does the source give?", answer: "Source evidence", model: "gemini/fixture" }; },
     async feedback(input, freeOnly) { writes.push({ kind: "feedback", input, freeOnly }); if (writerFailure) throw writerFailure; return { text: "Right about the source; add its condition.", model: "gemini/fixture" }; },
@@ -30,6 +31,11 @@ const fetcher: typeof fetch = async (input, init) => {
     if (failure === "missing") return Response.json({ code: "PGRST202", message: "missing" }, { status: 404 });
     if (name === "projects") return Response.json([{ id: project }]);
     if (name === "knowledge_documents") return Response.json(documents);
+    if (name === "study_settings") { assert.equal(url.searchParams.get("user_profile_id"), `eq.${owner}`); return Response.json(dueFixture.settings); }
+    if (init?.method === "HEAD" && (name === "study_cards" || name === "study_reviews")) {
+        assert.equal(url.searchParams.get("user_profile_id"), `eq.${owner}`);
+        return new Response(null, { headers: { "content-range": `*/${name === "study_cards" ? dueFixture.cards : dueFixture.reviews}` } });
+    }
     if (name === "study_cards") { assert.equal(url.searchParams.get("user_profile_id"), `eq.${owner}`); return Response.json(failure === "absent" ? null : row); }
     if (name === "rpc/assistant_study_report") return Response.json({ settings: { daily_limit: 20, timezone: "Australia/Sydney", version: 1 }, reviewed_today: 0, day: "2026-09-28", generated_at: now.toISOString(), cards: [row], reviews: reportReviews });
     if (name === "user_profiles") { assert.equal(url.searchParams.get("id"), `eq.${owner}`); return Response.json({ preferences: { freeOnly: freeOnlyPreference } }); }
@@ -70,6 +76,17 @@ const reviewBody = { id: crypto.randomUUID(), cardId: id, version: 1, rating: 3,
 let passed = 0;
 async function check(name: string, fn: () => unknown) { failure = ""; await fn(); passed++; console.log(`PASS ${name}`); }
 await check("report returns permitted sources and exact server daily count", async () => { const report = await service.report(owner); assert.equal(report.documents.length, 1); assert.equal(report.reviewedToday, 0); assert.equal(report.settings.timezone, "Australia/Sydney"); });
+await check("due count caps due cards by what is left of today's limit", async () => {
+    dueFixture = { settings: { daily_limit: 5, timezone: "Australia/Sydney" }, cards: 9, reviews: 2 };
+    assert.deepEqual(await service.due(owner), { due: 3 });
+    const cards = calls.findLast(call => call.name === "study_cards")!.url.searchParams, reviews = calls.findLast(call => call.name === "study_reviews")!.url.searchParams;
+    assert.equal(cards.get("active"), "eq.true"); assert.equal(cards.get("due_at"), `lte.${now.toISOString()}`);
+    assert.equal(reviews.get("reviewed_at"), "gte.2026-09-27T14:00:00.000Z");
+    dueFixture = { settings: { daily_limit: 5, timezone: "Australia/Sydney" }, cards: 9, reviews: 7 };
+    assert.deepEqual(await service.due(owner), { due: 0 });
+    dueFixture = { settings: null, cards: 30, reviews: 0 };
+    assert.deepEqual(await service.due(owner), { due: 20 });
+});
 await check("source creation verifies the immutable passage before save", async () => { const saved = await service.create(input, owner); assert.deepEqual(saved.card.evidence, evidence); assert.equal(evidenceCalls, 1); assert.equal(calls.at(-1)?.body.p_user_id, owner); });
 await check("caller cannot replace evidence or submit ownership", async () => { await assert.rejects(service.create({ ...input, userProfileId: other }, owner)); await assert.rejects(service.create({ ...input, evidence: { quote: "forged" } }, owner)); });
 await check("foreign owner and foreign project sources fail before revision reads", async () => {
@@ -202,6 +219,13 @@ await check("API routes draft and feedback actions for the session owner", async
     const note = await handlers.POST(req("POST", { action: "feedback", ...feedbackBody, id: crypto.randomUUID() }));
     assert.equal(note.status, 200); assert.equal((await note.json()).feedback.cardId, id);
     assert.equal((await handlers.POST(req("POST", { action: "feedback", ...feedbackBody, userProfileId: other }))).status, 400);
+});
+await check("API serves the due count only as its own view", async () => {
+    dueFixture = { settings: null, cards: 4, reviews: 0 };
+    const view = (query: string) => new NextRequest(`https://fixture.invalid/api/study?${query}`, { headers: { cookie: `${AUTH_COOKIE}=${session}` } });
+    const res = await handlers.GET(view("view=due")); assert.equal(res.status, 200); assert.deepEqual(await res.json(), { due: 4 }); assert.match(res.headers.get("cache-control") || "", /private, no-store/);
+    assert.equal((await handlers.GET(view("view=cards"))).status, 400);
+    assert.equal((await handlers.GET(view("view=due&documentId=doc"))).status, 400);
 });
 await check("API gives a clear missing migration error", async () => { failure = "missing"; const res = await handlers.GET(req()); assert.equal(res.status, 503); assert.match((await res.json()).error, /migration/); });
 console.log(`Study service/API: ${passed} checks passed with mocked transport.`);

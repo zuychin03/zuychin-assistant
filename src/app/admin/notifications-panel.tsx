@@ -111,82 +111,62 @@ export default function NotificationsPanel() {
     };
 
     const status = state === "enabled"
-        ? { label: "Enabled", detail: "This browser can receive reminders and nudges.", color: "var(--admin-success)" }
+        ? { label: "Enabled", detail: "This browser can receive reminders and nudges.", tone: "success" }
         : state === "unknown"
-            ? { label: "Status unavailable", detail: "Could not confirm browser alerts. Retry the status check.", color: "var(--admin-warning)" }
+            ? { label: "Status unavailable", detail: "Could not confirm browser alerts. Retry the status check.", tone: "warning" }
         : state === "unconfirmed"
-            ? { label: "Setup not confirmed", detail: "Browser alert delivery has not been confirmed. Retry setup.", color: "var(--admin-warning)" }
+            ? { label: "Setup not confirmed", detail: "Browser alert delivery has not been confirmed. Retry setup.", tone: "warning" }
         : state === "blocked"
-            ? { label: "Blocked", detail: "Allow notifications in your browser settings to enable them.", color: "var(--admin-warning)" }
+            ? { label: "Blocked", detail: "Allow notifications in your browser settings to enable them.", tone: "warning" }
             : state === "unsupported"
-                ? { label: "Unavailable", detail: "This browser does not support push notifications.", color: "#8f96a3" }
+                ? { label: "Unavailable", detail: "This browser does not support push notifications.", tone: undefined }
                 : state === "unconfigured"
-                    ? { label: "Setup required", detail: "Add the VAPID public key to enable browser alerts.", color: "var(--admin-warning)" }
+                    ? { label: "Setup required", detail: "Add the VAPID public key to enable browser alerts.", tone: "warning" }
                     : state === "checking"
-                        ? { label: "Checking", detail: "Checking this browser's notification access.", color: "var(--admin-info)" }
-                        : { label: "Off", detail: "Turn on browser alerts for reminders and nudges.", color: "#8f96a3" };
+                        ? { label: "Checking", detail: "Checking this browser's notification access.", tone: undefined }
+                        : { label: "Off", detail: "Turn on browser alerts for reminders and nudges.", tone: undefined };
     const canChange = state === "enabled" || state === "disabled" || state === "unconfirmed" || state === "unknown";
 
     return (
         <div>
-            <div style={styles.header}>
-                <div style={styles.headerIcon}><Bell size={16} /></div>
-                <div>
-                    <h2 style={styles.title}>Browser alerts</h2>
-                    <p style={styles.description}>Manage notifications for this browser and device.</p>
+            <div className="panel-head">
+                <Bell size={16} />
+                <div className="panel-heading">
+                    <h2>Browser alerts</h2>
+                    <p>Manage notifications for this browser and device.</p>
                 </div>
             </div>
 
-            <div style={styles.statusCard}>
-                <div style={{ ...styles.statusIcon, color: status.color }}>
+            <div className="box" style={styles.status}>
+                <span className="tone" data-tone={status.tone} style={styles.statusIcon}>
                     {state === "enabled" ? <CheckCircle2 size={18} /> : state === "checking" ? <LoaderCircle size={18} className="animate-spin" /> : <Smartphone size={18} />}
-                </div>
+                </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={styles.statusLine}><span style={{ ...styles.dot, background: status.color }} />{status.label}</div>
-                    <div style={styles.statusDetail}>{status.detail}</div>
+                    <div style={styles.statusLine}><span className="dot" data-tone={status.tone} />{status.label}</div>
+                    <div className="meta" style={{ marginTop: 2 }}>{status.detail}</div>
                 </div>
             </div>
 
             <button
                 type="button"
+                className="btn"
                 onClick={() => { if (state === "unknown") void checkStatus(); else void changeSubscription(); }}
                 disabled={!canChange || busy}
-                style={{ ...styles.action, ...(!canChange || busy ? styles.actionDisabled : {}) }}
+                style={styles.action}
             >
                 {busy ? <LoaderCircle size={14} className="animate-spin" /> : state === "enabled" ? <BellOff size={14} /> : <Bell size={14} />}
                 {busy ? "Updating..." : state === "enabled" ? "Turn off alerts" : state === "unconfirmed" ? "Retry setup" : state === "unknown" ? "Retry status" : "Enable alerts"}
             </button>
-            {message && <p role="status" style={styles.message}>{message}</p>}
-            <p style={styles.note}>Notifications are set separately for each browser and device.</p>
+            {message && <p role="status" className="meta" style={styles.message}>{message}</p>}
+            <p className="meta" style={styles.message}>Notifications are set separately for each browser and device.</p>
         </div>
     );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-    header: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
-    headerIcon: {
-        width: 32, height: 32, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center",
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)", flexShrink: 0,
-    },
-    title: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
-    description: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
-    statusCard: {
-        display: "flex", gap: 10, alignItems: "center", padding: "11px 12px", borderRadius: 16,
-        background: "color-mix(in srgb, var(--color-background) 48%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 48%, transparent)",
-    },
-    statusIcon: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
-    statusLine: { display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 700 },
-    dot: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
-    statusDetail: { marginTop: 3, fontSize: 11.5, lineHeight: 1.4, color: "var(--color-text-muted)" },
-    action: {
-        width: "100%", marginTop: 10, minHeight: 36, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-        border: "1px solid color-mix(in srgb, var(--color-primary) 45%, var(--color-border))", borderRadius: 11,
-        background: "color-mix(in srgb, var(--color-primary) 11%, var(--color-surface))", color: "var(--color-text-primary)",
-        font: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
-    },
-    actionDisabled: { opacity: 0.55, cursor: "not-allowed" },
-    message: { margin: "9px 1px 0", fontSize: 11.5, lineHeight: 1.4, color: "var(--color-text-muted)" },
-    note: { margin: "9px 1px 0", fontSize: 11, lineHeight: 1.4, color: "var(--color-text-muted)" },
+    status: { display: "flex", gap: 10, alignItems: "center" },
+    statusIcon: { display: "grid", placeItems: "center", flexShrink: 0, width: 28, height: 28 },
+    statusLine: { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 600 },
+    action: { width: "100%", marginTop: 12 },
+    message: { marginTop: 10 },
 };

@@ -1,73 +1,78 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { ArrowLeft } from "lucide-react";
 import { WorkspaceLink as Link } from "@/components/workspace-link";
-import { ArrowLeft, BookOpen, FlaskConical, GraduationCap, Inbox, ListTodo, MessageSquare, Moon, ShieldCheck, Sun } from "lucide-react";
+import { AppSidebar, SidebarToggle, useMediaQuery, useSidebarState, type Destination } from "@/components/app-sidebar";
+import { TODAY_DOCKED_QUERY, TodayPanel, TodayToggle, useDueCount } from "@/components/today-panel";
+import { ConversationList, type ConversationItem, type ProjectItem } from "@/app/home/conversation-list";
 import styles from "./workspace-shell.module.css";
 
-type Workspace = "library" | "research" | "study" | "capture" | "tasks" | "conversations" | "admin";
-const destinations = [
-    { id: "conversations", href: "/", label: "Chat", icon: MessageSquare },
-    { id: "library", href: "/knowledge", label: "Library", icon: BookOpen },
-    { id: "research", href: "/research", label: "Research", icon: FlaskConical },
-    { id: "study", href: "/study", label: "Study", icon: GraduationCap },
-    { id: "capture", href: "/capture", label: "Capture", icon: Inbox },
-    { id: "tasks", href: "/tasks", label: "Tasks", icon: ListTodo },
-    { id: "admin", href: "/admin", label: "Dashboard", icon: ShieldCheck },
-] as const;
+type Workspace = Destination | "conversations" | "admin";
 
-function subscribeTheme(onChange: () => void) {
-    const observer = new MutationObserver(onChange);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-}
+const toDestination = (workspace: Workspace): Destination =>
+    workspace === "conversations" ? "chat" : workspace === "admin" ? "dashboard" : workspace;
 
-export function WorkspaceThemeButton() {
-    const dark = useSyncExternalStore(subscribeTheme, () => document.documentElement.dataset.theme === "dark", () => false);
-    function toggleTheme() {
-        const next = dark ? "light" : "dark";
-        document.documentElement.dataset.theme = next;
-        try { localStorage.setItem("zuychin-theme", next); } catch { /* Theme still applies for this page. */ }
-    }
-    return <button type="button" onClick={toggleTheme} className={styles.iconButton} aria-label={`Switch to ${dark ? "light" : "dark"} mode`} title={`${dark ? "Light" : "Dark"} mode`}>
-        {dark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-    </button>;
-}
+export function RecentChats({ filter }: { filter: string }) {
+    const [conversations, setConversations] = useState<ConversationItem[]>([]);
+    const [projects, setProjects] = useState<ProjectItem[]>([]);
+    const [loaded, setLoaded] = useState(false);
+    const [failed, setFailed] = useState(false);
 
-export function WorkspaceNavigation({ current }: { current: Workspace }) {
-    const navigation = useRef<HTMLElement>(null);
     useEffect(() => {
-        const nav = navigation.current;
-        const active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-        if (!nav || !active) return;
-        const revealActive = () => {
-            if (nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, active.offsetLeft - nav.offsetLeft - (nav.clientWidth - active.clientWidth) / 2);
-        };
-        revealActive();
-        const observer = new ResizeObserver(revealActive);
-        observer.observe(nav);
-        return () => observer.disconnect();
-    }, [current]);
-    return <nav ref={navigation} className={styles.navigation} aria-label="Assistant workspaces">
-        {destinations.map(({ id, href, label, icon: Icon }) => <Link href={href} key={id} aria-current={current === id ? "page" : undefined}>
-            <Icon size={15} aria-hidden="true" /><span>{label}</span>
-        </Link>)}
-    </nav>;
+        const controller = new AbortController();
+        const read = <T,>(url: string) => fetch(url, { signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<T> : Promise.reject(new Error(String(response.status))));
+        Promise.allSettled([read<{ conversations?: ConversationItem[] }>("/api/conversations"), read<{ projects?: ProjectItem[] }>("/api/projects")]).then(([chats, groups]) => {
+            if (controller.signal.aborted) return;
+            if (chats.status === "fulfilled" && Array.isArray(chats.value.conversations)) setConversations(chats.value.conversations);
+            else setFailed(true);
+            if (groups.status === "fulfilled" && Array.isArray(groups.value.projects)) setProjects(groups.value.projects);
+            setLoaded(true);
+        });
+        return () => controller.abort();
+    }, []);
+
+    if (failed) return <p className={styles.sidebarNote}>Chats could not be loaded.</p>;
+    return <ConversationList conversations={conversations} projects={projects} activeConversationId={null} loaded={loaded} filter={filter} />;
 }
 
-export function WorkspaceShell({ current, title, description, actions, children, backHref = "/" }: {
-    current: Workspace; title: string; description: string; actions?: ReactNode; children: ReactNode; backHref?: string;
+export function WorkspaceShell({ current, title, description, actions, toolbar, children, backHref, backLabel = "Back", fill = false }: {
+    current: Workspace;
+    title: string;
+    description?: string;
+    actions?: ReactNode;
+    toolbar?: ReactNode;
+    children: ReactNode;
+    backHref?: string;
+    backLabel?: string;
+    fill?: boolean;
 }) {
-    return <main className={styles.shell}>
+    const sidebar = useSidebarState();
+    const [search, setSearch] = useState("");
+    const [todayOpen, setTodayOpen] = useState(false);
+    const todayDocked = useMediaQuery(TODAY_DOCKED_QUERY, false);
+    const [due, setDue] = useDueCount();
+    const closeToday = useCallback(() => setTodayOpen(false), []);
+
+    return <div className={styles.app} data-fill={fill || undefined}>
         <a href="#workspace-content" className={styles.skip}>Skip to content</a>
-        <header className={styles.header}>
-            <div className={styles.titleGroup}>
-                <Link href={backHref} className={styles.iconButton} aria-label="Back to chat"><ArrowLeft size={18} aria-hidden="true" /></Link>
-                <div><h1>{title}</h1><p>{description}</p></div>
-            </div>
-            <div className={styles.actions}>{actions}<WorkspaceThemeButton /></div>
-        </header>
-        <WorkspaceNavigation current={current} />
-        <div id="workspace-content" tabIndex={-1} className={styles.content}>{children}</div>
-    </main>;
+        <AppSidebar current={toDestination(current)} search={search} onSearch={setSearch} docked={sidebar.docked} open={sidebar.open} onClose={sidebar.close}>
+            <RecentChats filter={search} />
+        </AppSidebar>
+        <main className={styles.main}>
+            <header className={styles.topbar}>
+                {(!sidebar.docked || !sidebar.open) && <SidebarToggle open={sidebar.open} onToggle={() => sidebar.setOpen(!sidebar.open)} />}
+                {backHref && <Link href={backHref} className={styles.iconButton} aria-label={backLabel} title={backLabel}><ArrowLeft size={18} aria-hidden="true" /></Link>}
+                <div className={styles.heading}>
+                    <h1>{title}</h1>
+                    {description && <p>{description}</p>}
+                </div>
+                {toolbar && <div className={styles.toolbar}>{toolbar}</div>}
+                <div className={styles.actions}>{actions}</div>
+                <TodayToggle open={todayOpen} onToggle={() => setTodayOpen((open) => !open)} due={due} compact={!todayDocked} />
+            </header>
+            <div id="workspace-content" tabIndex={-1} className={styles.content}>{children}</div>
+        </main>
+        {todayOpen && <TodayPanel variant={todayDocked ? "docked" : "sheet"} onClose={closeToday} onDueCount={setDue} />}
+    </div>;
 }

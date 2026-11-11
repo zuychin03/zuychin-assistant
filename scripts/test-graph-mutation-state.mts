@@ -166,7 +166,7 @@ function panel(overrides: Record<string, unknown>, connection = false) {
             if (name === "lucide-react") return new Proxy({}, { get: (_target, key) => key });
             if (name.endsWith("workspace-link")) return { WorkspaceLink: "Link" };
             if (name.endsWith("palette")) return { CATEGORY_COLORS: {}, COSMOS: {}, HEALTH_COLORS: {}, HEALTH_LABELS: {} };
-            if (name.endsWith("styles")) return { styles: {} };
+            if (name.endsWith("styles")) return { styles: {}, CHROME: new Proxy({}, { get: (_target, key) => key }) };
             if (name.endsWith("model")) return { displayMarkdown: (value: string) => value, humanizePath: (value: string) => value };
             if (name.endsWith("sections")) return { documentHeadings: () => [] };
             if (name.endsWith("ui")) return { Badge: "Badge", PanelShell: "PanelShell" };

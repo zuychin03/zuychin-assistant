@@ -6,7 +6,7 @@ import {
     ArrowLeft, ChevronDown, ChevronUp, Clock, Crosshair, Layers, Loader2, Minus, Pause, Play, Plus, RefreshCw, Route,
     SlidersHorizontal, Type, X,
 } from "lucide-react";
-import { COSMOS, LENSES, TRUST_BUCKETS, type Lens, type TrustBucket } from "./cosmos/palette";
+import { LENSES, TRUST_BUCKETS, type Lens, type TrustBucket } from "./cosmos/palette";
 import { COSMOS_CSS, styles } from "./cosmos/styles";
 import { createCosmos, DEFAULT_PHYSICS, type Cosmos, type PhysicsSettings, type Quality } from "./cosmos/scene";
 import { createLabelLayer, type LabelLayer } from "./cosmos/labels";
@@ -16,7 +16,8 @@ import {
 } from "./cosmos/model";
 import { documentHeadings, parseSections } from "./cosmos/sections";
 import { useDocumentDraft } from "../use-document-draft";
-import { documentDestination, libraryDocumentDestination, rememberDocumentLocation, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
+import { useDocumentDestination } from "@/lib/use-document-destination";
+import { libraryDocumentDestination, rememberDocumentLocation, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
 import ExplorePanel, { type SearchHit } from "./panels/explore-panel";
 import LensPanel from "./panels/lens-panel";
 import { ClustersPanel, HealthPanel, HubsPanel } from "./panels/insight-panels";
@@ -46,6 +47,8 @@ export default function GraphPage() {
     const [urlHydrated, setUrlHydrated] = useState(false);
     const [currentUrl, setCurrentUrl] = useState("/graph");
     const [returnTo, setReturnTo] = useState<string | null>(null);
+    const libraryHome = useDocumentDestination("/knowledge");
+    const chatHome = useDocumentDestination("/");
     const graphRequest = useRef(0);
     const pendingFocus = useRef<string | null>(null);
     const systemFrameTimer = useRef<number | null>(null);
@@ -1171,7 +1174,7 @@ export default function GraphPage() {
                 draftDirty={draft.dirty}
                 draftPersisted={draft.persisted}
                 draftConflict={draft.conflict}
-                libraryHref={withReturnTo(libraryDocumentDestination(selected.id, returnTo ?? documentDestination("/knowledge"), focusedSection?.id), currentUrl)}
+                libraryHref={withReturnTo(libraryDocumentDestination(selected.id, returnTo ?? libraryHome, focusedSection?.id), currentUrl)}
                 busy={busy}
                 confirming={confirming}
                 suggestions={suggestions}
@@ -1241,17 +1244,13 @@ export default function GraphPage() {
     return (
         <div style={styles.root} className="cosmos-root">
             <style>{COSMOS_CSS}</style>
-            <div style={styles.nebulaOne} />
-            <div style={styles.nebulaTwo} />
             <div ref={containerRef} style={{ ...styles.canvas, bottom: dockHeight + timelineSpace,
                 top: mobile ? contentTop + (!dockContent && localRoot ? bannerHeight : 0) : 0,
                 left: leftRailVisible ? 316 : 0,
                 right: rightRailVisible ? 404 : 0 }} />
             {viewControlsVisible && (
                 <div ref={viewControlsRef} role="group" aria-label="View controls" style={{ position: "absolute", zIndex: 4,
-                    right: rightRailVisible ? 420 : 16, bottom: viewControlsBottom,
-                    display: "flex", gap: 4, padding: 4, borderRadius: 12,
-                    background: COSMOS.panelSolid, border: `1px solid ${COSMOS.border}` }}>
+                    right: rightRailVisible ? 420 : 16, bottom: viewControlsBottom, ...styles.viewControls }}>
                     <button style={styles.iconBtn} onClick={() => zoomView(1 / 0.7)} aria-label="Zoom out" title="Zoom out"><Minus size={15} /></button>
                     <button style={styles.iconBtn} onClick={fitView} aria-label={localRoot ? "Fit system in view" : "Fit graph in view"}
                         title={localRoot ? "Fit system (f)" : "Fit graph (f)"}><Crosshair size={15} /></button>
@@ -1264,7 +1263,7 @@ export default function GraphPage() {
                 ref={topBarRef}
             >
                 <div style={styles.topBarGroup}>
-                    <Link href={returnTo?.startsWith("/knowledge") ? returnTo : withReturnTo(returnTo ?? documentDestination("/"), currentUrl)} style={styles.backBtn}
+                    <Link href={returnTo?.startsWith("/knowledge") ? returnTo : withReturnTo(returnTo ?? chatHome, currentUrl)} style={styles.backBtn}
                         aria-label={returnTo?.startsWith("/knowledge") ? "Back to Library" : "Back to chat"}
                         title={returnTo?.startsWith("/knowledge") ? "Back to Library" : "Back to chat"}>
                         <ArrowLeft size={16} />
@@ -1508,7 +1507,7 @@ export default function GraphPage() {
 
             {error && !loading && (
                 <div style={{ ...styles.overlay, top: contentTop }} role="alert">
-                    <span style={{ color: COSMOS.danger, maxWidth: "min(420px, calc(100vw - 32px))", overflowWrap: "anywhere", textAlign: "center", lineHeight: 1.5 }}>{error}</span>
+                    <span style={{ ...styles.errorText, maxWidth: "min(420px, calc(100vw - 32px))", overflowWrap: "anywhere", textAlign: "center", lineHeight: 1.5 }}>{error}</span>
                     <button style={{ ...styles.action, ...styles.actionPrimary }} onClick={() => void fetchGraph("initial")}>
                         Try again
                     </button>

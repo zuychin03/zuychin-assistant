@@ -14,6 +14,17 @@ export function studyDay(now: Date, timezone: string): string {
     const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now).map(part => [part.type, part.value]));
     return `${parts.year}-${parts.month}-${parts.day}`;
 }
+function zoneOffset(at: number, timezone: string) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: timezone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(at).map(part => [part.type, Number(part.value)]));
+    return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - Math.floor(at / 1000) * 1000;
+}
+/** Midnight of the study day as an instant, matching the day assistant_study_report counts reviews in. */
+export function studyDayStart(now: Date, timezone: string): Date {
+    const [year, month, day] = studyDay(now, timezone).split("-").map(Number);
+    const midnight = Date.UTC(year, month - 1, day);
+    // Second pass picks up a DST change between midnight and now.
+    return new Date(midnight - zoneOffset(midnight - zoneOffset(now.getTime(), timezone), timezone));
+}
 export function studyDraft(kind: StudyKind, quote: string, title: string) {
     const prompt = kind === "recall" ? `Recall the key point from “${title}” without looking at the source.`
         : kind === "explain" ? `Explain the selected idea from “${title}” in your own words. State one limit or condition.`

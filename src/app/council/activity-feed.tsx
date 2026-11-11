@@ -66,16 +66,21 @@ export function ActivityFeed({ activity, agents }: {
     );
 }
 
+// Inline because test-council-activity-feed runs this file without a CSS loader.
 const styles: Record<string, CSSProperties> = {
-    wrap: { marginTop: 14 },
-    now: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 8, fontSize: 11.5, color: "var(--color-text-muted)" },
+    wrap: { display: "flex", flexDirection: "column", gap: 8, minWidth: 0 },
+    now: { display: "flex", flexWrap: "wrap", gap: "4px 16px", fontSize: 12.5, color: "var(--muted)" },
     nowItem: { minWidth: 0, overflowWrap: "anywhere" },
-    feed: { listStyle: "none", margin: 0, padding: 0, maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 },
-    row: { display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, lineHeight: 1.5 },
-    agent: { fontWeight: 750, flexShrink: 0, color: "var(--color-text-primary)" },
-    message: { minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap" },
-    muted: { minWidth: 0, overflowWrap: "anywhere", color: "var(--color-text-muted)" },
-    tool: { minWidth: 0, overflowWrap: "anywhere", fontSize: 11, color: "var(--color-text-muted)" },
-    thought: { flex: 1, minWidth: 0, color: "var(--color-text-muted)" },
+    feed: {
+        listStyle: "none", margin: 0, padding: "8px 12px", maxHeight: 260, overflowY: "auto",
+        display: "flex", flexDirection: "column", gap: 6,
+        border: "1px solid var(--line)", borderRadius: "var(--radius-md)", background: "var(--raised)",
+    },
+    row: { display: "flex", gap: 8, alignItems: "baseline", fontSize: 13, lineHeight: 1.5 },
+    agent: { fontWeight: 600, flexShrink: 0, color: "var(--ink)" },
+    message: { minWidth: 0, overflowWrap: "anywhere", whiteSpace: "pre-wrap", color: "var(--ink-2)" },
+    muted: { minWidth: 0, overflowWrap: "anywhere", color: "var(--muted)" },
+    tool: { minWidth: 0, overflowWrap: "anywhere", fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" },
+    thought: { flex: 1, minWidth: 0, color: "var(--muted)" },
     thoughtText: { display: "block", marginTop: 4, whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
 };

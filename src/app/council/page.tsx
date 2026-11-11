@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { WorkspaceLink as Link } from "@/components/workspace-link";
 import {
-    Activity, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Cpu, GitBranch,
-    Gavel, Maximize2, MessageSquare, Minimize2, Play, Plug, RefreshCw, ShieldCheck, Square,
+    CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Cpu, GitBranch,
+    Gavel, Maximize2, MessageSquare, Minimize2, Play, Plug, RefreshCw, Square,
     Laptop, Users, XCircle,
 } from "lucide-react";
+import { WorkspaceShell } from "@/components/workspace-shell";
 import {
     appendActivity, fetchBranches, findHost, forgetHost, pair, HostClient,
     type HostActivity, type HostConnection, type HostSnapshot,
@@ -101,17 +101,14 @@ function elapsed(iso: string): string {
     return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
 }
 
-const INTENT_TONE: Record<string, string> = {
-    challenge: "var(--council-warning)",
-    ask: "var(--council-caution)",
-    answer: "var(--council-good)",
-    concede: "var(--council-good)",
-    propose: "var(--council-info)",
-    refine: "var(--council-info)",
-    pass: "var(--color-text-muted)",
-    moderate: "var(--council-secondary)",
-    verdict: "var(--council-good)",
+const INTENT_TONE: Record<string, "success" | "warning"> = {
+    challenge: "warning",
+    concede: "success",
+    verdict: "success",
 };
+
+// One per --fam-* token in council.module.css.
+const SEAT_COLOURS = 4;
 
 export default function CouncilPage() {
     const [open, setOpen] = useState<OpenCouncil[]>([]);
@@ -125,9 +122,6 @@ export default function CouncilPage() {
     const selectedRef = useRef({ code: selected });
     if (selectedRef.current.code !== selected) selectedRef.current = { code: selected };
     const detailInFlight = useRef<{ code: string | null } | null>(null);
-    // The rail needs ~240px beside a readable transcript; below this the split
-    // is stacked instead of squeezed.
-    const [isNarrow, setIsNarrow] = useState(false);
     const [monitor, setMonitor] = useState(false);
     const monitorRef = useRef<HTMLDialogElement>(null);
     const transcriptEnd = useRef<HTMLDivElement | null>(null);
@@ -229,13 +223,6 @@ export default function CouncilPage() {
     useEffect(() => setDesktop(isDesktopHostAvailable()), []);
 
     useEffect(() => {
-        const check = () => setIsNarrow(window.innerWidth < 900);
-        check();
-        window.addEventListener("resize", check);
-        return () => window.removeEventListener("resize", check);
-    }, []);
-
-    useEffect(() => {
         if (!monitor) return;
         const dialog = monitorRef.current;
         const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -333,717 +320,684 @@ export default function CouncilPage() {
     // deployment address; the clipboard still gets the real one.
     const remoteBriefShown = remoteAgentSetup("https://<your-host>/api/mcp/mcp");
 
+    const agentSeats = new Map((detail?.participants ?? []).filter((p) => p.kind === "agent").map((p, index) => [p.name, index % SEAT_COLOURS]));
+    const presence = (p: Participant) => p.status === "left" ? undefined
+        : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "warning" : "success";
+    const selectCouncil = (code: string) => {
+        if (selected === code) return;
+        setDetailError(""); setDetail(null); lastSeqRef.current = 0; setSelected(code);
+    };
+
     return (
-        <div className={ui.council} style={{ ...styles.shell, ...(isNarrow ? styles.shellNarrow : {}) }}>
-            <div style={styles.ambientOne} />
-            <div style={styles.ambientTwo} />
-
-            <header style={{ ...styles.header, ...(isNarrow ? styles.headerNarrow : {}) }}>
-                <div>
-                    <div style={styles.kicker}>zuychin-council</div>
-                    <h1 style={{ ...styles.title, ...(isNarrow ? styles.titleNarrow : {}) }}>Council</h1>
-                    <p style={styles.subtitle}>
-                        Follow debates between your coding agents. Viewing a council does not mark an agent present or advance its turn.
-                    </p>
-                </div>
-                <div style={styles.headerActions}>
-                    <span style={{ ...styles.quickLink, ...(hostState === "connected" ? styles.liveOn : styles.hostChipOff) }}>
-                        <Plug size={15} />
-                        {hostState === "connected" ? `local host :${hostPort}` : hostState === "probing" ? "looking for a host" : "observing via Zuychin"}
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => setLive((v) => !v)}
-                        aria-pressed={live}
-                        style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
-                    >
-                        <RefreshCw size={15} style={live ? styles.spin : undefined} />
-                        {live ? "Live" : "Paused"}
-                    </button>
-                    {s && detail && <a href="#council-transcript" style={styles.quickLink} aria-label={`View transcript for ${s.code}`}><ChevronDown size={15} /> View transcript</a>}
-                </div>
-            </header>
-
-            <div style={styles.quickActions}>
-                <Link href="/" style={styles.quickLink}><MessageSquare size={15} /> Chat</Link>
-                <Link href="/knowledge" style={styles.quickLink}><Brain size={15} /> Knowledge</Link>
-                <Link href="/graph" style={styles.quickLink}><GitBranch size={15} /> Graph</Link>
-                <Link href="/admin" style={styles.quickLink}><ShieldCheck size={15} /> Dashboard</Link>
-            </div>
-
-            <section style={styles.panel}>
-                <div style={styles.panelHeadRow}>
-                    <PanelHeader
-                        title="Local host"
-                        description={
-                            hostState === "connected"
-                                ? `${host?.agents.length ?? 0} ${host?.agents.length === 1 ? "agent" : "agents"} · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
-                                : hostState === "unpaired"
-                                    ? `a host is running on port ${hostPort} but this browser is not paired with it`
-                                    : hostState === "probing"
-                                        ? `probing 127.0.0.1:${8787}-8791`
-                                        : "no host reachable on this machine"
-                        }
-                        icon={<Cpu size={16} />}
-                    />
-                    {hostState !== "connected" && (
-                        <button type="button" onClick={() => void probeHost()} style={styles.quickLink}>
-                            <RefreshCw size={15} /> Retry
-                        </button>
-                    )}
-                    {hostState === "connected" && !desktop && (
-                        <button
-                            type="button"
-                            onClick={() => { clientRef.current?.stop(); forgetHost(); }}
-                            style={{ ...styles.quickLink, ...styles.dangerLink }}
-                            title="Stop the host and every agent it owns"
-                        >
-                            <Square size={14} /> Stop host
-                        </button>
-                    )}
-                </div>
-
-                {desktop && (
-                    <DesktopHostControls
-                        externalHost={hostState === "connected" || hostState === "unpaired"}
-                        onHostAvailable={probeHost}
-                    />
-                )}
-
-                {hostError && <div style={styles.errorBox} role="alert">{hostError}</div>}
-
-                {hostState === "absent" && !desktop && (
-                    <div style={styles.emptyText}>
-                        Observing through Zuychin. Agents can still join by hand, but nothing here can
-                        start one, mediate its file access or push it a turn. To take control, run{" "}
-                        <code style={styles.code}>npx tsx --env-file=.env.local scripts/council-host.mts --repo &lt;path&gt;</code>{" "}
-                        on the machine holding the repo, then Retry.
-                        <br />
-                        On a phone, or from the deployed site with the local-network prompt denied,
-                        this is the only mode available - there is no host to reach.
-                    </div>
-                )}
-
-                {hostState === "unpaired" && (
-                    <div style={styles.pairRow}>
-                        <span style={styles.emptyText}>Enter the pairing code the host printed:</span>
-                        <input
-                            aria-label="Host pairing code"
-                            value={pairCode}
-                            onChange={(e) => setPairCode(e.target.value.toUpperCase())}
-                            placeholder="ABCD2345"
-                            maxLength={8}
-                            style={{ ...styles.input, maxWidth: 160, letterSpacing: 2 }}
+        <WorkspaceShell
+            current="council"
+            title="Council"
+            description="Watch your coding agents deliberate. Viewing never advances a turn."
+            actions={<>
+                <button type="button" onClick={() => setLive((v) => !v)} aria-pressed={live} className={ui.liveToggle}>
+                    <RefreshCw size={15} className={live ? ui.spin : undefined} />
+                    {live ? "Live" : "Paused"}
+                </button>
+                {s && detail && <a href="#council-transcript" aria-label={`View transcript for ${s.code}`}><ChevronDown size={15} /> View transcript</a>}
+            </>}
+        >
+            <div className={ui.council}>
+                <section className={ui.panel}>
+                    <div className={ui.panelHeadRow}>
+                        <PanelHeader
+                            title="Local host"
+                            description={
+                                hostState === "connected"
+                                    ? `${host?.agents.length ?? 0} ${host?.agents.length === 1 ? "agent" : "agents"} · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
+                                    : hostState === "unpaired"
+                                        ? `a host is running on port ${hostPort} but this browser is not paired with it`
+                                        : hostState === "probing"
+                                            ? `probing 127.0.0.1:${8787}-8791`
+                                            : "no host reachable on this machine"
+                            }
+                            icon={<Cpu size={16} />}
                         />
-                        <button type="button" onClick={() => void submitPairing()} style={styles.quickLink}>Pair</button>
-                    </div>
-                )}
-
-                {hostState === "connected" && host && (
-                    <>
-                        <div style={styles.conveneRow}>
-                            {/* An idle host never held a lease, so an unhealthy
-                                one has lost nothing; only a host that owns a
-                                council can lose it. */}
-                            <span style={{ ...styles.smallPill, ...(host.code && host.leaseHealthy === false ? styles.pillWarn : styles.pillGood) }}>
-                                {host.code && host.leaseHealthy === false
-                                    ? "host lease lost"
-                                    : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
+                        <div className={ui.headActions}>
+                            <span className={ui.hostStatus} data-state={hostState}>
+                                <Plug size={14} />
+                                {hostState === "connected" ? `local host :${hostPort}` : hostState === "probing" ? "looking for a host" : "observing via Zuychin"}
                             </span>
-                            {host.capabilities?.protocolVersion === 3 && <span style={{ ...styles.smallPill, ...styles.pillGood }}>Council V3</span>}
+                            {hostState !== "connected" && (
+                                <button type="button" onClick={() => void probeHost()} className={ui.btn}>
+                                    <RefreshCw size={15} /> Retry
+                                </button>
+                            )}
+                            {hostState === "connected" && !desktop && (
+                                <button
+                                    type="button"
+                                    onClick={() => { clientRef.current?.stop(); forgetHost(); }}
+                                    className={`${ui.btn} ${ui.danger}`}
+                                    title="Stop the host and every agent it owns"
+                                >
+                                    <Square size={14} /> Stop host
+                                </button>
+                            )}
                         </div>
-                        {host.permissions.length > 0 && (
-                            <div style={styles.permissionQueue}>
-                                <div style={styles.obligationsTitle}>Waiting on you</div>
-                                {host.permissions.map((p) => (
-                                    <div key={p.id} style={styles.permissionRow}>
-                                        <span style={{ ...styles.smallPill, ...styles.pillWarn }}>{p.kind}</span>
-                                        <span style={styles.rosterName}>{p.agent}</span>
-                                        <span style={styles.permissionTitle}>{p.title}</span>
-                                        <span style={styles.permissionButtons}>
-                                            <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, true)} style={styles.quickLink}>Allow</button>
-                                            <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, false)} style={{ ...styles.quickLink, ...styles.dangerLink }}>Deny</button>
-                                        </span>
-                                        <span style={styles.workDetail}>{p.path ?? ""}{p.path ? " · " : ""}{p.reason} · denied automatically after 120s</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                    </div>
 
-                        {host.agents.length > 0 && (
-                            <div style={styles.roster}>
-                                {host.agents.map((a) => (
-                                    <div key={a.name} style={styles.workRow}>
-                                        <span style={{
-                                            ...styles.dot,
-                                            background: a.state === "failed" || a.state === "exited"
-                                                ? "var(--council-warning)"
-                                                : a.state === "busy" ? "var(--council-caution)" : "var(--council-good)",
-                                        }} />
-                                        <span style={styles.rosterName}>{a.name}</span>
-                                        <span style={{ ...styles.smallPill, ...(a.mode === "acp" ? styles.pillGood : styles.pillMuted) }}>{a.mode}</span>
-                                        <span style={{ ...styles.smallPill, ...styles.pillMuted }}>{a.state}</span>
-                                        {host.floorHolder === a.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>has floor</span>}
-                                        <span style={styles.rosterMeta}>{a.detail}</span>
-                                        <span style={styles.workDetail}>
-                                            {executionIdentityLabel(a.identityAssurance)}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
-                                            {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
-                                        </span>
-                                        <div style={styles.workDetail}>
-                                            <ExecutionEvidence executionId={a.executionId} label="Host model report" snapshot={a.executionId ? {
-                                                executionId: a.executionId, agentName: a.name, connectorKind: a.mode,
-                                                identityAssurance: a.identityAssurance, provider: a.provider,
-                                                adapterVersion: a.adapterVersion ?? null, requestedModel: a.requestedModel,
-                                                effectiveModel: a.effectiveModel, requestedReasoningEffort: a.requestedReasoningEffort,
-                                                effectiveReasoningEffort: a.effectiveReasoningEffort, modelSource: a.modelSource ?? null,
-                                                hostGeneration: a.hostGeneration ?? null, policyVersion: a.policyVersion ?? null,
-                                            } : null} />
+                    {desktop && (
+                        <DesktopHostControls
+                            externalHost={hostState === "connected" || hostState === "unpaired"}
+                            onHostAvailable={probeHost}
+                        />
+                    )}
+
+                    {hostError && <div className={ui.notice} role="alert">{hostError}</div>}
+
+                    {hostState === "absent" && !desktop && (
+                        <div className={ui.emptyText}>
+                            Observing through Zuychin. Agents can still join by hand, but nothing here can
+                            start one, mediate its file access or push it a turn. To take control, run{" "}
+                            <code className={ui.inlineCode}>npx tsx --env-file=.env.local scripts/council-host.mts --repo &lt;path&gt;</code>{" "}
+                            on the machine holding the repo, then Retry.
+                            <br />
+                            On a phone, or from the deployed site with the local-network prompt denied,
+                            this is the only mode available - there is no host to reach.
+                        </div>
+                    )}
+
+                    {hostState === "unpaired" && (
+                        <div className={ui.pairRow}>
+                            <span className={ui.emptyText}>Enter the pairing code the host printed:</span>
+                            <input
+                                aria-label="Host pairing code"
+                                value={pairCode}
+                                onChange={(e) => setPairCode(e.target.value.toUpperCase())}
+                                placeholder="ABCD2345"
+                                maxLength={8}
+                                className={`${ui.input} ${ui.pairInput}`}
+                            />
+                            <button type="button" onClick={() => void submitPairing()} className={`${ui.btn} ${ui.primary}`}>Pair</button>
+                        </div>
+                    )}
+
+                    {hostState === "connected" && host && (
+                        <>
+                            <div className={ui.pillRow}>
+                                {/* An idle host never held a lease, so an unhealthy
+                                    one has lost nothing; only a host that owns a
+                                    council can lose it. */}
+                                <span className={ui.pill} data-tone={host.code && host.leaseHealthy === false ? "warning" : host.leaseEpoch ? "success" : undefined}>
+                                    {host.code && host.leaseHealthy === false
+                                        ? "host lease lost"
+                                        : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
+                                </span>
+                                {host.capabilities?.protocolVersion === 3 && <span className={ui.pill}>Council V3</span>}
+                            </div>
+                            {host.permissions.length > 0 && (
+                                <div className={ui.subBlock} data-emphasis>
+                                    <div className={ui.subHead} data-signal><Gavel size={15} /> Waiting on you</div>
+                                    {host.permissions.map((p) => (
+                                        <div key={p.id} className={ui.permissionRow}>
+                                            <span className={ui.pill} data-tone="warning">{p.kind}</span>
+                                            <span className={ui.name}>{p.agent}</span>
+                                            <span className={ui.permissionTitle}>{p.title}</span>
+                                            <span className={ui.permissionButtons}>
+                                                <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, true)} className={`${ui.btn} ${ui.small}`}>Allow</button>
+                                                <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, false)} className={`${ui.btn} ${ui.small} ${ui.danger}`}>Deny</button>
+                                            </span>
+                                            <span className={ui.detail}>{p.path ?? ""}{p.path ? " · " : ""}{p.reason} · denied automatically after 120s</span>
                                         </div>
-                                        <span style={styles.workDetail}>{a.branch} · {a.worktree}</span>
-                                        {a.warn && <span style={{ ...styles.workDetail, color: "var(--council-caution)" }}>! {a.warn}</span>}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-
-                        {host.busyWith && (
-                            <div style={styles.busyRow}>
-                                <span style={styles.busySpinner} />
-                                <span style={styles.busyLabel}>{host.busyWith.label}</span>
-                                <span style={styles.busySince}>{elapsed(host.busyWith.since)}</span>
-                            </div>
-                        )}
-
-                        <ActivityFeed activity={activity} agents={host.agents} />
-
-                        {!host.code && (
-                            <div style={styles.conveneForm}>
-                                <div style={styles.obligationsTitle}>Convene</div>
-                                <input
-                                    aria-label="Council topic"
-                                    value={form.topic}
-                                    onChange={(e) => setForm({ ...form, topic: e.target.value })}
-                                    placeholder="One decidable question"
-                                    style={{ ...styles.input, flex: "none" }}
-                                />
-                                <textarea
-                                    aria-label="Council brief"
-                                    value={form.brief}
-                                    onChange={(e) => setForm({ ...form, brief: e.target.value })}
-                                    placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
-                                    style={{ ...styles.input, flex: "none", minHeight: 80, resize: "vertical" }}
-                                />
-                                <div style={styles.conveneRow}>
-                                    <input
-                                        aria-label="Council agent names"
-                                        value={form.agents}
-                                        onChange={(e) => setForm({ ...form, agents: e.target.value })}
-                                        placeholder="claude-a, codex-1, cursor-1"
-                                        style={styles.input}
-                                    />
-                                    <input
-                                        aria-label="Council closer"
-                                        value={form.closer}
-                                        onChange={(e) => setForm({ ...form, closer: e.target.value })}
-                                        placeholder="closer (defaults to the first)"
-                                        style={styles.input}
-                                    />
-                                    <Dropdown
-                                        ariaLabel="Council type"
-                                        value={form.councilType}
-                                        onChange={(councilType) => setForm({ ...form, councilType })}
-                                        options={["debate", "code", "research", "audit", "debug"]}
-                                        style={styles.input}
-                                    />
-                                    {(host.workspaces?.length ?? 0) > 1 && (
-                                        <Dropdown
-                                            ariaLabel="Repository"
-                                            value={form.workspace}
-                                            onChange={(workspace) => setForm({ ...form, workspace })}
-                                            options={[
-                                                { value: "", label: "host default" },
-                                                ...(host.workspaces ?? []).map((w) => ({ value: w.name })),
-                                            ]}
-                                            style={styles.input}
-                                        />
-                                    )}
-                                    {branches.length > 1 && (
-                                        <Dropdown
-                                            ariaLabel="Base branch"
-                                            value={form.baseBranch}
-                                            onChange={(baseBranch) => setForm({ ...form, baseBranch })}
-                                            options={branches}
-                                            style={styles.input}
-                                        />
-                                    )}
-                                    <button type="button" onClick={submitConvene} disabled={convening} style={{ ...styles.quickLink, ...(convening ? styles.hostChipOff : {}) }}>
-                                        <Play size={15} /> {convening ? "Convening…" : "Convene"}
-                                    </button>
+                                    ))}
                                 </div>
-                                <div style={styles.modelGrid}>
-                                    {form.agents.split(",").map((name) => name.trim()).filter(Boolean).map((name) => {
-                                        const instance = host.instances?.find((item) => item.name === name);
-                                        if (!instance) return null;
-                                        const selection = agentSelections[name] ?? {};
-                                        return (
-                                            <div key={name} className={ui.modelRow} style={styles.modelRow}>
-                                                <span style={styles.modelAgent}>{name}</span>
-                                                <Dropdown
-                                                    ariaLabel={`Model for ${name}`}
-                                                    value={selection.modelId ?? instance.defaultModel ?? ""}
-                                                    onChange={(modelId) => setAgentSelections((current) => ({
-                                                        ...current, [name]: { ...current[name], modelId: modelId || undefined },
-                                                    }))}
-                                                    options={[
-                                                        ...(instance.defaultModel ? [] : [{ value: "", label: "Provider default" }]),
-                                                        ...instance.allowedModels.map((model) => ({ value: model })),
-                                                    ]}
-                                                    style={styles.input}
-                                                />
-                                                {instance.allowedReasoningEfforts.length > 0 && (
+                            )}
+
+                            {host.agents.length > 0 && (
+                                <div className={ui.list}>
+                                    {host.agents.map((a) => (
+                                        <div key={a.name} className={ui.row}>
+                                            <span className={ui.dot} data-tone={a.state === "failed" || a.state === "exited" ? "danger" : a.state === "busy" ? "warning" : "success"} />
+                                            <span className={ui.name}>{a.name}</span>
+                                            <span className={ui.pill}>{a.mode}</span>
+                                            <span className={ui.pill}>{a.state}</span>
+                                            {host.floorHolder === a.name && <span className={ui.pill} data-tone="success">has floor</span>}
+                                            <span className={ui.rowMeta}>{a.detail}</span>
+                                            <span className={ui.detail}>
+                                                {executionIdentityLabel(a.identityAssurance)}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
+                                                {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
+                                            </span>
+                                            <div className={ui.detail}>
+                                                <ExecutionEvidence executionId={a.executionId} label="Host model report" snapshot={a.executionId ? {
+                                                    executionId: a.executionId, agentName: a.name, connectorKind: a.mode,
+                                                    identityAssurance: a.identityAssurance, provider: a.provider,
+                                                    adapterVersion: a.adapterVersion ?? null, requestedModel: a.requestedModel,
+                                                    effectiveModel: a.effectiveModel, requestedReasoningEffort: a.requestedReasoningEffort,
+                                                    effectiveReasoningEffort: a.effectiveReasoningEffort, modelSource: a.modelSource ?? null,
+                                                    hostGeneration: a.hostGeneration ?? null, policyVersion: a.policyVersion ?? null,
+                                                } : null} />
+                                            </div>
+                                            <span className={ui.detail}><code>{a.branch} · {a.worktree}</code></span>
+                                            {a.warn && <span className={ui.detail} data-tone="warning">! {a.warn}</span>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {host.busyWith && (
+                                <div className={ui.busy}>
+                                    <span className={ui.busyDot} />
+                                    <span className={ui.busyLabel}>{host.busyWith.label}</span>
+                                    <span className={ui.busySince}>{elapsed(host.busyWith.since)}</span>
+                                </div>
+                            )}
+
+                            <ActivityFeed activity={activity} agents={host.agents} />
+
+                            {!host.code && (
+                                <div className={ui.conveneForm}>
+                                    <h3 className={ui.conveneTitle}>Convene</h3>
+                                    <input
+                                        aria-label="Council topic"
+                                        value={form.topic}
+                                        onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                                        placeholder="One decidable question"
+                                        className={ui.input}
+                                    />
+                                    <textarea
+                                        aria-label="Council brief"
+                                        value={form.brief}
+                                        onChange={(e) => setForm({ ...form, brief: e.target.value })}
+                                        placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
+                                        className={`${ui.input} ${ui.textarea}`}
+                                    />
+                                    <div className={ui.conveneRow}>
+                                        <input
+                                            aria-label="Council agent names"
+                                            value={form.agents}
+                                            onChange={(e) => setForm({ ...form, agents: e.target.value })}
+                                            placeholder="claude-a, codex-1, cursor-1"
+                                            className={ui.input}
+                                        />
+                                        <input
+                                            aria-label="Council closer"
+                                            value={form.closer}
+                                            onChange={(e) => setForm({ ...form, closer: e.target.value })}
+                                            placeholder="closer (defaults to the first)"
+                                            className={ui.input}
+                                        />
+                                        <Dropdown
+                                            ariaLabel="Council type"
+                                            value={form.councilType}
+                                            onChange={(councilType) => setForm({ ...form, councilType })}
+                                            options={["debate", "code", "research", "audit", "debug"]}
+                                        />
+                                        {(host.workspaces?.length ?? 0) > 1 && (
+                                            <Dropdown
+                                                ariaLabel="Repository"
+                                                value={form.workspace}
+                                                onChange={(workspace) => setForm({ ...form, workspace })}
+                                                options={[
+                                                    { value: "", label: "host default" },
+                                                    ...(host.workspaces ?? []).map((w) => ({ value: w.name })),
+                                                ]}
+                                            />
+                                        )}
+                                        {branches.length > 1 && (
+                                            <Dropdown
+                                                ariaLabel="Base branch"
+                                                value={form.baseBranch}
+                                                onChange={(baseBranch) => setForm({ ...form, baseBranch })}
+                                                options={branches}
+                                            />
+                                        )}
+                                        <button type="button" onClick={submitConvene} disabled={convening} className={`${ui.btn} ${ui.primary}`}>
+                                            <Play size={15} /> {convening ? "Convening…" : "Convene"}
+                                        </button>
+                                    </div>
+                                    <div className={ui.modelGrid}>
+                                        {form.agents.split(",").map((name) => name.trim()).filter(Boolean).map((name) => {
+                                            const instance = host.instances?.find((item) => item.name === name);
+                                            if (!instance) return null;
+                                            const selection = agentSelections[name] ?? {};
+                                            return (
+                                                <div key={name} className={ui.modelRow}>
+                                                    <span className={ui.modelAgent}>{name}</span>
                                                     <Dropdown
-                                                        ariaLabel={`Reasoning effort for ${name}`}
-                                                        value={selection.reasoningEffort ?? instance.defaultReasoningEffort ?? ""}
-                                                        onChange={(reasoningEffort) => setAgentSelections((current) => ({
-                                                            ...current, [name]: { ...current[name], reasoningEffort: reasoningEffort || undefined },
+                                                        ariaLabel={`Model for ${name}`}
+                                                        value={selection.modelId ?? instance.defaultModel ?? ""}
+                                                        onChange={(modelId) => setAgentSelections((current) => ({
+                                                            ...current, [name]: { ...current[name], modelId: modelId || undefined },
                                                         }))}
                                                         options={[
-                                                            ...(instance.defaultReasoningEffort ? [] : [{ value: "", label: "Default reasoning" }]),
-                                                            ...instance.allowedReasoningEfforts.map((effort) => ({ value: effort })),
+                                                            ...(instance.defaultModel ? [] : [{ value: "", label: "Provider default" }]),
+                                                            ...instance.allowedModels.map((model) => ({ value: model })),
                                                         ]}
-                                                        style={styles.input}
                                                     />
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                                <div style={styles.workDetail}>
-                                    Names must exist in scripts/council-agents.json. Each gets its own worktree off{" "}
-                                    {host.workspaces?.find((w) => w.name === form.workspace)?.path ?? host.repo}
-                                    {form.baseBranch ? ` at ${form.baseBranch}` : ""}. The host checks ACP client file and
-                                    terminal requests against that worktree. Adapter-managed operations may bypass those checks.
-                                </div>
-                            </div>
-                        )}
-                    </>
-                )}
-            </section>
-
-            <section style={styles.panel}>
-                <div style={styles.panelHeadRow}>
-                    <PanelHeader
-                        title="Agents on other machines"
-                        description="A brief they can self-configure from, so they can join a council by code"
-                        icon={<Laptop size={16} />}
-                    />
-                    <button type="button" onClick={() => setShowRemote((v) => !v)} style={styles.quickLink}>
-                        {showRemote ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                        {showRemote ? "Hide" : "Show brief"}
-                    </button>
-                </div>
-
-                {showRemote && (
-                    <>
-                        <div style={styles.emptyText}>
-                            Paste this into a coding agent on another device. It joins over MCP by hand and
-                            never touches the local host, so it needs no ACP adapter - but its council name
-                            must be on the roster when the council is convened, and must NOT be one this
-                            machine has configured, or the host would claim that seat first.
-                            {isLoopback && (
-                                <>
-                                    <br />
-                                    <strong>The copied brief points at this machine, which a remote agent
-                                    cannot reach.</strong> Set <code style={styles.code}>NEXT_PUBLIC_BASE_URL</code> to
-                                    your deployed address and every brief carries it whatever page you copy
-                                    from; until then, copy from the deployed site or swap the host in by hand.
-                                </>
-                            )}
-                            <br />
-                            Replace <code style={styles.code}>&lt;PASTE_YOUR_SEAT_KEY_HERE&gt;</code> with a
-                            seat key minted for that agent on the council page below — <strong>not</strong> your
-                            MCP key, which would hand over the whole knowledge base. The host is masked below
-                            so this panel is safe to screenshot; <strong>Copy brief</strong> fills in the real one.
-                        </div>
-                        <div style={styles.remoteActions}>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    void navigator.clipboard.writeText(remoteBrief).then(() => {
-                                        setCopied(true);
-                                        setTimeout(() => setCopied(false), 2000);
-                                    });
-                                }}
-                                style={{ ...styles.quickLink, ...(copied ? styles.liveOn : {}) }}
-                            >
-                                {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
-                                {copied ? "Copied" : "Copy brief"}
-                            </button>
-                        </div>
-                        <pre style={styles.remoteBrief}>{remoteBriefShown}</pre>
-                    </>
-                )}
-            </section>
-
-            {error && <div style={styles.errorBox} role="alert">{error} <button type="button" style={styles.quickLink} onClick={() => void fetchList()}>Retry councils</button></div>}
-
-            {loading && (
-                <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading councils…</div>
-            )}
-
-            {!loading && !error && open.length === 0 && recent.length === 0 && (
-                <section style={styles.panel}>
-                    <PanelHeader title="No councils yet" description="Nothing has been convened" icon={<Users size={16} />} />
-                    <div style={styles.emptyText}>
-                        Ask Zuychin to convene one: <em>&ldquo;convene a council on X with codex and
-                        claude-code; claude-code closes it&rdquo;</em>. Paste each generated block into
-                        that agent, then watch here.
-                    </div>
-                </section>
-            )}
-
-            {!loading && (open.length > 0 || recent.length > 0) && (
-                <div style={{ ...styles.split, ...(isNarrow ? styles.splitNarrow : {}) }}>
-                    <div style={styles.rail}>
-                        <section style={styles.panel}>
-                            <PanelHeader
-                                title="Open"
-                                description={`${open.length} running`}
-                                icon={<Activity size={16} />}
-                            />
-                            {open.length === 0 && <div style={styles.emptyText}>None running.</div>}
-                            {open.map((c) => (
-                                <div key={c.code}>
-                                    <button
-                                        type="button"
-                                        aria-pressed={selected === c.code}
-                                        onClick={() => { if (selected === c.code) return; setDetailError(""); setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
-                                        style={{
-                                            ...styles.railItem,
-                                            ...(selected === c.code ? styles.railItemActive : {}),
-                                            ...(canAdopt ? styles.railItemAdoptable : {}),
-                                        }}
-                                    >
-                                        <div style={styles.railTop}>
-                                            <span style={styles.railCode}>{c.code}</span>
-                                            {c.status === "awaiting_owner" && (
-                                                <span style={{ ...styles.smallPill, ...styles.pillWarn }}>decision needed</span>
-                                            )}
-                                            {c.campaignRunning && (
-                                                <span style={{ ...styles.smallPill, ...styles.pillGood }}>campaign running</span>
-                                            )}
-                                            {!c.campaignRunning && (
-                                                <span style={{ ...styles.smallPill, ...styles.pillGood }}>
-                                                    r{c.round}/{c.maxRounds}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div style={styles.railTopic}>{c.topic}</div>
-                                        <div style={styles.railMeta}>
-                                            {c.messages} {c.messages === 1 ? "msg" : "msgs"} · quiet {ago(c.lastMessageAt)}
-                                            {/* expires_at stops governing once a verdict is proposed;
-                                                standby_expires_at does, and it is not in this payload.
-                                                For a campaign the debate clock is long irrelevant. */}
-                                            {c.status !== "awaiting_owner" && !c.campaignRunning && <> · {until(c.expiresAt)}</>}
-                                        </div>
-                                        {c.waitingOn.length > 0 && (
-                                            <div style={styles.railWaiting}>waiting on {c.waitingOn.join(", ")}</div>
-                                        )}
-                                    </button>
-                                    {canAdopt && (
-                                        <button
-                                            type="button"
-                                            onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
-                                            disabled={adopting !== null}
-                                            style={{ ...styles.railAdopt, ...(adopting ? styles.hostChipOff : {}) }}
-                                            title={c.campaignRunning
-                                                ? "Hand this council's running campaign back to the local host: it restarts the agents in their worktrees and resumes verification, review and integration."
-                                                : "Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."}
-                                        >
-                                            <Plug size={13} /> {adopting === c.code ? "Adopting…" : c.campaignRunning ? "Resume" : "Adopt"}
-                                        </button>
-                                    )}
-                                </div>
-                            ))}
-                        </section>
-
-                        <section style={styles.panel}>
-                            <PanelHeader title="Recent" description="Closed and expired" icon={<Gavel size={16} />} />
-                            {recent.length === 0 && <div style={styles.emptyText}>Nothing closed yet.</div>}
-                            {recent.map((c) => (
-                                <button
-                                    key={c.code}
-                                    type="button"
-                                    aria-pressed={selected === c.code}
-                                        onClick={() => { if (selected === c.code) return; setDetailError(""); setDetail(null); lastSeqRef.current = 0; setSelected(c.code); }}
-                                    style={{ ...styles.railItem, ...(selected === c.code ? styles.railItemActive : {}) }}
-                                >
-                                    <div style={styles.railTop}>
-                                        <span style={styles.railCode}>{c.code}</span>
-                                        <span style={{ ...styles.smallPill, ...styles.pillMuted }}>{c.status}</span>
-                                    </div>
-                                    <div style={styles.railTopic}>{c.topic}</div>
-                                    <div style={styles.railMeta}>{c.messages} {c.messages === 1 ? "msg" : "msgs"} · {c.round} {c.round === 1 ? "round" : "rounds"}</div>
-                                </button>
-                            ))}
-                        </section>
-                    </div>
-
-                    <div style={styles.main}>
-                        {detailError && <div style={styles.errorBox} role="alert">{detailError} <button type="button" style={styles.quickLink} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
-                        {!detail && !detailError && <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading transcript…</div>}
-
-                        {s && detail && (
-                            <>
-                                <section style={styles.panel}>
-                                    <PanelHeader
-                                        title={`${s.code} - ${s.topic}`}
-                                        description={`${s.paused ? "stalled" : s.status} · round ${s.round} of ${s.maxRounds} · ${s.messages} ${s.messages === 1 ? "message" : "messages"} · closer ${s.closerName}`}
-                                        icon={<Users size={16} />}
-                                    />
-                                    <div style={styles.brief}><strong>{s.councilType} council</strong><br />{s.brief}</div>
-                                    {s.status === "awaiting_owner" && (
-                                        <DecisionPanel
-                                            code={s.code}
-                                            verdict={s.verdict}
-                                            openQuestions={s.openQuestions}
-                                            standbyExpiresAt={s.standbyExpiresAt}
-                                            continueCount={s.continueCount}
-                                            onDecided={() => { void fetchDetail(s.code); }}
-                                        />
-                                    )}
-                                    {isRunning && (
-                                        <OwnerChannelPanel
-                                            code={s.code}
-                                            paused={s.paused}
-                                            onStateChange={() => { void fetchDetail(s.code); }}
-                                        />
-                                    )}
-                                    {isRunning && (
-                                        <SeatKeysPanel key={s.code}
-                                            code={s.code}
-                                            agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
-                                        />
-                                    )}
-                                    <div style={styles.roster}>
-                                        {detail.participants.filter((p) => p.kind === "agent").map((p) => {
-                                            const stale = (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS;
-                                            const isFloor = s.floorHolder === p.name;
-                                            const latestRun = detail.executions?.records.find(record => record.agentName === p.name);
-                                            return (
-                                                <div key={p.name} style={styles.rosterRow}>
-                                                    <span style={{ ...styles.dot, background: p.status === "left" ? "var(--color-text-muted)" : stale ? "var(--council-warning)" : "var(--council-good)" }} />
-                                                    <span style={styles.rosterName}>
-                                                        {p.name}
-                                                        {p.name === s.closerName && <span style={styles.tag}>closer</span>}
-                                                        {isFloor && <span style={{ ...styles.tag, ...styles.tagFloor }}>has floor</span>}
-                                                    </span>
-                                                    <span style={styles.rosterMeta}>
-                                                        {p.postsThisRound}/2 this round · {p.postsTotal} total · seen {ago(p.lastSeenAt)} ago
-                                                    </span>
-                                                    <div style={{ width: "100%", minWidth: 0 }}>
-                                                        {latestRun ? <ExecutionRecord record={latestRun} label="Latest recorded run" />
-                                                            : <span className={ui.evidenceState}>{detail.executions?.historyStatus === "available" ? "No run in loaded history" : "Run history unavailable"}</span>}
-                                                    </div>
+                                                    {instance.allowedReasoningEfforts.length > 0 && (
+                                                        <Dropdown
+                                                            ariaLabel={`Reasoning effort for ${name}`}
+                                                            value={selection.reasoningEffort ?? instance.defaultReasoningEffort ?? ""}
+                                                            onChange={(reasoningEffort) => setAgentSelections((current) => ({
+                                                                ...current, [name]: { ...current[name], reasoningEffort: reasoningEffort || undefined },
+                                                            }))}
+                                                            options={[
+                                                                ...(instance.defaultReasoningEffort ? [] : [{ value: "", label: "Default reasoning" }]),
+                                                                ...instance.allowedReasoningEfforts.map((effort) => ({ value: effort })),
+                                                            ]}
+                                                        />
+                                                    )}
                                                 </div>
                                             );
                                         })}
                                     </div>
-                                    {detail.executions && <ExecutionHistory key={s.code} code={s.code} page={detail.executions} onRetry={() => void fetchDetail(s.code)} />}
-                                    {detail.openObligations.length > 0 && (
-                                        <div style={styles.obligations}>
-                                            <div style={styles.obligationsTitle}>Unanswered</div>
-                                            {detail.openObligations.map((o) => (
-                                                <div key={o.seq} style={styles.obligationRow}>
-                                                    seq {o.seq} · {o.from} → <strong>{o.to}</strong> ({o.intent})
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </section>
+                                    <p className={ui.formNote}>
+                                        Names must exist in <code>scripts/council-agents.json</code>. Each gets its own worktree off{" "}
+                                        <code>{host.workspaces?.find((w) => w.name === form.workspace)?.path ?? host.repo}</code>
+                                        {form.baseBranch ? <> at <code>{form.baseBranch}</code></> : ""}. The host checks ACP client file and
+                                        terminal requests against that worktree. Adapter-managed operations may bypass those checks.
+                                    </p>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </section>
 
-                                {s.verdict && (
-                                    <section style={styles.panel}>
-                                        <PanelHeader
-                                            title="Verdict"
-                                            description={`by ${s.closerName}`}
-                                            icon={<Gavel size={16} />}
-                                        />
-                                        <div style={styles.verdict}>{s.verdict}</div>
-                                        {s.openQuestions.length > 0 && (
-                                            <div style={styles.openQ}>
-                                                <div style={styles.obligationsTitle}>Open questions</div>
-                                                {s.openQuestions.map((q, i) => <div key={i} style={styles.obligationRow}>· {q}</div>)}
-                                            </div>
-                                        )}
-                                        <div style={styles.filedRow}>
-                                            <span style={{ ...styles.smallPill, ...(s.archiveStatus === "filed" ? styles.pillGood : styles.pillMuted) }}>
-                                                {s.archiveStatus === "filed" ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                                                {s.archiveStatus}
-                                            </span>
-                                            <span style={styles.filedPath}>
-                                                {s.vaultPath ?? "not filed"}
-                                                {s.vaultPath && <span style={styles.untrusted}> · untrusted draft, promote with vault_ingest</span>}
-                                            </span>
-                                        </div>
-                                    </section>
+                <section className={ui.panel}>
+                    <div className={ui.panelHeadRow}>
+                        <PanelHeader
+                            title="Agents on other machines"
+                            description="A brief they can self-configure from, so they can join a council by code"
+                            icon={<Laptop size={16} />}
+                        />
+                        <button type="button" onClick={() => setShowRemote((v) => !v)} className={ui.btn}>
+                            {showRemote ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            {showRemote ? "Hide" : "Show brief"}
+                        </button>
+                    </div>
+
+                    {showRemote && (
+                        <>
+                            <div className={ui.emptyText}>
+                                Paste this into a coding agent on another device. It joins over MCP by hand and
+                                never touches the local host, so it needs no ACP adapter - but its council name
+                                must be on the roster when the council is convened, and must NOT be one this
+                                machine has configured, or the host would claim that seat first.
+                                {isLoopback && (
+                                    <>
+                                        <br />
+                                        <strong>The copied brief points at this machine, which a remote agent
+                                        cannot reach.</strong> Set <code className={ui.inlineCode}>NEXT_PUBLIC_BASE_URL</code> to
+                                        your deployed address and every brief carries it whatever page you copy
+                                        from; until then, copy from the deployed site or swap the host in by hand.
+                                    </>
                                 )}
+                                <br />
+                                Replace <code className={ui.inlineCode}>&lt;PASTE_YOUR_SEAT_KEY_HERE&gt;</code> with a
+                                seat key minted for that agent on the council page below — <strong>not</strong> your
+                                MCP key, which would hand over the whole knowledge base. The host is masked below
+                                so this panel is safe to screenshot; <strong>Copy brief</strong> fills in the real one.
+                            </div>
+                            <div className={ui.buttonRow}>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void navigator.clipboard.writeText(remoteBrief).then(() => {
+                                            setCopied(true);
+                                            setTimeout(() => setCopied(false), 2000);
+                                        });
+                                    }}
+                                    className={ui.btn}
+                                    data-done={copied || undefined}
+                                >
+                                    {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
+                                    {copied ? "Copied" : "Copy brief"}
+                                </button>
+                            </div>
+                            <pre className={ui.remoteBrief}>{remoteBriefShown}</pre>
+                        </>
+                    )}
+                </section>
 
-                                {detail.campaign && (
-                                    <section style={styles.panel}>
-                                        <PanelHeader
-                                            title="Work campaign"
-                                            description={detail.campaign.status + " - " + detail.campaign.workItems.filter((item) => item.status === "verified").length + "/" + detail.campaign.workItems.length + " verified"}
-                                            icon={<GitBranch size={16} />}
-                                        />
-                                        <div style={styles.filedPath}>{detail.campaign.repoPath} - base {detail.campaign.baseBranch}</div>
-                                        <div style={styles.roster}>
-                                            {detail.campaign.workItems.map((item) => (
-                                                <div key={item.id} style={styles.workRow}>
-                                                    <span style={styles.seq}>{item.sequence}</span>
-                                                    <span style={styles.rosterName}>{item.agentName}</span>
-                                                    <span style={{ ...styles.smallPill, ...(item.status === "verified" ? styles.pillGood : item.status === "blocked" ? styles.pillWarn : styles.pillMuted) }}>{item.status}</span>
-                                                    <span style={styles.workTitle}>{item.title}</span>
-                                                    {/* Host-observed, not the agent's own account of its work. */}
-                                                    {item.status === "awaiting_review" && (
-                                                        <span style={{ ...styles.smallPill, ...(item.hostVerified === true ? styles.pillGood : item.hostVerified === false ? styles.pillWarn : styles.pillMuted) }}>
-                                                            {item.hostVerified === true ? "host ✓" : item.hostVerified === false ? "host ✗" : "host pending"}
-                                                        </span>
-                                                    )}
-                                                    {item.blockedReason && <span style={styles.workDetail}>{item.blockedReason}</span>}
-                                                    {!item.blockedReason && item.hostVerification && <span style={styles.workDetail}>{item.hostVerification.split("\n").find((l) => l.startsWith("FAIL")) ?? item.progress}</span>}
-                                                    {!item.blockedReason && !item.hostVerification && item.progress && <span style={styles.workDetail}>{item.progress}</span>}
-                                                    {item.commitHash && <div style={styles.workDetail}>
-                                                        <span className={ui.evidenceNote}>Submitted commit <code>{item.commitHash}</code></span>
-                                                        <ExecutionEvidence executionId={item.submittedExecutionId} records={executionRecords} label="Submitted in run" />
-                                                    </div>}
-                                                    {item.acceptedCommitSha && <div style={styles.workDetail}>
-                                                        <span className={ui.evidenceNote}>Accepted commit <code>{item.acceptedCommitSha}</code></span>
-                                                        <ExecutionEvidence executionId={item.acceptedExecutionId} records={executionRecords} label="Accepted submission run" />
-                                                    </div>}
-                                                </div>
-                                            ))}
-                                        </div>
-                                        <IntegrationPanel key={s.code}
-                                            code={s.code}
-                                            campaign={detail.campaign}
-                                            agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
-                                            onChange={() => { void fetchDetail(s.code); }}
-                                        />
-                                    </section>
-                                )}
+                {error && <div className={ui.notice} role="alert">{error} <button type="button" className={ui.btn} onClick={() => void fetchList()}>Retry councils</button></div>}
 
-                                <section style={styles.panel}>
-                                    <div style={styles.panelHeadRow}>
-                                        <PanelHeader
-                                            headingId="council-transcript"
-                                            title="Transcript"
-                                            description={isRunning ? `live · quiet ${ago(s.lastMessageAt)}` : "final"}
-                                            icon={<MessageSquare size={16} />}
-                                        />
+                {loading && (
+                    <div className={ui.loading} role="status"><Clock size={16} /> Loading councils…</div>
+                )}
+
+                {!loading && !error && open.length === 0 && recent.length === 0 && (
+                    <section className={ui.panel}>
+                        <PanelHeader title="No councils yet" description="Nothing has been convened" icon={<Users size={16} />} />
+                        <div className={ui.emptyText}>
+                            Ask Zuychin to convene one: <em>&ldquo;convene a council on X with codex and
+                            claude-code; claude-code closes it&rdquo;</em>. Paste each generated block into
+                            that agent, then watch here.
+                        </div>
+                    </section>
+                )}
+
+                {!loading && (open.length > 0 || recent.length > 0) && (
+                    <div className={ui.split}>
+                        <div className={ui.rail}>
+                            <section className={ui.railGroup}>
+                                <div className={ui.railHead}>
+                                    <h2>Open</h2>
+                                    <p>{open.length} running</p>
+                                </div>
+                                {open.length === 0 && <div className={ui.railEmpty}>None running.</div>}
+                                {open.map((c) => (
+                                    <div key={c.code}>
                                         <button
                                             type="button"
-                                            onClick={() => setMonitor(true)}
-                                            style={styles.quickLink}
-                                            title="Fullscreen monitor (Esc to exit)"
+                                            aria-pressed={selected === c.code}
+                                            onClick={() => selectCouncil(c.code)}
+                                            className={ui.railItem}
                                         >
-                                            <Maximize2 size={15} /> Monitor
+                                            <span className={ui.railTop}>
+                                                <span className={ui.railTitle}>{c.topic}</span>
+                                                <time className={ui.railTime} dateTime={c.lastMessageAt}>{ago(c.lastMessageAt)}</time>
+                                            </span>
+                                            <span className={ui.railMeta}>
+                                                <code>{c.code}</code> · {c.messages} {c.messages === 1 ? "msg" : "msgs"}
+                                                {c.campaignRunning ? " · campaign running" : ` · r${c.round}/${c.maxRounds}`}
+                                                {/* expires_at stops governing once a verdict is proposed;
+                                                    standby_expires_at does, and it is not in this payload.
+                                                    For a campaign the debate clock is long irrelevant. */}
+                                                {c.status !== "awaiting_owner" && !c.campaignRunning && <> · {until(c.expiresAt)}</>}
+                                            </span>
+                                            {c.status === "awaiting_owner" && <span className={ui.railSignal}>decision needed</span>}
+                                            {c.waitingOn.length > 0 && (
+                                                <span className={ui.railWaiting}>waiting on {c.waitingOn.join(", ")}</span>
+                                            )}
                                         </button>
+                                        {canAdopt && (
+                                            <button
+                                                type="button"
+                                                onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
+                                                disabled={adopting !== null}
+                                                className={`${ui.btn} ${ui.small} ${ui.railAdopt}`}
+                                                title={c.campaignRunning
+                                                    ? "Hand this council's running campaign back to the local host: it restarts the agents in their worktrees and resumes verification, review and integration."
+                                                    : "Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."}
+                                            >
+                                                <Plug size={13} /> {adopting === c.code ? "Adopting…" : c.campaignRunning ? "Resume" : "Adopt"}
+                                            </button>
+                                        )}
                                     </div>
-                                    <div style={styles.transcript}>
-                                        {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} />)}
-                                        {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
-                                        <div ref={monitor ? undefined : transcriptEnd} />
-                                    </div>
-                                </section>
-                            </>
-                        )}
-                    </div>
-                </div>
-            )}
+                                ))}
+                            </section>
 
-            {monitor && (
-                <dialog ref={monitorRef} className={ui.monitor} style={styles.monitorOverlay} aria-label="Council monitor" onCancel={(event) => { event.preventDefault(); setMonitor(false); }}>
-                    <div style={styles.monitorBar}>
-                        <div style={{ minWidth: 0 }}>
-                            <div style={styles.monitorTitle}>{s ? `${s.code} · ${s.topic}` : "Council monitor"}</div>
-                            {s && (
-                                <div style={styles.monitorMeta}>
-                                    {s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"}
-                                    {isRunning ? ` · quiet ${ago(s.lastMessageAt)}` : ""}
-                                    {s.floorHolder ? ` · floor ${s.floorHolder}` : ""}
+                            <section className={ui.railGroup}>
+                                <div className={ui.railHead}>
+                                    <h2>Recent</h2>
+                                    <p>Closed and expired</p>
+                                </div>
+                                {recent.length === 0 && <div className={ui.railEmpty}>Nothing closed yet.</div>}
+                                {recent.map((c) => (
+                                    <button
+                                        key={c.code}
+                                        type="button"
+                                        aria-pressed={selected === c.code}
+                                        onClick={() => selectCouncil(c.code)}
+                                        className={ui.railItem}
+                                    >
+                                        <span className={ui.railTop}>
+                                            <span className={ui.railTitle}>{c.topic}</span>
+                                            {c.closedAt && <time className={ui.railTime} dateTime={c.closedAt}>{ago(c.closedAt)}</time>}
+                                        </span>
+                                        <span className={ui.railMeta}>
+                                            <code>{c.code}</code> · {c.status} · {c.messages} {c.messages === 1 ? "msg" : "msgs"} · {c.round} {c.round === 1 ? "round" : "rounds"}
+                                        </span>
+                                    </button>
+                                ))}
+                            </section>
+                        </div>
+
+                        <div className={ui.main}>
+                            {detailError && <div className={ui.notice} role="alert">{detailError} <button type="button" className={ui.btn} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
+                            {!detail && !detailError && <div className={ui.loading} role="status"><Clock size={16} /> Loading transcript…</div>}
+
+                            {s && detail && (
+                                <>
+                                    <section className={ui.panel}>
+                                        <div className={ui.detailHead}>
+                                            <h2 className={ui.detailTitle}>{s.topic}</h2>
+                                            <p className={ui.detailMeta}>
+                                                <code>{s.code}</code> · {s.councilType} council · {s.paused ? "stalled" : s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"} · closer {s.closerName}
+                                            </p>
+                                        </div>
+                                        <p className={ui.brief}>{s.brief}</p>
+                                        {s.status === "awaiting_owner" && (
+                                            <DecisionPanel
+                                                code={s.code}
+                                                verdict={s.verdict}
+                                                openQuestions={s.openQuestions}
+                                                standbyExpiresAt={s.standbyExpiresAt}
+                                                continueCount={s.continueCount}
+                                                onDecided={() => { void fetchDetail(s.code); }}
+                                            />
+                                        )}
+                                        {isRunning && (
+                                            <OwnerChannelPanel
+                                                code={s.code}
+                                                paused={s.paused}
+                                                onStateChange={() => { void fetchDetail(s.code); }}
+                                            />
+                                        )}
+                                        {isRunning && (
+                                            <SeatKeysPanel key={s.code}
+                                                code={s.code}
+                                                agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
+                                            />
+                                        )}
+                                        <div className={ui.list}>
+                                            {detail.participants.filter((p) => p.kind === "agent").map((p) => {
+                                                const latestRun = detail.executions?.records.find(record => record.agentName === p.name);
+                                                return (
+                                                    <div key={p.name} className={ui.row}>
+                                                        <span className={ui.dot} data-tone={presence(p)} />
+                                                        <span className={ui.name}>
+                                                            {p.name}
+                                                            {p.name === s.closerName && <span className={ui.pill}>closer</span>}
+                                                            {s.floorHolder === p.name && <span className={ui.pill} data-tone="success">has floor</span>}
+                                                        </span>
+                                                        <span className={ui.rowMeta}>
+                                                            {p.postsThisRound}/2 this round · {p.postsTotal} total · seen {ago(p.lastSeenAt)} ago
+                                                        </span>
+                                                        <div className={ui.wide}>
+                                                            {latestRun ? <ExecutionRecord record={latestRun} label="Latest recorded run" />
+                                                                : <span className={ui.evidenceState}>{detail.executions?.historyStatus === "available" ? "No run in loaded history" : "Run history unavailable"}</span>}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                        {detail.executions && <ExecutionHistory key={s.code} code={s.code} page={detail.executions} onRetry={() => void fetchDetail(s.code)} />}
+                                        {detail.openObligations.length > 0 && (
+                                            <div className={ui.subBlock}>
+                                                <div className={ui.subHead}>Unanswered</div>
+                                                {detail.openObligations.map((o) => (
+                                                    <div key={o.seq} className={ui.obligationRow}>
+                                                        seq {o.seq} · {o.from} → <strong>{o.to}</strong> ({o.intent})
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </section>
+
+                                    {s.verdict && (
+                                        <section className={ui.panel}>
+                                            <PanelHeader
+                                                title="Verdict"
+                                                description={`by ${s.closerName}`}
+                                                icon={<Gavel size={16} />}
+                                            />
+                                            <div className={ui.verdict}>{s.verdict}</div>
+                                            {s.openQuestions.length > 0 && (
+                                                <div className={ui.subBlock}>
+                                                    <div className={ui.subHead}>Open questions</div>
+                                                    <ul className={ui.questions}>
+                                                        {s.openQuestions.map((q, i) => <li key={i}>{q}</li>)}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            <div className={ui.filedRow}>
+                                                <span className={ui.pill} data-tone={s.archiveStatus === "filed" ? "success" : undefined}>
+                                                    {s.archiveStatus === "filed" ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+                                                    {s.archiveStatus}
+                                                </span>
+                                                <span className={ui.path}>
+                                                    {s.vaultPath ? <code>{s.vaultPath}</code> : "not filed"}
+                                                    {s.vaultPath && <span className={ui.untrusted}> · untrusted draft, promote with vault_ingest</span>}
+                                                </span>
+                                            </div>
+                                        </section>
+                                    )}
+
+                                    {detail.campaign && (
+                                        <section className={ui.panel}>
+                                            <PanelHeader
+                                                title="Work campaign"
+                                                description={detail.campaign.status + " - " + detail.campaign.workItems.filter((item) => item.status === "verified").length + "/" + detail.campaign.workItems.length + " verified"}
+                                                icon={<GitBranch size={16} />}
+                                            />
+                                            <p className={ui.path}><code>{detail.campaign.repoPath}</code> · base <code>{detail.campaign.baseBranch}</code></p>
+                                            <div className={ui.list}>
+                                                {detail.campaign.workItems.map((item) => (
+                                                    <div key={item.id} className={`${ui.row} ${ui.workRow}`}>
+                                                        <span className={ui.seq}>{item.sequence}</span>
+                                                        <span className={ui.name}>{item.agentName}</span>
+                                                        <span className={ui.pill} data-tone={item.status === "verified" ? "success" : item.status === "blocked" ? "warning" : undefined}>{item.status}</span>
+                                                        <span className={ui.rowTitle}>{item.title}</span>
+                                                        {/* Host-observed, not the agent's own account of its work. */}
+                                                        {item.status === "awaiting_review" && (
+                                                            <span className={ui.pill} data-tone={item.hostVerified === true ? "success" : item.hostVerified === false ? "danger" : undefined}>
+                                                                {item.hostVerified === true ? "host ✓" : item.hostVerified === false ? "host ✗" : "host pending"}
+                                                            </span>
+                                                        )}
+                                                        {item.blockedReason && <span className={ui.detail}>{item.blockedReason}</span>}
+                                                        {!item.blockedReason && item.hostVerification && <span className={ui.detail}>{item.hostVerification.split("\n").find((l) => l.startsWith("FAIL")) ?? item.progress}</span>}
+                                                        {!item.blockedReason && !item.hostVerification && item.progress && <span className={ui.detail}>{item.progress}</span>}
+                                                        {item.commitHash && <div className={ui.detail}>
+                                                            <span className={ui.evidenceNote}>Submitted commit <code>{item.commitHash}</code></span>
+                                                            <ExecutionEvidence executionId={item.submittedExecutionId} records={executionRecords} label="Submitted in run" />
+                                                        </div>}
+                                                        {item.acceptedCommitSha && <div className={ui.detail}>
+                                                            <span className={ui.evidenceNote}>Accepted commit <code>{item.acceptedCommitSha}</code></span>
+                                                            <ExecutionEvidence executionId={item.acceptedExecutionId} records={executionRecords} label="Accepted submission run" />
+                                                        </div>}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <IntegrationPanel key={s.code}
+                                                code={s.code}
+                                                campaign={detail.campaign}
+                                                agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
+                                                onChange={() => { void fetchDetail(s.code); }}
+                                            />
+                                        </section>
+                                    )}
+
+                                    <section className={ui.panel}>
+                                        <div className={ui.panelHeadRow}>
+                                            <PanelHeader
+                                                headingId="council-transcript"
+                                                title="Transcript"
+                                                description={isRunning ? `live · quiet ${ago(s.lastMessageAt)}` : "final"}
+                                                icon={<MessageSquare size={16} />}
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setMonitor(true)}
+                                                className={ui.btn}
+                                                title="Fullscreen monitor (Esc to exit)"
+                                            >
+                                                <Maximize2 size={15} /> Monitor
+                                            </button>
+                                        </div>
+                                        <div className={ui.transcript}>
+                                            {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} seat={agentSeats.get(m.speaker)} />)}
+                                            {detail.messages.length === 0 && <div className={ui.emptyText}>Nothing said yet.</div>}
+                                            <div ref={monitor ? undefined : transcriptEnd} />
+                                        </div>
+                                    </section>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {monitor && (
+                    <dialog ref={monitorRef} className={ui.monitor} aria-label="Council monitor" onCancel={(event) => { event.preventDefault(); setMonitor(false); }}>
+                        <div className={ui.monitorBar}>
+                            <div className={ui.monitorHeading}>
+                                <div className={ui.monitorTitle}>{s ? `${s.code} · ${s.topic}` : "Council monitor"}</div>
+                                {s && (
+                                    <div className={ui.monitorMeta}>
+                                        {s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"}
+                                        {isRunning ? ` · quiet ${ago(s.lastMessageAt)}` : ""}
+                                        {s.floorHolder ? ` · floor ${s.floorHolder}` : ""}
+                                    </div>
+                                )}
+                            </div>
+                            <div className={ui.monitorActions}>
+                                {(detail?.participants ?? []).filter((p) => p.kind === "agent").map((p) => (
+                                    <span key={p.name} className={ui.monitorAgent}>
+                                        <span className={ui.dot} data-tone={presence(p)} />
+                                        {p.name}
+                                        {s?.floorHolder === p.name && <span className={ui.pill} data-tone="success">floor</span>}
+                                    </span>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={() => setLive((v) => !v)}
+                                    aria-pressed={live}
+                                    className={`${ui.btn} ${ui.liveToggle}`}
+                                >
+                                    <RefreshCw size={15} className={live ? ui.spin : undefined} />
+                                    {live ? "Live" : "Paused"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setMonitor(false)}
+                                    className={ui.btn}
+                                    title="Exit fullscreen (Esc)"
+                                >
+                                    <Minimize2 size={15} /> Exit
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className={ui.monitorFeed}>
+                            {detailError && <div className={ui.notice} role="alert">{detailError} <button type="button" className={ui.btn} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
+                            {!detail && !detailError && <div className={ui.loading} role="status"><Clock size={16} /> Loading transcript…</div>}
+                            {detail && (
+                                <div className={ui.monitorInner}>
+                                    {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} seat={agentSeats.get(m.speaker)} />)}
+                                    {detail.messages.length === 0 && <div className={ui.emptyText}>Nothing said yet.</div>}
+                                    <div ref={transcriptEnd} />
                                 </div>
                             )}
                         </div>
-                        <div style={styles.monitorActions}>
-                            {(detail?.participants ?? []).filter((p) => p.kind === "agent").map((p) => (
-                                <span key={p.name} style={styles.monitorAgent}>
-                                    <span style={{
-                                        ...styles.dot,
-                                        background: p.status === "left"
-                                            ? "var(--color-text-muted)"
-                                            : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "var(--council-warning)" : "var(--council-good)",
-                                    }} />
-                                    {p.name}
-                                    {s?.floorHolder === p.name && <span style={{ ...styles.tag, ...styles.tagFloor }}>floor</span>}
-                                </span>
-                            ))}
-                            <button
-                                type="button"
-                                onClick={() => setLive((v) => !v)}
-                                aria-pressed={live}
-                                style={{ ...styles.quickLink, ...(live ? styles.liveOn : {}) }}
-                            >
-                                <RefreshCw size={15} style={live ? styles.spin : undefined} />
-                                {live ? "Live" : "Paused"}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setMonitor(false)}
-                                style={styles.quickLink}
-                                title="Exit fullscreen (Esc)"
-                            >
-                                <Minimize2 size={15} /> Exit
-                            </button>
-                        </div>
-                    </div>
-
-                    <div style={styles.monitorFeed}>
-                        {detailError && <div style={styles.errorBox} role="alert">{detailError} <button type="button" style={styles.quickLink} onClick={() => { if (selected) { setDetailError(""); void fetchDetail(selected); } }}>Retry transcript</button></div>}
-                        {!detail && !detailError && <div style={styles.loadingCard} role="status"><Clock size={16} /> Loading transcript…</div>}
-                        {detail && (
-                            <div style={styles.monitorInner}>
-                                {detail.messages.map((m) => <MessageRow key={m.seq} m={m} executions={executionRecords} />)}
-                                {detail.messages.length === 0 && <div style={styles.emptyText}>Nothing said yet.</div>}
-                                <div ref={transcriptEnd} />
-                            </div>
-                        )}
-                    </div>
-                </dialog>
-            )}
-        </div>
+                    </dialog>
+                )}
+            </div>
+        </WorkspaceShell>
     );
 }
 
 // Shared by the inline transcript and the monitor overlay so the two views can
 // never drift apart.
-function MessageRow({ m, executions }: { m: Message; executions: CouncilExecutionRecord[] }) {
+function MessageRow({ m, executions, seat }: { m: Message; executions: CouncilExecutionRecord[]; seat?: number }) {
     return (
-        <div style={styles.msg}>
-            <div style={styles.msgHead}>
-                <span style={styles.seq}>{m.seq}</span>
-                <span style={styles.speaker}>{m.speaker}</span>
-                {m.addressedTo !== "all" && <span style={styles.arrow}>→ {m.addressedTo}</span>}
-                <span style={{ ...styles.intent, color: INTENT_TONE[m.intent] ?? "var(--color-text-muted)" }}>
-                    {m.intent}
-                </span>
-                {m.replyToSeq && <span style={styles.re}>re {m.replyToSeq}</span>}
+        <div className={ui.msg}>
+            <div className={ui.msgHead}>
+                <span className={ui.dot} data-seat={m.role === "agent" ? seat : undefined} />
+                <span className={ui.speaker}>{m.speaker}</span>
+                {m.role !== "agent" && <span className={ui.msgMuted}>{m.role}</span>}
+                {m.addressedTo !== "all" && <span className={ui.msgMuted}>→ {m.addressedTo}</span>}
+                <span className={ui.pill} data-tone={INTENT_TONE[m.intent]}>{m.intent}</span>
+                {m.replyToSeq && <span className={ui.msgMuted}>re {m.replyToSeq}</span>}
                 {!m.answered && ["challenge", "ask"].includes(m.intent) && m.addressedTo !== "all" && (
-                    <span style={{ ...styles.smallPill, ...styles.pillWarn }}>unanswered</span>
+                    <span className={ui.pill} data-tone="warning">unanswered</span>
                 )}
-                <span style={styles.msgTime}>r{m.round} · {ago(m.createdAt)} ago</span>
+                <span className={ui.msgTime}>#{m.seq} · r{m.round} · {ago(m.createdAt)} ago</span>
             </div>
-            <div style={{ ...styles.msgBody, ...(m.role !== "agent" ? styles.msgModerator : {}) }}>
+            <div className={m.role === "agent" ? ui.msgBody : `${ui.msgBody} ${ui.msgNote}`}>
                 {m.body}
             </div>
             {m.role === "agent" && <ExecutionEvidence executionId={m.executionId} records={executions} />}
@@ -1058,265 +1012,12 @@ function PanelHeader({ title, description, icon, headingId }: {
     headingId?: string;
 }) {
     return (
-        <div style={styles.panelHeader}>
-            <div style={styles.panelIcon}>{icon}</div>
-            <div style={{ minWidth: 0 }}>
-                <h2 id={headingId} tabIndex={headingId ? -1 : undefined} style={{ ...styles.sectionTitle, scrollMarginTop: 16 }}>{title}</h2>
-                <p style={styles.sectionDescription}>{description}</p>
+        <div className={ui.panelHeader}>
+            <span className={ui.panelIcon}>{icon}</span>
+            <div className={ui.panelHeading}>
+                <h2 id={headingId} tabIndex={headingId ? -1 : undefined} className={ui.panelTitle}>{title}</h2>
+                <p className={ui.panelDescription}>{description}</p>
             </div>
         </div>
     );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-    shell: {
-        position: "relative",
-        minHeight: "100vh",
-        overflow: "hidden",
-        maxWidth: 1240,
-        margin: "0 auto",
-        padding: "36px 24px 56px",
-        fontFamily: "var(--font-family)",
-        color: "var(--color-text-primary)",
-        background: "radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 30%), radial-gradient(circle at 95% 20%, color-mix(in srgb, var(--council-info) 13%, transparent), transparent 28%), var(--color-background)",
-    },
-    ambientOne: {
-        position: "fixed", width: 520, height: 520, top: -180, left: -160, borderRadius: "50%",
-        background: "color-mix(in srgb, var(--color-secondary) 18%, transparent)",
-        filter: "blur(90px)", pointerEvents: "none",
-    },
-    ambientTwo: {
-        position: "fixed", width: 460, height: 460, right: -160, top: 80, borderRadius: "50%",
-        background: "color-mix(in srgb, var(--council-info) 14%, transparent)",
-        filter: "blur(95px)", pointerEvents: "none",
-    },
-    header: {
-        position: "relative", zIndex: 1, display: "flex", alignItems: "flex-start",
-        justifyContent: "space-between", gap: 20, marginBottom: 18,
-    },
-    headerNarrow: { flexDirection: "column", alignItems: "stretch", gap: 12 },
-    shellNarrow: { padding: "22px 14px 40px" },
-    titleNarrow: { fontSize: 26 },
-    kicker: {
-        fontSize: 11, fontWeight: 800, letterSpacing: 1.2, textTransform: "uppercase",
-        color: "var(--color-text-muted)", marginBottom: 6,
-    },
-    title: { fontSize: 34, lineHeight: 1.05, fontWeight: 850, letterSpacing: "-0.05em", margin: 0 },
-    subtitle: { maxWidth: 640, margin: "10px 0 0", color: "var(--color-text-muted)", fontSize: 14, lineHeight: 1.55 },
-    quickActions: {
-        position: "relative", zIndex: 1, display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 18,
-    },
-    // Longhand border, because liveOn and dangerLink override borderColor alone:
-    // React warns when a shorthand and its longhand are mixed across a rerender.
-    quickLink: {
-        display: "inline-flex", alignItems: "center", gap: 7, padding: "9px 11px", borderRadius: 14,
-        textDecoration: "none", color: "var(--color-text-primary)",
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-border) 62%, transparent)",
-        fontSize: 12.5, fontWeight: 650, cursor: "pointer", fontFamily: "inherit",
-    },
-    liveOn: { color: "var(--council-good)", borderColor: "color-mix(in srgb, var(--council-good) 45%, transparent)" },
-    spin: { animation: "spin 2s linear infinite" },
-    headerActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    hostChipOff: { color: "var(--color-text-muted)", opacity: 0.75 },
-    dangerLink: { color: "var(--council-warning)", borderColor: "color-mix(in srgb, var(--council-warning) 40%, transparent)" },
-    code: {
-        fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5,
-        padding: "2px 6px", borderRadius: 5,
-        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-    },
-    input: {
-        flex: "1 1 180px", minWidth: 0, padding: "8px 10px", fontSize: 13,
-        borderRadius: 8, border: "1px solid var(--color-border)",
-        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-        color: "var(--color-text-primary)", fontFamily: "inherit",
-    },
-    pairRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    remoteActions: { display: "flex", gap: 8, flexWrap: "wrap", padding: "0 12px 10px" },
-    remoteBrief: {
-        margin: 0, padding: 14, borderRadius: 14, maxHeight: 380, overflow: "auto",
-        fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5, lineHeight: 1.6,
-        whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
-    },
-    conveneForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 14 },
-    conveneRow: { display: "flex", gap: 8, flexWrap: "wrap" },
-    modelGrid: { display: "flex", flexDirection: "column", gap: 6 },
-    modelRow: { display: "grid", gridTemplateColumns: "minmax(90px, .7fr) minmax(150px, 1.4fr) minmax(130px, 1fr)", gap: 8, alignItems: "center" },
-    modelAgent: { fontSize: 12, fontWeight: 700, color: "var(--color-text-muted)" },
-    permissionQueue: {
-        display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, padding: 12,
-        borderRadius: 10, border: "1px solid color-mix(in srgb, var(--council-warning) 40%, transparent)",
-        background: "color-mix(in srgb, var(--council-warning) 8%, transparent)",
-    },
-    permissionRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    permissionTitle: { fontSize: 12.5, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" },
-    permissionButtons: { display: "flex", gap: 6, marginLeft: "auto" },
-    busyRow: {
-        display: "flex", gap: 8, alignItems: "baseline", fontSize: 12,
-        padding: "7px 10px", borderRadius: 8,
-        background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-accent) 28%, transparent)",
-        marginTop: 10,
-    },
-    busySpinner: {
-        width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-        background: "var(--color-accent)", alignSelf: "center",
-        animation: "pulseSoft 1.4s ease-in-out infinite",
-    },
-    busyLabel: { flex: 1, minWidth: 0, overflowWrap: "anywhere" },
-    busySince: { color: "var(--color-text-muted)", flexShrink: 0, fontVariantNumeric: "tabular-nums" },
-    loadingCard: {
-        minHeight: "30vh", display: "flex", alignItems: "center", justifyContent: "center",
-        gap: 10, color: "var(--color-text-muted)",
-    },
-    split: {
-        position: "relative", zIndex: 1, display: "grid",
-        gridTemplateColumns: "minmax(240px, 320px) minmax(0, 1fr)", gap: 16, alignItems: "start",
-    },
-    splitNarrow: { gridTemplateColumns: "minmax(0, 1fr)" },
-    rail: { display: "flex", flexDirection: "column" },
-    main: { minWidth: 0 },
-    panel: {
-        marginBottom: 16, padding: 18, borderRadius: 24,
-        background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 66%, transparent)",
-        backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
-        boxShadow: "0 18px 60px rgba(0, 0, 0, 0.18)",
-    },
-    panelHeader: { display: "flex", gap: 11, alignItems: "flex-start", marginBottom: 14 },
-    panelHeadRow: {
-        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
-        gap: 12, flexWrap: "wrap",
-    },
-    // Fixed rather than the Fullscreen API: it needs no user-gesture permission,
-    // survives a re-render, and Esc still exits.
-    monitorOverlay: {
-        position: "fixed", inset: 0, width: "100vw", height: "100dvh", maxWidth: "none", maxHeight: "none", margin: 0, padding: 0, border: 0, zIndex: 60, display: "flex", flexDirection: "column",
-        background: "var(--color-background)", fontFamily: "var(--font-family)",
-        color: "var(--color-text-primary)",
-    },
-    monitorBar: {
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
-        flexWrap: "wrap", padding: "12px 18px", flexShrink: 0,
-        borderBottom: "1px solid color-mix(in srgb, var(--color-border) 66%, transparent)",
-        background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
-    },
-    monitorTitle: {
-        fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em",
-        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-    },
-    monitorMeta: { fontSize: 12, color: "var(--color-text-muted)", marginTop: 3 },
-    monitorActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    monitorAgent: {
-        display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 650,
-        padding: "7px 10px", borderRadius: 12,
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)",
-    },
-    // The scroll container is this element, so transcriptEnd.scrollIntoView
-    // follows the tail here exactly as it does inline.
-    monitorFeed: { flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 18px 28px" },
-    monitorInner: { maxWidth: 1600, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 },
-    panelIcon: {
-        width: 32, height: 32, borderRadius: 12, display: "flex", alignItems: "center",
-        justifyContent: "center",
-        background: "color-mix(in srgb, var(--color-background) 58%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 58%, transparent)",
-        flexShrink: 0,
-    },
-    sectionTitle: { fontSize: 15, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 },
-    sectionDescription: { margin: "3px 0 0", fontSize: 12, color: "var(--color-text-muted)" },
-    emptyText: { color: "var(--color-text-muted)", fontSize: 13, padding: 12, lineHeight: 1.5 },
-    errorBox: {
-        padding: 12, borderRadius: 14, marginBottom: 12, fontSize: 13, color: "var(--council-warning)",
-        background: "color-mix(in srgb, var(--council-warning) 10%, transparent)",
-    },
-    railItem: {
-        display: "block", width: "100%", textAlign: "left", marginBottom: 8, padding: "10px 12px",
-        borderRadius: 16, cursor: "pointer", fontFamily: "inherit",
-        color: "var(--color-text-primary)",
-        background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-border) 45%, transparent)",
-    },
-    railItemActive: {
-        background: "color-mix(in srgb, var(--color-secondary) 14%, transparent)",
-        borderColor: "color-mix(in srgb, var(--color-secondary) 45%, transparent)",
-    },
-    railItemAdoptable: { marginBottom: 4 },
-    railAdopt: {
-        display: "inline-flex", alignItems: "center", gap: 5, marginBottom: 10, padding: "5px 11px",
-        borderRadius: 999, fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-        color: "var(--color-text-primary)",
-        background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-border) 62%, transparent)",
-    },
-    railTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
-    railCode: { fontSize: 12.5, fontWeight: 800, letterSpacing: "-0.01em" },
-    railTopic: { marginTop: 4, fontSize: 12.5, lineHeight: 1.4, color: "var(--color-text-primary)" },
-    railMeta: { marginTop: 4, fontSize: 11, color: "var(--color-text-muted)" },
-    railWaiting: { marginTop: 3, fontSize: 11, fontWeight: 700, color: "var(--council-caution)" },
-    smallPill: {
-        display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 7px", borderRadius: 999,
-        fontSize: 11, fontWeight: 750, whiteSpace: "nowrap",
-    },
-    pillGood: { color: "var(--council-good)", background: "color-mix(in srgb, var(--council-good) 12%, transparent)" },
-    pillMuted: { color: "var(--color-text-muted)", background: "color-mix(in srgb, var(--color-background) 55%, transparent)" },
-    pillWarn: { color: "var(--council-warning)", background: "color-mix(in srgb, var(--council-warning) 14%, transparent)" },
-    brief: {
-        padding: 12, borderRadius: 14, fontSize: 12.5, lineHeight: 1.55,
-        color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 45%, transparent)",
-        marginBottom: 12, whiteSpace: "pre-wrap",
-    },
-    roster: { display: "flex", flexDirection: "column", gap: 8 },
-    rosterRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-    workRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--color-border) 30%, transparent)" },
-    workTitle: { fontSize: 12.5, fontWeight: 650 },
-    workDetail: { width: "100%", fontSize: 11.5, lineHeight: 1.45, color: "var(--color-text-muted)", paddingLeft: 36 },
-    dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
-    rosterName: { fontSize: 13, fontWeight: 750, display: "inline-flex", alignItems: "center", gap: 6 },
-    rosterMeta: { fontSize: 11.5, color: "var(--color-text-muted)", marginLeft: "auto" },
-    tag: {
-        fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 999,
-        textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-    },
-    tagFloor: { color: "var(--council-good)", background: "color-mix(in srgb, var(--council-good) 14%, transparent)" },
-    obligations: {
-        marginTop: 12, padding: 10, borderRadius: 14,
-        background: "color-mix(in srgb, var(--council-warning) 8%, transparent)",
-    },
-    obligationsTitle: {
-        fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.8,
-        color: "var(--color-text-muted)", marginBottom: 6,
-    },
-    obligationRow: { fontSize: 12, lineHeight: 1.5 },
-    verdict: { fontSize: 13.5, lineHeight: 1.6, whiteSpace: "pre-wrap" },
-    openQ: { marginTop: 12 },
-    filedRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" },
-    filedPath: { fontSize: 11.5, color: "var(--color-text-muted)" },
-    untrusted: { color: "var(--council-caution)" },
-    transcript: { display: "flex", flexDirection: "column", gap: 14, maxHeight: "62vh", overflowY: "auto" },
-    msg: { paddingBottom: 12, borderBottom: "1px solid color-mix(in srgb, var(--color-border) 35%, transparent)" },
-    msgHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 },
-    seq: {
-        fontSize: 11, fontWeight: 800, minWidth: 22, padding: "2px 6px", borderRadius: 8,
-        textAlign: "center", color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--color-background) 60%, transparent)",
-    },
-    speaker: { fontSize: 13, fontWeight: 800 },
-    arrow: { fontSize: 12, color: "var(--color-text-muted)" },
-    intent: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5 },
-    re: { fontSize: 11, color: "var(--color-text-muted)" },
-    msgTime: { fontSize: 11, color: "var(--color-text-muted)", marginLeft: "auto" },
-    msgBody: { fontSize: 13.5, lineHeight: 1.6, whiteSpace: "pre-wrap" },
-    msgModerator: {
-        padding: 10, borderRadius: 12, fontStyle: "italic",
-        color: "var(--color-text-muted)",
-        background: "color-mix(in srgb, var(--council-secondary) 8%, transparent)",
-    },
-};

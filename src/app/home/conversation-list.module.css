@@ -1,21 +1,376 @@
-.scope :is(button, input, textarea, [role="button"]):focus-visible,
-.focus:focus-visible,
+.scope :is(a, button, input, textarea):focus-visible,
 .menu button:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 .scope button:disabled,
 .menu button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
+  cursor: default;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.groupHead {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: var(--radius-sm);
+}
+
+.groupToggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px 0 11px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: 500 13px var(--font-family);
+  text-align: left;
+  cursor: pointer;
+}
+
+.groupToggle:disabled {
+  opacity: 1 !important;
+  cursor: default;
+}
+
+.groupToggle:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.groupName {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.groupLabel {
+  padding: 0 10px 0 38px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.groupActions,
+.rowActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  padding-right: 4px;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.row:hover {
+  background: var(--hover);
+}
+
+.row[data-active] {
+  background: var(--active);
+}
+
+.rowLink {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.row[data-grouped] .rowLink {
+  padding-left: 38px;
+}
+
+.row[data-active] .rowLink {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rowTime {
+  display: inline-flex;
+  flex: none;
+  justify-content: flex-end;
+  min-width: 40px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.row[data-active] .rowTime {
+  color: var(--ink-2);
+}
+
+.rowButton {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.rowButton:hover:not(:disabled) {
+  background: var(--active);
+  color: var(--ink);
+}
+
+@media (hover: hover) {
+  .row[data-actions] .rowActions,
+  .groupActions {
+    position: absolute;
+    top: 50%;
+    right: 2px;
+    padding: 0;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .row[data-actions]:is(:hover, :focus-within) .rowActions,
+  .groupHead:is(:hover, :focus-within) .groupActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .row[data-actions]:is(:hover, :focus-within) .rowTime {
+    visibility: hidden;
+  }
+
+  .row[data-actions] .rowActions {
+    background: inherit;
+  }
+
+  .row[data-actions]:is(:hover, :focus-within) .rowActions {
+    padding-left: 6px;
+    background: linear-gradient(to right, transparent, var(--hover) 6px);
+  }
+
+  .row[data-active][data-actions]:is(:hover, :focus-within) .rowActions {
+    background: linear-gradient(to right, transparent, var(--active) 6px);
+  }
+}
+
+@media (hover: none) {
+  .row[data-actions] .rowTime {
+    display: none;
+  }
+}
+
+.empty {
+  margin: 2px 0 4px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.empty[data-grouped] {
+  padding-left: 38px;
+}
+
+.skeleton {
+  height: 30px;
+  margin: 1px 0;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+
+.newProject {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: 500 13px var(--font-family);
+  cursor: pointer;
+}
+
+.newProject:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.inlineForm {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink);
+  font: 16px var(--font-family);
+}
+
+@media (min-width: 900px) {
+  .input,
+  .textarea {
+    font-size: 14px;
+  }
+}
+
+.textarea {
+  resize: vertical;
+}
+
+.formButton {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.formButton:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.instructions {
+  margin: 2px 4px 6px 38px;
+}
+
+.instructionsActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.textButton {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink);
+  font: 500 13px var(--font-family);
+  cursor: pointer;
+}
+
+.textButton[data-primary] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: max-content;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  visibility: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: 14px var(--font-family);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
 }
 
 .menu button:not(:disabled):hover {
-  background: var(--color-surface) !important;
+  background: var(--hover);
+}
+
+.menu button[data-danger] {
+  color: var(--danger);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (pointer: coarse) {
-  .scope button {
-    min-height: 44px;
-  }
+  .rowLink { height: 44px; }
+  .groupToggle, .groupHead, .newProject { min-height: 40px; }
+  .rowButton { width: 40px; height: 40px; }
+  .menu button { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation-duration: 2.4s; }
 }

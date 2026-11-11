@@ -8,7 +8,6 @@ import { ExecutionEvidence } from "./execution-evidence";
 import { OwnerMergePackage } from "./owner-merge-package";
 import ui from "./council.module.css";
 
-
 interface Campaign {
     status: string;
     baseBranch: string;
@@ -20,12 +19,10 @@ interface Campaign {
     integrationManifest?: unknown;
 }
 
-const TONE: Record<string, string> = {
-    verified: "var(--council-good)",
-    running: "var(--council-caution)",
-    pending: "var(--council-caution)",
-    conflict: "var(--council-error)",
-    failed: "var(--council-error)",
+const TONE: Record<string, "success" | "danger"> = {
+    verified: "success",
+    conflict: "danger",
+    failed: "danger",
 };
 
 export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
@@ -64,31 +61,31 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
     }
 
     const status = campaign.integrationStatus;
-    const tone = status ? TONE[status] ?? "var(--color-text-muted)" : "var(--color-text-muted)";
+    const tone = status ? TONE[status] : undefined;
     const frozenItems = parseFrozenExecutionItems(campaign.integrationManifest);
 
     return (
-        <div style={styles.wrap}>
-            <div style={styles.head}><GitMerge size={15} /><span>Integration</span></div>
+        <div className={ui.subBlock}>
+            <div className={ui.subHead}><GitMerge size={15} /><span>Integration</span></div>
 
             {status ? (
                 <>
-                    <div style={styles.statusRow}>
-                        <span style={{ ...styles.pill, color: tone, borderColor: `color-mix(in srgb, ${tone} 50%, transparent)` }}>
+                    <div className={ui.pillRow}>
+                        <span className={ui.pill} data-tone={tone}>
                             {status}
                         </span>
-                        {campaign.integrationBranch && <code style={styles.branch}>{campaign.integrationBranch}</code>}
-                        {campaign.integratorAgent && <span style={styles.meta}>by {campaign.integratorAgent}</span>}
+                        {campaign.integrationBranch && <code>{campaign.integrationBranch}</code>}
+                        {campaign.integratorAgent && <span className={ui.path}>by {campaign.integratorAgent}</span>}
                     </div>
                     {status === "verified" && (
-                        <div style={styles.merged}>
+                        <div className={ui.subNote}>
                             <ShieldCheck size={13} /> Assembled and checked. Merging into{" "}
-                            <code style={styles.branch}>{campaign.baseBranch}</code> is still yours to do.
+                            <code>{campaign.baseBranch}</code> is still yours to do.
                         </div>
                     )}
                 </>
             ) : (
-                <div style={styles.note}>
+                <div className={ui.subNote}>
                     {campaign.status === "complete"
                         ? "Every task is accepted. The host assembles them on a clean branch when it next ticks, or nominate one agent to do it."
                         : "Runs once every task has been accepted."}
@@ -105,7 +102,7 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
             <OwnerMergePackage key={code} code={code} revision={campaign.integrationCheckedAt} />
 
             {campaign.status === "complete" && (
-                <div style={styles.row}>
+                <div className={ui.buttonRow}>
                     <Dropdown
                         value={agent}
                         onChange={setAgent}
@@ -113,56 +110,15 @@ export function IntegrationPanel({ code, campaign, agentNames, onChange }: {
                         ariaLabel="Integration agent"
                         placeholder="Delegate the assembly to…"
                         disabled={busy || status === "running" || agentNames.length === 0}
-                        style={styles.input}
                     />
-                    <button type="button" onClick={nominate} disabled={busy || status === "running" || !agentNames.includes(agent)} style={styles.button}>
+                    <button type="button" onClick={nominate} disabled={busy || status === "running" || !agentNames.includes(agent)} className={ui.btn}>
                         {busy ? "Delegating…" : "Delegate"}
                     </button>
                 </div>
             )}
-            {campaign.status === "complete" && status === "running" && <p style={styles.note}>Assembly is running. Delegation becomes available when this attempt finishes.</p>}
+            {campaign.status === "complete" && status === "running" && <p className={ui.subNote}>Assembly is running. Delegation becomes available when this attempt finishes.</p>}
 
-            {error && <div role="alert" style={styles.error}>{error}</div>}
+            {error && <div role="alert" className={ui.errorText}>{error}</div>}
         </div>
     );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-    wrap: {
-        display: "flex", flexDirection: "column", gap: 9, marginTop: 12, padding: 12, borderRadius: 12,
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 25%, transparent)",
-        background: "color-mix(in srgb, var(--color-text-muted) 5%, transparent)",
-    },
-    head: {
-        display: "flex", alignItems: "center", gap: 7,
-        fontSize: 12.5, fontWeight: 700, color: "var(--color-text-primary)",
-    },
-    statusRow: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" },
-    pill: {
-        fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 999,
-        borderWidth: 1, borderStyle: "solid", background: "transparent",
-    },
-    branch: { fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5 },
-    meta: { fontSize: 11.5, color: "var(--color-text-muted)" },
-    note: { fontSize: 11.5, color: "var(--color-text-muted)", lineHeight: 1.5 },
-    merged: {
-        display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
-        fontSize: 11.5, color: "var(--color-text-muted)",
-    },
-    row: { display: "flex", gap: 8, flexWrap: "wrap" },
-    input: {
-        flex: "1 1 180px", minWidth: 0, padding: "6px 10px", borderRadius: 9, fontSize: 13,
-        fontFamily: "var(--font-family)",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 30%, transparent)",
-        background: "var(--color-background)", color: "var(--color-text-primary)",
-    },
-    button: {
-        minHeight: 40, padding: "6px 13px", borderRadius: "var(--radius-sm)", fontSize: 12, fontWeight: 600, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 35%, transparent)",
-        background: "transparent", color: "var(--color-text-primary)",
-    },
-    error: { fontSize: 12, color: "var(--council-error)" },
-};

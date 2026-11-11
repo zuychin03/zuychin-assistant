@@ -9,6 +9,9 @@ const STATUS_LABELS = {
     success: "Succeeded", auth: "Authentication failed", rate_limit: "Rate limited", transient: "Temporary failure",
     unavailable: "Unavailable", retired: "Retired (HTTP 410)", aborted: "Cancelled", unknown: "Unknown outcome",
 };
+const STATUS_TONES: Partial<Record<keyof typeof STATUS_LABELS, string>> = {
+    success: "success", auth: "danger", unavailable: "danger", retired: "danger", rate_limit: "warning", transient: "warning",
+};
 const CAPABILITY_LABELS = { streaming: "Streaming", tools: "Tool calls", vision: "Vision", grounding: "Grounding" };
 
 function localTime(value: string | null): string {
@@ -23,21 +26,21 @@ function ModelRow({ model, storageAvailable }: { model: ModelHealthEntry; storag
     const health = model.health;
     const latestLabel = !storageAvailable ? "Records unavailable" : health ? STATUS_LABELS[health.latestStatus] : "No observations";
     return (
-        <details style={styles.row}>
+        <details className="row" style={styles.row}>
             <summary style={styles.summary}>
-                <span style={styles.modelName}>{model.modelLabel}<span style={styles.secondary}>{model.providerLabel} · {model.kind === "historical" ? "Historical route" : model.kind}</span></span>
-                <span style={styles.outcome}>{latestLabel}</span>
-                <span style={styles.latest}>{health ? localTime(health.latestAt) : "Unknown health"}</span>
-                <ChevronDown size={16} aria-hidden="true" style={{ flexShrink: 0 }} />
+                <span style={styles.modelName}>{model.modelLabel}<span className="meta" style={styles.secondary}>{model.providerLabel} · {model.kind === "historical" ? "Historical route" : model.kind}</span></span>
+                <span className="tone" data-tone={storageAvailable && health ? STATUS_TONES[health.latestStatus] : undefined} style={styles.outcome}>{latestLabel}</span>
+                <span className="meta">{health ? localTime(health.latestAt) : "Unknown health"}</span>
+                <ChevronDown size={16} aria-hidden="true" style={{ flexShrink: 0, color: "var(--muted)" }} />
             </summary>
             <div style={styles.detail}>
-                <p style={styles.route}>{model.providerId} / {model.modelId}</p>
-                <p style={styles.note}>{model.catalogue === "historical" ? "Not in the current catalogue; retirement is unconfirmed."
+                <p className="meta" style={styles.route}>{model.providerId} / {model.modelId}</p>
+                <p className="meta" style={styles.note}>{model.catalogue === "historical" ? "Not in the current catalogue; retirement is unconfirmed."
                     : model.configured ? `Route configured${model.free ? " · eligible for Free only" : " · not eligible for Free only"}.`
                         : model.unavailableReason ?? "Route is not available."}</p>
                 {health ? (
                     <>
-                        <dl style={styles.measurements}>
+                        <dl className="facts" style={styles.measurements}>
                             <div><dt>Last successful request</dt><dd>{localTime(health.lastSuccessfulAt)}</dd></div>
                             <div><dt>Latest request duration</dt><dd>{latency(health.latestDurationMs)}</dd></div>
                             <div><dt>Latest first answer</dt><dd>{latency(health.latestFirstAnswerMs)}</dd></div>
@@ -45,16 +48,16 @@ function ModelRow({ model, storageAvailable }: { model: ModelHealthEntry; storag
                             <div><dt>Median first answer</dt><dd>{latency(health.medianFirstAnswerMs)}</dd></div>
                             <div><dt>Latest failure class / HTTP</dt><dd>{health.latestErrorClass ?? "None reported"}{health.latestHttpStatus !== null ? ` / ${health.latestHttpStatus}` : ""}</dd></div>
                         </dl>
-                        <p style={styles.note}>{health.totalCalls.toLocaleString()} recorded requests: {health.successfulCalls.toLocaleString()} succeeded, {health.failedCalls.toLocaleString()} failed, {health.abortedCalls.toLocaleString()} cancelled, {health.unknownCalls.toLocaleString()} unknown. Since {localTime(health.firstObservedAt)}.</p>
-                        <p style={styles.note}>Observed work: {health.purposes.join(", ")}. Medians use all retained successful observations; first-answer timings exclude unmeasured calls.</p>
+                        <p className="meta" style={styles.note}>{health.totalCalls.toLocaleString()} recorded requests: {health.successfulCalls.toLocaleString()} succeeded, {health.failedCalls.toLocaleString()} failed, {health.abortedCalls.toLocaleString()} cancelled, {health.unknownCalls.toLocaleString()} unknown. Since {localTime(health.firstObservedAt)}.</p>
+                        <p className="meta" style={styles.note}>Observed work: {health.purposes.join(", ")}. Medians use all retained successful observations; first-answer timings exclude unmeasured calls.</p>
                     </>
-                ) : <p style={styles.note}>{storageAvailable ? "No recorded requests for this model. Configuration does not establish health or capability support." : "Recorded health cannot be checked until storage is available."}</p>}
-                <dl style={styles.measurements}>
+                ) : <p className="meta" style={styles.note}>{storageAvailable ? "No recorded requests for this model. Configuration does not establish health or capability support." : "Recorded health cannot be checked until storage is available."}</p>}
+                <dl className="facts" style={styles.measurements}>
                     {Object.entries(model.capabilities).map(([key, capability]) => (
                         <div key={key}><dt>{CAPABILITY_LABELS[key as keyof typeof CAPABILITY_LABELS]}</dt><dd>{capability.observedAt ? `Observed ${localTime(capability.observedAt)}` : "Unknown"}</dd></div>
                     ))}
                 </dl>
-                <p style={styles.note}>Capabilities reflect observed output, not catalogue claims. Missing evidence does not mean unsupported.</p>
+                <p className="meta" style={styles.note}>Capabilities reflect observed output, not catalogue claims. Missing evidence does not mean unsupported.</p>
             </div>
         </details>
     );
@@ -96,31 +99,31 @@ export default function ModelHealthPanel() {
 
     return (
         <div>
-            <div style={styles.header}>
-                <div style={styles.heading}>
-                    <Activity size={18} aria-hidden="true" style={{ flexShrink: 0 }} />
-                    <h2 style={styles.title}>Model health</h2>
+            <div className="panel-head">
+                <Activity size={16} aria-hidden="true" />
+                <div className="panel-heading">
+                    <h2>Model health</h2>
+                    <p>Passive observations from assistant requests. Refresh reads stored metadata and never calls a model.</p>
                 </div>
-                <button type="button" style={styles.refresh} onClick={() => { void refresh(); }} disabled={loading} aria-label="Refresh model health">
+                <button type="button" className="btn" onClick={() => { void refresh(); }} disabled={loading} aria-label="Refresh model health">
                     <RefreshCw size={15} className={loading ? "animate-spin" : undefined} />
                     {loading ? "Loading" : "Refresh"}
                 </button>
-                <p style={{ ...styles.note, flexBasis: "100%", margin: 0 }}>Passive observations from assistant requests. Refresh reads stored metadata and never calls a model.</p>
             </div>
-            {failure && <div style={styles.feedback} role="alert">
+            {failure && <div className="notice" data-tone="danger" role="alert" style={styles.feedback}>
                 <span>{failure}{error && report ? " The last loaded records are shown below." : ""}</span>
-                <button type="button" style={styles.refresh} disabled={loading} onClick={() => { void refresh(); }}>Retry model health</button>
+                <button type="button" className="btn" disabled={loading} onClick={() => { void refresh(); }}>Retry model health</button>
             </div>}
-            {loading && !report && <p role="status" style={styles.note}>Loading the catalogue and recorded observations…</p>}
+            {loading && !report && <p role="status" className="empty">Loading the catalogue and recorded observations…</p>}
             {report && <>
                 <div style={styles.filters}>
-                    <label style={styles.filter}><span>Find a model</span><input style={styles.input} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Model or provider" /></label>
-                    <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model health provider" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider} options={[{ value: "", label: "All providers" }, ...providerOptions.map(([value, label]) => ({ value, label }))]} /></label>
+                    <label style={styles.filter}><span>Find a model</span><input className="field" style={styles.input} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Model or provider" /></label>
+                    <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model health provider" className="field" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider} options={[{ value: "", label: "All providers" }, ...providerOptions.map(([value, label]) => ({ value, label }))]} /></label>
                 </div>
-                <p style={styles.note} role="status">{models.length} of {report.models.length} models shown. Times use your browser&apos;s local timezone. Loaded {localTime(report.generatedAt)}.</p>
-                <div style={styles.list}>
+                <p className="meta" role="status">{models.length} of {report.models.length} models shown. Times use your browser&apos;s local timezone. Loaded {localTime(report.generatedAt)}.</p>
+                <div className="list scroll" style={styles.list}>
                     {models.map(model => <ModelRow key={`${model.providerId}:${model.modelId}`} model={model} storageAvailable={report.storage.available} />)}
-                    {!models.length && <p style={styles.note}>No models match these filters. Clear the search or select another provider.</p>}
+                    {!models.length && <p className="empty">No models match these filters. Clear the search or select another provider.</p>}
                 </div>
             </>}
         </div>
@@ -128,23 +131,18 @@ export default function ModelHealthPanel() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-    header: { display: "flex", alignItems: "center", columnGap: 12, rowGap: 8, flexWrap: "wrap", marginBottom: 16 },
-    heading: { display: "flex", alignItems: "center", gap: 8, flex: "1 1 130px", minWidth: 0 },
-    title: { margin: 0, fontSize: 16, fontWeight: 750, color: "var(--color-text-primary)" },
-    note: { margin: "6px 0", fontSize: 13, lineHeight: 1.5, color: "var(--color-text-muted)", overflowWrap: "anywhere" },
-    refresh: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 44, padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border)", background: "var(--color-background)", color: "var(--color-text-primary)", fontSize: 13, cursor: "pointer" },
-    feedback: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12, padding: "12px 0", fontSize: 14, lineHeight: 1.5, color: "var(--color-text-primary)" },
-    filters: { display: "flex", flexWrap: "wrap", gap: 12, margin: "16px 0 10px" },
-    filter: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 220px", minWidth: 0, fontSize: 13, color: "var(--color-text-muted)" },
-    input: { width: "100%", minWidth: 0, minHeight: 44, padding: "9px 12px", fontSize: 16, borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border)", background: "var(--color-background)", color: "var(--color-text-primary)" },
-    list: { marginTop: 12, maxHeight: 580, overflowY: "auto", scrollbarGutter: "stable" },
-    row: { borderTop: "1px solid var(--color-border)", color: "var(--color-text-primary)" },
-    summary: { display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 16, rowGap: 8, minHeight: 64, padding: "12px 4px", cursor: "pointer" },
-    modelName: { flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere", fontSize: 14, fontWeight: 650 },
-    secondary: { display: "block", marginTop: 3, fontSize: 13, fontWeight: 400, color: "var(--color-text-muted)" },
-    outcome: { fontSize: 13, fontWeight: 600, flex: "0 1 160px" },
-    latest: { fontSize: 13, fontVariantNumeric: "tabular-nums", color: "var(--color-text-muted)" },
-    detail: { padding: "0 4px 16px" },
-    route: { margin: "0 0 8px", fontSize: 13, overflowWrap: "anywhere", color: "var(--color-text-muted)" },
-    measurements: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "16px 24px", margin: "20px 0", fontSize: 13, lineHeight: 1.5, fontVariantNumeric: "tabular-nums" },
+    feedback: { marginBottom: 12 },
+    filters: { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 10 },
+    filter: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 220px", minWidth: 0, fontSize: 13, color: "var(--muted)" },
+    input: { width: "100%", padding: "0 10px", background: "var(--surface)" },
+    list: { marginTop: 12, maxHeight: 580, scrollbarGutter: "stable" },
+    row: { padding: 0 },
+    summary: { display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 16, rowGap: 6, minHeight: 56, padding: "10px 0", cursor: "pointer" },
+    modelName: { flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere", fontSize: 14, fontWeight: 600 },
+    secondary: { display: "block", marginTop: 2, fontWeight: 400 },
+    outcome: { flex: "0 1 160px", fontSize: 13, fontWeight: 500 },
+    detail: { padding: "0 0 16px" },
+    route: { marginBottom: 6, fontFamily: "var(--font-mono)", fontSize: 12 },
+    note: { margin: "6px 0" },
+    measurements: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: "14px 24px", margin: "16px 0", lineHeight: 1.45, fontVariantNumeric: "tabular-nums" },
 };

@@ -115,7 +115,7 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
 
     return (
         <div style={styles.wrap}>
-            <div style={styles.head}><KeyRound size={15} /><span>Guest seat keys</span></div>
+            <div style={styles.head}><KeyRound size={15} color="var(--muted)" /><span>Guest seat keys</span></div>
             <div style={styles.note}>
                 For agents that are not yours. A seat key reaches one seat in this council and expires with it,
                 so hand one of these to a collaborator instead of your MCP key. Councils with a campaign get a
@@ -130,15 +130,14 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                     ariaLabel="Guest seat"
                     placeholder={agentNames.length ? "Choose a seat" : "No agent seats"}
                     disabled={busy || keyStatus !== "ready" || agentNames.length === 0}
-                    style={styles.input}
                 />
-                <button type="button" onClick={() => { if (!keysReady.current) return; if (replacesExisting) setReplaceKey(true); else void mint(); }} disabled={busy || keyStatus !== "ready" || !agentNames.includes(seat)} style={styles.mint}>
+                <button type="button" data-btn onClick={() => { if (!keysReady.current) return; if (replacesExisting) setReplaceKey(true); else void mint(); }} disabled={busy || keyStatus !== "ready" || !agentNames.includes(seat)}>
                     {busy && !revokeSeat ? "Issuing…" : replacesExisting ? "Replace key" : "Issue"}
                 </button>
             </div>
 
             {keyStatus === "loading" && <div role="status" style={styles.note}>Loading seat keys…</div>}
-            {error && <div role="alert" style={styles.error}>{error} <button type="button" style={styles.copy} disabled={busy || keyStatus === "loading"} onClick={() => { setError(""); void load(); }}>Refresh keys</button></div>}
+            {error && <div role="alert" style={styles.error}>{error} <button type="button" data-btn disabled={busy || keyStatus === "loading"} onClick={() => { setError(""); void load(); }}>Refresh keys</button></div>}
 
             {minted && (
                 <div style={styles.mintedBox}>
@@ -156,9 +155,10 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                                     setTimeout(() => setCopied(false), 2000);
                                 }).catch(() => setError("Could not copy the key. Select and copy it manually."));
                             }}
-                            style={styles.copy}
+                            data-btn
+                            data-done={copied || undefined}
                         >
-                            {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy key"}
+                            {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy key"}
                         </button>
                         <button
                             type="button"
@@ -171,9 +171,10 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                                     setTimeout(() => setCopiedBrief(false), 2000);
                                 }).catch(() => setError("Could not copy the brief. Try copying the key instead."));
                             }}
-                            style={styles.copy}
+                            data-btn
+                            data-done={copiedBrief || undefined}
                         >
-                            {copiedBrief ? <Check size={13} /> : <FileKey size={13} />}
+                            {copiedBrief ? <Check size={14} /> : <FileKey size={14} />}
                             {copiedBrief ? "Copied" : "Copy brief with key"}
                         </button>
                     </div>
@@ -190,8 +191,8 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
                                 {!k.revokedAt && ` · ${expiryLabel(k.expiresAt)}`}
                             </span>
                             {!k.revokedAt && (
-                                <button type="button" aria-label={`Revoke key for ${k.seatName}`} onClick={() => setRevokeSeat(k.seatName)} disabled={busy} style={styles.revoke}>
-                                    <Trash2 size={12} />
+                                <button type="button" aria-label={`Revoke key for ${k.seatName}`} onClick={() => setRevokeSeat(k.seatName)} disabled={busy} data-btn="danger" data-icon>
+                                    <Trash2 size={14} />
                                 </button>
                             )}
                         </div>
@@ -208,61 +209,31 @@ export function SeatKeysPanel({ code, agentNames }: { code: string; agentNames: 
     );
 }
 
+// Inline because test-seat-key-load-gate runs this file without a CSS loader; buttons use the [data-btn] rules in council.module.css.
 const styles: Record<string, React.CSSProperties> = {
     wrap: {
-        display: "flex", flexDirection: "column", gap: 9, padding: 14, borderRadius: 14,
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 25%, transparent)",
-        background: "color-mix(in srgb, var(--color-text-muted) 5%, var(--color-surface))",
+        display: "flex", flexDirection: "column", gap: 10, minWidth: 0, padding: "12px 14px 14px",
+        border: "1px solid var(--line)", borderRadius: "var(--radius-md)", background: "var(--raised)",
     },
     head: {
         display: "flex", alignItems: "center", gap: 7,
-        fontSize: 13, fontWeight: 700, color: "var(--color-text-primary)",
+        fontSize: 13.5, fontWeight: 600, color: "var(--ink)",
     },
-    note: { fontSize: 11.5, color: "var(--color-text-muted)", lineHeight: 1.5 },
+    note: { maxWidth: "80ch", fontSize: 13, color: "var(--muted)", lineHeight: 1.5 },
     mintRow: { display: "flex", gap: 8, flexWrap: "wrap" },
-    input: {
-        flex: "1 1 180px", minWidth: 0, padding: "7px 10px", borderRadius: 9, fontSize: 13,
-        fontFamily: "var(--font-family)",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 30%, transparent)",
-        background: "var(--color-background)", color: "var(--color-text-primary)",
-    },
-    mint: {
-        minHeight: 40, padding: "7px 14px", borderRadius: "var(--radius-sm)", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-secondary) 45%, transparent)",
-        background: "color-mix(in srgb, var(--color-secondary) 16%, transparent)",
-        color: "var(--color-text-primary)",
-    },
-    error: { fontSize: 12, color: "var(--council-error)" },
+    error: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 13, color: "var(--danger)" },
     mintedBox: {
-        display: "flex", flexDirection: "column", gap: 7, padding: 10, borderRadius: 10,
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--council-good) 45%, transparent)",
-        background: "color-mix(in srgb, var(--council-good) 8%, transparent)",
+        display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px",
+        border: "1px solid var(--line-strong)", borderRadius: "var(--radius-sm)", background: "var(--surface)",
     },
-    mintedHead: { fontSize: 12, color: "var(--color-text-primary)" },
-    mintedActions: { display: "flex", flexWrap: "wrap", gap: 7 },
+    mintedHead: { fontSize: 13, color: "var(--ink)" },
+    mintedActions: { display: "flex", flexWrap: "wrap", gap: 8 },
     token: {
-        fontFamily: "var(--font-mono, ui-monospace, monospace)", fontSize: 11.5,
-        wordBreak: "break-all", lineHeight: 1.5, color: "var(--color-text-primary)",
+        fontFamily: "var(--font-mono)", fontSize: 12.5,
+        wordBreak: "break-all", lineHeight: 1.5, color: "var(--ink)",
     },
-    copy: {
-        alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "5px 11px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--color-text-muted) 35%, transparent)",
-        background: "transparent", color: "var(--color-text-primary)",
-    },
-    list: { display: "flex", flexDirection: "column", gap: 5 },
-    row: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5 },
-    rowName: { fontWeight: 600, color: "var(--color-text-primary)", overflowWrap: "anywhere", minWidth: 0 },
-    rowMeta: { flex: 1, color: "var(--color-text-muted)", fontSize: 11.5 },
-    revoke: {
-        display: "inline-flex", alignItems: "center", justifyContent: "center", minHeight: 40, minWidth: 40, padding: 4, borderRadius: 7, cursor: "pointer",
-        borderWidth: 1, borderStyle: "solid",
-        borderColor: "color-mix(in srgb, var(--council-error) 40%, transparent)",
-        background: "transparent", color: "var(--council-error)",
-    },
+    list: { display: "flex", flexDirection: "column" },
+    row: { display: "flex", alignItems: "center", gap: 10, minHeight: 40, fontSize: 13.5, borderTop: "1px solid var(--line)" },
+    rowName: { fontWeight: 600, color: "var(--ink)", overflowWrap: "anywhere", minWidth: 0 },
+    rowMeta: { flex: 1, color: "var(--muted)", fontSize: 12.5 },
 };

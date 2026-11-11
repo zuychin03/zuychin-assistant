@@ -538,25 +538,25 @@ export async function deleteTodo(id: string): Promise<boolean> {
 }
 
 /**
- * Open todos due within `hoursAhead` that haven't been nagged in the last
- * `renagHours`, so overdue tasks re-nag roughly daily, not every cron tick.
+ * Open todos due within `hoursAhead`, overdue ones included. By default it skips
+ * todos nagged in the last `renagHours`, so overdue tasks re-nag roughly daily,
+ * not every cron tick; `null` lists them all regardless of reminders.
  */
 export async function listDueTodos(
     hoursAhead: number = 24,
-    renagHours: number = 20
+    renagHours: number | null = 20
 ): Promise<Todo[]> {
     const now = Date.now();
     const cutoff = new Date(now + hoursAhead * 3_600_000).toISOString();
-    const renagBefore = new Date(now - renagHours * 3_600_000).toISOString();
 
-    const { data, error } = await supabase
+    let query = supabase
         .from("todos")
         .select("*")
         .in("status", ["pending", "in_progress"])
         .not("due_date", "is", null)
-        .lte("due_date", cutoff)
-        .or(`reminded_at.is.null,reminded_at.lt.${renagBefore}`)
-        .order("due_date", { ascending: true });
+        .lte("due_date", cutoff);
+    if (renagHours !== null) query = query.or(`reminded_at.is.null,reminded_at.lt.${new Date(now - renagHours * 3_600_000).toISOString()}`);
+    const { data, error } = await query.order("due_date", { ascending: true });
 
     if (error) {
         console.warn("[DB] Failed to list due todos:", error.message);

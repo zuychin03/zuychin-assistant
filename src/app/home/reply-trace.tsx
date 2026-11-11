@@ -1,6 +1,5 @@
 "use client";
 
-import { ChevronDown } from "lucide-react";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 const STATUS_LABELS = {
@@ -11,15 +10,12 @@ const measured = (value: number | null | undefined) => typeof value === "number"
 const duration = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value)
     ? value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s` : "Not measured";
 
-export function ReplyTraceDetails({ trace }: { trace: ReplyTrace }) {
-    if (trace.version !== 1 || !Array.isArray(trace.calls)) return null;
+export const validTrace = (trace: ReplyTrace | undefined): trace is ReplyTrace => trace?.version === 1 && Array.isArray(trace.calls);
+
+export function ReplyTraceBody({ trace, id }: { trace: ReplyTrace; id?: string }) {
+    if (!validTrace(trace)) return null;
     return (
-        <details style={styles.details}>
-            <summary style={styles.summary}>
-                <span>Reply details · {trace.calls.length} observed model call{trace.calls.length === 1 ? "" : "s"}</span>
-                <ChevronDown size={13} aria-hidden="true" />
-            </summary>
-            <div style={styles.content}>
+            <div id={id} style={styles.content}>
                 <p style={styles.note}>{trace.origin === "scheduled" ? "Scheduled request" : "Interactive request"} · {trace.freeOnly ? "Free only" : "Standard model selection"} · {duration(trace.durationMs)} overall · first answer {duration(trace.firstAnswerMs).toLowerCase()}.</p>
                 <dl style={styles.usage}>
                     <div><dt>Input tokens</dt><dd>{measured(trace.usage?.promptTokens)}</dd></div>
@@ -32,6 +28,7 @@ export function ReplyTraceDetails({ trace }: { trace: ReplyTrace }) {
                 {trace.background === "failed" && <p style={styles.note} role="status">Background work did not complete. These observations may be incomplete.</p>}
                 {trace.background === "skipped" && <p style={styles.note}>Optional background work was skipped.</p>}
                 {!trace.saved && <p style={styles.warning} role="status">Reply details have not been saved. They may be lost when you leave this chat.</p>}
+                <p style={styles.note}>{trace.calls.length} observed model call{trace.calls.length === 1 ? "" : "s"}</p>
                 <ol style={styles.calls}>
                     {trace.calls.map(call => <li key={call.id} style={styles.call}>
                         <div style={styles.callHeader}><strong style={styles.model}>{call.providerId} / {call.modelId}</strong><span>{STATUS_LABELS[call.status] ?? "Unknown outcome"}</span></div>
@@ -54,21 +51,16 @@ export function ReplyTraceDetails({ trace }: { trace: ReplyTrace }) {
                 </>}
                 <p style={styles.note}>Records cover instrumented calls only. Provider retention is not verified.</p>
             </div>
-        </details>
     );
 }
 
-export default ReplyTraceDetails;
-
 const styles: Record<string, React.CSSProperties> = {
-    details: { marginTop: 8, minWidth: 0, color: "var(--color-text-muted)" },
-    summary: { display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 8, minHeight: 44, fontSize: 12, cursor: "pointer", width: "fit-content", maxWidth: "100%" },
-    content: { padding: "4px 0 12px", fontSize: 13, lineHeight: 1.5, overflowWrap: "anywhere" },
-    note: { margin: "7px 0", color: "var(--color-text-muted)" },
-    warning: { margin: "12px 0", color: "var(--color-text-primary)", fontWeight: 600 },
-    usage: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 115px), 1fr))", gap: "12px 16px", margin: "14px 0", fontVariantNumeric: "tabular-nums" },
+    content: { maxWidth: 600, padding: "2px 0 4px", fontSize: 13, lineHeight: 1.5, overflowWrap: "anywhere", color: "var(--muted)" },
+    note: { margin: "7px 0", color: "var(--muted)" },
+    warning: { margin: "12px 0", color: "var(--ink)", fontWeight: 600 },
+    usage: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 115px), 1fr))", gap: "12px 16px", margin: "14px 0", color: "var(--ink-2)", fontVariantNumeric: "tabular-nums" },
     calls: { padding: 0, listStyle: "none", margin: "16px 0 12px" },
-    call: { padding: "12px 0", borderTop: "1px solid var(--color-border)" },
-    callHeader: { display: "flex", flexWrap: "wrap", gap: "6px 16px", color: "var(--color-text-primary)" },
+    call: { padding: "12px 0", borderTop: "1px solid var(--line)" },
+    callHeader: { display: "flex", flexWrap: "wrap", gap: "6px 16px", color: "var(--ink)" },
     model: { flex: "1 1 200px", minWidth: 0, overflowWrap: "anywhere", fontWeight: 600 },
 };

@@ -95,10 +95,8 @@ export default function LensPanel({ lens, onLens, clusters, nodes, trustFilter, 
                                     key={bucket}
                                     style={{
                                         ...styles.listRow,
+                                        ...(active ? styles.listRowActive : {}),
                                         opacity: count === 0 ? 0.45 : 1,
-                                        borderLeftWidth: 3,
-                                        borderLeftStyle: "solid",
-                                        borderLeftColor: active ? TRUST_COLORS[bucket] : "transparent",
                                     }}
                                     onClick={() => onToggleTrust(bucket)}
                                     disabled={count === 0}

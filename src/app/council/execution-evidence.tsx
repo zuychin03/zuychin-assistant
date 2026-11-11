@@ -70,7 +70,7 @@ export function ExecutionHistory({ code, page, onRetry }: { code: string; page: 
     }
     return <details className={ui.executionHistory}>
         <summary>Recorded run history <span className={ui.evidenceSummary}>{records.length} loaded</span></summary>
-        {page.historyStatus === "unavailable" && <div className={ui.evidenceNote} role="status">Run history is unavailable. <button type="button" onClick={onRetry}>Retry history</button></div>}
+        {page.historyStatus === "unavailable" && <div className={ui.evidenceNote} role="status">Run history is unavailable. <button className={ui.evidenceButton} type="button" onClick={onRetry}>Retry history</button></div>}
         {records.length === 0 && page.historyStatus === "available" && <p className={ui.evidenceNote}>No execution records.</p>}
         {records.map(record => <ExecutionRecord key={record.executionId} record={record} label={record.agentName} />)}
         {error && <p className={ui.evidenceNote} role="status">{error}</p>}

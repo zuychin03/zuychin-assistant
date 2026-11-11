@@ -9,7 +9,8 @@ import { createConversationContextStore } from "@/lib/ai/conversation-context-st
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { isolateBranchRecall } from "@/lib/conversations/branches";
 import { observeGeminiClient, withModelPurpose, withModelObservationCollector, configureModelDataPolicy, addModelDataClasses, type ModelCallObservation, type ExternalServiceObservation } from "@/lib/ai/model-observations";
-import { makeReplyTrace, type ReplyTrace } from "@/lib/ai/reply-trace";
+import { makeReplyTrace, type ReplySource, type ReplyTrace } from "@/lib/ai/reply-trace";
+import { rankReplySources, recordReplySources, withReplySources } from "@/lib/ai/reply-sources";
 import { saveReplyTrace } from "@/lib/ai/reply-trace-store";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { generateGeminiChat } from "@/lib/ai/gemini-chat";
@@ -444,6 +445,11 @@ export async function buildRagContext(params: {
     const branched = conversationId && profile?.id && hasConversationMatches
         ? await createBranchStore(supabaseAdmin).isBranch(conversationId, profile.id, params.signal) : false;
     const rankedMatches = rerankResults(isolateBranchRecall(rawMatches, conversationId, branched), message, RAG_CONFIG.maxContextItems);
+    recordReplySources([
+        ...knownFacts.map((fact) => ({ kind: "fact" as const, label: fact.fact, detail: fact.category, ref: fact.id, weight: fact.similarity })),
+        ...rankedMatches.map((match) => ({ kind: "memory" as const, label: match.content, weight: match.similarity ?? 0.4 })),
+        ...durableHits.map((hit) => ({ kind: "vault" as const, label: hit.title || hit.path, detail: hit.heading ?? undefined, ref: hit.path, weight: hit.score.final })),
+    ]);
     const relevantContext = rankedMatches.length > 0
         ? rankedMatches.map((m, i) => `[Memory ${i + 1}]: ${m.content}`).join("\n")
         : "";
@@ -541,6 +547,7 @@ type RagChatResult = { reply: string; messageId: string; userMessageId?: string;
 export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): Promise<RagChatResult> {
     const calls: ModelCallObservation[] = [];
     const externalServices: ExternalServiceObservation[] = [];
+    const sources: ReplySource[] = [];
     const background: (() => Promise<void>)[] = [];
     const savedMessages = new Set<string>();
     const startedAt = new Date().toISOString();
@@ -548,10 +555,10 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
     let firstAnswerMs: number | null = null;
     return withModelObservationCollector(calls, async () => {
         try {
-            const result = await runRagChat(params, (event) => {
+            const result = await withReplySources(sources, () => runRagChat(params, (event) => {
                 if (event.type === "token" && event.text && firstAnswerMs === null) firstAnswerMs = performance.now() - started;
                 onEvent?.(event);
-            }, (task) => { background.push(task); }, (id) => { if (id) savedMessages.add(id); });
+            }, (task) => { background.push(task); }, (id) => { if (id) savedMessages.add(id); }));
             params.signal?.throwIfAborted();
             if (!result.messageId) {
                 await persistModelObservations(calls, { conversationId: params.conversationId });
@@ -562,6 +569,7 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
                 calls: [...calls], externalServices: [...externalServices], startedAt, durationMs: performance.now() - started, firstAnswerMs,
                 origin: params.paidOnly ? "scheduled" : "interactive", freeOnly: result.freeOnly === true,
                 background: background.length ? "pending" : "skipped",
+                sources: rankReplySources(sources),
             });
             const replyTrace = await saveReplyTrace(result.messageId, trace, params.conversationId);
             params.signal?.throwIfAborted();
@@ -830,6 +838,7 @@ async function generateGeminiReply(opts: {
             if (name !== "search_web") return executeTool(name, args, embRef, ctx);
             const query = typeof args.query === "string" ? args.query.trim() : "";
             if (!query) return "Search requires a non-empty query.";
+            recordReplySources([{ kind: "web", label: query, ref: "search_web", weight: 0.6 }]);
             const location = /\b(near me|nearby|restaurant|cafe|hotel|pharmacy|directions?|map|address|open now|where is|location)\b/i.test(query);
             const result = await withModelPurpose("search", () => generateGeminiChat({
                 client, model, signal, cite: addCitationsText,

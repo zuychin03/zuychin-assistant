@@ -1,37 +1,48 @@
-.page { padding: 24px clamp(18px, 3vw, 42px) 64px; }
-.comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
-.column { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; background: var(--color-background); }
-.columnHeader { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 16px; padding: 18px 20px; background: color-mix(in srgb, var(--color-surface) 45%, var(--color-background)); }
-.columnHeader div { min-width: 0; flex: 1; }
-.columnHeader p { color: var(--color-text-muted); font-size: 11px; margin-bottom: 4px; }
-.columnHeader h2 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; overflow-wrap: anywhere; line-height: 1.4; }
-.button { cursor: pointer; font-family: inherit; display: inline-flex; padding: 8px 12px; min-height: 36px; align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 12px; font-weight: 650; text-decoration: none; color: var(--color-text-primary); background: var(--color-background); }
-.button:hover { border-color: var(--color-text-muted); background: var(--color-surface); }
-.messages { list-style: none; margin: 0; padding: 0; }
-.message { padding: 20px; border-top: 1px solid var(--color-border); }
-.message header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-bottom: 10px; font-size: 12px; }
-.message header span, .message small { color: var(--color-text-muted); }
-.message small { display: block; margin-bottom: 10px; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
-.content { max-width: 76ch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.75; }
-.quote { margin-bottom: 14px; padding: 12px; border-left: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-surface) 45%, transparent); color: var(--color-text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.shared summary { cursor: pointer; padding: 14px 20px; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
-.shared summary:hover { background: color-mix(in srgb, var(--color-surface) 35%, transparent); color: var(--color-text-primary); }
-.empty { padding: 24px 20px; font-size: 13px; color: var(--color-text-muted); line-height: 1.7; }
-.navigation { padding: 16px 0; font-size: 13px; }
-.navigation ul { display: flex; flex-wrap: wrap; list-style: none; gap: 12px 24px; margin-top: 12px; }
-.navigation li { display: flex; flex-wrap: wrap; gap: 12px; min-width: 0; }
-.navigation a { display: inline-flex; align-items: center; min-height: 36px; color: var(--color-text-primary); overflow-wrap: anywhere; }
-.notice { font-size: 12px; color: var(--color-text-muted); padding: 10px 0; }
-.error { overflow-wrap: anywhere; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6; }
-.error .button { margin-top: 12px; }
-.page button:focus-visible, .page a:focus-visible, .navigation a:focus-visible, .shared summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 4px; }
-@media (max-width: 760px) { .navigation a { min-height: 44px; } .comparison { grid-template-columns: 1fr; gap: 20px; } .columnHeader, .message { padding: 16px; } .button { min-height: 44px; } }
+.page { max-width: 1280px; margin: 0 auto; padding: 24px 24px 64px; color: var(--ink); font: 400 14px/1.55 var(--font-family); }
+.comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.column { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.columnHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--raised); }
+.columnHeader div { flex: 1; min-width: 0; }
+.columnHeader p { margin-bottom: 2px; color: var(--muted); font-size: 12.5px; }
+.columnHeader h2 { font-size: 15px; font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; overflow-wrap: anywhere; }
+.button { display: inline-flex; flex: none; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: 500 13.5px var(--font-family); text-decoration: none; white-space: nowrap; cursor: pointer; }
+.button:hover { border-color: var(--faint); }
+.messages { margin: 0; padding: 0; list-style: none; }
+.message { padding: 16px; }
+.message + .message { border-top: 1px solid var(--line); }
+.message header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin-bottom: 6px; font-size: 13px; }
+.message header strong { color: var(--ink); font-weight: 600; }
+.message header span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.message small { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.content { max-width: 76ch; color: var(--ink); font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quote { margin-bottom: 10px; padding: 6px 10px; border-radius: var(--radius-md); background: var(--active); color: var(--ink-2); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.shared { border-bottom: 1px solid var(--line); }
+.shared summary { padding: 10px 16px; color: var(--muted); font-size: 13px; line-height: 1.5; cursor: pointer; }
+.shared summary:hover { background: var(--hover); color: var(--ink); }
+.shared[open] summary { border-bottom: 1px solid var(--line); }
+.shared .messages { background: var(--raised); }
+.empty { padding: 20px 16px; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+.navigation { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); font-size: 13.5px; }
+.comparison + .navigation { margin-top: 20px; }
+.navigation strong { color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.navigation ul { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 6px; list-style: none; }
+.navigation li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.navigation a { display: inline-flex; align-items: center; min-height: 28px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+.navigation a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.navigation a + a { color: var(--accent-text); font-weight: 500; }
+.notice { padding: 4px 0; color: var(--muted); font-size: 13px; }
+.notice .button { margin-top: 8px; }
+.error { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: var(--radius-sm); background: var(--danger-soft); color: var(--danger); font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.error .button { margin-top: 10px; }
+.shared summary:focus-visible { outline-offset: -2px; }
+@media (max-width: 760px) { .comparison { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
+@media (max-width: 720px) { .page { padding: 16px 16px 48px; } }
+@media (pointer: coarse) { .button, .navigation a { min-height: 44px; } }
 
-.action { margin-top: 8px; font-size: 12px; }
-.action button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 6px 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; opacity: .8; }
-.action button:hover { opacity: 1; }
+.action { font-size: 13px; }
+.action button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font: 500 13px var(--font-family); cursor: pointer; }
+.action button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+@media (pointer: coarse) { .action button { height: 40px; } }
 .action button:disabled { opacity: .45; cursor: wait; }
-.action button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; border-radius: 4px; }
+.action button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 4px; }
 .action p { margin: 4px 0; max-width: 38em; line-height: 1.5; overflow-wrap: anywhere; }
-
-@media (max-width: 760px) { .columnHeader { flex-direction: column; } .columnHeader div { width: 100%; } }

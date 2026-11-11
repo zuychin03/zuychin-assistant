@@ -8,26 +8,27 @@ import {
     Check, ChevronDown, Crosshair, Link2, List, Loader2, Orbit, Pencil, Route, Sparkles, Trash2, X,
 } from "lucide-react";
 import {
-    CATEGORY_COLORS, COSMOS, HEALTH_COLORS, HEALTH_LABELS,
+    CATEGORY_COLORS, HEALTH_COLORS, HEALTH_LABELS,
 } from "../cosmos/palette";
-import { styles } from "../cosmos/styles";
+import { CHROME, styles } from "../cosmos/styles";
 import { displayMarkdown, humanizePath, type GraphNode } from "../cosmos/model";
 import { documentHeadings } from "../cosmos/sections";
 import { Badge, PanelShell } from "./ui";
 import { readDocumentPosition, rememberDocumentPosition } from "@/lib/document-navigation";
 
+// Unreviewed and pending states stay neutral; only trusted and deleted carry a tone.
 const TRUST_COLORS: Record<string, string> = {
-    trusted: "#dce8ff",
-    reviewed: "#8fc2ff",
-    untrusted: "#ff7a59",
+    trusted: CHROME.success,
+    reviewed: CHROME.ink2,
+    untrusted: CHROME.muted,
 };
 
 const STATUS_COLORS: Record<string, string> = {
-    active: "#45e0a8",
-    suggested: "#ffb545",
-    superseded: "#6a7086",
-    archived: "#6a7086",
-    deleted: "#ff5470",
+    active: CHROME.ink2,
+    suggested: CHROME.muted,
+    superseded: CHROME.muted,
+    archived: CHROME.muted,
+    deleted: CHROME.danger,
 };
 
 function formatUpdatedDate(value: string): string {
@@ -152,11 +153,11 @@ export default function PagePanel(props: {
             </div>
 
             <div style={styles.badgeRow}>
-                <Badge label={node.category} color={CATEGORY_COLORS[node.category] ?? "#8891a8"} />
-                <Badge label={node.trust} color={TRUST_COLORS[node.trust] ?? "#8891a8"} title="Trust level" />
-                <Badge label={node.status} color={STATUS_COLORS[node.status] ?? "#8891a8"} title="Lifecycle status" />
-                {node.sensitivity !== "private" && <Badge label={node.sensitivity} color="#c07bff" title="Sensitivity" />}
-                {node.scope !== "user" && <Badge label={node.scope} color="#5ce1e6" title="Scope" />}
+                <Badge label={node.category} color={CATEGORY_COLORS[node.category] ?? CHROME.muted} />
+                <Badge label={node.trust} color={TRUST_COLORS[node.trust] ?? CHROME.muted} title="Trust level" />
+                <Badge label={node.status} color={STATUS_COLORS[node.status] ?? CHROME.muted} title="Lifecycle status" />
+                {node.sensitivity !== "private" && <Badge label={node.sensitivity} color={CHROME.ink2} title="Sensitivity" />}
+                {node.scope !== "user" && <Badge label={node.scope} color={CHROME.ink2} title="Scope" />}
                 {node.health.map((finding) => (
                     <Badge key={finding} label={HEALTH_LABELS[finding]} color={HEALTH_COLORS[finding]} />
                 ))}
@@ -240,7 +241,7 @@ export default function PagePanel(props: {
                     <button style={styles.outlineToggle} onClick={() => setOutlineOpen(value => !value)}
                         aria-expanded={outlineOpen} aria-controls="cosmos-document-outline">
                         <List size={15} /> In this document
-                        <span style={{ marginLeft: "auto", color: COSMOS.muted }}>{headings.length}</span>
+                        <span style={{ marginLeft: "auto", color: CHROME.muted, fontVariantNumeric: "tabular-nums" }}>{headings.length}</span>
                         <ChevronDown size={14} style={{ transform: outlineOpen ? "rotate(180deg)" : undefined }} />
                     </button>
                     {outlineOpen && (
@@ -297,7 +298,7 @@ export default function PagePanel(props: {
                                         checked={checked}
                                         onChange={() => onToggleSuggestion(suggestion.target)}
                                         aria-label={`Select ${titleOf(suggestion.target)}`}
-                                        style={{ accentColor: "#6ba7ff", flexShrink: 0 }}
+                                        style={{ accentColor: CHROME.ink2, flexShrink: 0 }}
                                     />
                                     <button
                                         style={{ ...styles.resultRow, padding: 0, flex: 1 }}
@@ -336,7 +337,7 @@ export default function PagePanel(props: {
             )}
 
             <div style={styles.sectionLabel}>Link to another page</div>
-            <div style={styles.searchRow}>
+            <div style={styles.searchRow} className="cosmos-field">
                 <Link2 size={13} style={{ opacity: 0.65 }} />
                 <input
                     value={linkQuery}
@@ -364,7 +365,7 @@ export default function PagePanel(props: {
             )}
             {linkTargetId && (
                 <>
-                    <div style={{ ...styles.searchRow, marginTop: 6 }}>
+                    <div style={{ ...styles.searchRow, marginTop: 6 }} className="cosmos-field">
                         <input
                             value={linkLabel}
                             onChange={(event) => onLinkLabel(event.target.value)}
@@ -450,7 +451,7 @@ export function LinkPanel({ source, target, kind, similarity, titleOf, busy, con
             </div>
 
             {kind === "suggestion" && (
-                <p style={{ ...styles.empty, color: COSMOS.muted }}>
+                <p style={styles.empty}>
                     Computed from stored embeddings, so it costs nothing to look at. Accepting writes a
                     labelled wikilink into both pages as one commit.
                 </p>

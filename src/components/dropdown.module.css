@@ -1,24 +1,23 @@
 .trigger {
     flex: 1 1 180px;
-    min-height: 44px;
-    font-size: 13px;
-    border: 1px solid var(--color-border);
-    transition: border-color 120ms ease, background-color 120ms ease;
+    min-height: 32px;
+    border: 1px solid var(--line-strong);
+    transition: border-color 120ms ease;
     touch-action: manipulation;
 }
 
 .trigger:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 3px;
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
 }
 
 .trigger[aria-expanded="true"] {
-    border-color: var(--color-primary);
+    border-color: var(--focus);
 }
 
 .chevron {
     flex-shrink: 0;
-    opacity: 0.65;
+    color: var(--muted);
     transition: transform 120ms ease;
 }
 
@@ -28,8 +27,70 @@
 
 @media (hover: hover) {
     .trigger:hover:not(:disabled) {
-        border-color: var(--color-text-muted);
+        border-color: var(--faint);
     }
+}
+
+.menu {
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow-pop);
+    font: 400 13.5px/1.35 var(--font-family);
+}
+
+.option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 32px;
+    padding: 6px 8px 6px 10px;
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+}
+
+/* Not --hover: in dark it equals --surface, so the highlight would vanish on the menu. */
+.option[data-active] {
+    background: color-mix(in srgb, var(--ink) 6%, var(--surface));
+}
+
+.option[aria-selected="true"] {
+    background: var(--active);
+    font-weight: 500;
+}
+
+.menu[data-keyboard] .option[data-active] {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+}
+
+.option[aria-disabled="true"] {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.optionLabel {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.check {
+    flex-shrink: 0;
+    color: var(--muted);
+}
+
+.empty {
+    padding: 6px 10px;
+    color: var(--muted);
+}
+
+@media (pointer: coarse) {
+    .trigger { min-height: 44px; }
+    .option { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
