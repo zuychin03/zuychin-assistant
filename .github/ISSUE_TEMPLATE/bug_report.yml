@@ -1,0 +1,68 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For a security problem, use the private report on the Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, including any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Today panel on a phone
+        2. Tick a to-do
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat, models or agent mode
+        - Today panel or chat starters
+        - Library, Cosmos or the vault
+        - Research, Study or Capture
+        - Tasks, approvals or scheduled tasks
+        - Voice
+        - Discord or Telegram
+        - Council or the desktop host
+        - Sign-in or security settings
+        - Setup, database or deployment
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      placeholder: The commit you run, from git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Browser and device
+      placeholder: e.g. Chrome on Windows 11, or the installed app on an iPhone
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Remove keys, tokens, email content and anything personal before posting.

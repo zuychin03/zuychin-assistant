@@ -17,7 +17,7 @@ MiMo V2.5 is superseded by V2.6 Flash. Big Pickle has insufficient public model 
 
 Set `OPENCODE_ZEN_API_KEY` in the server environment, or in `.env.local` for local development. Restart the local server or redeploy after changing the environment. Do not put the key in source code or client configuration.
 
-The provider remains unavailable even with a key: the [endpoint audit](MODEL_AUDIT_2026_09.md) received HTTP 403 `FreeTierError` for MiMo V2.6 Flash and Nemotron 3.5 Lightning outside OpenCode. Access to the newly added Ultra and Muse variants remains unverified. A listed model or new key does not establish third-party access. The dashboard shows that restriction, and the chat picker and automatic workers exclude Zen until access is verified.
+The provider remains unavailable even with a key: a probe on 23/09/2026 received HTTP 403 `FreeTierError` for MiMo V2.6 Flash and Nemotron 3.5 Lightning outside OpenCode. Access to the newly added Ultra and Muse variants remains unverified. A listed model or new key does not establish third-party access. The dashboard shows that restriction, and the chat picker and automatic workers exclude Zen until access is verified.
 
 After a new key is supplied, test each exact free ID with synthetic text and a harmless tool call. Activate only endpoints that succeed for this application through the documented API. Confirm vision separately for MiMo; retain the conservative output limit and disabled strict structured output until validated. Muse additionally needs a Responses adapter with streaming and tool-continuation tests before it can be enabled. Do not impersonate the OpenCode client, substitute paid IDs or remove the restriction merely because the key exists.
 

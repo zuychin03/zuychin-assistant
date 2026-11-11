@@ -20,7 +20,7 @@ A single assistant that is both chief of staff and study partner: the conversati
 
 ## Operating Context
 
-- Chat home: conversation list with projects, per-message model picker, file upload, hands-free voice loop, agent mode with live step streaming, resumable runs, a Today card in the empty state, and Council launch cards.
+- Chat home: conversation list with projects, per-message model picker, file upload, hands-free voice loop, agent mode with live step streaming, resumable runs, a collapsible Today panel, and Council launch cards.
 - Workspaces sharing one shell: Library (knowledge and vault), Research, Study, Capture, Tasks, and Dashboard (facts, agents and keys, skills, run review).
 - Council: a live room where external coding agents deliberate and work, driven by a local host.
 - Knowledge Cosmos (`/graph`): a 3D graph of the vault drawn as a planetarium of stars and orbits.

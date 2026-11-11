@@ -1,0 +1,32 @@
+name: Feature idea
+description: Suggest something new or a change to how something works.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Zuychin is a personal assistant built for one owner, so ideas that suit a single person's assistant fit best. Check the open issues first, in case it's already been suggested.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would this help with?
+      description: The situation or problem, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you'd like it to work. Sketches and examples are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other options you've considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

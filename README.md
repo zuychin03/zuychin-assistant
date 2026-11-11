@@ -65,8 +65,12 @@ edited and deleted in place.
   for approval in the admin panel - it can propose improvements but never self-approve
 - History search: `/history <query>` (backed by the `search_history` tool) semantically
   searches your own past messages across channels, with links that jump to the conversation
-- Today card: the empty chat state shows a dismissible digest of the next 48 hours - due
-  todos, calendar events and pending tasks
+- Today panel: a collapsible panel beside the chat (docked on wide screens, a sheet on phones)
+  draws the day to time scale with a now line, then what's coming up, what's due, other
+  to-dos and scheduled tasks. Ticking a to-do completes it. Chat starters come from the same
+  day: the next event, the most urgent to-do and the study cards due today
+- Reply sources: each reply records the facts, memories, vault pages and tools it used, and
+  the chat shows them as a small chart with a numbered list and a link into the Cosmos
 - PWA + push: installable app (manifest + service worker) with web-push notifications for
   reminders, email-trigger digests, initiative nudges and agent-run completion - suppressed
   while the app is focused
@@ -101,12 +105,32 @@ edited and deleted in place.
   (`/plan_day`, `/weekly_review`, `/remind`, `/history`, `/new_app`, `/update_app`,
   `/facts`, `/skill`, `/research`, `/code`, `/debug`, `/vault_save`, …) that expand into
   full prompts - skill-backed ones force the agent loop
-- Notes checklist: a collapsible panel lists the agent's undated notes/tasks; ticking a box
-  completes the task and the agent never reminds you about it again. Pending undated tasks
-  are surfaced once a day, at the end of the first reply
-- Unified knowledge workspace: `/knowledge` provides a searchable document library,
-  chunk inspection, explainable hybrid recall, grounded answers with abstention, a lifecycle
-  timeline, safe corrections/promotions/archives/merges, and a governed maintenance queue
+- To-dos: the agent keeps a to-do list you can tick off in the Today panel, and it never
+  reminds you about a completed one again. Pending undated tasks are surfaced once a day, at
+  the end of the first reply
+- Library: `/knowledge` provides a searchable document library grouped by page type with a
+  reviewed/unreviewed filter, chunk inspection, explainable hybrid recall, grounded answers
+  with abstention, a lifecycle timeline, safe corrections/promotions/archives/merges, and a
+  governed maintenance queue. Each page shows a chart of the pages linking in and out, and
+  suggests possible connections ranked by similarity
+- Research workbench: `/research` holds a research question with its chosen Library sources,
+  notes tied to source passages and a side-by-side evidence comparison
+- Study: `/study` turns saved passages into cards. A model drafts a recall, explain or
+  worked-exercise question with a reference answer, **Get feedback** compares your answer
+  with the reference, and FSRS schedules reviews under a daily limit
+- Capture inbox: `/capture` collects links, PDFs and passages. You review where each one will
+  be saved before it is filed, and can keep saved documents for offline reading
+- Tasks and approvals: `/tasks` lists scheduled tasks with their schedule, next run and run
+  history. When an unattended task wants to change something (send or draft mail, edit the
+  calendar, write to the vault, change to-dos or memories), the action waits for your
+  approval; read-only tools run without it
+- Branches: start a branch from any saved message to try another prompt or model, and compare the
+  branches at `/conversations/compare`
+- Knowledge only and Free only: one switch answers only from saved knowledge, with sources;
+  the other keeps interactive chat on free models (scheduled tasks still use paid ones). The
+  dashboard shows each model's recent health
+- Knowledge revisions: compare versions of a Library page and restore an earlier one as a new
+  revision
 - Obsidian portability: lossless ZIP import/export preserves Markdown, frontmatter,
   wikilinks, attachments and `.obsidian` settings; stable `zuychin_id` properties survive
   renames, while signed GitHub webhooks support incremental synchronization
@@ -128,7 +152,9 @@ edited and deleted in place.
 - Date awareness: the current date/time (in your timezone) is injected into the model's context on every request, so it doesn't guess the date when discussing plans or schedules
 - Think mode: a deep-reasoning toggle (`/think`), tunable per model
 - Hyperparameters: optional temperature / top-p / max-tokens controls in the header
-- Dark / light mode: theme toggle that remembers your choice and respects the system setting
+- Atlas design: graphite neutrals, one red accent and Hanken Grotesk, in light and dark
+  themes picked from the sidebar (or matching the system). [DESIGN.md](DESIGN.md) records the
+  design system
 - Assistant identity: one source SVG generates the navigation mark, theme-aware favicon,
   Apple and PWA icons, notification badge and desktop icon assets; see the
   [brand asset guide](scripts/ASSISTANT_BRAND.md) for regeneration and verification
@@ -334,18 +360,20 @@ npm run dev
 
 ## Using the app
 
-- Pick the chat model from the header dropdown. **Knowledge** opens the unified workspace;
-  its Graph action opens the 3D vault view.
-- Open the sliders in the message bar for temperature / top-p / max-tokens, the embedding
-  model picker and the **Agent mode** switch (forces the multi-step agent loop for every
-  message; off = auto-detect).
+- Pick the chat model from the dropdown in the chat's top bar. The sidebar opens each
+  workspace: **Library** (its Cosmos link opens the 3D vault view), Research, Study, Capture,
+  Tasks and Dashboard.
+- **Generation settings**, beside the model picker, holds the Agent mode, Free only and
+  Knowledge only switches, temperature / top-p / max-tokens and the embedding model picker.
+  Agent mode forces the multi-step agent loop for every message (off = auto-detect); on
+  wide screens the top bar has the same switch.
 - Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
   and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
-- The checklist icon in the header opens the **Notes** panel - undated tasks the agent has
-  remembered. Ticking one completes it for good.
-- Toggle dark/light mode, start a new conversation, or open history from the header buttons.
+- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.
+- Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
+  away so chat history fills the sidebar, and the choice is remembered.
 - In the history sidebar, **New project** creates a collapsible group: use the folder icon
   on a chat row to move it into a project, and the project's ⋯ menu to rename it, edit the
   instructions injected into its chats, or delete it (chats fall back to Ungrouped).
@@ -363,7 +391,7 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/conversations` | Conversation list / create (optionally in a project) / move between projects / delete |
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
-| GET | `/api/today` | Today-card digest: next-48 h events + due and pending todos |
+| GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
 | GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM) |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
@@ -412,9 +440,8 @@ need a configured key and must not carry an unavailable reason. The default web 
 is Gemini 3.5 Flash-Lite; messaging uses the separate chain below. The registry lives in
 [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts).
 
-The [23/09/2026 model audit](scripts/MODEL_AUDIT_2026_09.md) records exact IDs, live probe
-results and unresolved capability checks. A catalogue entry is not proof of a successful
-chat or tool call, and a timeout or rate limit is not evidence that a model has retired.
+A catalogue entry is not proof of a successful chat or tool call, and a timeout or rate limit
+is not evidence that a model has retired.
 
 | Provider | Kind | Example models | Notes |
 |----------|------|----------------|-------|
@@ -761,8 +788,6 @@ Setup:
    Only explicit adapter overrides can supply supported vendor credentials (`OPENAI_API_KEY`,
    `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). Vendor login/config files remain accessible;
    environment filtering is not an operating-system sandbox.
-   Hand `docs/COUNCIL_AGENT_SETUP.md` to an agent and it can do this step itself (`docs/` is
-   gitignored, so that guide lives only in the working copy).
 3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
    and `codex-2` both on `codex`, or three Claude instances on `claude-code`. Each may carry an
    `allowedModels` / `allowedReasoningEfforts` allowlist, which is what `/council` offers per seat.
@@ -962,8 +987,7 @@ Point an external scheduler (for example cron-job.org) at these endpoints with t
 `Authorization: Bearer <CRON_SECRET>`. Delivery is centralized in the notification router
 (`src/lib/messaging/router.ts`): each notification type routes to its dedicated Discord
 channel, with push mirrored only for time-sensitive types and Telegram reserved for
-conversational chat plus initiative nudges. See `docs/messaging-redesign.md` for the routing
-table (`docs/` is gitignored, so it lives only in the working copy).
+conversational chat plus initiative nudges.
 
 | Endpoint | Schedule | Body |
 |----------|----------|------|
@@ -1115,8 +1139,7 @@ Markdown + wikilinks.
 
 Run `npm run cosmos:test` for heading identity, filters, camera gestures, orbital spacing and
 force-engine clearance regressions. The [cosmos design record](scripts/COSMOS_DESIGN.md)
-documents the local desktop/mobile browser checks and their limits. No new environment
-variables or database setup are required for this visual refinement.
+sets out its visual and interaction rules.
 
 ## Deployment
 
@@ -1142,7 +1165,11 @@ src/
 │   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
 │   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
 │   │   ├── council-card.tsx            # Proposed-council card in chat, with the Launch button
-│   │   └── styles.ts                   # Chat page style objects
+│   │   ├── day-starters.ts             # Chat starters drawn from the day
+│   │   ├── reply-sources.tsx           # Chart and list of the sources behind a reply
+│   │   └── chat.module.css             # Chat page styles
+│   ├── knowledge/                      # Library: page list, reader, link chart, possible connections
+│   ├── research/ study/ capture/ tasks/ # The other workspaces
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── council/
 │   │   ├── page.tsx                    # Live council view + local-host control surface
@@ -1159,7 +1186,7 @@ src/
 │       ├── conversations/route.ts      # Conversation CRUD + move between projects
 │       ├── projects/route.ts           # Project CRUD
 │       ├── todos/route.ts              # Notes checklist backend
-│       ├── today/route.ts              # Today-card digest (events + todos)
+│       ├── today/route.ts              # Today digest (events + todos)
 │       ├── tts/route.ts                # Voice-reply synthesis (blocking or streamed PCM)
 │       ├── push/subscribe/route.ts     # Web-push subscription registry
 │       ├── export/route.ts             # PDF/DOCX export
@@ -1182,6 +1209,7 @@ src/
 │   │   ├── providers.ts                # Provider + chat/embedding model registry
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
 │   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
+│   │   ├── reply-sources.ts            # Records the sources each reply used
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
 │   │   ├── mcp-service.ts              # MCP tool definitions + executors
@@ -1196,7 +1224,11 @@ src/
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
 │   └── messaging/                      # Discord + Telegram + web-push services
-├── components/dropdown.tsx             # Shared listbox used by every select in the app
+├── components/
+│   ├── app-sidebar.tsx                 # Shared sidebar: workspaces, chat history, theme
+│   ├── workspace-shell.tsx             # Top bar with title, tabs and actions for each workspace
+│   ├── today-panel.tsx                 # Today panel: the day, due items, to-dos, scheduled tasks
+│   └── dropdown.tsx                    # Shared listbox used by every select in the app
 ├── proxy.ts                            # Cookie auth proxy (Next 16 middleware convention)
 public/sw.js                            # Service worker: push display + click-through
 discord-bot/
@@ -1220,6 +1252,11 @@ scripts/
 └── reembed-knowledge.ts                # Manual store re-embed
 supabase-setup.sql                      # One-shot database setup script
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and what a change has to keep true,
+and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
