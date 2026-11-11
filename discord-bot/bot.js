@@ -8,10 +8,16 @@ const CHAT_API_KEY = process.env.CHAT_API_KEY;
 // in #ask-zuychin. Notification channels are written to by the crons over REST.
 // Falls back to the legacy single channel so existing setups keep working.
 const CHANNEL_ID = process.env.DISCORD_ASK_CHANNEL_ID || process.env.DISCORD_CHANNEL_ID;
+// Every message runs as the owner (memory, mail, vault and agent tools), so once
+// set, only these Discord user IDs are answered.
+const ALLOWED_USERS = new Set((process.env.DISCORD_ALLOWED_USER_IDS || "").split(",").map((id) => id.trim()).filter(Boolean));
 
 if (!BOT_TOKEN) {
     console.error("DISCORD_BOT_TOKEN is required");
     process.exit(1);
+}
+if (ALLOWED_USERS.size === 0) {
+    console.warn("[Bot] DISCORD_ALLOWED_USER_IDS is not set; anyone who can post where the bot reads can use the assistant.");
 }
 
 const client = new Client({
@@ -31,6 +37,7 @@ client.once(Events.ClientReady, (c) => {
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (CHANNEL_ID && message.channel.id !== CHANNEL_ID) return;
+    if (ALLOWED_USERS.size > 0 && !ALLOWED_USERS.has(message.author.id)) return;
 
     if (processedIds.has(message.id)) return;
     processedIds.add(message.id);
