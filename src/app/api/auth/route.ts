@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AUTH_CHALLENGE_COOKIE, AUTH_RECOVERY_COOKIE, authEnabled } from "@/lib/auth/config";
 import { createSessionValue, sessionCookie } from "@/lib/auth/session";
-import { validPassword } from "@/lib/auth/server";
 import { createChallenge, getTotpConfig } from "@/lib/auth/store";
+import { checkPassword, clientAddress, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
 
 const clearCookie = {
     httpOnly: true,
@@ -15,7 +15,11 @@ const clearCookie = {
 export async function POST(req: NextRequest) {
     const { password } = await req.json();
     if (!authEnabled()) return NextResponse.json({ error: "Access password not configured" }, { status: 500 });
-    if (!validPassword(password)) return NextResponse.json({ error: "Wrong password" }, { status: 401 });
+    const checked = checkPassword(clientAddress(req.headers), password);
+    if (checked === "blocked") return NextResponse.json({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    if (checked === "wrong") return NextResponse.json({ error: "Wrong password" }, { status: 401 });
+    // Fails closed: when TOTP state cannot be read, the password alone must not
+    // stand in for a second factor that may be switched on.
     try {
         const totp = await getTotpConfig();
         if (totp?.enabled) {
@@ -25,7 +29,8 @@ export async function POST(req: NextRequest) {
             return res;
         }
     } catch (error) {
-        console.warn("[Auth] TOTP lookup unavailable:", error);
+        console.error("[Auth] TOTP check failed; refusing password sign-in:", error);
+        return NextResponse.json({ error: "Sign-in is unavailable right now. Try again shortly, or use a passkey." }, { status: 503 });
     }
     const res = NextResponse.json({ ok: true });
     res.cookies.set(sessionCookie(await createSessionValue()));

@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import QRCode from "qrcode";
 import { AUTH_RECOVERY_COOKIE } from "@/lib/auth/config";
 import { createSessionValue, sessionCookie, verifySessionValue } from "@/lib/auth/session";
-import { createTotp, encryptTotpSecret, validPassword, validTotpCode } from "@/lib/auth/server";
+import { createTotp, encryptTotpSecret, validTotpCode } from "@/lib/auth/server";
 import { consumeChallenge, enableTotp, getChallenge, getTotpConfig, registerFailedChallengeAttempt, saveTotpConfig } from "@/lib/auth/store";
+import { checkPassword, clientAddress, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
 
 async function signedIn(req: NextRequest) {
     return verifySessionValue(req.cookies.get("zuychin-auth")?.value);
@@ -39,7 +40,9 @@ export async function POST(req: NextRequest) {
         }
 
         if (!await signedIn(req)) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
-        if (!validPassword(body.password)) return NextResponse.json({ error: "Confirm your password first." }, { status: 401 });
+        const checked = checkPassword(clientAddress(req.headers), body.password);
+        if (checked === "blocked") return NextResponse.json({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
+        if (checked === "wrong") return NextResponse.json({ error: "Confirm your password first." }, { status: 401 });
 
         if (body.action === "setup") {
             const totp = createTotp();

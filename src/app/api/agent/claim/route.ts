@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { beginClaimAttempt, exchangeClaim, finishClaimAttempt, hashClientIp } from "@/lib/agents/clients";
+import { clientAddress } from "@/lib/auth/attempts";
 
 // The only unauthenticated write surface in the application, so it carries its
 // own limits rather than relying on proxy.ts.
@@ -12,14 +13,8 @@ export const dynamic = "force-dynamic";
 
 const REFUSED = { error: "That claim cannot be used." };
 
-function clientIp(req: NextRequest): string {
-    const forwarded = req.headers.get("x-forwarded-for");
-    if (forwarded) return forwarded.split(",")[0].trim();
-    return req.headers.get("x-real-ip") ?? "unknown";
-}
-
 export async function POST(req: NextRequest) {
-    const { attemptId, limited } = await beginClaimAttempt(hashClientIp(clientIp(req)));
+    const { attemptId, limited } = await beginClaimAttempt(hashClientIp(clientAddress(req.headers)));
     if (limited) {
         return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
     }

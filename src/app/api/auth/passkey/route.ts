@@ -6,7 +6,7 @@ import {
 } from "@simplewebauthn/server";
 import { AUTH_CHALLENGE_COOKIE, authOrigin, authOwnerName, authRpId } from "@/lib/auth/config";
 import { createSessionValue, sessionCookie, verifySessionValue } from "@/lib/auth/session";
-import { validPassword } from "@/lib/auth/server";
+import { checkPassword, clientAddress, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
 import {
     consumeChallenge, createChallenge, deletePasskey, findPasskey, getChallenge,
     listPasskeys, savePasskey, updatePasskeyUse,
@@ -18,6 +18,12 @@ function challengeCookie(id: string) {
 
 async function signedIn(req: NextRequest) {
     return verifySessionValue(req.cookies.get("zuychin-auth")?.value);
+}
+
+function passwordRefusal(req: NextRequest, password: unknown, message: string) {
+    const checked = checkPassword(clientAddress(req.headers), password);
+    if (checked === "blocked") return NextResponse.json({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    return checked === "wrong" ? NextResponse.json({ error: message }, { status: 401 }) : null;
 }
 
 export async function GET(req: NextRequest) {
@@ -66,7 +72,8 @@ export async function POST(req: NextRequest) {
         if (!await signedIn(req)) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 
         if (action === "registration-options") {
-            if (!validPassword(body.password)) return NextResponse.json({ error: "Confirm your password before adding a passkey." }, { status: 401 });
+            const refused = passwordRefusal(req, body.password, "Confirm your password before adding a passkey.");
+            if (refused) return refused;
             const passkeys = await listPasskeys();
             const options = await generateRegistrationOptions({
                 rpName: "Zuychin Assistant", rpID: authRpId(), userID: new TextEncoder().encode("zuychin-owner"), userName: authOwnerName(), userDisplayName: authOwnerName(),
@@ -99,7 +106,8 @@ export async function POST(req: NextRequest) {
         }
 
         if (action === "delete") {
-            if (!validPassword(body.password)) return NextResponse.json({ error: "Confirm your password before removing a passkey." }, { status: 401 });
+            const refused = passwordRefusal(req, body.password, "Confirm your password before removing a passkey.");
+            if (refused) return refused;
             const passkeys = await listPasskeys();
             if (passkeys.length <= 1) return NextResponse.json({ error: "Keep at least one passkey registered." }, { status: 400 });
             await deletePasskey(body.credentialId);

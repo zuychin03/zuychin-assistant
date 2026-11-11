@@ -87,6 +87,10 @@ export async function deletePasskey(credentialId: string) {
 }
 
 export async function createChallenge(purpose: ChallengePurpose, challenge: string) {
+    // Passkey options are unauthenticated and nothing else removes abandoned
+    // rows, so every request would otherwise grow the table for good.
+    const { error: sweepError } = await supabase.from("auth_challenges").delete().lt("expires_at", new Date().toISOString());
+    if (sweepError) console.warn("[Auth] Expired challenge cleanup failed:", sweepError.message);
     const id = randomUUID();
     const { error } = await supabase.from("auth_challenges").insert({
         id,
