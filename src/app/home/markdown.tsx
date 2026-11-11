@@ -3,6 +3,7 @@
 import { isValidElement, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import type { Components } from "react-markdown";
+import { MarkdownImage } from "@/components/markdown-image";
 
 // react-markdown hands `pre` a React tree, not the source text, so the copy
 // button has to reassemble it from the rendered children.
@@ -50,4 +51,5 @@ export const chatMarkdownComponents: Components = {
     // A wide table must scroll inside the bubble instead of compressing its
     // columns to fit, the same way a long code line already does.
     table: ({ children }) => <div className="table-scroll"><table>{children}</table></div>,
+    img: MarkdownImage,
 };

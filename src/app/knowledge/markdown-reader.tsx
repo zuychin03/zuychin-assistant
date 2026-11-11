@@ -3,6 +3,7 @@
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
+import { MarkdownImage } from "@/components/markdown-image";
 import styles from "./markdown-reader.module.css";
 import { documentHeadings } from "../graph/cosmos/sections";
 import type { ElementType, ReactNode } from "react";
@@ -60,6 +61,8 @@ export function MarkdownReader({ markdown, variant = "document", onVaultLink, ti
 
             return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
         },
+        // Answers are model output; stored documents keep their images.
+        ...(variant === "answer" ? { img: MarkdownImage } : {}),
     };
 
     return <div className={styles.reader} data-variant={variant}>

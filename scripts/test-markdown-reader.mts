@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
+import * as markdownImage from "../src/components/markdown-image.tsx";
 
 interface ReaderProps {
     markdown: string;
@@ -28,6 +29,7 @@ vm.runInNewContext(compiled, {
         if (name === "react-markdown") return { default: ReactMarkdown, defaultUrlTransform };
         if (name === "remark-gfm") return { default: remarkGfm };
         if (name === "lucide-react") return { FileText };
+        if (name === "@/components/markdown-image") return markdownImage;
         if (name.endsWith(".module.css")) return { default: { reader: "reader", vaultLink: "vaultLink" } };
         if (name.endsWith("/sections")) return { documentHeadings: () => [] };
         throw new Error(`Unmocked import: ${name}`);
@@ -61,4 +63,14 @@ for (const variant of ["document", "answer", "excerpt"] as const) {
 test("external Markdown links retain their existing behaviour without vault navigation", () => {
     const html = renderToStaticMarkup(createElement(exported.MarkdownReader, { markdown: "[Source](https://example.test/source)" }));
     assert.match(html, /<a href="https:\/\/example\.test\/source" target="_blank" rel="noreferrer">Source<\/a>/);
+});
+
+test("answers turn remote images into links while documents keep them", () => {
+    const markdown = "![chart](https://collector.test/x.png?d=secret) ![local](/api/artifacts/a1)";
+    const answer = renderToStaticMarkup(createElement(exported.MarkdownReader, { markdown, variant: "answer" }));
+    assert.doesNotMatch(answer, /<img[^>]+collector\.test/);
+    assert.match(answer, /<a href="https:\/\/collector\.test\/x\.png\?d=secret" target="_blank" rel="noreferrer">chart \(collector\.test\)<\/a>/);
+    assert.match(answer, /<img src="\/api\/artifacts\/a1" alt="local"\/>/);
+    const document = renderToStaticMarkup(createElement(exported.MarkdownReader, { markdown, variant: "document" }));
+    assert.match(document, /<img src="https:\/\/collector\.test\/x\.png\?d=secret" alt="chart"\/>/);
 });
