@@ -1,7 +1,7 @@
 # Zuychin Assistant
 
 A personal AI chatbot you can talk to from the web, Discord, or Telegram. It lets you
-switch chat model providers per message (Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM),
+switch chat model providers per message (Google Gemini, DeepSeek, OpenRouter, NVIDIA NIM and Kilo),
 keeps long-term memory with a pgvector RAG store, handles file uploads, and can use a set of
 tools (Google Calendar, Gmail, a to-do list and a knowledge base) plus Google Search and Maps
 grounding. It can schedule its own recurring tasks, watch the inbox for bills and deadlines,
@@ -16,7 +16,7 @@ edited and deleted in place.
 ## Features
 
 - Multi-provider chat: switch the model per message between Gemini 3.8 Flash / 3.5 Flash-Lite,
-  DeepSeek V4.1 Flash / V4 Pro, OpenRouter and NVIDIA NIM, straight from the chat header.
+  DeepSeek V4.1 Flash / V4 Pro, OpenRouter, NVIDIA NIM and Kilo, straight from the chat header.
   Retired model IDs resolve to replacements; unavailable gateways are hidden and excluded from workers
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
@@ -249,7 +249,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `OPENCODE_ZEN_API_KEY` | Retained configuration; unavailable to this app because the probed free tier requires OpenCode itself |
 | `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
-| `TAVILY_API_KEY` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). Without it those models can't search the web |
+| `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini |
 
 Optional auth, integrations, channels and cron:
 
@@ -274,6 +274,7 @@ Optional auth, integrations, channels and cron:
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
 | `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
+| `COUNCIL_V2_ASSERTED_IDENTITY` | Leave `false`. `true` lets an owner-scoped key act for a named agent in councils with no protocol version; V3 always needs the seat's own credential |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
 | `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
@@ -387,8 +388,11 @@ npm run dev
 |--------|------|-------------|
 | POST | `/api/chat` | RAG chat with file, thinking, search and hyperparameters |
 | POST | `/api/chat/stream` | Same as `/api/chat` but streams agent steps + tokens over SSE (web UI) |
+| GET/PATCH | `/api/chat/preferences` | Read / set the Free only preference |
 | GET | `/api/providers` | Available providers/models (filtered by configured keys) |
 | GET/POST/PUT/DELETE | `/api/conversations` | Conversation list / create (optionally in a project) / move between projects / delete |
+| GET/POST | `/api/conversations/branches` | List a conversation's related branches (`?conversationId=`) / branch from a saved message |
+| GET | `/api/conversations/compare` | Two branches side by side (`?left=&right=`) |
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
@@ -396,15 +400,37 @@ npm run dev
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
+| GET/POST | `/api/research` | Research questions (`?questionId=` for one workspace) / save a question |
+| GET/POST/PATCH | `/api/research/sources` | Read a source's saved text / add / edit a question's sources |
+| POST/DELETE | `/api/research/entries` | Save / delete a research note |
+| GET/POST | `/api/study` | Study report (`?view=due` returns only the reviewable count) / create, draft, edit, review, feedback and settings actions |
+| GET/POST | `/api/capture` | Capture inbox and saved documents / capture, preview a destination, ingest |
+| GET | `/api/capture/download` | A saved document's content for offline reading (`?documentId=`) |
+| GET | `/api/capture/original` | The original PDF of a capture (`?id=`) |
+| GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
+| GET/POST/PATCH/DELETE | `/api/tasks` | Scheduled tasks with runs and approvals / create / edit, pause or resume / delete |
+| POST | `/api/tasks/run` | Run a task now (202 when accepted, 409 while it is already running) |
+| POST | `/api/tasks/approvals` | Approve or reject an action an unattended task proposed |
 | POST / DELETE | `/api/auth` | Login / logout |
 | GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
 | GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
 | GET | `/api/council` | Open councils and participant rosters for the council dashboard |
 | GET | `/api/council/[code]` | One council's status and transcript for the council dashboard |
+| GET/POST | `/api/council/[code]/owner` | The owner's private thread into a running council / send a turn (never exposed over MCP) |
+| POST | `/api/council/[code]/decide` | Accept the result or send the council back to work while it awaits the owner |
+| POST | `/api/council/[code]/pause` | Pause or resume a council (`{ resume: true }`) |
+| GET/POST/DELETE | `/api/council/[code]/seat-key` | List / reissue / revoke a seat's credential |
+| POST | `/api/council/[code]/integrator` | Nominate the agent that assembles accepted work |
+| GET | `/api/council/[code]/executions` | Paged execution history (`?cursor=`) |
+| GET | `/api/council/[code]/integration-attempts` | Integration attempts, with `/[attemptId]` and `/[attemptId]/verification/[runId]` for one attempt and one verification run |
+| GET | `/api/council/runtime-inventory` | Paged list of councils with their host generation, policy version and whether they have execution history (`?cursor=`) |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
 | GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client, Council seat or dedicated host bearer) |
 | POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
+| GET/POST/DELETE | `/api/agents` | Owner-only: list / add / remove agent clients |
+| POST | `/api/agents/claim` | Owner-only: mint a setup claim and brief at a chosen access level |
+| DELETE | `/api/agents/keys` | Owner-only: revoke one agent key (`?keyId=`) |
 | GET | `/api/telegram/test` | Telegram connectivity / config check |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
 | POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
@@ -414,18 +440,32 @@ npm run dev
 | POST | `/api/cron/run-review` | Nightly review of failed/expensive agent runs → draft skills |
 | POST | `/api/cron/proactive` | Proactive check-ins |
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
+| POST | `/api/cron/conversation-cleanup` | Review conversations and record cleanup recommendations |
+| POST | `/api/cron/council-sweep` | Expire overdue councils, write the verdict for ended ones nobody concluded, retry failed filing |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
 | GET | `/api/vault/graph` | Vault as graph data: nodes with lifecycle/cluster/centrality/health, edges, link suggestions. Served from a cached snapshot, revalidated in the background; `?refresh=1` forces a rebuild |
 | GET | `/api/vault/search` | Semantic (hybrid keyword + vector) page search for the graph's search box |
 | GET | `/api/vault/suggestions` | Link candidates for one page (`?path=`), ranked by cosine against stored vectors |
 | GET/PUT/DELETE | `/api/vault/page` | Read / edit / cascade-delete a wiki page |
 | POST/DELETE | `/api/vault/link` | Create / remove a bidirectional wikilink between two pages |
+| GET/POST | `/api/knowledge/documents` | Library documents (filter by `kind`, `scope`, `status`, or one by `id`) / lifecycle actions: correct, archive, restore, forget, promote, merge |
+| POST | `/api/knowledge/recall` | Explainable hybrid recall with a grounded, abstaining answer |
+| GET | `/api/knowledge/events` | Lifecycle timeline (`?documentId=` for one document) |
+| GET/POST | `/api/knowledge/suggestions` | Maintenance findings (`?status=`) / scan, dismiss, merge |
+| GET/POST | `/api/knowledge/revisions` | A document's revision history and diffs / restore an earlier revision after previewing it |
+| GET/POST | `/api/knowledge/evidence` | A document at an exact commit / anchor a quoted passage in it |
+| POST | `/api/knowledge/sync` | Reconcile derived knowledge state with the vault repository |
+| POST | `/api/knowledge/import` | Obsidian ZIP import: a dry-run plan unless `dryRun=false` |
+| GET | `/api/knowledge/export` | Obsidian ZIP export with checksums |
+| POST | `/api/knowledge/webhook` | Signed GitHub push webhook for incremental sync |
 | GET | `/api/admin/status` | Bot stats |
 | PUT | `/api/admin/personality` | Update system prompt |
 | GET | `/api/admin/runs` | Agent-run traces (list, or `?id=` for the full event timeline) |
 | GET/POST/PUT/DELETE | `/api/admin/memories` | List / add / edit / delete extracted memory facts |
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
 | GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
+| GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
+| GET/POST | `/api/admin/conversation-cleanup` | Cleanup recommendations / dismiss or review them |
 
 Browser routes require the signed `zuychin-auth` session when authentication is enabled. The
 public webhook, cron and headless-chat routes protect themselves with bearer credentials:
@@ -1044,10 +1084,10 @@ commits). Every change is a Git commit, so any bad write is one revert away.
 
 Open `/knowledge` for the primary knowledge interface:
 
-- **Library** reads the GitHub Markdown source and shows indexed chunks, links, trust,
+- **Pages** reads the GitHub Markdown source and shows indexed chunks, links, trust,
   sensitivity, scope and lifecycle status. Corrections create Git commits; archive,
   restore, retire and promote update frontmatter without deleting history.
-- **Recall** exposes semantic, lexical, graph, authority, freshness and importance
+- **Ask** exposes semantic, lexical, graph, authority, freshness and importance
   components for every result. Answers are extractive and abstain below the support
   threshold.
 - **Timeline** records indexing, imports, corrections, promotions, merges and retirement.
