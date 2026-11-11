@@ -163,7 +163,7 @@ await test("existing proxy also session-gates the inventory endpoint", async () 
     const source = readFileSync(new URL("../src/proxy.ts", import.meta.url), "utf8");
     const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
     const loaded = { exports: {} as { proxy: (request: NextRequest) => Promise<Response> } };
-    runInNewContext(output, { exports: loaded.exports, module: loaded, require: (name: string) => {
+    runInNewContext(output, { exports: loaded.exports, module: loaded, process, require: (name: string) => {
         if (name === "@/lib/auth/config") return authConfig;
         if (name === "@/lib/auth/session") return { verifySessionValue };
         return require(name);

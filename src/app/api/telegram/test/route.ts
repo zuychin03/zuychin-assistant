@@ -1,7 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
+import { requireChatAuth } from "@/lib/auth/guard";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+    const denied = await requireChatAuth(req);
+    if (denied) return denied;
     const results: Record<string, string> = {};
 
     results.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ? "✅ set" : "❌ missing";
