@@ -64,7 +64,8 @@ const tests = [
     "jev-decisions",
     "owner-profile",
     "server-only-tables",
-    "v6-migrations"
+    "v6-migrations",
+    "security-boundaries"
 ];
 const failed: string[] = [];
 for (const test of tests) {
