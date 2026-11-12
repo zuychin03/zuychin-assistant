@@ -4,6 +4,7 @@ import { requireChatAuth } from "@/lib/auth/guard";
 import { knowledgeRevisions } from "@/lib/knowledge/revision-store";
 import { KnowledgeRevisionError } from "@/lib/knowledge/revisions";
 import { VaultConflictError } from "@/lib/vault/github";
+import { sameOrigin } from "@/lib/auth/config";
 
 export const maxDuration = 60;
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
@@ -30,8 +31,7 @@ export async function GET(req: NextRequest) {
 }
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ error: "Revision changes must come from this app." }, { status: 403 });
+    if (!sameOrigin(req)) return NextResponse.json({ error: "Revision changes must come from this app." }, { status: 403 });
     try { return NextResponse.json(await knowledgeRevisions.restore(writeSchema.parse(await req.json()))); }
     catch (error) { return failure(error); }
 }

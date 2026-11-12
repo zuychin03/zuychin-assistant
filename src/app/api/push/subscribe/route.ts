@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
-import { AUTH_COOKIE, authEnabled } from "@/lib/auth/config";
+import { AUTH_COOKIE, authEnabled, sameOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
 
 // web-push needs Node; keep this route off the edge runtime.
@@ -8,8 +8,7 @@ export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
     const reply = (body: { registered: boolean } | { error: string }, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return reply({ error: "Use this site's owner session." }, 403);
+    if (!sameOrigin(req)) return reply({ error: "Use this site's owner session." }, 403);
     if (authEnabled() && !await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return reply({ error: "Sign in to check browser alerts." }, 401);
     const endpoint = req.headers.get("x-push-endpoint");
     if (!endpoint || endpoint.length > 4096) return reply({ error: "A valid browser endpoint is required." }, 400);

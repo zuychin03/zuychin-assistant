@@ -23,6 +23,13 @@ export function authOrigin() {
     return "http://localhost:3000";
 }
 
+// Self-hosted behind Cloudflare Tunnel, Next builds req.nextUrl from the address
+// it listens on (127.0.0.1:3000), so the public origin has to come from config.
+export function sameOrigin(req: { headers: Headers; nextUrl: URL }) {
+    const origin = req.headers.get("origin");
+    return !origin || origin === req.nextUrl.origin || origin === authOrigin();
+}
+
 export function authOwnerName() {
     return process.env.AUTH_OWNER_NAME || "Zuychin owner";
 }

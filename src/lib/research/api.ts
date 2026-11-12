@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { AUTH_COOKIE, authEnabled } from "@/lib/auth/config";
+import { AUTH_COOKIE, authEnabled, sameOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
 import { branchUserId } from "@/lib/conversations/branch-api";
 import { validConversationId } from "@/lib/conversations/branches";
@@ -12,8 +12,7 @@ export function researchResponse(data: unknown, status = 200) {
     return NextResponse.json(data, { status, headers: { "Cache-Control": "private, no-store" } });
 }
 export async function requireResearchOwner(req: NextRequest) {
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return researchResponse({ error: "Use the research workbench from this site's owner session." }, 403);
+    if (!sameOrigin(req)) return researchResponse({ error: "Use the research workbench from this site's owner session." }, 403);
     if (!authEnabled() || await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return null;
     return researchResponse({ error: "Sign in to your owner session to use the research workbench." }, 401);
 }

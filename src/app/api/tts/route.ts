@@ -6,6 +6,7 @@ import { requireChatAuth } from "@/lib/auth/guard";
 import { withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { TTS_MODEL } from "@/lib/gemini";
+import { sameOrigin } from "@/lib/auth/config";
 
 // TTS generation scales with text length; the full-reply streaming cap is
 // sized to finish inside this window (~45s worst case).
@@ -19,8 +20,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ error: "Speech requests must come from this app." }, { status: 403 });
+    if (!sameOrigin(req)) return NextResponse.json({ error: "Speech requests must come from this app." }, { status: 403 });
     const calls: ModelCallObservation[] = [];
     let userProfileId: string | undefined;
     let persistence: ReturnType<typeof persistModelObservations> | undefined;

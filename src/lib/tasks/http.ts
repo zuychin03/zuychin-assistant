@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDefaultProfile } from "@/lib/db";
-import { AUTH_COOKIE } from "@/lib/auth/config";
+import { AUTH_COOKIE, sameOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
 import { APP_TIMEZONE } from "@/lib/datetime";
 import { validateCron } from "@/lib/tasks/schedule";
@@ -18,8 +18,7 @@ export async function taskOwner(): Promise<string> {
 }
 export async function requireApprovalOwner(req: NextRequest) {
     if (!await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return NextResponse.json({ error: "Sign in as the owner to decide actions." }, { status: 401 });
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ error: "Approval must come from this app." }, { status: 403 });
+    if (!sameOrigin(req)) return NextResponse.json({ error: "Approval must come from this app." }, { status: 403 });
     return null;
 }
 type Edit = Pick<ScheduledTask, "title" | "instruction" | "scheduleType" | "cron" | "runAt" | "timezone" | "channel" | "agentMode" | "enabled">;

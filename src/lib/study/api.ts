@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { AUTH_COOKIE, authEnabled } from "../auth/config";
+import { AUTH_COOKIE, authEnabled, sameOrigin } from "../auth/config";
 import { verifySessionValue } from "../auth/session";
 import { StudyError } from "./contracts";
 import type { createStudyService } from "./service";
@@ -8,8 +8,7 @@ import type { createStudyService } from "./service";
 const respond = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "private, no-store" } });
 export async function studyAuth(req: NextRequest) {
     if (authEnabled() && !await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return respond({ error: "Sign in with your owner account to use Active study." }, 401);
-    const origin = req.headers.get("origin");
-    if (req.method !== "GET" && origin && origin !== req.nextUrl.origin) return respond({ error: "Study changes must come from this app." }, 403);
+    if (req.method !== "GET" && !sameOrigin(req)) return respond({ error: "Study changes must come from this app." }, 403);
     return null;
 }
 export function createStudyHandlers(service: ReturnType<typeof createStudyService>, identify: () => Promise<string>, authenticate = studyAuth) {

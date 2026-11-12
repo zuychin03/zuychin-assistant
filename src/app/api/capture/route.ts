@@ -5,6 +5,7 @@ import { captureProfile, captureService, listCaptures } from "@/lib/capture/stor
 import { CaptureError } from "@/lib/capture/service";
 import { captureDocuments } from "@/lib/capture/documents";
 import { VaultConflictError } from "@/lib/vault/github";
+import { sameOrigin } from "@/lib/auth/config";
 export const maxDuration = 60;
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 function failure(error: unknown) {
@@ -20,8 +21,7 @@ export async function GET(req: NextRequest) {
 }
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
-    const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) return respond({ error: "Open the capture inbox on this site before saving." }, 403);
+    if (!sameOrigin(req)) return respond({ error: "Open the capture inbox on this site before saving." }, 403);
     try {
         const raw = await req.text();
         if (raw.length > 3_000_000) throw new CaptureError("This capture is too large.", 413);

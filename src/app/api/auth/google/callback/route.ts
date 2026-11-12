@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { SCOPES } from "@/lib/google-auth";
+import { authOrigin } from "@/lib/auth/config";
 
 export async function GET(req: NextRequest) {
     const code = req.nextUrl.searchParams.get("code");
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
         const oauth2 = new google.auth.OAuth2(
             clientId,
             clientSecret,
-            `${req.nextUrl.origin}/api/auth/google/callback`
+            `${authOrigin()}/api/auth/google/callback`
         );
 
         const authUrl = oauth2.generateAuthUrl({
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
         const oauth2 = new google.auth.OAuth2(
             clientId,
             clientSecret,
-            `${req.nextUrl.origin}/api/auth/google/callback`
+            `${authOrigin()}/api/auth/google/callback`
         );
 
         const { tokens } = await oauth2.getToken(code);
