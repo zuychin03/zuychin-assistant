@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { sameOrigin } from "../src/lib/auth/config.ts";
 
 interface Element { type: string; props: Record<string, unknown> & { children?: unknown } }
 interface RequestStub {
@@ -300,7 +301,7 @@ test("push status read enforces the owner session, origin, bounded endpoint and 
     vm.runInNewContext(compiled, { exports: exported, URL, require(name: string) {
         if (name === "next/server") return { NextResponse: { json: Response.json } };
         if (name === "@/lib/supabase") return { supabaseAdmin: database };
-        if (name === "@/lib/auth/config") return { AUTH_COOKIE: "owner-cookie", authEnabled: () => true };
+        if (name === "@/lib/auth/config") return { AUTH_COOKIE: "owner-cookie", authEnabled: () => true, sameOrigin };
         if (name === "@/lib/auth/session") return { verifySessionValue: async (value?: string) => value === "valid-owner-session" };
         throw new Error(`Unmocked route import: ${name}`);
     } });
@@ -321,8 +322,17 @@ test("push status read enforces the owner session, origin, bounded endpoint and 
     assert.equal(lookups.length, 0);
     const registered = await read(endpoint, "valid-owner-session", "https://fixture.invalid");
     assert.deepEqual(await registered.json(), { registered: true });
+    // Behind the tunnel nextUrl is the bound address, so the configured public origin must pass too.
+    const previousOrigin = process.env.AUTH_ORIGIN;
+    process.env.AUTH_ORIGIN = "https://owner.invalid";
+    try {
+        assert.deepEqual(await (await read(endpoint, "valid-owner-session", "https://owner.invalid")).json(), { registered: true });
+    } finally {
+        if (previousOrigin === undefined) delete process.env.AUTH_ORIGIN;
+        else process.env.AUTH_ORIGIN = previousOrigin;
+    }
     assert.deepEqual(await (await read(`${endpoint}-different`, "valid-owner-session")).json(), { registered: false });
-    assert.deepEqual(lookups, [endpoint, `${endpoint}-different`]);
+    assert.deepEqual(lookups, [endpoint, endpoint, `${endpoint}-different`]);
     fail = true;
     const unavailable = await read(endpoint, "valid-owner-session");
     assert.equal(unavailable.status, 503);
