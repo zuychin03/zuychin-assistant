@@ -266,8 +266,9 @@ Optional auth, integrations, channels and cron:
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | Google OAuth, Calendar + Gmail |
 | `DISCORD_BOT_TOKEN` / `DISCORD_CHANNEL_ID` | Discord: bot token + legacy single channel (fallback for the per-purpose ids below) |
 | `DISCORD_ASK_CHANNEL_ID` | The one Discord channel the bot converses in (`#ask-zuychin`) |
+| `DISCORD_ALLOWED_USER_IDS` | Bot only: comma-separated Discord user ids it answers; unset answers anyone who can post where it reads |
 | `DISCORD_CH_BRIEFING` / `_REMINDERS` / `_TASKS` / `_CALENDAR` / `_BILLS` / `_COWORKING` / `_SYSTEM` | Per-purpose notification channels; each falls back to `DISCORD_CHANNEL_ID` (`_SYSTEM` stays silent unless set) |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel. The webhook answers only `TELEGRAM_CHAT_ID` and any chat in `TELEGRAM_ALLOWED_CHAT_IDS`; production ignores every update while neither is set |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); either unset = push disabled |
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
@@ -346,7 +347,7 @@ passkey enrolment.
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
 Create an OAuth client in the Google Cloud Console with the redirect URI
-`http://localhost:3000/api/auth/google/callback`, then visit that URL while the app is running
+`http://localhost:3000/api/auth/google/callback`, then visit that URL while signed in
 to finish the flow and copy the refresh token into `GOOGLE_REFRESH_TOKEN`. You can run
 `node test-google-auth.js` afterwards to check the credentials in `.env.local`.
 
@@ -424,14 +425,14 @@ npm run dev
 | GET | `/api/council/[code]/executions` | Paged execution history (`?cursor=`) |
 | GET | `/api/council/[code]/integration-attempts` | Integration attempts, with `/[attemptId]` and `/[attemptId]/verification/[runId]` for one attempt and one verification run |
 | GET | `/api/council/runtime-inventory` | Paged list of councils with their host generation, policy version and whether they have execution history (`?cursor=`) |
-| GET | `/api/auth/google/callback` | Google OAuth setup / token exchange |
-| POST | `/api/telegram/webhook` | Telegram bot webhook (secret-header gated) |
+| GET | `/api/auth/google/callback` | Google OAuth setup / token exchange (signed in only) |
+| POST | `/api/telegram/webhook` | Telegram bot webhook (secret header and chat allowlist) |
 | GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client, Council seat or dedicated host bearer) |
 | POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
 | GET/POST/DELETE | `/api/agents` | Owner-only: list / add / remove agent clients |
 | POST | `/api/agents/claim` | Owner-only: mint a setup claim and brief at a chosen access level |
 | DELETE | `/api/agents/keys` | Owner-only: revoke one agent key (`?keyId=`) |
-| GET | `/api/telegram/test` | Telegram connectivity / config check |
+| GET | `/api/telegram/test` | Telegram connectivity / config check (signed in only) |
 | POST | `/api/cron/daily-briefing` | Morning briefing (emails + calendar) |
 | POST | `/api/cron/reminders` | Imminent event reminders + due-todo nagging |
 | POST | `/api/cron/scheduled-tasks` | Run due user-scheduled tasks (claims up to 3 per invocation) |
@@ -1019,7 +1020,7 @@ node bot.js
 curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-app>/api/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 
-`GET /api/telegram/test` checks the configuration.
+Signed in, `GET /api/telegram/test` checks the configuration.
 
 ## Cron Jobs (optional)
 

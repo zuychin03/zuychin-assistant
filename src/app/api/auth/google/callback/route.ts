@@ -1,9 +1,23 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { SCOPES } from "@/lib/google-auth";
-import { authOrigin } from "@/lib/auth/config";
+import { AUTH_COOKIE, authOrigin } from "@/lib/auth/config";
+import { verifySessionValue } from "@/lib/auth/session";
+
+const STATE_COOKIE = "zuychin-google-state";
+const stateCookie = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/api/auth/google" };
+
+function stateMatches(given: string | null, expected: string | undefined): boolean {
+    if (!given || !expected) return false;
+    const a = Buffer.from(given);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export async function GET(req: NextRequest) {
+    if (!await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+
     const code = req.nextUrl.searchParams.get("code");
 
     if (!code) {
@@ -23,13 +37,21 @@ export async function GET(req: NextRequest) {
             `${authOrigin()}/api/auth/google/callback`
         );
 
+        const state = randomBytes(24).toString("base64url");
         const authUrl = oauth2.generateAuthUrl({
             access_type: "offline",
             prompt: "consent",
             scope: SCOPES,
+            state,
         });
 
-        return NextResponse.redirect(authUrl);
+        const res = NextResponse.redirect(authUrl);
+        res.cookies.set(STATE_COOKIE, state, { ...stateCookie, maxAge: 600 });
+        return res;
+    }
+
+    if (!stateMatches(req.nextUrl.searchParams.get("state"), req.cookies.get(STATE_COOKIE)?.value)) {
+        return NextResponse.json({ error: "This Google sign-in expired. Start it again." }, { status: 400 });
     }
 
     try {
@@ -65,13 +87,15 @@ export async function GET(req: NextRequest) {
 </body>
 </html>`;
 
-        return new NextResponse(html, {
-            headers: { "Content-Type": "text/html" },
+        const res = new NextResponse(html, {
+            headers: { "Content-Type": "text/html", "Cache-Control": "no-store" },
         });
+        res.cookies.set(STATE_COOKIE, "", { ...stateCookie, maxAge: 0 });
+        return res;
     } catch (error) {
         console.error("[Google OAuth] Token exchange error:", error);
         return NextResponse.json(
-            { error: "Failed to exchange authorization code.", details: String(error) },
+            { error: "Failed to exchange authorization code." },
             { status: 500 }
         );
     }
