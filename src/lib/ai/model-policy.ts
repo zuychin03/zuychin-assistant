@@ -1,4 +1,4 @@
-import { PROVIDERS, isProviderAvailable, resolveChat, type ResolvedChat, type ResolvedEmbedding } from "@/lib/ai/providers";
+import { automaticRouteEligible, isProviderAvailable, providers, resolveChat, type ResolvedChat, type ResolvedEmbedding } from "@/lib/ai/providers";
 
 export class ModelPolicyError extends Error {}
 
@@ -15,10 +15,10 @@ export function assertFreeModel(ref: ResolvedChat | ResolvedEmbedding): void {
 }
 
 export function freeChatCandidates(geminiOnly = false): ResolvedChat[] {
-    return PROVIDERS.flatMap((provider) => {
+    return providers().flatMap((provider) => {
         if (!isProviderAvailable(provider) || (geminiOnly && provider.kind !== "gemini")) return [];
         return provider.chatModels.flatMap((model) => {
-            if (model.free !== true) return [];
+            if (model.free !== true || !automaticRouteEligible(model)) return [];
             try { return [resolveChat(provider.id, model.id)]; } catch { return []; }
         });
     });

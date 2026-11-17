@@ -2,6 +2,7 @@ export interface ModelPickerOption {
     value: string;
     label: string;
     searchTerms?: string[];
+    badge?: { label: string; tone?: "danger" };
 }
 
 export interface ModelPickerGroup {
@@ -45,7 +46,7 @@ export function filterModelGroups(groups: ModelPickerGroup[], query: string): Mo
     return groups.map((group) => ({
         ...group,
         options: group.options.filter((option) => {
-            const text = searchableText([group.label, option.label, option.value, ...(option.searchTerms ?? [])].join(" "));
+            const text = searchableText([group.label, option.label, option.value, option.badge?.label ?? "", ...(option.searchTerms ?? [])].join(" "));
             return terms.every((term) => text.includes(term));
         }),
     })).filter((group) => group.options.length > 0);

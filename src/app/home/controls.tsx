@@ -32,6 +32,8 @@ export interface ProviderModel {
   /** Verified output-token ceiling; bounds the max-tokens slider. */
   maxOutputTokens?: number;
   meta?: ModelMeta | null;
+  /** From the stored catalogue: "new" is a tested model not yet approved for automatic routes. */
+  status?: "new" | "missing" | "failing" | null;
 }
 export interface ProviderInfo {
   id: string;
@@ -238,6 +240,7 @@ export function SelectMenu({
                       style={{ ...dropdown.item, ...(option.value === value ? dropdown.itemActive : {}), ...(index === activeIndex ? dropdown.itemFocused : {}) }}
                     >
                       <span style={dropdown.itemLabel}>{option.label}</span>
+                      {option.badge && <span style={{ ...dropdown.badge, ...(option.badge.tone === "danger" ? dropdown.badgeDanger : {}) }}>{option.badge.label}</span>}
                       {option.value === value && <Check size={14} aria-hidden="true" style={{ flexShrink: 0 }} />}
                     </button>
                   );
@@ -702,10 +705,24 @@ const dropdown: Record<string, React.CSSProperties> = {
     background: "var(--hover)",
   },
   itemLabel: {
+    flex: "1 1 auto",
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
     minWidth: 0,
+  },
+  badge: {
+    flexShrink: 0,
+    padding: "1px 7px",
+    border: "1px solid var(--line)",
+    borderRadius: "var(--radius-full)",
+    color: "var(--muted)",
+    fontSize: 11.5,
+    fontWeight: 500,
+    lineHeight: "16px",
+  },
+  badgeDanger: {
+    color: "var(--danger)",
   },
 };
 

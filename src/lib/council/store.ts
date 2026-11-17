@@ -965,6 +965,35 @@ export async function listOpenCouncils(): Promise<CouncilSession[]> {
     return (data as unknown as SessionRow[]).map(mapSession);
 }
 
+// The four sweep queries below with only their time comparisons dropped, so
+// every row any of them can return is counted here and a zero means the sweep
+// has nothing to act on. Each branch must stay a superset of its query: change
+// one of those predicates and this one widens with it.
+//
+// Status alone is not enough. A paused council with no verdict, and the legacy
+// closed rows whose closed_at was never written, both sit in a sweepable status
+// forever while no query can ever return them - a status-only count never
+// reaches zero on this database. null is "unknown", never "idle".
+const SWEEP_CANDIDATE_FILTER = [
+    // expireOverdueSessions, and listSessionsNeedingVerdict's 'concluding' half.
+    "status.in.(open,concluding,awaiting_owner)",
+    "and(status.eq.expired,verdict.is.null,paused_at.is.null)",
+    "and(status.eq.closed,archive_status.eq.failed)",
+    "and(status.eq.closed,archive_status.eq.pending,closed_at.not.is.null)",
+].join(",");
+
+export async function countSweepCandidates(): Promise<number | null> {
+    const { count, error } = await supabase
+        .from("council_sessions")
+        .select("id", { count: "exact", head: true })
+        .or(SWEEP_CANDIDATE_FILTER);
+    if (error) {
+        console.error("[Council] countSweepCandidates failed:", error.message);
+        return null;
+    }
+    return count ?? null;
+}
+
 // Terminal but unwritten: the sweep is the only actor when every participant is
 // dead and nobody is polling to execute a transition.
 //

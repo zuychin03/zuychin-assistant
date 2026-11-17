@@ -1470,7 +1470,10 @@ export default function Home() {
           onChange={handleChatSelChange}
           groups={chatProviders.map((p) => ({
             label: p.label,
-            options: p.chatModels.map((m) => ({ value: `${p.id}::${m.id}`, label: m.label, searchTerms: modelSearchTerms(m) })),
+            options: p.chatModels.map((m) => ({
+              value: `${p.id}::${m.id}`, label: m.label, searchTerms: modelSearchTerms(m),
+              badge: m.status === "new" ? { label: "New" } : m.status === "missing" ? { label: "Missing", tone: "danger" as const } : undefined,
+            })),
           }))}
         />
         {!compact && <button

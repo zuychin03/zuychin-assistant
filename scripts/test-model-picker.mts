@@ -14,11 +14,11 @@ const groups: ModelPickerGroup[] = PROVIDERS.filter((provider) => !provider.unav
 }));
 
 test("combined provider, model and capability terms find the correct endpoint", () => {
-    const result = filterModelGroups(groups, "NVIDIA DeepSeek vision");
+    const result = filterModelGroups(groups, "NVIDIA GLM vision");
     assert.equal(result.length, 1);
     assert.equal(result[0].options.length, 1);
-    assert.equal(result[0].options[0].value, "nvidia-nim::deepseek-ai/deepseek-v4.1-flash");
-    assert.deepEqual(filterModelGroups(groups, "NVIDIA DeepSeek web search"), []);
+    assert.equal(result[0].options[0].value, "nvidia-nim::z-ai/glm-5.3-flash");
+    assert.deepEqual(filterModelGroups(groups, "NVIDIA Nemotron vision"), []);
     assert.ok(filterModelGroups(groups, "Gemini structured output").every((group) => group.label.includes("Gemini")));
 });
 

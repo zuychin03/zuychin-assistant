@@ -1,6 +1,16 @@
 import { getModelMeta } from "@/lib/ai/model-meta";
+import { uniqueShortName, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
+import { catalogueSnapshot, type CatalogueOrigin, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 
 export type ProviderKind = "gemini" | "openai-compatible";
+
+/** Present when the stored catalogue has a row for this model. */
+export interface ChatModelCatalogue {
+    origin: "code" | CatalogueOrigin;
+    approved: boolean;
+    status: "new" | "missing" | "failing" | null;
+    probeChatMs: number | null;
+}
 
 export interface ChatModel {
     id: string;
@@ -17,6 +27,7 @@ export interface ChatModel {
     supportsStructuredOutput?: boolean;
     /** Published or probed endpoint ceiling; omitted where unverified. */
     maxOutputTokens?: number;
+    catalogue?: ChatModelCatalogue;
 }
 
 // Conservative request limit when the endpoint ceiling is unverified.
@@ -43,6 +54,7 @@ export interface ProviderConfig {
     extraHeaders?: Record<string, string>;
     /** Excludes paid providers from automatic worker recruitment. */
     metered?: boolean;
+    discovery?: ProviderDiscovery;
     chatModels: ChatModel[];
     embeddingModels: EmbeddingModel[];
 }
@@ -53,6 +65,7 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini",
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
+        discovery: { source: "gemini", include: "all", pricing: "all-paid" },
         chatModels: [
             { free: false, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", name: "gemini-3.8-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: false, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -67,6 +80,7 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini (free)",
         kind: "gemini",
         apiKeyEnv: "GEMINI_FREE_API_KEY",
+        discovery: { source: "gemini", include: "all", pricing: "all-free", nameSuffix: "-free" },
         chatModels: [
             { free: true, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (free)", name: "gemini-3.8-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: true, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -83,6 +97,7 @@ export const PROVIDERS: ProviderConfig[] = [
             "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zuychin.app",
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
+        discovery: { source: "openrouter", include: "free", pricing: "listed" },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
             { free: true, id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
@@ -98,6 +113,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "openai-compatible",
         baseUrl: "https://api.kilo.ai/api/gateway",
         apiKeyEnv: "KILO_API_KEY",
+        discovery: { source: "kilo", include: "free", pricing: "listed" },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
             { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false, maxOutputTokens: 65536 },
@@ -113,13 +129,10 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "openai-compatible",
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
+        discovery: { source: "openai-list", include: "all", pricing: "all-free" },
         chatModels: [
-            { free: true, id: "moonshotai/kimi-k3", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "z-ai/glm-5.3", label: "GLM-5.3 (free)", name: "glm-5.3", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "deepseek-ai/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (free)", name: "deepseek-v4.1-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: false },
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
             { free: true, id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
-            { free: true, id: "google/diffusiongemma-26b-a4b-it", label: "DiffusionGemma 26B (free)", name: "diffusiongemma", supportsTools: false, supportsVision: true, supportsThinking: false, supportsSearch: false, supportsStructuredOutput: true, maxOutputTokens: 131072 },
             { free: true, id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { free: true, id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
             { free: true, id: "poolside/laguna-xs-2.1", label: "Laguna XS 2.1 (free)", name: "laguna-xs-2.1", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true }
@@ -135,6 +148,7 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://api.deepseek.com",
         apiKeyEnv: "DEEPSEEK_API_KEY",
         metered: true,
+        discovery: { source: "openai-list", include: "all", pricing: "all-paid" },
         chatModels: [
             // DeepSeek accepts json_object, not strict json_schema output.
             { free: false, id: "deepseek-flash", label: "DeepSeek V4.1 Flash", name: "deepseek-v4.1-flash-api", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 393216 },
@@ -196,7 +210,7 @@ export function sanitizeGenParams(raw: unknown): GenParams {
 
 /** Verified output ceiling for a chat model id, or the conservative fallback. */
 export function modelMaxOutputTokens(modelId: string): number {
-    for (const provider of PROVIDERS) {
+    for (const provider of providers()) {
         const model = provider.chatModels.find((m) => m.id === modelId);
         if (model) return model.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS;
     }
@@ -226,18 +240,27 @@ const LEGACY_CHAT_MODELS: Record<string, Record<string, string>> = {
         "gemini-3.7-flash-free": "gemini-3.8-flash",
     },
     "nvidia-nim": {
-        "minimaxai/minimax-m3": "moonshotai/kimi-k3",
-        "minimax-m3": "moonshotai/kimi-k3",
-        "deepseek-ai/deepseek-v4-pro": "z-ai/glm-5.3",
-        "deepseek-v4-pro": "z-ai/glm-5.3",
-        "deepseek-ai/deepseek-v4-flash": "deepseek-ai/deepseek-v4.1-flash",
-        "deepseek-v4-flash": "deepseek-ai/deepseek-v4.1-flash",
+        "minimaxai/minimax-m3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "minimax-m3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "deepseek-ai/deepseek-v4-pro": "nvidia/nemotron-3-ultra-550b-a55b",
+        "deepseek-v4-pro": "nvidia/nemotron-3-ultra-550b-a55b",
+        "deepseek-ai/deepseek-v4-flash": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "deepseek-v4-flash": "nvidia/nemotron-3.5-lightning-30b-a3b",
         "stepfun-ai/step-3.7-flash": "z-ai/glm-5.3-flash",
         "step-3.7-flash": "z-ai/glm-5.3-flash",
-        "z-ai/glm-5.2": "z-ai/glm-5.3",
-        "glm-5.2": "z-ai/glm-5.3",
+        "z-ai/glm-5.2": "nvidia/nemotron-3-ultra-550b-a55b",
+        "glm-5.2": "nvidia/nemotron-3-ultra-550b-a55b",
         "openai/gpt-oss-120b": "nvidia/nemotron-3-ultra-550b-a55b",
         "gpt-oss-120b": "nvidia/nemotron-3-ultra-550b-a55b",
+        // NIM returned 410 end of life for these on 18/11/2026.
+        "moonshotai/kimi-k3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "kimi-k3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "glm-5.3": "nvidia/nemotron-3-ultra-550b-a55b",
+        "deepseek-ai/deepseek-v4.1-flash": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "deepseek-v4.1-flash": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "google/diffusiongemma-26b-a4b-it": "google/gemma-4-31b-it",
+        "diffusiongemma": "google/gemma-4-31b-it",
     },
     deepseek: {
         "deepseek-v4-flash": "deepseek-flash",
@@ -256,6 +279,11 @@ const LEGACY_CHAT_MODELS: Record<string, Record<string, string>> = {
     },
 };
 
+/** Saved ids that resolve to a replacement; discovery must not list them as models of their own. */
+export function retiredChatModelIds(providerId: string): Set<string> {
+    return new Set(Object.keys(LEGACY_CHAT_MODELS[providerId] ?? {}));
+}
+
 function canonicalChatModelId(providerId: string, modelId?: string): string | undefined {
     if (!modelId) return modelId;
     return LEGACY_CHAT_MODELS[providerId]?.[modelId] ?? modelId;
@@ -263,8 +291,93 @@ function canonicalChatModelId(providerId: string, modelId?: string): string | un
 // Changing the embedding space requires scripts/reembed-knowledge.ts.
 export const DEFAULT_EMBEDDING = { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3-embed-1b" };
 
+// An approved discovered model counts as Fast for worker recruitment when its chat probe finished within this.
+export const FAST_PROBE_MS = 10_000;
+
+function chatModelFromRow(row: CatalogueRow, name: string): ChatModel {
+    const approved = row.approvedAt !== null;
+    return {
+        id: row.modelId,
+        label: row.label,
+        name,
+        free: row.free,
+        metered: row.metered,
+        supportsTools: row.supportsTools ?? false,
+        supportsVision: row.supportsVision ?? false,
+        supportsThinking: row.supportsThinking ?? row.listedThinking ?? false,
+        supportsSearch: row.supportsSearch ?? false,
+        ...(row.supportsStructured ? { supportsStructuredOutput: true } : {}),
+        ...(row.maxOutputTokens ? { maxOutputTokens: Math.min(row.maxOutputTokens, MAX_OUTPUT_TOKENS_CEILING) } : {}),
+        catalogue: {
+            origin: row.origin,
+            approved,
+            status: row.missingSince ? "missing" : row.probeStatus === "failed" ? "failing" : approved ? null : "new",
+            probeChatMs: row.probeChatMs,
+        },
+    };
+}
+
+/** Code entries win field by field; rows add discovered models and status. Untested or failed rows stay out unless approved. */
+export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly CatalogueRow[]): ProviderConfig[] {
+    if (!rows.length) return [...config];
+    return config.map((provider) => {
+        const own = rows.filter((row) => row.providerId === provider.id);
+        if (!own.length) return provider;
+        const byId = new Map(own.map((row) => [row.modelId, row]));
+        const retired = LEGACY_CHAT_MODELS[provider.id] ?? {};
+        const chatModels: ChatModel[] = provider.chatModels.map((model) => {
+            const row = byId.get(model.id);
+            if (!row) return model;
+            return {
+                ...model,
+                ...(model.maxOutputTokens === undefined && row.maxOutputTokens ? { maxOutputTokens: Math.min(row.maxOutputTokens, MAX_OUTPUT_TOKENS_CEILING) } : {}),
+                catalogue: {
+                    origin: "code",
+                    approved: true,
+                    status: row.missingSince ? "missing" : row.probeStatus === "failed" ? "failing" : null,
+                    probeChatMs: row.probeChatMs,
+                },
+            };
+        });
+        const taken = new Set(chatModels.map((model) => model.name));
+        const codeIds = new Set(chatModels.map((model) => model.id));
+        const added = own
+            .filter((row) => !codeIds.has(row.modelId) && !Object.hasOwn(retired, row.modelId)
+                && (row.approvedAt !== null || row.probeStatus === "passed"))
+            .sort((a, b) => a.label.localeCompare(b.label))
+            .map((row) => {
+                const name = uniqueShortName(row.shortName, taken);
+                taken.add(name);
+                return chatModelFromRow(row, name);
+            });
+        return { ...provider, chatModels: [...chatModels, ...added] };
+    });
+}
+
+let mergedProviders: { version: number; list: ProviderConfig[] } | null = null;
+
+/** Code providers merged with the stored catalogue. Synchronous: reads the in-memory snapshot. */
+export function providers(): ProviderConfig[] {
+    const snapshot = catalogueSnapshot();
+    if (mergedProviders?.version !== snapshot.version) {
+        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, snapshot.rows) };
+    }
+    return mergedProviders.list;
+}
+
+/** Worker recruitment, Free only fallback and messaging fallback use code models and approved catalogue models only. */
+export function automaticRouteEligible(model: ChatModel): boolean {
+    return !model.catalogue || model.catalogue.origin === "code" || model.catalogue.approved;
+}
+
+function workerFast(model: ChatModel): boolean {
+    if (getModelMeta(model.id)?.strengths.includes("Fast")) return true;
+    const probeMs = model.catalogue && model.catalogue.origin !== "code" ? model.catalogue.probeChatMs : null;
+    return probeMs !== null && probeMs <= FAST_PROBE_MS;
+}
+
 export function getProvider(id: string): ProviderConfig | undefined {
-    return PROVIDERS.find((p) => p.id === id);
+    return providers().find((p) => p.id === id);
 }
 
 export function getProviderApiKey(p: ProviderConfig): string | undefined {
@@ -312,22 +425,19 @@ function resolveAvailable(providerId: string, modelId: string): ResolvedChat | n
     return model && !chatModelUnavailableReason(model) ? { provider, model } : null;
 }
 
+// On 18/11/2026 NIM took about 110 s to start a GLM-5.3 Flash reply, past the 60 s request timeout.
 export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = [
-    { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" },
     { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3-ultra-550b-a55b" },
+    { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" },
     { providerId: "gemini", modelId: "gemini-3.8-flash" },
 ];
 
 // Gemini is reserved for the worker's explicit final fallback.
 const WORKER_PREFERRED: { providerId: string; modelId: string }[] = [
-    { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" },
-    { providerId: "nvidia-nim", modelId: "deepseek-ai/deepseek-v4.1-flash" },
     { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b" },
     { providerId: "openrouter", modelId: "nvidia/nemotron-3.5-lightning:free" },
+    { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" },
 ];
-
-// Tried first for no-tool subtasks; cannot call functions.
-export const WORKER_NO_TOOLS_MODEL = { providerId: "nvidia-nim", modelId: "google/diffusiongemma-26b-a4b-it" };
 
 // Paid Gemini for workers, sized to subtask complexity: the fallback after free
 // workers fail, and the only model on a paid-only run.
@@ -348,14 +458,11 @@ export function resolveWorkerChain(needsTools: boolean): ResolvedChat[] {
         }
     };
 
-    if (!needsTools) {
-        push(resolveAvailable(WORKER_NO_TOOLS_MODEL.providerId, WORKER_NO_TOOLS_MODEL.modelId));
-    }
     for (const c of WORKER_PREFERRED) push(resolveAvailable(c.providerId, c.modelId));
-    for (const provider of PROVIDERS) {
+    for (const provider of providers()) {
         if (provider.kind === "gemini" || provider.metered || !isProviderAvailable(provider)) continue;
         for (const model of provider.chatModels) {
-            if (!model.metered && model.supportsTools && getModelMeta(model.id)?.strengths.includes("Fast")) {
+            if (!model.metered && model.supportsTools && automaticRouteEligible(model) && workerFast(model)) {
                 push({ provider, model });
             }
         }
@@ -367,6 +474,12 @@ export function resolveMessagingDefault(): ResolvedChat {
     for (const c of MESSAGING_MODEL_CHAIN) {
         const resolved = resolveAvailable(c.providerId, c.modelId);
         if (resolved) return resolved;
+    }
+    for (const provider of providers()) {
+        if (provider.metered || !isProviderAvailable(provider)) continue;
+        const model = provider.chatModels.find((m) => m.catalogue && m.catalogue.origin !== "code" && m.catalogue.approved
+            && m.free === true && m.supportsTools && !chatModelUnavailableReason(m));
+        if (model) return { provider, model };
     }
     return resolveChat();
 }
@@ -389,7 +502,7 @@ export function resolveModelKey(key?: string | null): ResolvedChat | null {
 
 function findAvailableProvider(arg: string): ProviderConfig | undefined {
     const a = arg.trim().toLowerCase();
-    const provider = PROVIDERS.find((p) => p.id.toLowerCase() === a || p.label.toLowerCase() === a);
+    const provider = providers().find((p) => p.id.toLowerCase() === a || p.label.toLowerCase() === a);
     return provider && isProviderAvailable(provider) ? provider : undefined;
 }
 
@@ -406,7 +519,7 @@ export function resolveChatByName(providerArg: string, modelArg: string): Resolv
 export function resolveChatModelByName(name: string): ResolvedChat | null {
     const n = name.trim().toLowerCase();
     const aliases: ResolvedChat[] = [];
-    for (const provider of PROVIDERS) {
+    for (const provider of providers()) {
         if (!isProviderAvailable(provider)) continue;
         const model = provider.chatModels.find(
             (m) => m.name.toLowerCase() === n || m.id.toLowerCase() === n,
@@ -419,13 +532,17 @@ export function resolveChatModelByName(name: string): ResolvedChat | null {
     return aliases.length === 1 ? aliases[0] : null;
 }
 
-export function availableChatModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
-    return PROVIDERS
+/** Picker models for `/model`: untested and failed discovered models never reach `providers()`. */
+export function availableChatModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string; status?: "new" | "missing" }[] }[] {
+    return providers()
         .filter((p) => isProviderAvailable(p) && p.chatModels.length > 0)
         .map((p) => ({
             provider: p.label,
             providerId: p.id,
-            models: p.chatModels.filter((m) => !chatModelUnavailableReason(m) && (!freeOnly || m.free === true)).map((m) => ({ name: m.name, label: m.label })),
+            models: p.chatModels.filter((m) => !chatModelUnavailableReason(m) && (!freeOnly || m.free === true)).map((m) => {
+                const status = m.catalogue?.status;
+                return { name: m.name, label: m.label, ...(status === "new" || status === "missing" ? { status } : {}) };
+            }),
         })).filter((p) => p.models.length > 0);
 }
 
@@ -436,7 +553,7 @@ export interface ResolvedEmbedding {
 
 export function resolveEmbedding(modelId?: string): ResolvedEmbedding {
     const wanted = modelId ?? (process.env.KNOWLEDGE_EMBEDDING_MODEL?.trim() || undefined);
-    for (const provider of PROVIDERS) {
+    for (const provider of providers()) {
         const model = provider.embeddingModels.find((m) => m.id === wanted);
         if (model) return { provider, model };
     }
@@ -462,7 +579,7 @@ export function resolveEmbeddingByName(providerArg: string, modelArg: string): R
 }
 
 export function availableEmbeddingModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
-    return PROVIDERS
+    return providers()
         .filter((p) => isProviderAvailable(p) && p.embeddingModels.length > 0)
         .map((p) => ({
             provider: p.label,
@@ -491,7 +608,7 @@ export function resolveMessagingEmbedding(): ResolvedEmbedding {
 }
 
 export function listProvidersPublic() {
-    return PROVIDERS.map((p) => ({
+    return providers().map((p) => ({
         id: p.id,
         label: p.label,
         available: isProviderAvailable(p),
@@ -508,6 +625,9 @@ export function listProvidersPublic() {
             supportsStructuredOutput: m.supportsStructuredOutput ?? false,
             maxOutputTokens: m.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS,
             meta: getModelMeta(m.id),
+            origin: m.catalogue?.origin ?? "code",
+            approved: automaticRouteEligible(m),
+            status: m.catalogue?.status ?? null,
         })),
         unavailableChatModels: p.chatModels.filter((m) => chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,

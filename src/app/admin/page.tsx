@@ -12,6 +12,7 @@ import AgentsPanel from "./agents-panel";
 import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import NotificationsPanel from "./notifications-panel";
 import ModelHealthPanel from "./model-health-panel";
+import ModelsPanel from "./models-panel";
 import { clearOfflinePrivateData } from "@/lib/offline/storage";
 import { Masonry } from "./masonry";
 import { Activity, Bot, CheckCircle2, Clock, RefreshCw, Save, ShieldCheck, LogOut, Sparkles, Wifi, XCircle } from "lucide-react";
@@ -133,7 +134,7 @@ export default function DashboardPage() {
         if (loading) return;
         const revealFragment = () => {
             const id = window.location.hash.slice(1);
-            if (!["model-health", "security", "agents"].includes(id)) return;
+            if (!["model-health", "models", "security", "agents"].includes(id)) return;
             const section = document.getElementById(id);
             if (!section) return;
             section.setAttribute("tabindex", "-1");
@@ -266,6 +267,10 @@ export default function DashboardPage() {
 
                 <section className={ui.panel} id="model-health">
                     <ModelHealthPanel />
+                </section>
+
+                <section className={ui.panel} id="models">
+                    <ModelsPanel />
                 </section>
 
                 <Masonry minColumnWidth={300} gap={16}>

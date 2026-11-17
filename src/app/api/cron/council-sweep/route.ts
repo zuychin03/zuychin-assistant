@@ -3,17 +3,19 @@ import { notify } from "@/lib/messaging/router";
 import { finalizeCouncil, proposeCouncilVerdict } from "@/lib/council/close";
 import { requireCron } from "@/lib/auth/guard";
 import {
-    expireOverdueSessions, listStandbyExpired, listUnfiledArchives, listSessionsNeedingVerdict,
-    readTranscript,
+    countSweepCandidates, expireOverdueSessions, listStandbyExpired, listUnfiledArchives,
+    listSessionsNeedingVerdict, readTranscript,
 } from "@/lib/council/store";
 
 export const maxDuration = 60;
 
 // A terminal session gets this long for its own closer to write the verdict
-// before the sweep writes one from the transcript.
+// before the sweep writes one from the transcript. A floor, not a deadline: the
+// sweep runs every 15 minutes, so the worst case to act is ~25 minutes.
 const VERDICT_GRACE_MS = 10 * 60 * 1000;
 // How long a 'pending' archive may sit before it is treated as abandoned. Long
-// enough that a close still in flight is never fought over.
+// enough that a close still in flight is never fought over. Same ~25 minute
+// worst case as above.
 const ARCHIVE_GRACE_MS = 10 * 60 * 1000;
 
 // The only actor when EVERY participant is dead and nobody is polling to execute
@@ -23,6 +25,12 @@ export async function POST(req: NextRequest) {
     try {
         const denied = requireCron(req);
         if (denied) return denied;
+
+        // Nothing to do is the normal outcome at this cadence, and one indexed
+        // count replaces four full-row queries to discover it. null is the count
+        // itself failing, so fall through rather than skip the sweep.
+        const candidates = await countSweepCandidates();
+        if (candidates === 0) return NextResponse.json({ idle: true });
 
         const expired = await expireOverdueSessions();
 

@@ -18,6 +18,11 @@ edited and deleted in place.
 - Multi-provider chat: switch the model per message between Gemini 3.8 Flash / 3.5 Flash-Lite,
   DeepSeek V4.1 Flash / V4 Pro, OpenRouter, NVIDIA NIM and Kilo, straight from the chat header.
   Retired model IDs resolve to replacements; unavailable gateways are hidden and excluded from workers
+- Model catalogue: a daily check lists each provider's models, tests new free ones (chat, tool
+  call, forced tool call, vision) and adds those that pass to the picker marked New. A model that
+  drops off its provider's list twice is marked Missing but stays selectable. Worker runs and
+  fallbacks use a discovered model only after you approve it in `/admin`; paid models are tested
+  only when you press Test
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -46,7 +51,7 @@ edited and deleted in place.
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
-  free fast models (GLM-5.3 Flash, DeepSeek V4.1 Flash, Nemotron 3.5 Lightning and available Fast-tagged
+  free fast models (Nemotron 3.5 Lightning on NIM and OpenRouter, GLM-5.3 Flash and available Fast-tagged
   tool-capable models), with Gemini 3.5 Flash-Lite for simple fallback subtasks and 3.8 Flash
   for complex ones. Metered models stay out of the free worker pool
 - Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
@@ -161,15 +166,15 @@ edited and deleted in place.
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
 - Cron jobs: daily briefing (LLM-triaged inbox - only the emails that matter, icon-coded
   by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
-  initiative decisions, the nightly run review and proactive check-ins
+  initiative decisions, the nightly run review, the daily model check and proactive check-ins
 - Export: every long reply gets a collapsed **Generate ▾** menu for a DOCX / PDF / MD
   download; whole conversations export to PDF or DOCX (Markdown-aware)
 - Live embedding switcher: changing the embedding model in settings (behind a confirm
   modal) re-embeds the entire knowledge store in resumable batches and flips the active
   partition at runtime - no script run or redeploy needed
-- Admin dashboard: stats, a live personality/system-prompt editor, agent-run traces
-  (status, duration, tokens, expandable step timeline), a fact-memory editor and a
-  skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
+- Admin dashboard: stats, model health, the model catalogue, a live personality/system-prompt
+  editor, agent-run traces (status, duration, tokens, expandable step timeline), a fact-memory
+  editor and a skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
 - Self-authoring skills: after a novel multi-step task the agent can save its procedure
   as a draft skill; once approved in the admin panel it joins the skill index for future runs
 - Resilient replies: a provider response that stops at its length limit is resumed and stitched
@@ -182,7 +187,7 @@ edited and deleted in place.
 | Layer | Technology |
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
-| Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Kimi K3, GLM-5.3, DeepSeek V4.1 Flash, Nemotron, Gemma 4, Laguna XS) |
+| Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Nemotron, Gemma 4, GLM-5.3 Flash, Laguna XS) |
 | Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3 Embed 1B (2048d, default) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
@@ -193,7 +198,7 @@ edited and deleted in place.
 | Messaging | Discord.js, Telegram Bot API |
 | Agent council | Agent Client Protocol (`@agentclientprotocol/sdk`) over stdio, `ws` loopback control channel, git worktree isolation |
 | Export | docx, pdfkit |
-| Hosting | Vercel (web/API), Render (Discord bot) |
+| Hosting | Self-hosted standalone Next server (web/API) and an always-on Node process (Discord bot) |
 
 ## Prerequisites
 
@@ -248,6 +253,8 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
 | `OPENCODE_ZEN_API_KEY` | Retained configuration; unavailable to this app because the probed free tier requires OpenCode itself |
 | `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
+| `MODEL_DISCOVERY` | Optional. `off` makes the daily model check return 204 and do nothing; the app keeps using the stored catalogue and the models in code. Check now in `/admin` still works |
+| `MODEL_DISCOVERY_MAX_PROBES` | Optional. Free models tested per provider in each check, a whole number from 0 to 50 (default 10) |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini |
 
@@ -315,6 +322,14 @@ The `-- ===== Knowledge graph wave =====` block at the bottom adds `vault_graph_
 `vault_page_links`, which back the cached `/graph` payload and the derived vault adjacency.
 Both are rebuildable from the repo, so they can be dropped and regenerated at any time; the
 graph still works without them, it just rebuilds from GitHub on every load.
+
+The `-- ===== V7 model catalogue =====` block adds `model_catalogue` (every known chat model with
+its test results, missing count and approval) and `model_discovery_runs` (one row per check; a
+unique index on running rows is the lock), seeds them with the models in code, and allows the
+`probe` purpose in model health. On an existing project, run
+[`scripts/migrations/v7-model-catalogue.sql`](scripts/migrations/v7-model-catalogue.sql); it is
+safe to run again. Without these tables the app serves the models in code and `/admin` says
+which file to apply.
 
 
 ### Web authentication
@@ -443,6 +458,7 @@ npm run dev
 | POST | `/api/cron/vault-lint` | Second-brain vault lint (`?mode=suggest` to report only) |
 | POST | `/api/cron/conversation-cleanup` | Review conversations and record cleanup recommendations |
 | POST | `/api/cron/council-sweep` | Expire overdue councils, write the verdict for ended ones nobody concluded, retry failed filing |
+| POST | `/api/cron/model-discovery` | Daily model check: list providers' models, test new free ones, count missing ones (202, runs in the background; 409 while a check runs; 204 with `MODEL_DISCOVERY=off`) |
 | GET | `/api/vault/health` | Vault repo connectivity / permissions check |
 | GET | `/api/vault/graph` | Vault as graph data: nodes with lifecycle/cluster/centrality/health, edges, link suggestions. Served from a cached snapshot, revalidated in the background; `?refresh=1` forces a rebuild |
 | GET | `/api/vault/search` | Semantic (hybrid keyword + vector) page search for the graph's search box |
@@ -466,6 +482,9 @@ npm run dev
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
 | GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
 | GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
+| GET/PATCH | `/api/admin/models` | Model catalogue rows and the last 10 checks / approve or unapprove a model for automatic routes |
+| POST | `/api/admin/models/refresh` | Start a model check now (202; 409 while one runs) |
+| POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
 | GET/POST | `/api/admin/conversation-cleanup` | Cleanup recommendations / dismiss or review them |
 
 Browser routes require the signed `zuychin-auth` session when authentication is enabled. The
@@ -490,7 +509,7 @@ is not evidence that a model has retired.
 | Google Gemini (free) | native | the same two ids | Same models on a free-tier project's key. Picking one routes the call through that key's own client, so it draws on the free quota instead of the paid project |
 | DeepSeek | OpenAI-compatible | `deepseek-flash`, `deepseek-v4-pro` | Metered; excluded from the free worker pool. Flash is labelled V4.1 Flash. `json_object` only, no `json_schema` |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it`, `nvidia/nemotron-3.5-lightning:free` | Gemma 4 26B is metered and excluded from free workers |
-| NVIDIA NIM | OpenAI-compatible | `moonshotai/kimi-k3`, `z-ai/glm-5.3`, `z-ai/glm-5.3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `google/diffusiongemma-26b-a4b-it`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. DiffusionGemma does not use tools. See the audit for timeout and capability limits |
+| NVIDIA NIM | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.3-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. Kimi K3, GLM-5.3, DeepSeek V4.1 Flash and DiffusionGemma reached end of life on NIM (HTTP 410 on 18/11/2026); saved choices resolve to replacements |
 | Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
 | OpenCode Zen | Restricted catalogue | `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free` | Free-only; access remains restricted. Muse also requires the unsupported Responses transport and contributor training terms. See [setup](scripts/OPENCODE_ZEN_SETUP.md) |
 | TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
@@ -503,9 +522,6 @@ How it works:
 - Tool dispatch follows each model's declared capability. Some endpoints remain unverified
   under load; successful HTTP responses alone do not prove a tool was executed. If a model
   rejects tools, the client can retry without them.
-- NIM DeepSeek V4.1 Flash supports automatic tool calls in streamed probes, but forced
-  tool selection returned plain JSON. Its explicit Search toggle is disabled; automatic
-  tool use remains enabled.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
   can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning`,
@@ -532,6 +548,36 @@ How it works:
   processes up to 20 rows per request with four concurrent preparations and reports failures
   instead of presenting an unavailable count as zero. Removed embedding IDs fail explicitly
   instead of silently interpreting old vectors as a new model's partition.
+
+### Model catalogue
+
+The models in `providers.ts` are merged with the stored catalogue
+([`src/lib/ai/catalogue/`](src/lib/ai/catalogue)). Code wins field by field; the catalogue adds
+discovered models and a status. The server loads the catalogue at start-up and reloads it in the
+background once it is more than 5 minutes old, so model lookups stay synchronous.
+
+- Listing: the daily check lists Gemini (both keys), OpenRouter and Kilo (free models only),
+  NVIDIA NIM and DeepSeek. OpenCode Zen and TokenRouter are not listed.
+- Testing: each check tests up to `MODEL_DISCOVERY_MAX_PROBES` free models per provider: new
+  ones first, then retries of unclear results, then picker models last tested over 7 days ago.
+  A test sends short streamed requests: a chat reply, an automatic tool call, a forced tool call
+  (the Search toggle relies on it) and, when the list shows image input or says nothing about
+  inputs, a vision question. Three unclear results in a row (timeouts, 429) count as a failure;
+  HTTP 410 marks the model failed and Missing at once. Test requests appear in model health with
+  the `probe` purpose.
+- Picker: a discovered model joins the picker once it passes (marked New) or once you approve
+  it. A model missing from its provider's list in two checks running is marked Missing but stays
+  selectable, so saved choices keep working.
+- Automatic routes: worker recruitment, the Free only fallback and the messaging fallback use
+  models in code and approved catalogue models only.
+- Messages: at most one Discord message per check, in the `DISCORD_CH_SYSTEM` channel, and only
+  when something changed: new models that passed, models newly Missing, approved models that
+  failed a re-test, and a provider whose list failed twice in a row.
+- A check stops starting tests after 20 minutes, inside the 30-minute window after which a
+  stuck check's lock is cleared.
+- `npx tsx scripts/model-discovery-dry-run.mts` prints what a check would add, mark missing and
+  test, and writes nothing. `npx tsx scripts/model-probe.mts <provider> <model>` tests one model
+  and refuses paid routes without `--allow-paid`. `npm run catalogue:test` runs the offline checks.
 
 ### Migrating knowledge embeddings
 
@@ -967,17 +1013,18 @@ Review and merge the named worktree branches yourself when the campaign is compl
 
 The messaging channels pick the first available configured model in this order:
 
-1. GLM-5.3 Flash (NVIDIA NIM)
-2. Nemotron 3 Ultra (NVIDIA NIM)
+1. Nemotron 3 Ultra (NVIDIA NIM)
+2. GLM-5.3 Flash (NVIDIA NIM)
 3. Gemini 3.8 Flash
 
 Switch the model from inside a chat with the `/model` command. The choice is saved per channel
 and reused until you change it again. Every command also accepts a `!` prefix (e.g. `!model`)
 since Discord reserves `/` for its own slash-command UI:
 
-- `/model` (or `/model list`) shows the current model and every available provider + model.
+- `/model` (or `/model list`) shows the current model and every available provider + model,
+  with "(new)" or "(missing)" after catalogue models in those states.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
-  `/model nvidia-nim deepseek-v4.1-flash` or `/model gemini gemini-3.8-flash`.
+  `/model nvidia-nim nemotron-3-ultra` or `/model gemini gemini-3.8-flash`.
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
   memory partition the channel uses (memories are stored per embedding model).
 
@@ -1008,7 +1055,8 @@ node bot.js
 - Honors `/search`, `/think`, `/agent`, `/model` and `/embed-model` prefixes (use the `!` variant
   so Discord doesn't capture `/`), downloads attachments (up to 20 MB), uploads any generated
   files (reports/code) as attachments, and chunks replies to Discord's 2000-char limit.
-- Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` for Render.
+- Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` (`web: node bot.js`)
+  for hosts that read one.
 
 ## Telegram Bot (optional)
 
@@ -1041,7 +1089,8 @@ conversational chat plus initiative nudges.
 | `/api/cron/conversation-cleanup` | Weekly (quiet hour) | `{}` |
 | `/api/cron/proactive` | As needed | `{ "type": "morning_briefing" }` |
 | `/api/cron/vault-lint` | Weekly (quiet hour) | `{}` |
-| `/api/cron/council-sweep` | Every 5 min | `{}` |
+| `/api/cron/council-sweep` | Every 15 min | `{}` |
+| `/api/cron/model-discovery` | Daily (quiet hour) | `{}` |
 
 Proactive types: `morning_briefing`, `daily_check`, `reminder`.
 
@@ -1055,6 +1104,8 @@ Run-review reads the previous day's agent runs and files draft skills for anythi
 failed or ran expensive; drafts wait for approval in `/admin`.
 Conversation cleanup reviews inactive chats weekly, surfaces only conservative deletion suggestions in
 Dashboard, and never deletes a conversation without your selection.
+Model discovery answers 202 straight away and runs the check in the background, since tests can
+take minutes (see [Model catalogue](#model-catalogue)).
 
 ## Second Brain (optional)
 
@@ -1070,7 +1121,8 @@ Setup:
    [`vault-template/`](vault-template/) (`agents.md` schema, empty `index.md`/`log.md`,
    `raw/` + `wiki/` folders).
 2. Create a fine-grained PAT scoped to that one repo with **Contents read/write**, and set
-   `GITHUB_VAULT_REPO`, `GITHUB_VAULT_TOKEN`, `GITHUB_VAULT_BRANCH` in `.env.local` / Vercel.
+   `GITHUB_VAULT_REPO`, `GITHUB_VAULT_TOKEN`, `GITHUB_VAULT_BRANCH` in `.env.local` and the
+   production environment.
 3. Check `GET /api/vault/health` returns `"ok": true`.
 
 The assistant then gets six tools: `vault_search` (hybrid keyword + pgvector over pages),
@@ -1184,16 +1236,26 @@ sets out its visual and interaction rules.
 
 ## Deployment
 
-- Web app: Vercel. Add every `.env.local` variable under Project > Settings > Environment
-  Variables. Update the Google OAuth redirect URI and the Telegram webhook URL to your
-  production domain. Set `AUTH_RP_ID` and `AUTH_ORIGIN` to that exact domain before enrolling
+- Web app: any always-on Node host. `next.config.ts` builds a standalone server
+  (`output: "standalone"`): run `npm ci` and `npm run build`, copy `.next/static` to
+  `.next/standalone/.next/static` and `public` to `.next/standalone/public`, then start
+  `node .next/standalone/server.js` with the `.env.local` variables in its environment.
+  `NEXT_BUILD_CPUS` (default 2) caps the build's page-data workers, which otherwise run out of
+  memory on a 16 GB machine.
+- Behind a tunnel or reverse proxy the server sees its own bound address as the request origin,
+  so set `AUTH_ORIGIN` (and `NEXT_PUBLIC_BASE_URL`) to the public origin; origin checks and
+  absolute links use it. Set `AUTH_RP_ID` and `AUTH_ORIGIN` to that exact domain before enrolling
   a passkey. Do not rotate `AUTH_SESSION_SECRET` without also resetting TOTP recovery data.
+- Update the Google OAuth redirect URI and the Telegram webhook URL to your production domain.
+- If the host has no IPv6 route, start Node with
+  `NODE_OPTIONS=--dns-result-order=ipv4first --no-network-family-autoselection`, or distant API
+  hosts can fail Node's 250 ms connection race.
 - Apply `supabase-setup.sql` after deployment upgrades. It is idempotent and includes the
-  passkey, TOTP and council schema.
+  passkey, TOTP, council and model catalogue schema.
 - Give the Discord bot `CHAT_API_KEY` and the web app the identical value; cron callers need
   `Authorization: Bearer <CRON_SECRET>`.
-- Discord bot: Render (or any always-on host) using `discord-bot/Procfile`, with
-  `ZUYCHIN_API_URL` pointing at the deployed web app.
+- Discord bot: any always-on host, the web app's machine included, running `node bot.js` (as in
+  `discord-bot/Procfile`) with `ZUYCHIN_API_URL` pointing at the deployed web app.
 
 ## Project Structure
 
@@ -1217,7 +1279,7 @@ src/
 │   │   ├── host-client.ts              # Loopback host probe, pairing, WebSocket client, launch
 │   │   └── remote-setup.ts             # Paste-in brief for agents on other machines
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + run-trace, memory, skills and agent-credential panels
+│   ├── admin/                          # Dashboard + model health, model catalogue, run-trace, memory, skills and agent-credential panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── agent/claim/route.ts        # Unauthenticated claim → per-agent key exchange (rate limited)
@@ -1232,10 +1294,10 @@ src/
 │       ├── push/subscribe/route.ts     # Web-push subscription registry
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
-│       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint
+│       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint / model discovery
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status, personality, run traces, memories, skills
+│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
@@ -1247,7 +1309,8 @@ src/
 │   ├── datetime.ts                     # Current date/time context injected on every request
 │   ├── google-auth.ts                  # Google OAuth2 client
 │   ├── ai/
-│   │   ├── providers.ts                # Provider + chat/embedding model registry
+│   │   ├── providers.ts                # Provider + chat/embedding model registry, merged with the catalogue
+│   │   ├── catalogue/                  # Model discovery: provider lists, tests, stored catalogue, daily check
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
 │   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
 │   │   ├── reply-sources.ts            # Records the sources each reply used
@@ -1271,10 +1334,11 @@ src/
 │   ├── today-panel.tsx                 # Today panel: the day, due items, to-dos, scheduled tasks
 │   └── dropdown.tsx                    # Shared listbox used by every select in the app
 ├── proxy.ts                            # Cookie auth proxy (Next 16 middleware convention)
+├── instrumentation.ts                  # Loads the model catalogue before the server takes requests
 public/sw.js                            # Service worker: push display + click-through
 discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
-└── Procfile                            # Render deployment
+└── Procfile                            # Process definition (web: node bot.js)
 scripts/
 ├── council-host.mts                    # Local ACP host: agent sessions, permission gate, dispatch loop, control channel
 ├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
@@ -1290,7 +1354,10 @@ scripts/
 ├── test-agent-credentials.mts          # Scope split + per-agent key mint/exchange/revoke tests
 ├── test-mutation-journal.mts           # Mutation-journal tests
 ├── evaluate-knowledge.ts               # Knowledge-store retrieval eval
-└── reembed-knowledge.ts                # Manual store re-embed
+├── reembed-knowledge.ts                # Manual store re-embed
+├── model-discovery-dry-run.mts         # What a model check would add, mark missing and test (writes nothing)
+├── model-probe.mts                     # Test one model by hand (paid routes need --allow-paid)
+└── test-catalogue-*.mts                # Model catalogue checks (npm run catalogue:test)
 supabase-setup.sql                      # One-shot database setup script
 ```
 

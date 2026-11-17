@@ -21,6 +21,7 @@ export type NotificationType =
     | "initiative_nudge"
     | "proactive_checkin"
     | "run_review"
+    | "model_catalogue"
     | "council_convened"
     | "council_conclusion"
     | "council_stalled";
@@ -46,6 +47,7 @@ const ROUTES: Record<NotificationType, Route> = {
     initiative_nudge: { telegram: true, push: true },
     proactive_checkin: { telegram: true },
     run_review: { discord: "system", discordFallback: false },
+    model_catalogue: { discord: "system", discordFallback: false },
     // Milestones only, never per turn: sendDiscordMessage chunks over 2000 chars
     // into sequential POSTs and aborts the rest on the first non-ok.
     council_convened: { discord: "coworking" },

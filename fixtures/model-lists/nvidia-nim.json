@@ -1,0 +1,35 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "object": "model",
+      "created": 735790403,
+      "owned_by": "z-ai"
+    },
+    {
+      "id": "nvidia/nemotron-3-embed-1b",
+      "object": "model",
+      "created": 735790403,
+      "owned_by": "nvidia"
+    },
+    {
+      "id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+      "object": "model",
+      "created": 735790403,
+      "owned_by": "nvidia"
+    },
+    {
+      "id": "poolside/laguna-xs-2.1",
+      "object": "model",
+      "created": 735790403,
+      "owned_by": "poolside"
+    },
+    {
+      "id": "stepfun-ai/step-5-preview",
+      "object": "model",
+      "created": 735790403,
+      "owned_by": "stepfun-ai"
+    }
+  ]
+}

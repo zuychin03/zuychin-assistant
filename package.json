@@ -36,6 +36,7 @@
     "council:ci:env:test": "tsx scripts/test-council-ci-env.mts",
     "journal:test": "tsx --env-file=.env.local scripts/test-mutation-journal.mts",
     "v6:test": "tsx scripts/test-v6.mts",
+    "catalogue:test": "tsx scripts/test-catalogue-sources.mts && tsx scripts/test-catalogue-merge.mts && tsx scripts/test-catalogue-probe.mts && tsx scripts/test-catalogue-run.mts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -78,23 +78,6 @@ const GEMMA_4_26B_A4B: ModelMeta = {
     strengths: ["Efficient", "Multimodal", "Vision", "Tool use", "Reasoning", "Multilingual"],
 };
 
-const DIFFUSIONGEMMA_26B: ModelMeta = {
-    developer: "Google DeepMind",
-    description: "Multimodal text-diffusion model that refines blocks of tokens in parallel. This endpoint is used for tasks without tools.",
-    inputs: ["Text", "Image", "Video"],
-    context: "256K",
-    params: "25.2B total · 3.8B active (MoE)",
-    strengths: ["Fast", "Multimodal", "Efficient", "Multilingual"],
-};
-
-const GLM_53: ModelMeta = {
-    developer: "Z.ai",
-    description: "Text reasoning model for coding and long-context agent workflows, with configurable reasoning effort.",
-    inputs: ["Text"],
-    context: "1M",
-    strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Long context"],
-};
-
 const GLM_53_FLASH: ModelMeta = {
     developer: "Z.ai",
     description: "Multimodal Flash model for reasoning and tool-driven tasks, with image understanding.",
@@ -177,14 +160,10 @@ export const MODEL_META: Record<string, ModelMeta> = {
         params: "196B total · 11B active (MoE)",
         strengths: ["Fast", "Coding", "Vision", "Reasoning", "Tool use"],
     },
-    "moonshotai/kimi-k3": KIMI_K3,
-    "z-ai/glm-5.3": GLM_53,
-    "deepseek-ai/deepseek-v4.1-flash": DEEPSEEK_V41_FLASH,
     "deepseek-v4-pro": DEEPSEEK_V4_PRO,
     "deepseek-flash": { ...DEEPSEEK_V41_FLASH, maxOutput: "384K" },
     "nvidia/nemotron-3-ultra-550b-a55b": NEMOTRON_3_ULTRA,
     "google/gemma-4-31b-it": GEMMA_4_31B,
-    "google/diffusiongemma-26b-a4b-it": DIFFUSIONGEMMA_26B,
     "z-ai/glm-5.3-flash": GLM_53_FLASH,
     "nvidia/nemotron-3.5-lightning-30b-a3b": NEMOTRON_35_LIGHTNING,
     "poolside/laguna-xs-2.1": LAGUNA_XS_21,

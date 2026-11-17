@@ -226,10 +226,10 @@ function resolveChatForRequest(
 }
 
 function formatModelListing(
-    groups: { provider: string; providerId: string; models: { name: string; label: string }[] }[]
+    groups: { provider: string; providerId: string; models: { name: string; label: string; status?: "new" | "missing" }[] }[]
 ): string {
     return groups
-        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  â€¢ ${m.name} - ${m.label}`).join("\n"))
+        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  • ${m.name} - ${m.label}${m.status ? ` (${m.status})` : ""}`).join("\n"))
         .join("\n");
 }
 
@@ -692,7 +692,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
             const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
                 ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
                 : effectiveMessage;
-            onEvent?.({ type: "status", message: "Understanding your requestâ€¦" });
+            onEvent?.({ type: "status", message: "Understanding your request…" });
             const resumePrefix = resumeRun ? buildResumePrefix(resumeRun) : undefined;
             const res = await runAgent({
                 rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,

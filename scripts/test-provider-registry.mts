@@ -38,14 +38,21 @@ try {
 
     check("saved NIM IDs and names migrate within their provider", () => {
         const aliases = [
-            ["minimaxai/minimax-m3", "moonshotai/kimi-k3"],
-            ["minimax-m3", "moonshotai/kimi-k3"],
-            ["deepseek-ai/deepseek-v4-pro", "z-ai/glm-5.3"],
-            ["deepseek-v4-pro", "z-ai/glm-5.3"],
-            ["deepseek-ai/deepseek-v4-flash", "deepseek-ai/deepseek-v4.1-flash"],
+            ["minimaxai/minimax-m3", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["minimax-m3", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["deepseek-ai/deepseek-v4-pro", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["deepseek-v4-pro", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["deepseek-ai/deepseek-v4-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"],
             ["step-3.7-flash", "z-ai/glm-5.3-flash"],
-            ["z-ai/glm-5.2", "z-ai/glm-5.3"],
+            ["z-ai/glm-5.2", "nvidia/nemotron-3-ultra-550b-a55b"],
             ["openai/gpt-oss-120b", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["moonshotai/kimi-k3", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["kimi-k3", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["z-ai/glm-5.3", "nvidia/nemotron-3-ultra-550b-a55b"],
+            ["deepseek-ai/deepseek-v4.1-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"],
+            ["deepseek-v4.1-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"],
+            ["google/diffusiongemma-26b-a4b-it", "google/gemma-4-31b-it"],
+            ["diffusiongemma", "google/gemma-4-31b-it"],
         ];
         for (const [oldId, newId] of aliases) {
             assert.equal(resolveChat("nvidia-nim", oldId).model.id, newId);
@@ -181,9 +188,11 @@ try {
 
     check("workers use available free tool endpoints in priority order", () => {
         const workers = resolveWorkerChain(true);
-        assert.equal(workers[0].model.id, "z-ai/glm-5.3-flash");
-        assert.equal(workers[1].model.id, "deepseek-ai/deepseek-v4.1-flash");
-        assert.equal(workers[1].model.supportsSearch, false);
+        assert.deepEqual(workers.slice(0, 3).map((w) => `${w.provider.id}::${w.model.id}`), [
+            "nvidia-nim::nvidia/nemotron-3.5-lightning-30b-a3b",
+            "openrouter::nvidia/nemotron-3.5-lightning:free",
+            "nvidia-nim::z-ai/glm-5.3-flash",
+        ]);
         const keys = workers.map((w) => `${w.provider.id}::${w.model.id}`);
         assert.equal(new Set(keys).size, keys.length);
         for (const worker of workers) {
@@ -192,7 +201,7 @@ try {
             assert.ok(!worker.provider.metered && !worker.model.metered);
             assert.ok(worker.model.supportsTools);
         }
-        assert.equal(resolveWorkerChain(false)[0].model.id, "google/diffusiongemma-26b-a4b-it");
+        assert.equal(resolveWorkerChain(false)[0].model.id, "nvidia/nemotron-3.5-lightning-30b-a3b");
         const preferred = getProvider("nvidia-nim")!.chatModels.find((m) => m.id === "z-ai/glm-5.3-flash")!;
         preferred.supportsTools = false;
         try {
@@ -216,6 +225,7 @@ try {
     check("default chains use current endpoints and respect missing keys", () => {
         assert.equal(resolveChat().model.id, DEFAULT_CHAT.modelId);
         assert.equal(resolveMessagingDefault().provider.id, "nvidia-nim");
+        assert.equal(resolveMessagingDefault().model.id, "nvidia/nemotron-3-ultra-550b-a55b");
         assert.equal(resolveMessagingEmbedding().model.id, DEFAULT_EMBEDDING.modelId);
         delete process.env.NVIDIA_NIM_API_KEY;
         assert.equal(resolveMessagingDefault().model.id, "gemini-3.8-flash");
@@ -254,7 +264,7 @@ try {
     });
 
     check("new NIM endpoints use conservative unverified output and schema limits", () => {
-        for (const id of ["moonshotai/kimi-k3", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "deepseek-ai/deepseek-v4.1-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"]) {
+        for (const id of ["z-ai/glm-5.3-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"]) {
             assert.equal(modelMaxOutputTokens(id), 8192);
             assert.ok(!resolveChat("nvidia-nim", id).model.supportsStructuredOutput);
         }
@@ -262,7 +272,7 @@ try {
 
     check("public aliases support saved selection migration without exposing keys", () => {
         const providers = listProvidersPublic();
-        assert.equal(providers.find((p) => p.id === "nvidia-nim")!.chatModelAliases["deepseek-v4-pro"], "z-ai/glm-5.3");
+        assert.equal(providers.find((p) => p.id === "nvidia-nim")!.chatModelAliases["deepseek-v4-pro"], "nvidia/nemotron-3-ultra-550b-a55b");
         assert.equal(providers.find((p) => p.id === "deepseek")!.chatModelAliases["deepseek-v4-pro"], undefined);
         assert.ok(!JSON.stringify(providers).includes("registry-test-key"));
     });
