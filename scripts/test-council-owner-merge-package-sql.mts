@@ -7,6 +7,8 @@ import { PGlite } from "@electric-sql/pglite";
 const marker = "-- ===== Council owner merge package =====";
 const setup = await readFile(new URL("../supabase-setup.sql", import.meta.url), "utf8");
 const baseline = setup.split(marker)[0];
+// Setup sections after this one may belong to other features; apply only the Council ones.
+const councilTail = setup.includes(marker) ? setup.slice(setup.indexOf(marker)).split(/(?=^-- ===== )/m).filter(part => /^-- ===== .*Council/.test(part)).join("") : "";
 const attribution = await readFile(new URL("./migrations/council-execution-attribution.sql", import.meta.url), "utf8");
 const migration = await readFile(new URL("./migrations/council-owner-merge-package.sql", import.meta.url), "utf8").catch(() => "");
 const baselineOnly = process.env.COUNCIL_OWNER_PACKAGE_BASELINE === "1";
@@ -20,7 +22,7 @@ function lastFunction(name: string) {
     return matches.at(-1)![0];
 }
 
-for (const [source, sql] of baselineOnly ? [["baseline", ""]] : [["migration", migration], ["setup", setup.includes(marker) ? setup.slice(setup.indexOf(marker)) : ""]]) {
+for (const [source, sql] of baselineOnly ? [["baseline", ""]] : [["migration", migration], ["setup", councilTail]]) {
     await test(`${source}: owner merge package`, async t => {
         const db = new PGlite(); t.after(() => db.close());
         await db.exec("create role anon; create role authenticated; create role service_role; create table user_profiles(id uuid primary key); create table agent_clients(id uuid primary key)");

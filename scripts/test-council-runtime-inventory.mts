@@ -17,7 +17,8 @@ const migration = (() => { try { return readFileSync(new URL("./migrations/counc
 
 test("setup mirrors the complete inventory migration", () => {
     assert(migration.trim());
-    assert.equal(setup.slice(setup.indexOf("-- ===== Owner Council runtime inventory =====")).trim(), migration.trim());
+    const block = setup.slice(setup.indexOf("-- ===== Owner Council runtime inventory =====")).split(/(?=^-- ===== )/m)[0];
+    assert.equal(block.trim(), migration.trim());
 });
 
 await test("inventory SQL is bounded, private and follows the complete campaign lifecycle", async suite => {

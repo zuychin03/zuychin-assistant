@@ -7,6 +7,8 @@ import { PGlite } from "@electric-sql/pglite";
 const marker = "-- ===== Council execution policy version =====";
 const setup = await readFile(new URL("../supabase-setup.sql", import.meta.url), "utf8");
 const baseline = setup.split("-- ===== Council execution attribution =====")[0];
+// Setup sections after this one may belong to other features; apply only the Council ones.
+const councilTail = setup.includes(marker) ? setup.slice(setup.indexOf(marker)).split(/(?=^-- ===== )/m).filter(part => /^-- ===== .*Council/.test(part)).join("") : "";
 const attribution = await readFile(new URL("./migrations/council-execution-attribution.sql", import.meta.url), "utf8");
 const migration = await readFile(new URL("./migrations/council-execution-policy.sql", import.meta.url), "utf8").catch(() => "");
 const policy = "typescript-node-v3-2026-09-30";
@@ -19,7 +21,7 @@ function baselineFunction(name: string): string {
     return entries.at(-1)![0];
 }
 
-for (const [label, sql] of [["migration", migration], ["setup", setup.includes(marker) ? setup.slice(setup.indexOf(marker)) : ""]]) {
+for (const [label, sql] of [["migration", migration], ["setup", councilTail]]) {
     await test(`${label}: execution policy boundary`, async t => {
         const db = new PGlite();
         t.after(() => db.close());
