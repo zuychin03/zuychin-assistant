@@ -20,6 +20,8 @@ const eslintConfig = defineConfig([
     "test-google-auth.js",
     // Gitignored design-review workspace: repo copies and their builds, not source.
     ".impeccable/**",
+    // Gitignored agent worktrees: other checkouts of this repo and their builds.
+    ".claude/**",
   ]),
 ]);
 
