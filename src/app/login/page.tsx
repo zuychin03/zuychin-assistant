@@ -5,8 +5,10 @@ import { useState } from "react";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { KeyRound, Lock, Loader2, ShieldCheck } from "lucide-react";
 import { ZuychinMark } from "@/components/app-sidebar";
+import { safeNextPath } from "@/lib/auth/next-path";
 
 const spin = { animation: "spin 1s linear infinite" };
+const signedIn = () => { window.location.href = safeNextPath(new URLSearchParams(window.location.search).get("next")); };
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
@@ -34,7 +36,7 @@ export default function LoginPage() {
       if (res.ok && data.requiresTotp) {
         setNeedsTotp(true);
       } else if (res.ok) {
-        window.location.href = "/";
+        signedIn();
       } else {
         setError(data.error || "Incorrect password");
         setPassword("");
@@ -57,7 +59,7 @@ export default function LoginPage() {
       const verifyRes = await fetch("/api/auth/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "authentication-verify", response }) });
       const verified = await verifyRes.json();
       if (!verifyRes.ok) throw new Error(verified.error || "Passkey verification failed. Please try again.");
-      window.location.href = "/";
+      signedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey sign-in was cancelled or failed.");
     } finally { setPending(null); }
@@ -71,7 +73,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/totp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "recover", code: totp }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not verify the authenticator code. Please retry.");
-      window.location.href = "/";
+      signedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not verify authenticator code.");
     } finally { setPending(null); }

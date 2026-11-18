@@ -14,7 +14,7 @@ const READ = new Set(["get_current_time", "search_web", "search_knowledge", "sea
     "list_calendar_events", "list_unread_emails", "list_recent_emails", "read_email", "vault_search", "vault_read"]);
 const LOCAL = new Set(["create_document", "create_code_file", "create_code_bundle"]);
 const MUTATIONS = new Set(["send_email", "draft_gmail_reply", "manage_calendar_event", "save_note", "vault_ingest",
-    "vault_write", "vault_delete", "vault_lint", "manage_todo_list", "manage_scheduled_task", "manage_memory_facts", "manage_notes"]);
+    "vault_write", "vault_delete", "vault_lint", "manage_todo_list", "manage_scheduled_task", "manage_memory_facts", "manage_notes", "capture_add"]);
 const LISTABLE = new Set(["manage_todo_list", "manage_scheduled_task", "manage_memory_facts", "manage_notes"]);
 
 export function unattendedDisposition(tool: string, args: Record<string, unknown>): "read" | "local" | "approval" | "deny" {
@@ -66,6 +66,7 @@ export function confirmedActionReceipt(tool: string, args: Record<string, unknow
         case "draft_gmail_reply": return /^✅ Draft reply created! Draft ID: \S+/.test(receipt);
         case "manage_calendar_event": return action === "delete" ? receipt === "Event deleted successfully." : /^✅ Event created: /.test(receipt);
         case "save_note": return /^Note saved successfully: /.test(receipt);
+        case "capture_add": return /^Saved to your Capture inbox for review: /.test(receipt);
         case "vault_write": return /^(Created|Updated) wiki\/\S+ \(commit [a-f0-9]{7}\)\. Index and log updated\.$/.test(receipt);
         case "vault_ingest": return /^(Created|Updated) wiki\/\S+ \(commit [a-f0-9]{7}\)\. Summary: /.test(receipt);
         case "vault_delete": return /^Deleted wiki\/\S+ \(commit [a-f0-9]{7}\)\. Index, log and search index updated\./.test(receipt);

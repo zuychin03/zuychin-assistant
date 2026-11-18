@@ -190,6 +190,33 @@ export const MCP_TOOLS: McpTool[] = [
         },
     },
     {
+        name: "capture_add",
+        description: "Save a link or a passage to the user's Capture inbox, where the user reviews it later and files it into the knowledge vault. Use only when the user asks to save, capture or keep something for later reading or review. Do not use it for reminders, tasks or personal notes (use manage_todo_list or save_note). Returns a link that opens the capture's review.",
+        parameters: {
+            kind: {
+                type: "string",
+                enum: ["link", "text"],
+                description: "'link' for a web page or PDF URL, 'text' for a passage or note.",
+                required: true,
+            },
+            title: {
+                type: "string",
+                description: "A short title, up to 200 characters.",
+                required: true,
+            },
+            url: {
+                type: "string",
+                description: "The http or https URL. Required for kind 'link'.",
+                required: false,
+            },
+            text: {
+                type: "string",
+                description: "The passage for kind 'text'. For a link, optional notes from the user.",
+                required: false,
+            },
+        },
+    },
+    {
         name: "get_recent_conversations",
         description: "Get a summary of recent conversations across all channels.",
         parameters: {
@@ -613,6 +640,7 @@ import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
 import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
 import { recordReplySources } from "@/lib/ai/reply-sources";
+import { executeCaptureAdd } from "@/lib/capture/chat-tool";
 
 export async function executeTool(
     toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
@@ -670,6 +698,9 @@ async function dispatchTool(
                 args.category as string | undefined,
                 embRef
             );
+
+        case "capture_add":
+            return executeCaptureAdd(args, { userProfileId: ctx?.userProfileId });
 
         case "get_recent_conversations":
             return executeGetRecentConversations(args.limit as number | undefined, ctx);

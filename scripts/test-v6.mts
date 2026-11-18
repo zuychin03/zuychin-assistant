@@ -48,6 +48,7 @@ const tests = [
     "capture-extract",
     "capture-extract-routes",
     "capture-review-source",
+    "capture-extras",
     "offline-library",
     "offline-shell",
     "offline-privacy",

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { WorkspaceLink as Link } from "@/components/workspace-link";
 import { Download, Inbox, RefreshCw, Trash2 } from "lucide-react";
 import { WorkspaceShell } from "@/components/workspace-shell";
@@ -8,6 +8,7 @@ import { ConfirmModal } from "../home/controls";
 import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import type { CaptureExtract, CaptureItem, CapturePreview, CaptureReview, CaptureSource, OcrTier } from "@/lib/capture/types";
 import { EXTRACT_LABEL, fillsSourceText, offersGemini, readableCapture, sourceStatus, type SourceActivity } from "@/lib/capture/review-source";
+import { sharedCapture } from "@/lib/capture/share";
 import type { OfflineDocument, OfflineState, OfflineToken } from "@/lib/offline/library";
 import { clearConfirmedOfflinePrivateData, clearOfflinePrivateData, offlineLibrary, OFFLINE_PRIVACY_EVENT } from "@/lib/offline/storage";
 import styles from "./capture.module.css";
@@ -50,7 +51,7 @@ export default function CapturePage() {
     const [ocrTiers, setOcrTiers] = useState<Record<OcrTier, boolean>>({ free: false, paid: false });
     const reviewHeading = useRef<HTMLHeadingElement>(null), readerHeading = useRef<HTMLHeadingElement>(null), sourceLine = useRef<HTMLParagraphElement>(null);
     const captureId = useRef<string | null>(null), active = useRef(true), locked = useRef(false), privacyRevision = useRef(0);
-    const inboxRequest = useRef(0), selectedId = useRef<string | undefined>(undefined);
+    const inboxRequest = useRef(0), selectedId = useRef<string | undefined>(undefined), reviewTarget = useRef<string | null>(null), sharedDraft = useRef<CaptureSource | null>(null);
     useUnsavedChanges(() => Boolean(source.title.trim() || source.text.trim() || source.url?.trim() || source.pdf || note.trim()
         || (selected && !selected.receipt && review && JSON.stringify(review) !== JSON.stringify(baseline))));
     const request = useCallback(async (path: string, body?: unknown) => {
@@ -90,7 +91,16 @@ export default function CapturePage() {
     }, [refreshOffline, request]);
     useEffect(() => {
         active.current = true;
-        void load().catch(async reason => { if (active.current) setError(message(reason)); try { await refreshOffline(); } catch {} }).finally(() => { if (active.current) setBusy(""); });
+        // Refs, not locals: Strict Mode runs this twice and the first run clears the query.
+        const params = new URLSearchParams(window.location.search);
+        sharedDraft.current ??= sharedCapture(params); reviewTarget.current ??= params.get("review");
+        if (sharedDraft.current || reviewTarget.current) window.history.replaceState(window.history.state, "", window.location.pathname);
+        void load().catch(async reason => { if (active.current) setError(message(reason)); try { await refreshOffline(); } catch {} }).finally(() => {
+            if (!active.current) return;
+            setBusy("");
+            const shared = sharedDraft.current; sharedDraft.current = null;
+            if (shared) { setSource(shared); setNotice("Shared into the form below. Check it, then save it to the inbox."); }
+        });
         const cleared = () => { privacyRevision.current++; setClearRequest(null); setOffline(undefined); setToken(undefined); setProfileId(undefined); setItems([]); setInboxLoaded(false); setInboxLoading(false); setInboxError(""); setDocuments([]); setSelected(undefined); setReview(undefined); setPreview(undefined); readCopy(undefined); setNote(""); setPdfUrl(undefined); setSource({ kind: "text", title: "", text: "" }); captureId.current = null;
             selectedId.current = undefined; setBaseline(undefined); setExtract(undefined); setSourceBusy(""); setSourceError(""); setOcrTiers({ free: false, paid: false }); };
         window.addEventListener(OFFLINE_PRIVACY_EVENT, cleared);
@@ -123,6 +133,14 @@ export default function CapturePage() {
         timer = setTimeout(tick, 3_000);
         return () => { stopped = true; clearTimeout(timer); };
     }, [polling, profileId, request, applyExtract]);
+    const openTarget = useEffectEvent((item: CaptureItem) => choose(item));
+    useEffect(() => {
+        const target = reviewTarget.current;
+        if (!target || !inboxLoaded || !profileId) return;
+        reviewTarget.current = null;
+        const item = items.find(entry => entry.id === target);
+        if (item) openTarget(item); else setError("That capture is not in the inbox. It may have been deleted.");
+    }, [inboxLoaded, items, profileId]);
     useEffect(() => { if (selected) reviewHeading.current?.focus(); }, [selected]);
     useEffect(() => { if (reading) readerHeading.current?.focus(); }, [reading]);
     useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); }, [pdfUrl]);

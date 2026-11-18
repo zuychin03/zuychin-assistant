@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AUTH_COOKIE, authEnabled, authOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
+import { loginSearch } from "@/lib/auth/next-path";
 
 const PUBLIC_PATHS = [
   "/login", "/api/webhooks", "/api/cron", "/api/chat", "/api/telegram/webhook", "/api/mcp", "/api/knowledge/webhook",
@@ -60,6 +61,7 @@ export async function proxy(req: NextRequest) {
   if (await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return secured(NextResponse.next());
   const loginUrl = req.nextUrl.clone();
   loginUrl.pathname = "/login";
+  if (req.method === "GET" && !pathname.startsWith("/api/")) loginUrl.search = loginSearch(pathname, req.nextUrl.search);
   return secured(NextResponse.redirect(loginUrl));
 }
 

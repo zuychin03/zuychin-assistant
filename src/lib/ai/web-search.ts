@@ -34,6 +34,12 @@ const POOLS: TavilyPool[] = [
     .filter((p): p is { key: string; role: SearchDepth } => !!p.key)
     .map((p) => ({ ...p, blockedUntil: 0 }));
 
+// Keys load once per process, so a refused key (401) stays refused until a restart.
+function park(pool: TavilyPool, status: number) {
+    if (status === 401 || status === 402 || status === 432) pool.blockedUntil = Date.now() + QUOTA_COOLDOWN_MS;
+    else if (status === 429) pool.blockedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+}
+
 function poolsFor(depth: SearchDepth): TavilyPool[] {
     const now = Date.now();
     return [...POOLS]
@@ -70,11 +76,7 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
         if (!res.ok) {
             observation.finish({ error: { status: res.status }, ...(res.status === 432 || res.status === 402 ? { status: "rate_limit" as const } : {}) });
             const detail = await res.text().catch(() => "");
-            if (res.status === 432 || res.status === 402) {
-                pool.blockedUntil = Date.now() + QUOTA_COOLDOWN_MS;
-            } else if (res.status === 429) {
-                pool.blockedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
-            }
+            park(pool, res.status);
             console.error(`[WebSearch] Tavily ${res.status} on ${pool.role} pool:`, detail.slice(0, 200));
             return null;
         }
@@ -111,6 +113,43 @@ export async function webSearch(query: string, depth: SearchDepth = "quick"): Pr
     for (const pool of poolsFor(depth)) {
         const result = await searchWithPool(pool, query, depth);
         if (result !== null) return result;
+    }
+    return null;
+}
+
+interface TavilyExtractResponse {
+    results?: { url?: string; raw_content?: string }[];
+    failed_results?: { url?: string; error?: string }[];
+}
+
+export interface ExtractedPage { text: string; url?: string }
+
+// Capture's fallback when the box cannot read a page itself. null means no pool
+// could serve it or Tavily could not read the page either. URLs stay out of logs.
+export async function tavilyExtract(url: string): Promise<ExtractedPage | null> {
+    for (const pool of poolsFor("quick")) {
+        try {
+            const res = await fetch("https://api.tavily.com/extract", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${pool.key}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ urls: [url], extract_depth: "basic", format: "markdown", timeout: 15 }),
+                signal: AbortSignal.timeout(20_000),
+            });
+            if (!res.ok) {
+                park(pool, res.status);
+                console.error(`[Extract] Tavily ${res.status} on ${pool.role} pool`);
+                if (pool.blockedUntil > Date.now()) continue;
+                return null;
+            }
+            const data = (await res.json()) as TavilyExtractResponse;
+            const page = data.results?.find((result) => typeof result.raw_content === "string" && result.raw_content.trim());
+            if (page?.raw_content) return { text: page.raw_content, url: page.url };
+            if (data.failed_results?.length) console.error("[Extract] Tavily could not read the page");
+            return null;
+        } catch (err) {
+            console.error(`[Extract] Tavily ${pool.role} pool failed:`, err instanceof Error ? err.name : "error");
+            return null;
+        }
     }
     return null;
 }

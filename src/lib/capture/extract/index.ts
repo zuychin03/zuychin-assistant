@@ -1,7 +1,8 @@
 import { CaptureError } from "../service";
 import type { CaptureExtract, CaptureExtractMethod, CaptureSource, OcrTier } from "../types";
 import { fetchSource, SourceFetchError, type FetchOptions } from "../fetch/http";
-import { extractHtml } from "./html";
+import type { ExtractedPage } from "@/lib/ai/web-search";
+import { extractHtml, MIN_PAGE_WORDS } from "./html";
 import { transcribePdf, type OcrGenerate } from "./ocr";
 import { extractPdfText } from "./pdf";
 import { capText, countWords, decodeText, tidyMarkdown } from "./text";
@@ -10,6 +11,7 @@ export interface ExtractOptions {
     fetch?: typeof fetchSource;
     fetchOptions?: FetchOptions;
     now?: () => Date;
+    tavily?: (url: string) => Promise<ExtractedPage | null>;
 }
 
 type Draft = Omit<CaptureExtract, "version" | "truncated" | "words" | "fetchedAt"> & { truncated?: boolean };
@@ -17,6 +19,33 @@ type Draft = Omit<CaptureExtract, "version" | "truncated" | "words" | "fetchedAt
 export function finishExtract(draft: Draft, now: Date): CaptureExtract {
     const capped = capText(draft.text);
     return { version: 1, ...draft, text: capped.text, truncated: capped.truncated || draft.truncated === true, words: countWords(capped.text), fetchedAt: now.toISOString() };
+}
+
+const RETRY_STATUSES = new Set([401, 403, 429, 451, 503]);
+
+// Guard refusals, unknown hosts and PDFs never go to Tavily.
+function tavilyReason(error: SourceFetchError): string | null {
+    if (error.reason === "timeout") return "the site did not respond";
+    if (error.reason === "network") return "the site could not be reached";
+    if (error.reason === "http" && RETRY_STATUSES.has(error.status ?? 0)) return "the site blocked the box";
+    return null;
+}
+
+// Tavily keeps the page's own relative links, which break once saved to the vault.
+function absoluteLinks(markdown: string, base: string): string {
+    return markdown.replace(/\]\((\/[^)\s]*)/g, (whole, path: string) => {
+        try { return `](${new URL(path, base).href}`; } catch { return whole; }
+    });
+}
+
+async function viaTavily(url: string, reason: string, options: ExtractOptions): Promise<Draft | null> {
+    const read = options.tavily ?? (async (link: string) => (await import("@/lib/ai/web-search")).tavilyExtract(link));
+    const page = await read(url).catch(() => null);
+    const text = page ? tidyMarkdown(absoluteLinks(page.text, page.url ?? url)) : "";
+    if (!text) return null;
+    const words = countWords(text);
+    return { method: "tavily", status: words >= MIN_PAGE_WORDS ? "ok" : "empty", text, finalUrl: page?.url,
+        note: `Read through Tavily because ${reason}.${words >= MIN_PAGE_WORDS ? "" : ` It found only ${words} words.`}` };
 }
 
 async function fromPdf(bytes: Uint8Array, base: Partial<Draft>): Promise<Draft> {
@@ -46,6 +75,12 @@ export async function extractCapture(source: CaptureSource, options: ExtractOpti
         }
         const page = await extractHtml(decoded, fetched.finalUrl);
         const words = countWords(page.text);
+        if (page.status !== "ok") {
+            const fallback = await viaTavily(source.url, "the page had too little text", options);
+            if (fallback && countWords(fallback.text) > words) {
+                return finishExtract({ ...base, ...fallback, finalUrl: fallback.finalUrl ?? base.finalUrl, title: page.title, author: page.author, site: page.site, published: page.published }, now());
+            }
+        }
         return finishExtract({
             ...base, method, status: page.status, text: page.text, title: page.title, author: page.author, site: page.site, published: page.published,
             note: page.status === "ok" ? undefined : words
@@ -54,6 +89,9 @@ export async function extractCapture(source: CaptureSource, options: ExtractOpti
         }, now());
     } catch (error) {
         if (!(error instanceof SourceFetchError)) throw error;
+        const reason = tavilyReason(error);
+        const fallback = reason ? await viaTavily(source.url, reason, options) : null;
+        if (fallback) return finishExtract(fallback, now());
         return finishExtract({ method, status: error.reason === "blocked" ? "blocked" : "failed", text: "", note: error.message }, now());
     }
 }
