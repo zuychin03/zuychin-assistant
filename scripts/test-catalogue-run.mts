@@ -246,6 +246,20 @@ try {
         assert.equal(h.saved[0].find((entry) => entry.row.modelId === "acme/fresh-paid")!.probeDetail, undefined);
     });
 
+    await check("an untested free seed row with no code entry is probed like a new model; a paid one is not", async () => {
+        const seeded = row({ providerId: "acme", modelId: "acme/seeded", origin: "seed", shortName: "seeded", probeStatus: "untested", probedAt: null, approvedAt: null });
+        const seededPaid = row({ providerId: "acme", modelId: "acme/seeded-paid", origin: "seed", shortName: "seeded-paid", free: false, metered: true, probeStatus: "untested", probedAt: null, approvedAt: null });
+        const listing = okListing("acme/pinned", "acme/seeded");
+        if (listing.ok) listing.models.push(listed("acme/seeded-paid", false));
+        const h = harness({ rows: [pinned(), seeded, seededPaid], listings: { acme: listing } });
+        const summary = await h.run();
+        assert.ok(h.probed.includes("acme::acme/seeded"));
+        assert.ok(!h.probed.includes("acme::acme/seeded-paid"));
+        assert.equal(h.db.get("acme::acme/seeded")!.probeStatus, "passed");
+        assert.equal(h.db.get("acme::acme/seeded")!.approvedAt, null);
+        assert.deepEqual(summary.added, []);
+    });
+
     await check("a new model whose short name is taken gets a numbered one", async () => {
         const h = harness({ rows: [pinned()], listings: { acme: okListing("acme/pinned", "other/pinned") } });
         await h.run();

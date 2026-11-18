@@ -189,10 +189,10 @@ export function applyProbe(row: CatalogueRow, result: ProbeResult, at: string): 
     return { ...base, probeAttempts: attempts, probeStatus };
 }
 
-/** Probe order: new free models, then inconclusive retries, then free picker models whose last probe is over 7 days old. Paid models never. */
+/** Probe order: new free models (discovered, or seeded with no code entry), then inconclusive retries, then free picker models whose last probe is over 7 days old. Paid models never. */
 export function probePriority(row: CatalogueRow, inCode: boolean, listedNow: boolean, nowMs: number): number | null {
     if (!row.free || !listedNow || row.missingSince !== null) return null;
-    if (row.origin === "discovered" && row.probeStatus === "untested") return 0;
+    if (row.probeStatus === "untested" && (row.origin === "discovered" || !inCode)) return 0;
     if (row.probeAttempts > 0 && row.probeAttempts < MAX_INCONCLUSIVE) return 1;
     const inPicker = inCode || row.approvedAt !== null || row.probeStatus === "passed";
     const due = row.probedAt === null || nowMs - Date.parse(row.probedAt) > RETEST_AFTER_MS;
