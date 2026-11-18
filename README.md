@@ -129,8 +129,12 @@ edited and deleted in place.
 - Study: `/study` turns saved passages into cards. A model drafts a recall, explain or
   worked-exercise question with a reference answer, **Get feedback** compares your answer
   with the reference, and FSRS schedules reviews under a daily limit
-- Capture inbox: `/capture` collects links, PDFs and passages. You review where each one will
-  be saved before it is filed, and can keep saved documents for offline reading
+- Capture inbox: `/capture` collects links, PDFs and passages. Opening a link or PDF in Review
+  reads its text into an editable Source text section. Pages the server can't read go through
+  Tavily, and a scanned PDF can be read by Gemini on request (free or paid key, your pick each
+  time). You review the text and where each one will be saved before it is filed, and can keep
+  saved documents for offline reading. On Android, sharing a link to the installed app opens the
+  inbox with it filled in, and in chat the assistant can save a link or passage with `capture_add`
 - Tasks and approvals: `/tasks` lists scheduled tasks with their schedule, next run and run
   history. When an unattended task wants to change something (send or draft mail, edit the
   calendar, write to the vault, change to-dos or memories), the action waits for your
@@ -264,7 +268,8 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `MODEL_DISCOVERY` | Optional. `off` makes the daily model check return 204 and do nothing; the app keeps using the stored catalogue and the models in code. Check now in `/admin` still works |
 | `MODEL_DISCOVERY_MAX_PROBES` | Optional. Free models tested per provider in each check, a whole number from 0 to 50 (default 10) |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
-| `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini |
+| `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini. Capture also uses them to read a page the server is blocked from or can't reach |
+| `CAPTURE_FETCH` | Optional. `off` stops Capture fetching links on the server; Review then asks you to paste the passage instead |
 
 Optional auth, integrations, channels and cron:
 
@@ -351,6 +356,8 @@ keep it stable:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
+A signed-out visit to a page goes to sign-in and comes back to the same page afterwards.
+
 After signing in with the password, open **Security** in the sidebar, or visit `/security`.
 Add a passkey using your device's biometric prompt, Windows Hello, Samsung Pass, a password
 manager or a FIDO2 key. Register at least two passkeys on separate devices before relying on
@@ -434,7 +441,7 @@ npm run dev
 | GET/POST/PATCH | `/api/research/sources` | Read a source's saved text / add / edit a question's sources |
 | POST/DELETE | `/api/research/entries` | Save / delete a research note |
 | GET/POST | `/api/study` | Study report (`?view=due` returns only the reviewable count) / create, draft, edit, review, feedback and settings actions |
-| GET/POST | `/api/capture` | Capture inbox and saved documents / capture, preview a destination, ingest |
+| GET/POST | `/api/capture` | Capture inbox and saved documents / capture, read the source text (`extract`, with `ocr` for Gemini), preview a destination, ingest |
 | GET | `/api/capture/download` | A saved document's content for offline reading (`?documentId=`) |
 | GET | `/api/capture/original` | The original PDF of a capture (`?id=`) |
 | GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
@@ -633,6 +640,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `search_knowledge` | Hybrid keyword + vector search over the pgvector knowledge base |
 | `search_history` | Semantic search over your own past messages across channels, with links that open the conversation |
 | `save_note` | Persist a note as an embedding for later recall |
+| `capture_add` | Save a link or passage to the Capture inbox and return a link to its Review (unattended tasks need approval) |
 | `get_recent_conversations` | Summary of recent messages across channels |
 | `manage_calendar_event` | Create or delete a Google Calendar event |
 | `list_calendar_events` | List upcoming events within N hours |
