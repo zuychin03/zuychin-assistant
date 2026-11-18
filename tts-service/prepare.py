@@ -1,7 +1,9 @@
 """Text preparation for the speech service. Pure functions, standard library only."""
 import re
 
-MAX_SENTENCE_CHARS = 400
+# Memory per call grows faster than length: on the box 150 characters peaked at 171 MB and 300 at 284 MB,
+# and the arena keeps the peak, so long pieces push the service past its 220 MB MemoryHigh.
+MAX_SENTENCE_CHARS = 150
 # More than this share of letters outside A-Z means the text is not English the model can read.
 MAX_NON_ASCII_LETTER_SHARE = 0.15
 

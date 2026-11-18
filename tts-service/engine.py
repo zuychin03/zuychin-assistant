@@ -4,8 +4,10 @@ import os
 SAMPLE_RATE = 24000
 VOICES = {"F2": 0, "M2": 1}
 MODEL_NAME = "tiny-voca"
-# The graph reads at most 512 tokens (32 s) per call.
-MAX_TOKENS = 500
+# The graph reads at most 512 tokens (32 s) per call, but memory is the tighter limit: on the box 122 tokens
+# peaked at 171 MB and 206 at 229 MB. Catches pieces that prepare.py's character limit lets through, such as
+# numbers that read as many words.
+MAX_TOKENS = 140
 GAP_SECONDS = 0.12
 PEAK = 0.99
 

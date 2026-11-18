@@ -1,6 +1,6 @@
 import unittest
 
-from prepare import UnsupportedText, clean, is_english, prepare, split_sentences
+from prepare import MAX_SENTENCE_CHARS, UnsupportedText, clean, is_english, prepare, split_sentences
 
 
 class SplitTests(unittest.TestCase):
@@ -27,6 +27,16 @@ class SplitTests(unittest.TestCase):
         pieces = split_sentences(text, limit=200)
         self.assertGreater(len(pieces), 1)
         self.assertTrue(all(len(p) <= 202 for p in pieces))
+        self.assertEqual(" ".join(pieces).replace(".", "").replace(",", "").split(), text.replace(".", "").replace(",", "").split())
+
+    def test_default_limit_keeps_reply_sentences_short(self):
+        text = ("At nine thirty you have the dentist in the city so leave home by nine, and after that the capstone "
+                "meeting moved to two in the afternoon, which means the slides still need the results table before "
+                "lunch, while the gas bill of one hundred and twelve dollars is due on Friday, the weather looks dry "
+                "with a top of twenty three degrees so the evening walk should be fine, and the parcel can wait.")
+        pieces = split_sentences(text)
+        self.assertGreater(len(pieces), 2)
+        self.assertTrue(all(len(p) <= MAX_SENTENCE_CHARS + 2 for p in pieces), pieces)
         self.assertEqual(" ".join(pieces).replace(".", "").replace(",", "").split(), text.replace(".", "").replace(",", "").split())
 
     def test_drops_pieces_with_nothing_to_read(self):

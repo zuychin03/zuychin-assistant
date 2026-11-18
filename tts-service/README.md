@@ -5,7 +5,7 @@ A small local service that speaks Assistant replies with [tiny-voca](https://hug
 - Model: tiny-voca, 4.5M parameters, fp32 ONNX, English only, two American voices, 24 kHz mono. Apache-2.0.
 - Text to phonemes: [dizione](https://github.com/n4ze3m/dizione) (Apache-2.0), pinned to one commit. It reads numbers, dates, money and abbreviations, and guesses unknown words.
 - Runtime: Python 3.12 with `onnxruntime` and `numpy`, one thread.
-- Measured on the 1 GB, 2 vCPU target box: first audio about 0.45 s for an 80-character sentence, real-time factor about 0.10, about 130 MB loaded and 170 MB at peak.
+- Measured on the 1 GB, 2 vCPU target box: first audio about 0.45 s for an 80-character sentence, real-time factor about 0.10 to 0.15, about 130 MB loaded and under 180 MB at peak with the sentence limits below.
 
 ## API
 
@@ -29,7 +29,7 @@ The response is `200` with a chunked `application/octet-stream` body of 16-bit l
 | 503 | `busy`, `queue_timeout`, `loading`, `time_limit` | One synthesis runs at a time with 2 waiting; the model may still be loading; 90 s cap |
 | 500 | `synth_failed` | The model failed before the first chunk |
 
-Text preparation: URLs are spoken as "link", emoji and code fences are dropped, lines become sentences, titles such as "Dr." do not end a sentence, sentences over 400 characters are cut at a comma, and a closing full stop is added when missing.
+Text preparation: URLs are spoken as "link", emoji and code fences are dropped, lines become sentences, titles such as "Dr." do not end a sentence, sentences over 150 characters are cut at a comma (or a space), a piece that still reads as more than 140 tokens is cut in half, and a closing full stop is added when missing. The limits keep memory low: it grows faster than sentence length (on the box, 171 MB at peak for 150 characters, 284 MB for 300), and the runtime keeps the highest peak until the service exits.
 
 Logs are one JSON line per request with sizes and timings. They never hold text.
 
