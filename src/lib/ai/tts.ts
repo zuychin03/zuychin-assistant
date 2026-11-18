@@ -1,5 +1,6 @@
 import { ai, geminiClient, TTS_MODEL } from "@/lib/gemini";
 import { stripMarkdown } from "@/lib/speech";
+import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
 import { observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { isLocalVoice, LOCAL_SPEECH_MODEL, streamLocalSpeech, ttsConfigured, type LocalVoice } from "@/lib/voice/tts-client";
@@ -49,7 +50,7 @@ export function getVoicePrefs(preferences: unknown): VoicePrefs {
 export type SpeechRoute = { providerId: "gemini" | "gemini-free"; apiKey?: string };
 export const PAID_SPEECH: SpeechRoute = { providerId: "gemini" };
 export function freeSpeechRoute(): SpeechRoute | null {
-    const apiKey = process.env.GEMINI_FREE_API_KEY;
+    const apiKey = providerKeyOrEnv("gemini-free", "GEMINI_FREE_API_KEY");
     return apiKey ? { providerId: "gemini-free", apiKey } : null;
 }
 

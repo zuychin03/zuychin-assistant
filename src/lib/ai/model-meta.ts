@@ -103,14 +103,6 @@ const DEEPSEEK_V41_FLASH: ModelMeta = {
     strengths: ["Coding", "Reasoning", "Vision", "Fast", "Long context"],
 };
 
-const MIMO_V26_FLASH: ModelMeta = {
-    developer: "Xiaomi",
-    description: "Multimodal Flash model for coding and agent tasks. OpenCode's free endpoint is restricted to the OpenCode client.",
-    inputs: ["Text", "Image", "Audio", "Video"],
-    context: "200K",
-    strengths: ["Coding", "Agentic", "Reasoning", "Tool use", "Multimodal", "Fast"],
-};
-
 const GEMINI_EMBED_2: ModelMeta = {
     developer: "Google DeepMind",
     description: "Multimodal embedding model supporting text, images, video, audio and documents. Configured here at 768 dimensions.",
@@ -168,17 +160,6 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "nvidia/nemotron-3.5-lightning-30b-a3b": NEMOTRON_35_LIGHTNING,
     "poolside/laguna-xs-2.1": LAGUNA_XS_21,
     "nvidia/nemotron-3-embed-1b": NEMOTRON_3_EMBED_1B,
-    "mimo-v2.6-flash-free": MIMO_V26_FLASH,
-    "nemotron-3-ultra-free": NEMOTRON_3_ULTRA,
-    "nemotron-3.5-lightning-free": { ...NEMOTRON_35_LIGHTNING, context: "256K" },
-    "muse-spark-1.3-contributor-free": {
-        developer: "Meta",
-        description: "Multimodal reasoning model. Contributor requests may train future Meta models. Requires the Responses API; unavailable through this app's Zen integration.",
-        inputs: ["Text", "Image", "Audio", "Video", "PDF"],
-        context: "1M",
-        maxOutput: "128K",
-        strengths: ["Reasoning", "Coding", "Agentic", "Multimodal", "Tool use"],
-    },
     "moonshotai/kimi-k3-free": KIMI_K3,
 };
 

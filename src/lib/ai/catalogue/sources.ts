@@ -1,6 +1,6 @@
 import type { ProviderConfig } from "@/lib/ai/providers";
 
-export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list";
+export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list" | "opencode";
 
 export interface ProviderDiscovery {
     source: DiscoverySource;
@@ -38,7 +38,7 @@ const MAX_DESCRIPTION = 400;
 
 const ROUTER_IDS = /^(openrouter|kilo-auto)\//;
 const GEMINI_NON_CHAT = /(tts|image|imagen|veo|lyria|embedding|aqa|live|native-audio|robotics|computer-use|nano-banana|transcribe|deep-research|antigravity|customtools|-latest$)/;
-const OPENAI_LIST_NON_CHAT = /(embed|rerank|guard|safety|reward|parse|retriever|nvclip|detector)/;
+const OPENAI_LIST_NON_CHAT = /(embed|rerank|guard|safety|reward|parse|retriever|nvclip|detector|whisper|orpheus|tts|playai)/;
 
 function record(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -154,7 +154,7 @@ export function parseGeminiModels(raw: unknown, free: boolean): ListedModel[] {
     });
 }
 
-/** OpenAI-style `{ data: [{ id }] }`: NVIDIA NIM gives ids only; DeepSeek adds limits and modalities. */
+/** OpenAI-style `{ data: [{ id }] }`: NVIDIA NIM gives ids only; DeepSeek adds limits and modalities; Groq adds `active` and `max_completion_tokens`. */
 export function parseOpenAiModelList(raw: unknown, free: boolean): ListedModel[] {
     return (Array.isArray(record(raw).data) ? record(raw).data as unknown[] : []).flatMap((value) => {
         const entry = record(value);
@@ -168,13 +168,59 @@ export function parseOpenAiModelList(raw: unknown, free: boolean): ListedModel[]
             developer: text(entry.owned_by) ?? vendorFromId(id),
             free,
             contextTokens: count(entry.context_window) ?? count(entry.context_length),
-            maxOutputTokens: count(entry.max_output_tokens),
+            maxOutputTokens: count(entry.max_output_tokens) ?? count(entry.max_completion_tokens),
             inputs: inputNames(entry.input_modalities),
             listedTools: null,
             listedStructured: null,
             listedThinking: entry.effort !== undefined ? true : null,
             mayTrain: null,
-            chat: !OPENAI_LIST_NON_CHAT.test(id) && (outputs.length === 0 || outputs.includes("text")),
+            chat: entry.active !== false && !OPENAI_LIST_NON_CHAT.test(id) && (outputs.length === 0 || outputs.includes("text")),
+        }];
+    });
+}
+
+function opencodeInputs(value: unknown): string[] {
+    const names = strings(value).map((entry) => {
+        const kind = entry.toLowerCase();
+        if (kind === "application/pdf") return "PDF";
+        const family = kind.split("/")[0];
+        return ["text", "image", "audio", "video"].includes(family) ? family.charAt(0).toUpperCase() + family.slice(1) : null;
+    });
+    return [...new Set(names.filter((name): name is string => name !== null))];
+}
+
+/** OpenCode Console list (19/11/2026 shape). Free models answer 403 outside OpenCode and other transports are not wired, so only paid Chat Completions models count as chat. */
+export function parseOpenCodeModels(raw: unknown): ListedModel[] {
+    return (Array.isArray(record(raw).data) ? record(raw).data as unknown[] : []).flatMap((value) => {
+        const entry = record(value);
+        const id = text(entry.id);
+        if (!id) return [];
+        const cost = record(record(entry.cost).text);
+        const inputPrice = record(cost.input).price;
+        const outputPrice = record(cost.output).price;
+        const free = inputPrice === 0 && outputPrice === 0;
+        const capabilities = record(entry.capabilities);
+        const limit = record(entry.limit);
+        const modalities = record(entry.modalities);
+        const outputs = strings(modalities.output);
+        const tools = record(capabilities.tools).supported;
+        const reasoning = record(capabilities.reasoning).supported;
+        return [{
+            modelId: id,
+            label: cleanLabel(text(entry.name) ?? labelFromId(id), free),
+            description: description(entry.description),
+            developer: vendorFromId(text(entry.canonical_id) ?? ""),
+            free,
+            contextTokens: count(limit.context),
+            maxOutputTokens: count(limit.output),
+            inputs: opencodeInputs(modalities.input),
+            listedTools: typeof tools === "boolean" ? tools : null,
+            listedStructured: typeof capabilities.structured_output === "boolean" ? capabilities.structured_output : null,
+            listedThinking: typeof reasoning === "boolean" ? reasoning : null,
+            mayTrain: null,
+            chat: !free && entry.type === "chat" && "chat-completions" in record(entry.api)
+                && typeof inputPrice === "number" && typeof outputPrice === "number"
+                && outputs.length === 1 && outputs[0] === "text",
         }];
     });
 }
@@ -186,6 +232,7 @@ export function parseListing(discovery: ProviderDiscovery, raw: unknown): Listed
         case "kilo": return parseKiloModels(raw);
         case "gemini": return parseGeminiModels(raw, keyFree);
         case "openai-list": return parseOpenAiModelList(raw, keyFree);
+        case "opencode": return parseOpenCodeModels(raw);
     }
 }
 

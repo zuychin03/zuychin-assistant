@@ -163,6 +163,18 @@ try {
         assert.equal(resolveModelKey("nvidia-nim::moonshotai/kimi-k3")?.model.id, "nvidia/nemotron-3-ultra-550b-a55b");
     });
 
+    check("old OpenCode free rows stay hidden before the migration deletes them, and approved paid rows join", () => {
+        setCatalogueSnapshotForTests([
+            row({ providerId: "opencode-zen", modelId: "mimo-v2.6-flash-free", origin: "seed", approvedAt: "2026-09-23T00:00:00.000Z" }),
+            row({ providerId: "opencode-zen", modelId: "glm-5.3-flash", free: false, metered: true, probeStatus: "untested", approvedAt: null }),
+            row({ providerId: "opencode-zen", modelId: "kimi-k2.5", free: false, metered: true, approvedAt: "2026-11-19T00:00:00.000Z" }),
+        ]);
+        assert.deepEqual(chatIds("opencode-zen"), ["kimi-k2.5"]);
+        assert.equal(resolveModelKey("opencode-zen::mimo-v2.6-flash-free"), null);
+        assert.equal(resolveModelKey("opencode-zen::kimi-k2.5")?.model.metered, true);
+        assert.ok(!resolveWorkerChain(true).some((entry) => entry.provider.id === "opencode-zen"));
+    });
+
     check("short names stay unique within a provider", () => {
         setCatalogueSnapshotForTests([row({ providerId: "nvidia-nim", modelId: "google/gemma-4-new", shortName: "gemma-4" })]);
         const added = getProvider("nvidia-nim")!.chatModels.find((model) => model.id === "google/gemma-4-new")!;

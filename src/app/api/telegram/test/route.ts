@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { requireChatAuth } from "@/lib/auth/guard";
+import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
 
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req);
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
     results.SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ? "✅ set" : "❌ missing";
     results.SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "✅ set" : "❌ missing";
     results.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ set" : "❌ missing - DB writes will fail on server-side routes!";
-    results.GEMINI_API_KEY = process.env.GEMINI_API_KEY ? "✅ set" : "❌ missing";
+    results.GEMINI_API_KEY = providerKeyOrEnv("gemini", "GEMINI_API_KEY") ? "✅ set" : "❌ missing";
 
     try {
         const { error } = await supabaseAdmin

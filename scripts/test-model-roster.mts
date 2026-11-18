@@ -80,7 +80,7 @@ check("purpose picks are free, approved and never Gemini; paid models are hints 
     assert.equal(entry(paid, "deepseek::deepseek-v4-pro").hintEligible, true);
     assert.equal(entry(paid, "deepseek::deepseek-v4-pro").autoEligible, false);
     assert.equal(entry(paid, "openrouter::google/gemma-4-26b-a4b-it").autoEligible, false, "metered OpenRouter models stay out of purpose picks");
-    assert.equal(entry(free, "opencode-zen::mimo-v2.6-flash-free").hintEligible, false, "unavailable providers are never usable");
+    assert.equal(entry(free, "tokenrouter::moonshotai/kimi-k3-free").hintEligible, false, "unavailable providers are never usable");
 });
 
 check("Free only and scheduled runs narrow what may be named", () => {

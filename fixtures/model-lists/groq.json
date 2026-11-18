@@ -1,0 +1,86 @@
+{
+  "_source": "Shape from the Groq API reference; ids, limits and the inactive entry from its models and deprecations pages on 19/11/2026. Not a live response.",
+  "object": "list",
+  "data": [
+    {
+      "id": "openai/gpt-oss-120b",
+      "object": "model",
+      "created": 1754408224,
+      "owned_by": "OpenAI",
+      "active": true,
+      "context_window": 131072,
+      "public_apps": null,
+      "max_completion_tokens": 65536
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "object": "model",
+      "created": 1754407957,
+      "owned_by": "OpenAI",
+      "active": true,
+      "context_window": 131072,
+      "public_apps": null,
+      "max_completion_tokens": 65536
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "object": "model",
+      "created": 1790000000,
+      "owned_by": "Alibaba Cloud",
+      "active": true,
+      "context_window": 131072,
+      "public_apps": null,
+      "max_completion_tokens": 16384
+    },
+    {
+      "id": "openai/gpt-oss-safeguard-20b",
+      "object": "model",
+      "created": 1761708789,
+      "owned_by": "OpenAI",
+      "active": true,
+      "context_window": 131072,
+      "public_apps": null,
+      "max_completion_tokens": 65536
+    },
+    {
+      "id": "meta-llama/llama-prompt-guard-2-22m",
+      "object": "model",
+      "created": 1748632101,
+      "owned_by": "Meta",
+      "active": true,
+      "context_window": 512,
+      "public_apps": null,
+      "max_completion_tokens": 512
+    },
+    {
+      "id": "whisper-large-v3-turbo",
+      "object": "model",
+      "created": 1728413088,
+      "owned_by": "OpenAI",
+      "active": true,
+      "context_window": 448,
+      "public_apps": null,
+      "max_completion_tokens": 448
+    },
+    {
+      "id": "canopylabs/orpheus-v1-english",
+      "object": "model",
+      "created": 1766186316,
+      "owned_by": "Canopy Labs",
+      "active": true,
+      "context_window": 4000,
+      "public_apps": null,
+      "max_completion_tokens": 50000
+    },
+    {
+      "id": "gemma2-9b-it",
+      "object": "model",
+      "created": 1693721698,
+      "owned_by": "Google",
+      "active": false,
+      "context_window": 8192,
+      "public_apps": null,
+      "max_completion_tokens": 8192
+    }
+  ]
+}

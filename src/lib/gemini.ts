@@ -1,10 +1,28 @@
 import { GoogleGenAI } from "@google/genai";
-
-const apiKey = process.env.GEMINI_API_KEY!;
-
-export const ai = new GoogleGenAI({ apiKey });
+import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
 
 const clients = new Map<string, GoogleGenAI>();
+
+function clientFor(key: string): GoogleGenAI {
+    let client = clients.get(key);
+    if (!client) {
+        client = new GoogleGenAI({ apiKey: key });
+        clients.set(key, client);
+    }
+    return client;
+}
+
+/**
+ * The paid project's client. It resolves the key on each use, so a key saved on
+ * the dashboard reaches background work without a restart.
+ */
+export const ai: GoogleGenAI = new Proxy({} as GoogleGenAI, {
+    get(_target, property) {
+        const key = providerKeyOrEnv("gemini", "GEMINI_API_KEY");
+        if (!key) throw new Error("No Gemini API key is set. Save one on the dashboard or set GEMINI_API_KEY.");
+        return Reflect.get(clientFor(key), property);
+    },
+});
 
 /**
  * The client for one specific key. A key is a billing project and a quota, so a
@@ -13,13 +31,7 @@ const clients = new Map<string, GoogleGenAI>();
  * never sees a user's model choice keeps importing `ai` directly.
  */
 export function geminiClient(key?: string): GoogleGenAI {
-    if (!key || key === apiKey) return ai;
-    let client = clients.get(key);
-    if (!client) {
-        client = new GoogleGenAI({ apiKey: key });
-        clients.set(key, client);
-    }
-    return client;
+    return key ? clientFor(key) : ai;
 }
 
 export const MODEL = "gemini-3.5-flash-lite";

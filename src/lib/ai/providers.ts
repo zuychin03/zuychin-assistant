@@ -4,6 +4,7 @@ import { catalogueSnapshot, type CatalogueOrigin, type CatalogueRow } from "@/li
 import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
 import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
 import { removedModelKeys } from "@/lib/ai/models/profiles";
+import { providerKeyOrEnv, storedProviderKey } from "@/lib/ai/provider-keys/snapshot";
 
 export type ProviderKind = "gemini" | "openai-compatible";
 
@@ -147,6 +148,18 @@ export const PROVIDERS: ProviderConfig[] = [
         ],
     },
     {
+        // No built-in models: the three free ones are catalogue seeds (v7-provider-keys.sql), so automatic
+        // routes wait for Approve. The free tier allows 8K tokens per minute (checked 19/11/2026).
+        id: "groq",
+        label: "Groq",
+        kind: "openai-compatible",
+        baseUrl: "https://api.groq.com/openai/v1",
+        apiKeyEnv: "GROQ_API_KEY",
+        discovery: { source: "openai-list", include: "all", pricing: "all-free" },
+        chatModels: [],
+        embeddingModels: [],
+    },
+    {
         id: "deepseek",
         label: "DeepSeek",
         kind: "openai-compatible",
@@ -162,18 +175,16 @@ export const PROVIDERS: ProviderConfig[] = [
         embeddingModels: [],
     },
     {
+        // Paid only: free models answer 403 outside OpenCode (checked 19/11/2026). Models come from discovery
+        // once a key is saved, and each needs Test before use. Id kept so call history keeps its provider.
         id: "opencode-zen",
-        label: "OpenCode Zen",
+        label: "OpenCode Console",
         kind: "openai-compatible",
-        baseUrl: "https://opencode.ai/zen/v1",
-        apiKeyEnv: "OPENCODE_ZEN_API_KEY",
-        unavailableReason: "OpenCode's free tier can only be used within OpenCode (checked 23/09/2026).",
-        chatModels: [
-            { free: true, id: "mimo-v2.6-flash-free", label: "MiMo V2.6 Flash (free)", name: "mimo-v2.6-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "nemotron-3-ultra-free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "nemotron-3.5-lightning-free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "muse-spark-1.3-contributor-free", label: "Muse Spark 1.3 Contributor (free)", name: "muse-spark-1.3-contributor", apiFormat: "responses", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 131072 },
-        ],
+        baseUrl: "https://opencode.ai/inference/openai/v1",
+        apiKeyEnv: "OPENCODE_API_KEY",
+        metered: true,
+        discovery: { source: "opencode", include: "all", pricing: "listed" },
+        chatModels: [],
         embeddingModels: [],
     },
     {
@@ -272,21 +283,24 @@ const LEGACY_CHAT_MODELS: Record<string, Record<string, string>> = {
         "deepseek-v4-flash-api": "deepseek-flash",
         "deepseek-v4.1-flash": "deepseek-flash",
     },
-    "opencode-zen": {
-        "mimo-v2.5-free": "mimo-v2.6-flash-free",
-        "mimo-v2.5": "mimo-v2.6-flash-free",
-        "deepseek-v4-flash-free": "nemotron-3.5-lightning-free",
-        "deepseek-v4-flash": "nemotron-3.5-lightning-free",
-        "laguna-s-2.1-free": "nemotron-3.5-lightning-free",
-        "laguna-s-2.1": "nemotron-3.5-lightning-free",
-        "ling-3.0-flash-free": "nemotron-3.5-lightning-free",
-        "ling-3.0-flash": "nemotron-3.5-lightning-free",
-    },
 };
 
-/** Saved ids that resolve to a replacement; discovery must not list them as models of their own. */
+// Saved ids with no replacement: OpenCode's free models, which answer 403 outside OpenCode (19/11/2026).
+const RETIRED_CHAT_MODELS: Record<string, readonly string[]> = {
+    "opencode-zen": [
+        "mimo-v2.6-flash-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free",
+        "mimo-v2.5-free", "deepseek-v4-flash-free", "laguna-s-2.1-free", "ling-3.0-flash-free",
+    ],
+};
+
+/** A saved choice of a retired model falls back to the default instead of erroring. */
+export function isRetiredChatModel(providerId?: string, modelId?: string): boolean {
+    return !!providerId && !!modelId && (RETIRED_CHAT_MODELS[providerId]?.includes(modelId) ?? false);
+}
+
+/** Saved ids that resolve to a replacement or are retired; discovery must not list them as models of their own. */
 export function retiredChatModelIds(providerId: string): Set<string> {
-    return new Set(Object.keys(LEGACY_CHAT_MODELS[providerId] ?? {}));
+    return new Set([...Object.keys(LEGACY_CHAT_MODELS[providerId] ?? {}), ...(RETIRED_CHAT_MODELS[providerId] ?? [])]);
 }
 
 function canonicalChatModelId(providerId: string, modelId?: string): string | undefined {
@@ -329,7 +343,7 @@ export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly
         const own = rows.filter((row) => row.providerId === provider.id);
         if (!own.length) return provider;
         const byId = new Map(own.map((row) => [row.modelId, row]));
-        const retired = LEGACY_CHAT_MODELS[provider.id] ?? {};
+        const retired = retiredChatModelIds(provider.id);
         const chatModels: ChatModel[] = provider.chatModels.map((model) => {
             const row = byId.get(model.id);
             if (!row) return model;
@@ -348,7 +362,7 @@ export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly
         const taken = new Set(chatModels.map((model) => model.name));
         const codeIds = new Set(chatModels.map((model) => model.id));
         const added = own
-            .filter((row) => !codeIds.has(row.modelId) && !Object.hasOwn(retired, row.modelId)
+            .filter((row) => !codeIds.has(row.modelId) && !retired.has(row.modelId)
                 && (row.approvedAt !== null || row.probeStatus === "passed"))
             .sort((a, b) => a.label.localeCompare(b.label))
             .map((row) => {
@@ -387,8 +401,14 @@ export function getProvider(id: string): ProviderConfig | undefined {
     return providers().find((p) => p.id === id);
 }
 
+/** A key saved on the dashboard wins over the env var. */
 export function getProviderApiKey(p: ProviderConfig): string | undefined {
-    return process.env[p.apiKeyEnv];
+    return providerKeyOrEnv(p.id, p.apiKeyEnv);
+}
+
+export function providerKeySource(p: ProviderConfig): "dashboard" | "environment" | null {
+    if (storedProviderKey(p.id)) return "dashboard";
+    return process.env[p.apiKeyEnv] ? "environment" : null;
 }
 
 export function isProviderAvailable(p: ProviderConfig): boolean {
@@ -518,7 +538,13 @@ export function resolvePaidChat(storedKey?: string | null): ResolvedChat {
 export function resolveModelKey(key?: string | null): ResolvedChat | null {
     if (!key || !key.includes("::")) return null;
     const idx = key.indexOf("::");
-    return resolveAvailable(key.slice(0, idx), key.slice(idx + 2));
+    const providerId = key.slice(0, idx);
+    const modelId = key.slice(idx + 2);
+    if (isRetiredChatModel(providerId, modelId)) {
+        console.warn(`[Chat] Saved model ${key} is retired; using the default.`);
+        return null;
+    }
+    return resolveAvailable(providerId, modelId);
 }
 
 function findAvailableProvider(arg: string): ProviderConfig | undefined {

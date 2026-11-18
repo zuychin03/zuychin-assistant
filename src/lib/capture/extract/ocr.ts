@@ -1,6 +1,7 @@
 import { CaptureError } from "../service";
 import type { OcrTier } from "../types";
 import { tidyMarkdown } from "./text";
+import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
 
 export const OCR_MODEL = "gemini-3.8-flash";
 const OCR_TIMEOUT_MS = 8 * 60_000;
@@ -8,15 +9,19 @@ const NO_TEXT = "[no text]";
 const PROMPT = "Transcribe all readable text in this PDF as Markdown, in reading order. Keep headings, lists and tables. "
     + `Do not summarise, translate or add commentary. Write [unreadable] where text cannot be read. If the PDF has no readable text at all, reply with exactly ${NO_TEXT}`;
 
+function ocrKey(tier: OcrTier): string | undefined {
+    return tier === "paid" ? providerKeyOrEnv("gemini", "GEMINI_API_KEY") : providerKeyOrEnv("gemini-free", "GEMINI_FREE_API_KEY");
+}
+
 export function ocrTiers(freeOnly: boolean): Record<OcrTier, boolean> {
-    return { free: !!process.env.GEMINI_FREE_API_KEY, paid: !freeOnly && !!process.env.GEMINI_API_KEY };
+    return { free: !!ocrKey("free"), paid: !freeOnly && !!ocrKey("paid") };
 }
 
 export interface OcrResponse { text?: string; candidates?: { finishReason?: unknown }[] }
 export type OcrGenerate = (bytes: Uint8Array, tier: OcrTier) => Promise<OcrResponse>;
 
 async function geminiGenerate(bytes: Uint8Array, tier: OcrTier, freeOnly: boolean): Promise<OcrResponse> {
-    const key = tier === "paid" ? process.env.GEMINI_API_KEY : process.env.GEMINI_FREE_API_KEY;
+    const key = ocrKey(tier);
     if (!key) throw new CaptureError(`The ${tier} Gemini key is not set.`, 400);
     const [{ geminiClient }, { ThinkingLevel }, observations, { persistModelObservations }] = await Promise.all([
         import("@/lib/gemini"), import("@google/genai"), import("@/lib/ai/model-observations"), import("@/lib/ai/model-health"),

@@ -40,6 +40,12 @@ export async function requireChatAuth(req: NextRequest): Promise<NextResponse | 
     return unauthorized();
 }
 
+/** A signed-in browser session only. Refuses the bot's CHAT_API_KEY bearer, so a leaked bot key cannot reach owner settings. */
+export async function requireSession(req: NextRequest): Promise<NextResponse | null> {
+    if (!authEnabled()) return null;
+    return await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value) ? null : unauthorized();
+}
+
 /**
  * Cron endpoints trigger briefings, outbound messages and task runs, so a
  * missing CRON_SECRET must refuse the request rather than wave it through.

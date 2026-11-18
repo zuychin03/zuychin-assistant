@@ -9,6 +9,7 @@ import {
     availableEmbeddingModels,
     getProvider,
     isProviderAvailable,
+    isRetiredChatModel,
     listProvidersPublic,
     modelMaxOutputTokens,
     resolveChat,
@@ -21,6 +22,7 @@ import {
     resolveMessagingEmbedding,
     resolveModelKey,
     resolveWorkerChain,
+    retiredChatModelIds,
 } from "../src/lib/ai/providers";
 
 const envKeys = [...PROVIDERS.map((p) => p.apiKeyEnv), "KNOWLEDGE_EMBEDDING_MODEL"];
@@ -83,7 +85,7 @@ try {
     });
 
     check("disabled providers remain unavailable with configured keys", () => {
-        for (const id of ["opencode-zen", "tokenrouter"]) {
+        for (const id of ["tokenrouter"]) {
             const provider = getProvider(id)!;
             assert.equal(isProviderAvailable(provider), false);
             assert.throws(() => resolveChat(id), /unavailable:/);
@@ -96,29 +98,31 @@ try {
         }
     });
 
-    check("Zen keeps only the qualified free shortlist with conservative endpoint capabilities", () => {
+    check("OpenCode Console is paid, starts with no models and retires the free ids", () => {
         const provider = getProvider("opencode-zen")!;
-        assert.equal(provider.baseUrl, "https://opencode.ai/zen/v1");
-        assert.equal(provider.apiKeyEnv, "OPENCODE_ZEN_API_KEY");
-        assert.deepEqual(provider.chatModels.map((model) => model.id), [
-            "mimo-v2.6-flash-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
-            "muse-spark-1.3-contributor-free",
-        ]);
-        for (const model of provider.chatModels) {
-            assert.ok(model.id.endsWith("-free"));
-            assert.ok(!model.metered && !provider.metered);
-            assert.ok(model.supportsTools && model.supportsThinking);
-            assert.ok(!model.supportsStructuredOutput);
-            assert.equal(modelMaxOutputTokens(model.id), model.apiFormat === "responses" ? 131072 : 8192);
-            assert.ok(MODEL_META[model.id]);
-        }
+        assert.equal(provider.label, "OpenCode Console");
+        assert.equal(provider.baseUrl, "https://opencode.ai/inference/openai/v1");
+        assert.equal(provider.apiKeyEnv, "OPENCODE_API_KEY");
+        assert.equal(provider.metered, true);
+        assert.equal(provider.unavailableReason, undefined);
+        assert.deepEqual(provider.discovery, { source: "opencode", include: "all", pricing: "listed" });
+        assert.equal(provider.chatModels.length, 0);
         assert.equal(provider.embeddingModels.length, 0);
-        assert.equal(provider.chatModels.find((model) => model.id === "muse-spark-1.3-contributor-free")?.apiFormat, "responses");
+        assert.equal(isProviderAvailable(provider), true);
+        assert.throws(() => resolveChat("opencode-zen"), /no chat models/);
         assert.ok(!resolveWorkerChain(true).some((entry) => entry.provider.id === provider.id));
-        delete process.env.OPENCODE_ZEN_API_KEY;
+        const retired = retiredChatModelIds("opencode-zen");
+        for (const id of ["mimo-v2.6-flash-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free", "deepseek-v4-flash-free"]) {
+            assert.ok(isRetiredChatModel("opencode-zen", id), id);
+            assert.ok(retired.has(id), id);
+            assert.equal(resolveModelKey(`opencode-zen::${id}`), null);
+            assert.equal(MODEL_META[id], undefined);
+        }
+        assert.equal(isRetiredChatModel("nvidia-nim", "nemotron-3-ultra-free"), false);
+        assert.equal(isRetiredChatModel("opencode-zen", "glm-5.3-flash"), false);
+        delete process.env.OPENCODE_API_KEY;
         assert.equal(isProviderAvailable(provider), false);
-        assert.equal(resolveModelKey("opencode-zen::nemotron-3-ultra-free"), null);
-        process.env.OPENCODE_ZEN_API_KEY = "registry-test-key";
+        process.env.OPENCODE_API_KEY = "registry-test-key";
     });
 
     check("Kilo resolves only qualified free endpoints and honours its own key", () => {
@@ -167,14 +171,13 @@ try {
             assert.equal(MODEL_META[id], undefined);
         }
         assert.equal(resolveChat("kilo", "nemotron-3.5-lightning").model.supportsSearch, false);
-        const zen = getProvider("opencode-zen")!;
-        const reason = zen.unavailableReason;
-        delete zen.unavailableReason;
+        const opencode = getProvider("opencode-zen")!;
+        opencode.chatModels.push({ free: false, id: "responses-only", label: "Responses only", name: "responses-only", apiFormat: "responses", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false });
         try {
-            assert.throws(() => resolveChat("opencode-zen", "muse-spark-1.3-contributor-free"), /Responses API/);
-            assert.equal(resolveModelKey("opencode-zen::muse-spark-1.3-contributor-free"), null);
+            assert.throws(() => resolveChat("opencode-zen", "responses-only"), /Responses API/);
+            assert.equal(resolveModelKey("opencode-zen::responses-only"), null);
         } finally {
-            zen.unavailableReason = reason;
+            opencode.chatModels.pop();
         }
     });
 

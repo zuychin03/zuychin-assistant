@@ -6,7 +6,7 @@ const fixtureEnv: Record<string, string> = {
     SUPABASE_SERVICE_ROLE_KEY: "adapter-fixture-service",
     GEMINI_API_KEY: "adapter-fixture-gemini",
     KILO_API_KEY: "adapter-fixture-kilo",
-    OPENCODE_ZEN_API_KEY: "adapter-fixture-zen",
+    OPENCODE_API_KEY: "adapter-fixture-opencode",
 };
 const previousEnv = new Map(Object.keys(fixtureEnv).map((key) => [key, process.env[key]]));
 const originalFetch = globalThis.fetch;
@@ -176,16 +176,15 @@ try {
         assert.deepEqual(events, []);
     });
 
-    await check("Muse Spark Responses model is rejected before any fetch", async () => {
-        const zen = getProvider("opencode-zen")!;
-        const muse = zen.chatModels.find((entry) => entry.id === "muse-spark-1.3-contributor-free");
-        assert.ok(muse, "Muse Spark must be represented in the disabled catalogue.");
+    await check("Responses-only model is rejected before any fetch", async () => {
+        const opencode = getProvider("opencode-zen")!;
+        const responsesOnly = { free: false, id: "responses-only", label: "Responses only", name: "responses-only", apiFormat: "responses" as const, supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false };
         let fetches = 0;
         globalThis.fetch = async () => {
             fetches++;
-            throw new Error("Muse Spark must not reach Chat Completions.");
+            throw new Error("A Responses-only model must not reach Chat Completions.");
         };
-        await assert.rejects(openaiCompatChat({ ...base, provider: { ...zen, unavailableReason: undefined }, model: muse }), /responses/i);
+        await assert.rejects(openaiCompatChat({ ...base, provider: opencode, model: responsesOnly }), /responses/i);
         assert.equal(fetches, 0);
     });
 

@@ -36,7 +36,7 @@ type SpeedStats = import("../src/lib/ai/models/stats").SpeedStats;
 type ProfileRecord = import("../src/lib/ai/models/profiles").ProfileRecord;
 
 for (const provider of PROVIDERS) process.env[provider.apiKeyEnv] = "status-test-key";
-process.env.OPENCODE_ZEN_API_KEY = "";
+process.env.OPENCODE_API_KEY = "";
 
 const LAGUNA = "nvidia-nim::poolside/laguna-xs-2.1";
 const GLM = "nvidia-nim::z-ai/glm-5.3-flash";

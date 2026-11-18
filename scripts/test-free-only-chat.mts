@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 Object.assign(process.env, {
     NEXT_PUBLIC_SUPABASE_URL: "https://free-fixture.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "fixture-anon", SUPABASE_SERVICE_ROLE_KEY: "fixture-service",
     GEMINI_API_KEY: "fixture-paid", GEMINI_FREE_API_KEY: "fixture-free", NVIDIA_NIM_API_KEY: "fixture-nim", CHAT_API_KEY: "fixture-chat",
-    OPENROUTER_API_KEY: "", KILO_API_KEY: "", OPENCODE_ZEN_API_KEY: "", TOKENROUTER_API_KEY: "", DEEPSEEK_API_KEY: "", KNOWLEDGE_EMBEDDING_MODEL: "",
+    OPENROUTER_API_KEY: "", KILO_API_KEY: "", OPENCODE_API_KEY: "", TOKENROUTER_API_KEY: "", DEEPSEEK_API_KEY: "", KNOWLEDGE_EMBEDDING_MODEL: "",
 });
 type Call = { url: URL; method: string; body: Record<string, unknown>; key: string | null };
 const calls: Call[] = [], unexpected: string[] = [];

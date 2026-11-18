@@ -160,10 +160,6 @@ from (values
   ('nvidia-nim', 'poolside/laguna-xs-2.1', array['coding', 'agentic']::text[]),
   ('deepseek', 'deepseek-flash', array['coding', 'reasoning', 'vision', 'long-context', 'agentic']::text[]),
   ('deepseek', 'deepseek-v4-pro', array['research', 'coding', 'reasoning', 'writing', 'long-context', 'agentic']::text[]),
-  ('opencode-zen', 'mimo-v2.6-flash-free', array['coding', 'reasoning', 'vision', 'agentic']::text[]),
-  ('opencode-zen', 'nemotron-3-ultra-free', array['research', 'coding', 'reasoning', 'writing', 'long-context', 'agentic']::text[]),
-  ('opencode-zen', 'nemotron-3.5-lightning-free', array['research', 'coding', 'reasoning', 'agentic']::text[]),
-  ('opencode-zen', 'muse-spark-1.3-contributor-free', array['coding', 'reasoning', 'writing', 'vision', 'long-context', 'agentic']::text[]),
   ('tokenrouter', 'moonshotai/kimi-k3-free', array['research', 'coding', 'reasoning', 'writing', 'vision', 'long-context', 'agentic']::text[])
 ) as v (provider_id, model_id, tags)
 join public.model_catalogue c on c.provider_id = v.provider_id and c.model_id = v.model_id

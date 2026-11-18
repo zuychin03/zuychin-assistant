@@ -22,6 +22,7 @@ export type NotificationType =
     | "proactive_checkin"
     | "run_review"
     | "model_catalogue"
+    | "provider_key"
     | "council_convened"
     | "council_conclusion"
     | "council_stalled";
@@ -48,6 +49,8 @@ const ROUTES: Record<NotificationType, Route> = {
     proactive_checkin: { telegram: true },
     run_review: { discord: "system", discordFallback: false },
     model_catalogue: { discord: "system", discordFallback: false },
+    // A key change is a security event, so it falls back to the default channel when no system channel is set.
+    provider_key: { discord: "system" },
     // Milestones only, never per turn: sendDiscordMessage chunks over 2000 chars
     // into sequential POSTs and aborts the rest on the first non-ok.
     council_convened: { discord: "coworking" },

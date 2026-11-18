@@ -1,6 +1,7 @@
 import { deflateSync } from "node:zlib";
 import { beginModelObservation } from "@/lib/ai/model-observations";
 import type { ProviderConfig } from "@/lib/ai/providers";
+import { groqBody } from "@/lib/ai/groq";
 
 // Synthetic requests shaped like the app's own (streamed, same tool and image formats), with a
 // tool that is never dispatched, so a probe never reaches real tools, the knowledge base or search.
@@ -144,7 +145,7 @@ function openAiBody(target: ProbeTarget, step: ProbeStepName): Record<string, un
         ? [{ type: "text", text: PROMPTS.vision }, { type: "image_url", image_url: { url: `data:image/png;base64,${probeImageBase64()}` } }]
         : PROMPTS[step];
     const tools = [{ type: "function", function: { name: TOOL_NAME, description: TOOL_DESCRIPTION, parameters: { type: "object", properties: { text: { type: "string", description: "Text to echo." } }, required: ["text"] } } }];
-    return {
+    const body = {
         model: target.modelId,
         messages: [{ role: "user", content }],
         max_tokens: MAX_TOKENS,
@@ -153,6 +154,7 @@ function openAiBody(target: ProbeTarget, step: ProbeStepName): Record<string, un
         ...(step === "tools" ? { tools, tool_choice: "auto" } : {}),
         ...(step === "forced" ? { tools, tool_choice: { type: "function", function: { name: TOOL_NAME } } } : {}),
     };
+    return target.provider.id === "groq" ? groqBody(body, target.modelId, false) : body;
 }
 
 function geminiBody(step: ProbeStepName): Record<string, unknown> {

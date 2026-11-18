@@ -29,7 +29,7 @@ import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelListing, formatPurposePicks } from "@/lib/ai/models/command";
 import { isPurposeTag, PURPOSE_TAGS } from "@/lib/ai/models/tags";
-import { resolveChat, resolveModelKey, resolveMessagingDefault, resolvePaidChat, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, isRetiredChatModel, resolveMessagingDefault, resolvePaidChat, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -218,7 +218,9 @@ function resolveChatForRequest(
     freeOnly = false
 ): ResolvedChat {
     if (paidOnly) return resolvePaidChat(getStoredChannelModel(profile, channel));
-    if (provider || model) {
+    const retired = isRetiredChatModel(provider, model);
+    if (retired) console.warn(`[Chat] ${provider}::${model} is retired; using the default.`);
+    if (!retired && (provider || model)) {
         const selected = resolveChat(provider, model);
         if (freeOnly) assertFreeModel(selected);
         return selected;

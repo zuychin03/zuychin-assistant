@@ -267,7 +267,7 @@ Required:
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key |
 | `GEMINI_API_KEY` | Google AI Studio API key (default chat provider and optional Gemini embeddings) |
 
-Model-provider configuration (missing keys and explicitly unavailable providers are hidden in the UI):
+Model-provider configuration (missing keys and explicitly unavailable providers are hidden in the UI). Every provider key can also be saved on `/admin` instead; a saved key wins over its env var (see [Provider keys](#provider-keys)):
 
 | Variable | Description |
 |----------|-------------|
@@ -278,7 +278,10 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `GEMINI_FREE_API_KEY` | Second Google AI Studio key on a free-tier project. Lists the same Gemini models a second time as "(free)", and calls made with them go to that key's quota rather than the paid project's |
 | `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): canonical `deepseek-flash` and `deepseek-v4-pro`. Metered and excluded from the free worker pool |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
-| `OPENCODE_ZEN_API_KEY` | Retained configuration; unavailable to this app because the probed free tier requires OpenCode itself |
+| `GROQ_API_KEY` | Groq free-tier key ([console.groq.com](https://console.groq.com)). Its free models are seeded unapproved: they join the picker once a test passes, and automatic routes wait for Approve. The free tier allows 8K tokens per minute |
+| `OPENCODE_API_KEY` | OpenCode Console key (paid credits). Replaces `OPENCODE_ZEN_API_KEY`. Metered; no built-in models. See [setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
+| `PROVIDER_KEYS_SECRET` | Dev only. 32 random bytes, base64 (`openssl rand -base64 32`), that encrypt provider keys saved on `/admin`. Production reads a systemd credential instead. Unset = saving keys is off and env keys work as before |
+| `PROVIDER_KEYS_SECRET_PREVIOUS` | Dev only, during a master key change: the old value, so saved keys are re-encrypted on start |
 | `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
 | `MODEL_DISCOVERY` | Optional. `off` makes the daily model check return 204 and do nothing; the app keeps using the stored catalogue and the models in code. Check now in `/admin` still works |
 | `MODEL_DISCOVERY_MAX_PROBES` | Optional. Free models tested per provider in each check, a whole number from 0 to 50 (default 10) |
@@ -373,6 +376,13 @@ Approve, the `lookup` and `consult` purposes in model health, and the delete gra
 safe to run again. Without it, tags come from the models in code, speed from the latest test,
 ratings are not stored, Remove and Delete are unavailable, and `/admin` says which file to apply.
 If you applied an earlier copy, run it again to add the removal column and the grant.
+
+The `-- ===== V7 provider keys =====` block adds `provider_keys` (provider API keys saved on
+`/admin`, encrypted, server-only), seeds Groq's three free models unapproved with their purpose
+tags, and deletes the four retired OpenCode free-model rows. On an existing project, dump
+`model_catalogue` and `model_profiles` first, then run
+[`scripts/migrations/v7-provider-keys.sql`](scripts/migrations/v7-provider-keys.sql); it is safe
+to run again. Without it, env keys work as before and `/admin` says which file to apply.
 
 
 ### Web authentication
@@ -539,6 +549,8 @@ npm run dev
 | POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
 | POST | `/api/admin/models/lookup` | Draft one model's profile from free sources (202; 409 while a check runs) |
 | POST | `/api/admin/models/profile` | Approve a model with its profile and tags in one step, approve a built-in model's profile, or save tags |
+| GET/PUT/DELETE | `/api/admin/provider-keys` | Key status per provider (never the key) / save or replace a key / clear it. Session only; changes need the access password |
+| POST | `/api/admin/provider-keys/test` | Check the active key for one provider |
 | GET/POST | `/api/admin/conversation-cleanup` | Cleanup recommendations / dismiss or review them |
 
 Browser routes require the signed `zuychin-auth` session when authentication is enabled. The
@@ -565,21 +577,23 @@ is not evidence that a model has retired.
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it`, `nvidia/nemotron-3.5-lightning:free` | Gemma 4 26B is metered and excluded from free workers |
 | NVIDIA NIM | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.3-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. Kimi K3, GLM-5.3, DeepSeek V4.1 Flash and DiffusionGemma reached end of life on NIM (HTTP 410 on 18/11/2026); saved choices resolve to replacements |
 | Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
-| OpenCode Zen | Restricted catalogue | `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free` | Free-only; access remains restricted. Muse also requires the unsupported Responses transport and contributor training terms. See [setup](scripts/OPENCODE_ZEN_SETUP.md) |
+| Groq | OpenAI-compatible | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` | Free tier (8K tokens per minute). Seeded as catalogue rows, not code models, so automatic routes wait for Approve. Requests drop `messages[].name` and send `max_completion_tokens` |
+| OpenCode Console | OpenAI-compatible | none until a key is set | Paid only (credits); metered. Discovery tracks paid Chat Completions models; each needs Test and Approve. Free models answer 403 outside OpenCode, so the old free ids are retired and saved choices of them fall back to the default. [Setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
 | TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
-  OpenRouter, Kilo, NVIDIA NIM and Zen chat-completion models with streamed responses. Gemini keeps
-  its own native path.
+  OpenRouter, Kilo, NVIDIA NIM, Groq, DeepSeek and OpenCode Console chat-completion models with
+  streamed responses. Gemini keeps its own native path.
 - Tool dispatch follows each model's declared capability. Some endpoints remain unverified
   under load; successful HTTP responses alone do not prove a tool was executed. If a model
   rejects tools, the client can retry without them.
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
   can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning`,
-  NIM `chat_template_kwargs.enable_thinking` and DeepSeek `thinking` + `reasoning_effort`.
+  NIM `chat_template_kwargs.enable_thinking`, DeepSeek `thinking` + `reasoning_effort`, and Groq
+  `reasoning_effort` (GPT-OSS always reasons, so off means low effort with the reasoning hidden).
   DeepSeek is the one provider that reasons unless told not to, so its branch runs on every
   request rather than only when `/think` is on.
 - Web search works two ways depending on the model. Gemini uses native Google Search/Maps
@@ -611,7 +625,9 @@ discovered models and a status. The server loads the catalogue at start-up and r
 background once it is more than 5 minutes old, so model lookups stay synchronous.
 
 - Listing: the daily check lists Gemini (both keys), OpenRouter and Kilo (free models only),
-  NVIDIA NIM and DeepSeek. OpenCode Zen and TokenRouter are not listed.
+  NVIDIA NIM, DeepSeek, Groq and OpenCode Console (paid Chat Completions models only, tested
+  only when you press Test). TokenRouter is not listed. Saving a provider key on `/admin` starts
+  a check straight away.
 - Testing: each check tests up to `MODEL_DISCOVERY_MAX_PROBES` free models per provider: new
   ones first, then retries of unclear results, then picker models last tested over 7 days ago.
   A test sends short streamed requests: a chat reply, an automatic tool call, a forced tool call
@@ -646,6 +662,50 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
   `npx tsx scripts/model-lookup.mts <provider> <model>` drafts one profile without saving, and
   `npx tsx scripts/model-roster.mts [purpose]` prints the roster. `npm run models:test` runs the
   offline checks. The tables come from `scripts/migrations/v7-model-awareness.sql`.
+
+### Provider keys
+
+Each provider's API key can be set, replaced, tested and cleared on `/admin` under
+**Providers and keys**. A saved key wins over the env var, and clearing it falls back to the env
+var. Changes apply on the next request, with no restart.
+
+- Keys are encrypted with AES-256-GCM before they reach the database (`provider_keys`). The
+  encryption key is derived from a 32-byte master key that never goes to the database. Each row
+  is bound to its provider and to a fingerprint of the master key, so dev and production can share
+  one database without reading each other's rows.
+- The browser never gets a key back: only where it came from, the last 4 characters and the date.
+  The last 4 are not stored; they come from the decrypted key.
+- Save first checks the key with one small authenticated request. A 401 or 403 refuses it; a
+  timeout or server error saves it with a warning.
+- Save, Replace and Clear ask for the access password again (same lockout as sign-in) and post a
+  notice to the Discord system channel naming the provider, never the key. The routes accept only
+  a signed-in browser session, not the `CHAT_API_KEY` bearer token.
+- With auth on but no `ACCESS_PASSWORD` (passkey only), key changes are refused.
+
+What the encryption protects against:
+
+| Threat | Result |
+| --- | --- |
+| Database dump or backup leaks | Safe: rows hold ciphertext only |
+| Supabase service-role key leaks | Safe: the master key is not in Supabase |
+| Supabase account or dashboard taken over | Safe |
+| Stolen browser session | Can replace or clear a key only with the access password; can never read one |
+| `CHAT_API_KEY` leaks | Key routes refuse the bearer token |
+| The server itself is compromised | Not protected: the app must decrypt keys to call providers unattended. Keep keys on free tiers and rotate them from the dashboard |
+| A copy of `.env.local` leaks | Exposed only if it holds the production master key, so use a different one in dev |
+
+Production setup: the master key lives in a root-only file and reaches the app as a systemd
+credential (`LoadCredential=provider-keys:/etc/zuychin/provider-keys.key`), so it is not in the
+process environment. The app reads `$CREDENTIALS_DIRECTORY/provider-keys`, and falls back to
+`PROVIDER_KEYS_SECRET` elsewhere. Without a master key, or before
+[`scripts/migrations/v7-provider-keys.sql`](scripts/migrations/v7-provider-keys.sql) is applied,
+the panel still lists every provider and its env key, and Save is disabled with the reason.
+
+To change the master key: provide the old one as the `provider-keys-previous` credential (or
+`PROVIDER_KEYS_SECRET_PREVIOUS`), write a new current key and restart. On start the app
+re-encrypts every saved key with the new master key and deletes the old rows, and the panel says
+so. Then remove the previous credential and restart again. Losing the master key means
+re-entering each saved key.
 
 ### Migrating knowledge embeddings
 
@@ -1451,7 +1511,9 @@ src/
 │   │   ├── catalogue/                  # Model discovery: provider lists, tests, stored catalogue, daily check
 │   │   ├── models/                     # Model awareness: tags, speed, roster, lookups, profiles, model_status, /model text
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
-│   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
+│   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, DeepSeek, OpenCode) + tool loop
+│   │   ├── groq.ts                     # Groq request quirks (field names, reasoning switches)
+│   │   ├── provider-keys/              # Encrypted provider keys: master key, AES-GCM, store, snapshot, key checks, admin actions
 │   │   ├── reply-sources.ts            # Records the sources each reply used
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models

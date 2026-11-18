@@ -1,10 +1,12 @@
-// Lists each provider's models with the keys in .env.local and prints what a discovery run would do.
+// Lists each provider's models with its dashboard key (when PROVIDER_KEYS_SECRET is set) or the key in .env.local, and prints what a discovery run would do.
 // Writes nothing and never prints a key. Usage: npx tsx scripts/model-discovery-dry-run.mts [providerId...]
 import fs from "node:fs";
 import { PROVIDERS, getProviderApiKey, retiredChatModelIds } from "../src/lib/ai/providers";
 import { listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName } from "../src/lib/ai/catalogue/sources";
+import { refreshProviderKeys } from "../src/lib/ai/provider-keys/snapshot";
 
 if (fs.existsSync(".env.local")) process.loadEnvFile(".env.local");
+if (process.env.PROVIDER_KEYS_SECRET) await refreshProviderKeys();
 const MAX_PROBES = Number(process.env.MODEL_DISCOVERY_MAX_PROBES) || 10;
 const only = new Set(process.argv.slice(2));
 

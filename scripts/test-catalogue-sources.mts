@@ -7,6 +7,7 @@ import {
     parseGeminiModels,
     parseKiloModels,
     parseOpenAiModelList,
+    parseOpenCodeModels,
     parseOpenRouterModels,
     selectDiscoverable,
     shortNameFor,
@@ -91,6 +92,43 @@ await check("DeepSeek: paid key, limits, modalities and effort are read", () => 
     assert.equal(flash.listedThinking, true);
 });
 
+await check("Groq: free key, inactive, speech and guard models left out, completion limit read", () => {
+    const models = parseOpenAiModelList(fixture("groq"), true);
+    const groq = getProvider("groq")!;
+    const tracked = selectDiscoverable(models, groq.discovery!, retiredChatModelIds("groq"));
+    assert.deepEqual(ids(tracked).sort(), ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]);
+    const qwen = tracked.find((model) => model.modelId === "qwen/qwen3.8-27b")!;
+    assert.equal(qwen.free, true);
+    assert.equal(qwen.maxOutputTokens, 16384);
+    assert.equal(qwen.contextTokens, 131072);
+    assert.equal(qwen.developer, "Alibaba Cloud");
+    assert.equal(models.find((model) => model.modelId === "gemma2-9b-it")!.chat, false);
+});
+
+await check("OpenCode Console: only paid Chat Completions models are chat, with price, limits and inputs read", () => {
+    const models = parseOpenCodeModels(fixture("opencode"));
+    const opencode = getProvider("opencode-zen")!;
+    const tracked = selectDiscoverable(models, opencode.discovery!, retiredChatModelIds("opencode-zen"));
+    assert.deepEqual(ids(tracked), ["glm-5.3-flash", "deepseek-v4.1-flash", "kimi-k2.5"]);
+    const glm = tracked[0];
+    assert.equal(glm.free, false);
+    assert.equal(glm.label, "GLM-5.3-Flash");
+    assert.equal(glm.developer, "zhipuai");
+    assert.equal(glm.contextTokens, 1000000);
+    assert.equal(glm.maxOutputTokens, 131072);
+    assert.deepEqual(glm.inputs, ["Text", "Image", "Video"]);
+    assert.equal(glm.listedTools, true);
+    assert.equal(glm.listedThinking, true);
+    assert.equal(glm.listedStructured, true);
+    assert.equal(tracked.find((model) => model.modelId === "kimi-k2.5")!.listedStructured, null);
+    const free = models.find((model) => model.modelId === "big-pickle")!;
+    assert.equal(free.free, true);
+    assert.equal(free.chat, false, "free models answer 403 outside OpenCode");
+    for (const id of ["claude-haiku-5-5", "gpt-6-luna", "gemini-3.5-flash-lite"]) {
+        assert.equal(models.find((model) => model.modelId === id)!.chat, false, `${id} needs a transport this app lacks`);
+    }
+});
+
 await check("labels and short names", () => {
     assert.equal(cleanLabel("NVIDIA: Nemotron 3.5 Lightning (free)", true), "Nemotron 3.5 Lightning (free)");
     assert.equal(cleanLabel("Gemma 4 26B A4B (free)", false), "Gemma 4 26B A4B");
@@ -121,6 +159,20 @@ await check("listing: OpenAI-style providers send the bearer key and extra heade
     assert.equal(calls[0].url, "https://openrouter.ai/api/v1/models");
     assert.equal(calls[0].headers.Authorization, "Bearer test-key");
     assert.ok(calls[0].headers["X-Title"]);
+});
+
+await check("listing: Groq and OpenCode Console list from their own base URL with the bearer key", async () => {
+    for (const [id, name, url] of [
+        ["groq", "groq", "https://api.groq.com/openai/v1/models"],
+        ["opencode-zen", "opencode", "https://opencode.ai/inference/openai/v1/models"],
+    ] as const) {
+        const calls: Call[] = [];
+        const provider = getProvider(id)!;
+        const result = await listProviderModels(provider, provider.discovery!, "test-key", { fetchImpl: stubFetch(() => ({ status: 200, body: fixture(name) }), calls) });
+        assert.ok(result.ok && result.models.length > 0, id);
+        assert.equal(calls[0].url, url);
+        assert.equal(calls[0].headers.Authorization, "Bearer test-key");
+    }
 });
 
 await check("listing: Gemini follows page tokens and uses its key header", async () => {

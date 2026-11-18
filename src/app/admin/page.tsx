@@ -13,9 +13,10 @@ import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import NotificationsPanel from "./notifications-panel";
 import ModelHealthPanel from "./model-health-panel";
 import ModelsPanel from "./models-panel";
+import ProviderKeysPanel from "./provider-keys-panel";
 import { clearOfflinePrivateData } from "@/lib/offline/storage";
 import { Masonry } from "./masonry";
-import { Activity, Bot, CheckCircle2, Clock, RefreshCw, Save, ShieldCheck, LogOut, Sparkles, Wifi, XCircle } from "lucide-react";
+import { Activity, Bot, CheckCircle2, Clock, RefreshCw, Save, ShieldCheck, LogOut, Wifi, XCircle } from "lucide-react";
 
 interface BotStats {
     status: string;
@@ -274,36 +275,8 @@ export default function DashboardPage() {
                 </section>
 
                 <Masonry minColumnWidth={300} gap={16}>
-                    <section className={ui.panel}>
-                        <PanelHeader title="Provider status" description={`${availableProviders.length}/${providers.length || 0} providers configured`} icon={<Sparkles size={16} />} />
-                        <div className="list">
-                            {providers.map((provider) => (
-                                <div key={provider.id} className="row">
-                                    <div className={ui.providerHead}>
-                                        <span className="row-title">{provider.label}</span>
-                                        <span className="pill" data-tone={provider.available ? "success" : undefined}>
-                                            {provider.available ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                                            {provider.available ? "Ready" : provider.unavailableReason ? "Unavailable" : "Missing key"}
-                                        </span>
-                                    </div>
-                                    <div className="meta">
-                                        {provider.chatModels.length} chat · {provider.embeddingModels.length} embedding
-                                    </div>
-                                    {!provider.available && provider.unavailableReason && (
-                                        <div className="meta">{provider.unavailableReason}</div>
-                                    )}
-                                    {!!provider.unavailableChatModels?.length && (
-                                        <details className={ui.providerDetails}>
-                                            <summary>{provider.unavailableChatModels.length} unavailable model{provider.unavailableChatModels.length === 1 ? "" : "s"}</summary>
-                                            {provider.unavailableChatModels.map((model) => (
-                                                <p key={model.id}><strong>{model.label}</strong>: {model.reason}</p>
-                                            ))}
-                                        </details>
-                                    )}
-                                </div>
-                            ))}
-                            {providers.length === 0 && <div className="empty">No providers loaded.</div>}
-                        </div>
+                    <section className={ui.panel} id="providers">
+                        <ProviderKeysPanel providers={providers} onChanged={() => void fetchStats()} />
                     </section>
 
                     <section className={ui.panel}>

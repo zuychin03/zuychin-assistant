@@ -12,6 +12,7 @@ import { formatTextAttachment } from "@/lib/attachments";
 import type { ToolContext } from "@/lib/ai/mcp-service";
 import type { FileAttachment } from "@/lib/types";
 import { aggregateUsage, requestUsage, type CompatUsage } from "@/lib/ai/stream-usage";
+import { groqBody } from "@/lib/ai/groq";
 import { beginModelObservation, type ModelCallPurpose } from "@/lib/ai/model-observations";
 
 interface ToolCall {
@@ -142,7 +143,7 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
 
     const apiKey = getProviderApiKey(provider);
     if (!apiKey) {
-        throw new Error(`Missing API key (${provider.apiKeyEnv}) for ${provider.label}.`);
+        throw new Error(`Missing API key for ${provider.label}. Save one on the dashboard or set ${provider.apiKeyEnv}.`);
     }
 
     const opts: RequestOpts = {
@@ -417,6 +418,8 @@ async function postChat(
         if (thinking) body.reasoning_effort = "high";
     }
 
+    const payload = provider.id === "groq" ? groqBody(body, model, !!thinking) : body;
+
     let latestUsage: unknown;
     let streamFinished = false;
     const observation = beginModelObservation({ providerId: provider.id, modelId: model, purpose: opts.purpose ?? "chat" });
@@ -435,7 +438,7 @@ async function postChat(
                 Accept: "text/event-stream",
                 ...(provider.extraHeaders ?? {}),
             },
-            body: JSON.stringify(body),
+            body: JSON.stringify(payload),
             signal: controller.signal,
         });
 

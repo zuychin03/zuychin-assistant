@@ -36,7 +36,7 @@ export async function embedText(
     requestSignal.throwIfAborted();
     const apiKey = getProviderApiKey(ref.provider);
     if (!apiKey) {
-        throw new Error(`Missing API key (${ref.provider.apiKeyEnv}) for ${ref.provider.label}.`);
+        throw new Error(`Missing API key for ${ref.provider.label}. Save one on the dashboard or set ${ref.provider.apiKeyEnv}.`);
     }
     if (ref.provider.kind === "gemini") {
         const result = await observeGeminiClient(geminiClient(apiKey), { providerId: ref.provider.id, purpose: "embedding" }).models.embedContent({

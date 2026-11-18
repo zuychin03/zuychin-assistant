@@ -73,6 +73,8 @@ const tests = [
     "approval-observations",
     "jev-decisions",
     "owner-profile",
+    "provider-keys",
+    "provider-key-admin",
     "server-only-tables",
     "v6-migrations",
     "security-boundaries"
