@@ -1,6 +1,7 @@
 import type { ModelCallObservation, ExternalServiceObservation } from "@/lib/ai/model-observations";
 import { aggregateUsage, type CompatUsage } from "@/lib/ai/stream-usage";
 import { mergeDataClasses, type ModelDataClass } from "@/lib/ai/data-policy";
+import type { AgentActivity } from "@/lib/ai/agent/activity";
 
 export type ReplySourceKind = "fact" | "memory" | "vault" | "tool" | "web";
 
@@ -28,6 +29,8 @@ export interface ReplyTrace {
     background: "pending" | "complete" | "failed" | "skipped";
     saved: boolean;
     sources?: ReplySource[];
+    /** Agent runs only: the plan, tools, sub-agents and files, for the summary under the reply. */
+    agent?: AgentActivity;
 }
 
 export function makeReplyTrace(params: Omit<ReplyTrace, "version" | "retention" | "usage" | "saved" | "dataClasses">): ReplyTrace {
@@ -43,5 +46,6 @@ export function mergeReplyTrace(previous: ReplyTrace | undefined, incoming: Repl
         ? previous.background : incoming.background;
     const externalServices = [...new Map([...(previous?.externalServices ?? []), ...incoming.externalServices].map((call) => [call.id, call])).values()];
     const sources = incoming.sources ?? previous?.sources;
-    return { ...incoming, ...(sources ? { sources } : {}), background, calls, externalServices, dataClasses: mergeDataClasses(...calls.map(call => call.dataClasses), ...externalServices.map(call => call.dataClasses)), usage: aggregateUsage(calls.map((call) => call.usage)), saved: true };
+    const agent = incoming.agent ?? previous?.agent;
+    return { ...incoming, ...(sources ? { sources } : {}), ...(agent ? { agent } : {}), background, calls, externalServices, dataClasses: mergeDataClasses(...calls.map(call => call.dataClasses), ...externalServices.map(call => call.dataClasses)), usage: aggregateUsage(calls.map((call) => call.usage)), saved: true };
 }

@@ -64,7 +64,7 @@ const { runWorker } = await import("../src/lib/ai/agent/worker");
 const { executeTool } = await import("../src/lib/ai/mcp-service");
 const { getEmbeddingRef } = await import("../src/lib/ai/embeddings");
 const { setEmbeddingOverride } = await import("../src/lib/ai/embedding-override");
-const { listProvidersPublic } = await import("../src/lib/ai/providers");
+const { getProvider, listProvidersPublic } = await import("../src/lib/ai/providers");
 const { POST: chatPost } = await import("../src/app/api/chat/route");
 const { POST: streamPost } = await import("../src/app/api/chat/stream/route");
 const { POST: ttsPost } = await import("../src/app/api/tts/route");
@@ -138,7 +138,7 @@ await check("paid active partition refuses chat and knowledge-only without migra
     } finally { await setEmbeddingOverride("nvidia/nemotron-3-embed-1b"); }
 });
 await check("knowledge-only uses free partition without generation", async () => { assert.match((await ragChat({ ...base, knowledgeOnly: true })).reply, /could not find/); assert.equal(modelCalls().length, 0); });
-await check("worker ignores paid model hint", async () => { await runWorker({ ...worker, embRef: getEmbeddingRef(), modelHint: "gemini-3.8-flash" }); assert.equal(modelCalls()[0].key, "Bearer fixture-nim"); });
+await check("worker ignores paid model hint", async () => { const gemini = getProvider("gemini")!; await runWorker({ ...worker, embRef: getEmbeddingRef(), pick: { candidates: [{ provider: gemini, model: gemini.chatModels.find((model) => model.id === "gemini-3.8-flash")! }], defaultChain: true, note: null } }); assert.equal(modelCalls()[0].key, "Bearer fixture-nim"); });
 await check("worker exhaustion has no paid fallback", async () => {
     generationError = true; await assert.rejects(runWorker({ ...worker, embRef: getEmbeddingRef() }), /No paid fallback/); assert(modelCalls().some((c) => c.key === "fixture-free"));
 });

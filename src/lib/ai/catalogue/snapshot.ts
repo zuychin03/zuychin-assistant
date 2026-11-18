@@ -1,3 +1,5 @@
+import type { ProfileRecord } from "@/lib/ai/models/profiles";
+
 export type CatalogueOrigin = "seed" | "discovered";
 export type ProbeStatus = "untested" | "passed" | "failed" | "inconclusive";
 
@@ -42,6 +44,9 @@ export interface CatalogueSnapshot {
     loadedAt: number;
     storage: CatalogueStorage;
     rows: readonly CatalogueRow[];
+    /** Purpose tags and profiles; empty with its own storage state until v7-model-awareness.sql is applied. */
+    profiles: readonly ProfileRecord[];
+    profileStorage: CatalogueStorage;
 }
 
 const STALE_MS = 5 * 60_000;
@@ -56,7 +61,7 @@ interface State {
 
 function state(): State {
     const holder = globalThis as typeof globalThis & { [KEY]?: State };
-    holder[KEY] ??= { snapshot: { version: 0, loadedAt: 0, storage: "empty", rows: [] }, refreshing: null, autoRefresh: false };
+    holder[KEY] ??= { snapshot: { version: 0, loadedAt: 0, storage: "empty", rows: [], profiles: [], profileStorage: "empty" }, refreshing: null, autoRefresh: false };
     return holder[KEY];
 }
 
@@ -76,10 +81,14 @@ export async function refreshCatalogueSnapshot(): Promise<CatalogueSnapshot> {
             try {
                 // Loaded lazily so importing providers.ts never builds a Supabase client.
                 const { readCatalogueRows } = await import("@/lib/ai/catalogue/store");
-                const result = await readCatalogueRows();
+                const { readProfiles } = await import("@/lib/ai/models/store");
+                const [result, profiles] = await Promise.all([readCatalogueRows(), readProfiles()]);
+                const profileState = profiles.ok
+                    ? { profiles: profiles.profiles, profileStorage: "ok" as const }
+                    : { profiles: current.snapshot.profiles, profileStorage: profiles.reason };
                 current.snapshot = result.ok
-                    ? { version: current.snapshot.version + 1, loadedAt: Date.now(), storage: "ok", rows: result.rows }
-                    : { ...current.snapshot, loadedAt: Date.now(), storage: result.reason };
+                    ? { version: current.snapshot.version + 1, loadedAt: Date.now(), storage: "ok", rows: result.rows, ...profileState }
+                    : { ...current.snapshot, ...profileState, loadedAt: Date.now(), storage: result.reason };
             } catch (error) {
                 console.error("[ModelCatalogue] Refresh failed:", error instanceof Error ? error.message : error);
                 current.snapshot = { ...current.snapshot, loadedAt: Date.now(), storage: "unavailable" };
@@ -96,7 +105,7 @@ export function enableCatalogueRefresh(): void {
     state().autoRefresh = true;
 }
 
-export function setCatalogueSnapshotForTests(rows: readonly CatalogueRow[], storage: CatalogueStorage = "ok"): void {
+export function setCatalogueSnapshotForTests(rows: readonly CatalogueRow[], storage: CatalogueStorage = "ok", profiles: readonly ProfileRecord[] = []): void {
     const current = state();
-    current.snapshot = { version: current.snapshot.version + 1, loadedAt: Date.now(), storage, rows };
+    current.snapshot = { version: current.snapshot.version + 1, loadedAt: Date.now(), storage, rows, profiles, profileStorage: storage };
 }

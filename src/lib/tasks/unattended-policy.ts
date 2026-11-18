@@ -11,7 +11,7 @@ export interface ProposedAction extends UnattendedRun {
 type Scope = UnattendedRun & { sources: string[]; initialContext?: string; permit?: { tool: string; argsHash: string; used: boolean } };
 const scope = new AsyncLocalStorage<Scope>();
 const READ = new Set(["get_current_time", "search_web", "search_knowledge", "search_history", "get_recent_conversations",
-    "list_calendar_events", "list_unread_emails", "list_recent_emails", "read_email", "vault_search", "vault_read"]);
+    "list_calendar_events", "list_unread_emails", "list_recent_emails", "read_email", "vault_search", "vault_read", "model_status"]);
 const LOCAL = new Set(["create_document", "create_code_file", "create_code_bundle"]);
 const MUTATIONS = new Set(["send_email", "draft_gmail_reply", "manage_calendar_event", "save_note", "vault_ingest",
     "vault_write", "vault_delete", "vault_lint", "manage_todo_list", "manage_scheduled_task", "manage_memory_facts", "manage_notes", "capture_add"]);

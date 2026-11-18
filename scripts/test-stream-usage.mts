@@ -154,7 +154,7 @@ try {
             assert.equal(String(input), `${provider.baseUrl}/chat/completions`);
             return stream([text(), stop]);
         };
-        const result = await runWorker({ objective: "Fixture", modelHint: base.model.name, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
+        const result = await runWorker({ objective: "Fixture", pick: { candidates: [{ provider, model: base.model }], defaultChain: true, note: null }, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
         assert.equal(result.tokens, null);
     });
     await check("worker fallback retains an earlier unknown attempt", async () => {
@@ -165,7 +165,7 @@ try {
             requests++;
             return requests <= 2 ? stream([stop]) : stream([text(), stop, { usage: usage() }]);
         };
-        const result = await runWorker({ objective: "Fixture", modelHint: base.model.name, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
+        const result = await runWorker({ objective: "Fixture", pick: { candidates: [{ provider, model: base.model }], defaultChain: true, note: null }, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
         assert.equal(requests, 3);
         assert.equal(result.tokens, null);
     });

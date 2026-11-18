@@ -45,4 +45,23 @@ const classified = renderToStaticMarkup(createElement(ReplyTraceBody, { trace: {
 assert.match(classified, /Data classes: personal, knowledge, public search, unattended/);
 assert.match(classified, /returned source evidence not observed/);
 assert.match(classified, /existing shared knowledge partition and may be free/);
-console.log("Reply trace UI: 22 assertions passed.");
+const rounds = Array.from({ length: 5 }, (_, index) => ({ ...trace.calls[0], id: `round-${index}`, modelId: "lead-model", purpose: "orchestration" as const, status: "success" as const, httpStatus: null, errorClass: null, durationMs: 1000 }));
+const agentHtml = renderToStaticMarkup(createElement(ReplyTraceBody, { trace: { ...trace, calls: [...rounds, trace.calls[0]], agent: {
+    steps: [{ title: "Search sources", status: "done" }, { title: "Write the report", status: "in_progress" }],
+    tools: [{ name: "search_web", count: 3 }, { name: "use_skill", count: 1 }],
+    workers: [{ objective: "Compare hosting prices", model: "nvidia/nemotron-3.5-lightning-30b-a3b" }],
+    files: ["report.pdf"],
+} } }));
+assert.match(agentHtml, /Agent run/);
+assert.match(agentHtml, /Search sources/);
+assert.match(agentHtml, /Searched the web ×3, Used a skill/);
+assert.match(agentHtml, /Sub-agents \(1\)/);
+assert.match(agentHtml, /on nvidia\/nemotron-3\.5-lightning-30b-a3b/);
+assert.match(agentHtml, /Files:<\/span> report\.pdf/);
+assert.match(agentHtml, /6 observed model calls/);
+assert.match(agentHtml, /5 calls, Succeeded/);
+assert.match(agentHtml, /5\.00 s in total/);
+assert.equal((agentHtml.match(/lead-model/g) ?? []).length, 1, "same model, purpose and outcome fold into one line");
+const malformed = renderToStaticMarkup(createElement(ReplyTraceBody, { trace: { ...trace, agent: { steps: "nope", tools: [{ name: 3 }] } as unknown as ReplyTrace["agent"] } }));
+assert.doesNotMatch(malformed, /Agent run/);
+console.log("Reply trace UI: 33 assertions passed.");

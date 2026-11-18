@@ -26,6 +26,9 @@ import { extractMemories } from "@/lib/ai/memory/extractor";
 import { getConversationProject } from "@/lib/projects";
 import { after } from "next/server";
 import type { AgentEventSink } from "@/lib/ai/agent/events";
+import { currentRoster } from "@/lib/ai/models/roster";
+import { formatModelListing, formatPurposePicks } from "@/lib/ai/models/command";
+import { isPurposeTag, PURPOSE_TAGS } from "@/lib/ai/models/tags";
 import { resolveChat, resolveModelKey, resolveMessagingDefault, resolvePaidChat, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
@@ -36,6 +39,7 @@ import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
 import { inputModeError, userMessageMetadata, VOICE_TRANSCRIPT_NOTE, type InputMode } from "@/lib/voice/input-mode";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
+import { createActivityRecorder } from "@/lib/ai/agent/activity";
 import type { MessageChannel, FileAttachment, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
 
 const RAG_CONFIG = {
@@ -226,7 +230,7 @@ function resolveChatForRequest(
     return resolveChat();
 }
 
-function formatModelListing(
+function formatEmbeddingListing(
     groups: { provider: string; providerId: string; models: { name: string; label: string; status?: "new" | "missing" }[] }[]
 ): string {
     return groups
@@ -237,13 +241,16 @@ function formatModelListing(
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile, freeOnly = false): Promise<string> {
     const arg = message.trim().replace(/^[/!]model(?:@\S+)?\s*/i, "").trim();
     const current = resolveChatForRequest(channel, undefined, undefined, profile, false, freeOnly);
-    const usage = `Usage: /model <provider> <model>\n\nAvailable models:\n${formatModelListing(availableChatModels(freeOnly))}`;
+    const roster = currentRoster({ freeOnly, paidOrchestrator: true, unattended: false });
+    const usage = `Usage: /model <provider> <model>, or /model <purpose> for the best picks (${PURPOSE_TAGS.join(", ")}).\n\nAvailable models:\n${formatModelListing(availableChatModels(freeOnly), roster)}`;
 
     if (!arg || arg.toLowerCase() === "list") {
         return `Current model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${usage}`;
     }
 
     const parts = arg.split(/\s+/);
+    const purpose = parts.length === 1 ? parts[0].toLowerCase() : null;
+    if (isPurposeTag(purpose)) return formatPurposePicks(roster, purpose, freeOnly);
     if (parts.length < 2) {
         return `Please specify both a provider and a model.\n\n${usage}`;
     }
@@ -264,7 +271,7 @@ async function handleModelCommand(message: string, channel: MessageChannel, prof
 async function handleEmbedModelCommand(message: string, channel: MessageChannel, profile: Profile, freeOnly = false): Promise<string> {
     const arg = message.trim().replace(/^[/!]embed-model(?:@\S+)?\s*/i, "").trim();
     const current = resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding();
-    const usage = `Usage: /embed-model <provider> <model>\n\nAvailable embedding models:\n${formatModelListing(availableEmbeddingModels(freeOnly))}`;
+    const usage = `Usage: /embed-model <provider> <model>\n\nAvailable embedding models:\n${formatEmbeddingListing(availableEmbeddingModels(freeOnly))}`;
 
     if (!arg || arg.toLowerCase() === "list") {
         return `Current embedding model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${usage}`;
@@ -554,11 +561,13 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
     const savedMessages = new Set<string>();
     const startedAt = new Date().toISOString();
     const started = performance.now();
+    const activity = createActivityRecorder();
     let firstAnswerMs: number | null = null;
     return withModelObservationCollector(calls, async () => {
         try {
             const result = await withReplySources(sources, () => runRagChat(params, (event) => {
                 if (event.type === "token" && event.text && firstAnswerMs === null) firstAnswerMs = performance.now() - started;
+                activity.record(event);
                 onEvent?.(event);
             }, (task) => { background.push(task); }, (id) => { if (id) savedMessages.add(id); }));
             params.signal?.throwIfAborted();
@@ -567,11 +576,13 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
                 params.signal?.throwIfAborted();
                 return result;
             }
+            const agent = activity.result();
             const trace = makeReplyTrace({
                 calls: [...calls], externalServices: [...externalServices], startedAt, durationMs: performance.now() - started, firstAnswerMs,
                 origin: params.paidOnly ? "scheduled" : "interactive", freeOnly: result.freeOnly === true,
                 background: background.length ? "pending" : "skipped",
                 sources: rankReplySources(sources),
+                ...(agent ? { agent } : {}),
             });
             const replyTrace = await saveReplyTrace(result.messageId, trace, params.conversationId);
             params.signal?.throwIfAborted();

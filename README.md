@@ -23,6 +23,10 @@ edited and deleted in place.
   drops off its provider's list twice is marked Missing but stays selectable. Worker runs and
   fallbacks use a discovered model only after you approve it in `/admin`; paid models are tested
   only when you press Test
+- Model awareness: every chat model has purpose tags (research, coding, reasoning and more) and
+  a speed measured from recent calls. A lookup on free sources drafts each model's profile, which
+  you approve in `/admin` before the info modal or the agent uses it. Agent mode picks sub-agents
+  by purpose, can ask or compare models directly, and rates the workers it used
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
 - Chat history: conversation sidebar with auto-titling and full CRUD
@@ -277,6 +281,8 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
 | `MODEL_DISCOVERY` | Optional. `off` makes the daily model check return 204 and do nothing; the app keeps using the stored catalogue and the models in code. Check now in `/admin` still works |
 | `MODEL_DISCOVERY_MAX_PROBES` | Optional. Free models tested per provider in each check, a whole number from 0 to 50 (default 10) |
+| `MODEL_LOOKUP` | Optional. `off` skips profile lookups in the daily model check. The Look up button in `/admin` still works |
+| `MODEL_LOOKUP_MAX_PER_RUN` | Optional. Profile lookups per daily check (default 4) |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini. Capture also uses them to read a page the server is blocked from or can't reach |
 | `CAPTURE_FETCH` | Optional. `off` stops Capture fetching links on the server; Review then asks you to paste the passage instead |
@@ -355,6 +361,15 @@ unique index on running rows is the lock), seeds them with the models in code, a
 [`scripts/migrations/v7-model-catalogue.sql`](scripts/migrations/v7-model-catalogue.sql); it is
 safe to run again. Without these tables the app serves the models in code and `/admin` says
 which file to apply.
+
+The `-- ===== V7 model awareness =====` block adds `model_profiles` (purpose tags, the drafted
+and approved profile, and its vault state per model route, seeded for the models in code),
+`model_feedback` (worker ratings), the `assistant_model_speed` and `assistant_model_feedback`
+functions, the `model_profile_approve` function behind one-click Approve, and the `lookup` and
+`consult` purposes in model health. On an existing project, run
+[`scripts/migrations/v7-model-awareness.sql`](scripts/migrations/v7-model-awareness.sql); it is
+safe to run again. Without it, tags come from the models in code, speed from the latest test,
+ratings are not stored, and `/admin` says which file to apply.
 
 
 ### Web authentication
@@ -519,6 +534,8 @@ npm run dev
 | GET/PATCH | `/api/admin/models` | Model catalogue rows and the last 10 checks / approve or unapprove a model for automatic routes |
 | POST | `/api/admin/models/refresh` | Start a model check now (202; 409 while one runs) |
 | POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
+| POST | `/api/admin/models/lookup` | Draft one model's profile from free sources (202; 409 while a check runs) |
+| POST | `/api/admin/models/profile` | Approve a model with its profile and tags in one step, approve a built-in model's profile, or save tags |
 | GET/POST | `/api/admin/conversation-cleanup` | Cleanup recommendations / dismiss or review them |
 
 Browser routes require the signed `zuychin-auth` session when authentication is enabled. The
@@ -612,6 +629,14 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
 - `npx tsx scripts/model-discovery-dry-run.mts` prints what a check would add, mark missing and
   test, and writes nothing. `npx tsx scripts/model-probe.mts <provider> <model>` tests one model
   and refuses paid routes without `--allow-paid`. `npm run catalogue:test` runs the offline checks.
+- Profiles: each chat model carries purpose tags (research, coding, reasoning, writing, vision,
+  long-context, multilingual, agentic) and a profile. A lookup drafts the profile from free
+  sources on free models; nothing is used until you approve it on `/admin#models`, where Approve
+  on a discovered model accepts the model, its profile and the ticked tags together. Speed comes
+  from the last 14 days of recorded calls, or the latest test when there are fewer than 3.
+  `npx tsx scripts/model-lookup.mts <provider> <model>` drafts one profile without saving, and
+  `npx tsx scripts/model-roster.mts [purpose]` prints the roster. `npm run models:test` runs the
+  offline checks. The tables come from `scripts/migrations/v7-model-awareness.sql`.
 
 ### Migrating knowledge embeddings
 
@@ -672,6 +697,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `vault_write` | Direct wiki page write (index/log/embedding kept consistent) |
 | `vault_delete` | Permanently delete a wiki page + every reference to it, in one commit |
 | `vault_lint` | Vault health check / auto-fix curator |
+| `model_status` | Read-only model health: the last model check, failing, missing, unreliable and slow models, drafts waiting for review, and the best free picks for a purpose |
 | `council_propose` | Draft a council and render a Launch card in chat; creates nothing until you click |
 | `council_convene` | Open a council now and return a paste-in kickoff block per agent |
 | `council_status` | How the open councils are going, or one council's state and recent transcript |
@@ -680,8 +706,11 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
 (downloadable artifacts - generated documents are auto-embedded into the knowledge base),
 `update_plan` (live step tracker), `use_skill` (loads a skill's full instructions -
-built-in or approved custom), `save_skill` (files a new draft skill for review) and
-`run_subagents` (parallel workers on free fast models).
+built-in or approved custom), `save_skill` (files a new draft skill for review),
+`run_subagents` (parallel workers on free fast models, picked by an optional purpose tag),
+`list_models` (the roster with tags, speed and reliability), `ask_model` and `compare_models`
+(short text-only questions to one or a few models, 6 calls per run) and `rate_workers`
+(scores each worker's answer once per run, which feeds later picks).
 
 ## Shared MCP Server
 
@@ -1057,7 +1086,10 @@ and reused until you change it again. Every command also accepts a `!` prefix (e
 since Discord reserves `/` for its own slash-command UI:
 
 - `/model` (or `/model list`) shows the current model and every available provider + model,
-  with "(new)" or "(missing)" after catalogue models in those states.
+  with "new" or "missing" for catalogue models in those states, plus speed and the first three
+  purposes when known.
+- `/model <purpose>` (for example `/model coding`) lists the five best usable models for that
+  purpose with the command to switch to each. Free only narrows it to free models.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
   `/model nvidia-nim nemotron-3-ultra` or `/model gemini gemini-3.8-flash`.
 - `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
@@ -1408,6 +1440,7 @@ src/
 │   ├── ai/
 │   │   ├── providers.ts                # Provider + chat/embedding model registry, merged with the catalogue
 │   │   ├── catalogue/                  # Model discovery: provider lists, tests, stored catalogue, daily check
+│   │   ├── models/                     # Model awareness: tags, speed, roster, lookups, profiles, model_status, /model text
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
 │   │   ├── openai-compat.ts            # OpenRouter / NVIDIA NIM / OpenCode Zen client + tool loop
 │   │   ├── reply-sources.ts            # Records the sources each reply used
@@ -1460,7 +1493,10 @@ scripts/
 ├── reembed-knowledge.ts                # Manual store re-embed
 ├── model-discovery-dry-run.mts         # What a model check would add, mark missing and test (writes nothing)
 ├── model-probe.mts                     # Test one model by hand (paid routes need --allow-paid)
-└── test-catalogue-*.mts                # Model catalogue checks (npm run catalogue:test)
+├── model-lookup.mts                    # Draft one model's profile from free sources (writes nothing without --save)
+├── model-roster.mts                    # Print the model roster for a purpose (read-only)
+├── test-catalogue-*.mts                # Model catalogue checks (npm run catalogue:test)
+└── test-model-*.mts                    # Model awareness checks, with test-agent-model-tools (npm run models:test)
 supabase-setup.sql                      # One-shot database setup script
 ```
 

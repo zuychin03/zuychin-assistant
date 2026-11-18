@@ -1,6 +1,8 @@
 import { getModelMeta } from "@/lib/ai/model-meta";
 import { uniqueShortName, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
 import { catalogueSnapshot, type CatalogueOrigin, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
+import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
 
 export type ProviderKind = "gemini" | "openai-compatible";
 
@@ -388,6 +390,11 @@ export function isProviderAvailable(p: ProviderConfig): boolean {
     return !p.unavailableReason && !!getProviderApiKey(p);
 }
 
+/** False for models this app cannot call yet (Responses API only). */
+export function chatModelUsable(model: ChatModel): boolean {
+    return !chatModelUnavailableReason(model);
+}
+
 function chatModelUnavailableReason(model: ChatModel): string | undefined {
     return model.apiFormat === "responses"
         ? "Requires the Responses API, which this app does not yet support."
@@ -433,7 +440,7 @@ export const MESSAGING_MODEL_CHAIN: { providerId: string; modelId: string }[] = 
 ];
 
 // Gemini is reserved for the worker's explicit final fallback.
-const WORKER_PREFERRED: { providerId: string; modelId: string }[] = [
+export const WORKER_PREFERRED: readonly { providerId: string; modelId: string }[] = [
     { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b" },
     { providerId: "openrouter", modelId: "nvidia/nemotron-3.5-lightning:free" },
     { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" },
@@ -533,7 +540,7 @@ export function resolveChatModelByName(name: string): ResolvedChat | null {
 }
 
 /** Picker models for `/model`: untested and failed discovered models never reach `providers()`. */
-export function availableChatModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string; status?: "new" | "missing" }[] }[] {
+export function availableChatModels(freeOnly = false): { provider: string; providerId: string; models: { id: string; name: string; label: string; status?: "new" | "missing" }[] }[] {
     return providers()
         .filter((p) => isProviderAvailable(p) && p.chatModels.length > 0)
         .map((p) => ({
@@ -541,7 +548,7 @@ export function availableChatModels(freeOnly = false): { provider: string; provi
             providerId: p.id,
             models: p.chatModels.filter((m) => !chatModelUnavailableReason(m) && (!freeOnly || m.free === true)).map((m) => {
                 const status = m.catalogue?.status;
-                return { name: m.name, label: m.label, ...(status === "new" || status === "missing" ? { status } : {}) };
+                return { id: m.id, name: m.name, label: m.label, ...(status === "new" || status === "missing" ? { status } : {}) };
             }),
         })).filter((p) => p.models.length > 0);
 }
@@ -608,27 +615,35 @@ export function resolveMessagingEmbedding(): ResolvedEmbedding {
 }
 
 export function listProvidersPublic() {
+    const catalogue = catalogueSnapshot(), stats = statsSnapshot();
+    const rows = new Map(catalogue.rows.map((row) => [statsKey(row.providerId, row.modelId), row]));
+    const profiles = new Map(catalogue.profiles.map((profile) => [statsKey(profile.providerId, profile.modelId), profile]));
     return providers().map((p) => ({
         id: p.id,
         label: p.label,
         available: isProviderAvailable(p),
         unavailableReason: p.unavailableReason,
         chatModelAliases: LEGACY_CHAT_MODELS[p.id] ?? {},
-        chatModels: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => ({
-            id: m.id,
-            label: m.label,
-            free: m.free === true,
-            supportsTools: m.supportsTools,
-            supportsVision: m.supportsVision,
-            supportsThinking: m.supportsThinking,
-            supportsSearch: m.supportsSearch,
-            supportsStructuredOutput: m.supportsStructuredOutput ?? false,
-            maxOutputTokens: m.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS,
-            meta: getModelMeta(m.id),
-            origin: m.catalogue?.origin ?? "code",
-            approved: automaticRouteEligible(m),
-            status: m.catalogue?.status ?? null,
-        })),
+        chatModels: p.chatModels.filter((m) => !chatModelUnavailableReason(m)).map((m) => {
+            const key = statsKey(p.id, m.id), profile = profiles.get(key), row = rows.get(key), speed = resolveSpeed(p.id, m, stats.speed);
+            return {
+                id: m.id,
+                label: m.label,
+                free: m.free === true,
+                supportsTools: m.supportsTools,
+                supportsVision: m.supportsVision,
+                supportsThinking: m.supportsThinking,
+                supportsSearch: m.supportsSearch,
+                supportsStructuredOutput: m.supportsStructuredOutput ?? false,
+                maxOutputTokens: m.maxOutputTokens ?? UNVERIFIED_MAX_OUTPUT_TOKENS,
+                meta: modelView(m, profile, row, speed),
+                origin: m.catalogue?.origin ?? "code",
+                approved: automaticRouteEligible(m),
+                status: m.catalogue?.status ?? null,
+                tags: resolveTags(m, profile, row).tags,
+                speed,
+            };
+        }),
         unavailableChatModels: p.chatModels.filter((m) => chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,
             label: m.label,

@@ -4,30 +4,43 @@ import { PROVIDERS, isProviderAvailable, retiredChatModelIds } from "@/lib/ai/pr
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval } from "@/lib/ai/catalogue/store";
 import { refreshCatalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
-import { discoveryEnabled, maxProbesFromEnv, startFailure } from "@/lib/ai/catalogue/run";
+import { discoveryEnabled, lookupEnabled, maxLookupsFromEnv, maxProbesFromEnv, startFailure } from "@/lib/ai/catalogue/run";
+import { readModelStats, readProfiles } from "@/lib/ai/models/store";
+import { statsKey } from "@/lib/ai/models/stats";
+import { adminModelInfo, rowModel } from "@/lib/ai/models/admin-view";
+import { PURPOSE_TAGS, TAG_INFO } from "@/lib/ai/models/tags";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const [catalogue, runs] = await Promise.all([readCatalogueAdmin(), listDiscoveryRuns(10)]);
+    const [catalogue, runs, profiles, stats] = await Promise.all([readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats()]);
     if (!catalogue.ok) {
         return NextResponse.json({ storage: catalogue.reason, error: startFailure(catalogue.reason).error }, { status: 503, headers: NO_STORE });
     }
-    const codeIds = new Map(PROVIDERS.map((provider) => [provider.id, new Set(provider.chatModels.map((model) => model.id))]));
+    const codeModels = new Map(PROVIDERS.map((provider) => [provider.id, new Map(provider.chatModels.map((model) => [model.id, model]))]));
+    const profileByKey = new Map((profiles.ok ? profiles.profiles : []).map((entry) => [statsKey(entry.providerId, entry.modelId), entry]));
     return NextResponse.json({
         storage: "ok",
-        settings: { enabled: discoveryEnabled(), maxProbes: maxProbesFromEnv() },
+        profileStorage: profiles.ok ? "ok" : profiles.reason,
+        statsStorage: stats.ok ? "ok" : stats.reason,
+        settings: { enabled: discoveryEnabled(), maxProbes: maxProbesFromEnv(), lookups: lookupEnabled() ? maxLookupsFromEnv() : 0 },
+        tags: PURPOSE_TAGS.map((tag) => ({ tag, ...TAG_INFO[tag] })),
         providers: PROVIDERS.map((provider) => ({
             id: provider.id, label: provider.label, available: isProviderAvailable(provider),
             discovery: provider.discovery ? { include: provider.discovery.include, pricing: provider.discovery.pricing } : null,
         })),
-        rows: catalogue.rows.map((row) => ({
-            ...row,
-            inCode: codeIds.get(row.providerId)?.has(row.modelId) ?? false,
-            retired: retiredChatModelIds(row.providerId).has(row.modelId),
-        })),
+        rows: catalogue.rows.map((row) => {
+            const code = codeModels.get(row.providerId)?.get(row.modelId);
+            const key = statsKey(row.providerId, row.modelId);
+            return {
+                ...row,
+                inCode: code !== undefined,
+                retired: retiredChatModelIds(row.providerId).has(row.modelId),
+                ...adminModelInfo(row, rowModel(row, code), profileByKey.get(key), stats.ok ? stats.speed.get(key) : undefined, stats.ok ? stats.feedback.get(key) : undefined),
+            };
+        }),
         runs: runs.ok ? runs.runs : [],
     }, { headers: NO_STORE });
 }

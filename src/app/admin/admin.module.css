@@ -514,6 +514,38 @@
   flex: none;
 }
 
+.dashboard :global(.chip) {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--muted);
+  font: 500 12.5px var(--font-family);
+  cursor: pointer;
+}
+
+.dashboard :global(.chip):hover:not(:disabled) {
+  border-color: var(--faint);
+  color: var(--ink);
+}
+
+.dashboard :global(.chip)[aria-pressed="true"] {
+  border-color: var(--ink-2);
+  background: var(--active);
+  color: var(--ink);
+}
+
+.dashboard :global(.chip):disabled {
+  border-style: dashed;
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
 .dashboard :global(.tone) {
   color: var(--muted);
 }

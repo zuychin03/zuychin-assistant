@@ -130,6 +130,15 @@ export const COUNCIL_TOOLS: McpTool[] = [
         },
     },
     {
+        name: "model_status",
+        description:
+            "Report the health of the chat models: the last daily model check, models that are failing, missing, unreliable or slow, profile drafts waiting for review, and the best free picks for a purpose. Calls no model. Use when the user asks which models are slow, broken or best for something.",
+        parameters: {
+            show: { type: "string", enum: ["problems", "all", "drafts"], description: "problems (default): what needs attention; all: also counts by speed; drafts: profiles waiting for review.", required: false },
+            purpose: { type: "string", enum: ["research", "coding", "reasoning", "writing", "vision", "long-context", "multilingual", "agentic"], description: "Optional purpose tag for the top three free picks.", required: false },
+        },
+    },
+    {
         name: "council_close",
         description:
             "Owner override: force a council closed and file the outcome, even if its closer never concluded. Writes a verdict from the transcript when none is supplied. Use when he says to close, stop, kill or retire a council.",
@@ -643,6 +652,11 @@ import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } 
 import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
 import { recordReplySources } from "@/lib/ai/reply-sources";
 import { executeCaptureAdd } from "@/lib/capture/chat-tool";
+import { currentRoster } from "@/lib/ai/models/roster";
+import { formatModelStatus } from "@/lib/ai/models/status";
+import { isPurposeTag } from "@/lib/ai/models/tags";
+import { listDiscoveryRuns } from "@/lib/ai/catalogue/store";
+import { catalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
 
 export async function executeTool(
     toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
@@ -688,6 +702,8 @@ async function dispatchTool(
             return executeCouncilStatus(args.sessionCode as string | undefined);
         case "council_close":
             return executeCouncilClose(args.sessionCode as string, args.verdict as string | undefined);
+        case "model_status":
+            return executeModelStatus(args, ctx);
 
         case "search_knowledge":
             return executeSearchKnowledge(args.query as string, embRef, ctx);
@@ -1518,7 +1534,7 @@ function toOpenAISchema(param: McpToolParam): Record<string, unknown> {
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
     "get_current_time", "search_web", "search_knowledge", "search_history",
     "get_recent_conversations", "list_calendar_events", "list_unread_emails",
-    "list_recent_emails", "read_email", "vault_search", "vault_read", "council_status",
+    "list_recent_emails", "read_email", "vault_search", "vault_read", "council_status", "model_status",
 ]);
 
 // Returned instead of running a tool the caller is not allowed to use. Phrased
@@ -1641,6 +1657,15 @@ async function executeCouncilConvene(args: Record<string, unknown>): Promise<str
 function quietFor(iso: string): string {
     const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+async function executeModelStatus(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
+    const show = args.show === "all" || args.show === "drafts" ? args.show : "problems";
+    const purpose = isPurposeTag(args.purpose) ? args.purpose : null;
+    if (args.purpose && !purpose) return `Unknown purpose "${String(args.purpose)}". Use research, coding, reasoning, writing, vision, long-context, multilingual or agentic.`;
+    const runs = await listDiscoveryRuns(10);
+    const roster = currentRoster({ freeOnly: ctx?.freeOnly === true, paidOrchestrator: true, unattended: false });
+    return formatModelStatus({ roster, runs: runs.ok ? runs.runs : [], profiles: catalogueSnapshot().profiles, show, purpose });
 }
 
 async function executeCouncilStatus(sessionCode?: string): Promise<string> {

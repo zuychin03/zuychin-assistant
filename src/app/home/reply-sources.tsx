@@ -4,34 +4,10 @@ import { useId, useState } from "react";
 import { ArrowUpRight, ChevronRight } from "lucide-react";
 import type { ReplySource, ReplyTrace } from "@/lib/ai/reply-trace";
 import { ReplyTraceBody, validTrace } from "./reply-trace";
+import { toolInfo } from "./tool-labels";
+import { parseAgentActivity } from "@/lib/ai/agent/activity";
 import ui from "./reply-sources.module.css";
 
-const TOOLS: Record<string, { service: string; action: string; activity: string }> = {
-    list_calendar_events: { service: "Calendar", action: "checked events", activity: "Checked Calendar" },
-    manage_calendar_event: { service: "Calendar", action: "updated an event", activity: "Updated Calendar" },
-    list_unread_emails: { service: "Gmail", action: "checked unread mail", activity: "Checked Gmail" },
-    list_recent_emails: { service: "Gmail", action: "checked recent mail", activity: "Checked Gmail" },
-    read_email: { service: "Gmail", action: "read an email", activity: "Read Gmail" },
-    send_email: { service: "Gmail", action: "sent an email", activity: "Sent an email" },
-    draft_gmail_reply: { service: "Gmail", action: "drafted a reply", activity: "Drafted a reply" },
-    manage_todo_list: { service: "To-do", action: "updated the list", activity: "Updated to-dos" },
-    search_knowledge: { service: "Memory", action: "searched", activity: "Searched memory" },
-    save_note: { service: "Notes", action: "saved a note", activity: "Saved a note" },
-    get_recent_conversations: { service: "Chats", action: "reviewed recent chats", activity: "Reviewed recent chats" },
-    get_current_time: { service: "Clock", action: "checked the time", activity: "Checked the time" },
-    create_document: { service: "Files", action: "wrote a document", activity: "Wrote a document" },
-    create_code_file: { service: "Files", action: "wrote a code file", activity: "Wrote a code file" },
-    create_code_bundle: { service: "Files", action: "bundled files", activity: "Bundled files" },
-    use_skill: { service: "Skill", action: "consulted a skill", activity: "Used a skill" },
-    vault_search: { service: "Vault", action: "searched", activity: "Searched the vault" },
-    vault_read: { service: "Vault", action: "read a page", activity: "Read the vault" },
-    vault_ingest: { service: "Vault", action: "saved a page", activity: "Saved to the vault" },
-    vault_write: { service: "Vault", action: "updated a page", activity: "Updated the vault" },
-    vault_lint: { service: "Vault", action: "tidied pages", activity: "Tidied the vault" },
-    search_web: { service: "Web", action: "searched", activity: "Searched the web" },
-};
-
-const toolInfo = (name: string) => TOOLS[name] ?? { service: name.replaceAll("_", " "), action: "used", activity: `Used ${name.replaceAll("_", " ")}` };
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 function vaultFamily(path = "") {
@@ -60,6 +36,13 @@ function sourceText(source: ReplySource): { kind: string; text: string } {
 export function activitySummary(trace: ReplyTrace) {
     const sources = trace.sources ?? [];
     const parts: string[] = [];
+    const agent = parseAgentActivity(trace.agent);
+    if (agent?.steps.length) parts.push(`Ran ${plural(agent.steps.length, "step")}`);
+    if (agent?.workers.length) parts.push(`Used ${plural(agent.workers.length, "sub-agent")}`);
+    for (const tool of agent?.tools ?? []) {
+        const phrase = toolInfo(tool.name).activity;
+        if (!parts.includes(phrase)) parts.push(phrase);
+    }
     for (const source of sources) {
         if (source.kind !== "tool" && source.kind !== "web") continue;
         const phrase = source.kind === "web" ? "Searched the web" : toolInfo(source.ref ?? source.label).activity;
@@ -109,20 +92,48 @@ function layout(sources: ReplySource[]) {
     });
 }
 
+export function sourcesSummary(sources: ReplySource[]) {
+    const kinds = new Map<string, number>();
+    for (const source of sources) {
+        const { kind } = sourceText(source);
+        kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+    }
+    const parts = [...kinds].sort((a, b) => b[1] - a[1]).map(([kind, count]) => `${kind} ${count}`);
+    return `${plural(sources.length, "source")}: ${parts.length > 3 ? `${parts.slice(0, 3).join(", ")}, ${parts.length - 3} more` : parts.join(", ")}`;
+}
+
+// Collapsed by default so a long chat is not a column of charts; each reply opens on its own.
 export function SourceChart({ sources, vaultHref, cosmosHref }: {
     sources: ReplySource[];
     vaultHref: (path: string) => string;
     cosmosHref?: string;
 }) {
-    const [active, setActive] = useState<number | null>(null);
+    const [open, setOpen] = useState(false);
+    const id = useId();
     if (!sources.length) return null;
+    return <>
+        <button type="button" className={ui.activity} aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen((value) => !value)}>
+            <span>{sourcesSummary(sources)}</span>
+            <ChevronRight size={14} aria-hidden="true" />
+        </button>
+        {open && <SourceConstellation id={id} sources={sources} vaultHref={vaultHref} cosmosHref={cosmosHref} />}
+    </>;
+}
+
+function SourceConstellation({ id, sources, vaultHref, cosmosHref }: {
+    id: string;
+    sources: ReplySource[];
+    vaultHref: (path: string) => string;
+    cosmosHref?: string;
+}) {
+    const [active, setActive] = useState<number | null>(null);
     const nodes = layout(sources);
     const trail = nodes.map((node, index) => `${index ? "L" : "M"}${node.x} ${node.y}`).join("");
     const lit = active === null ? "" : nodes
         .filter((_, index) => Math.abs(index - active) <= 1)
         .map((node, index) => `${index ? "L" : "M"}${node.x} ${node.y}`).join("");
 
-    return <figure className={ui.recall} aria-label="Sources this reply drew on">
+    return <figure id={id} className={ui.recall} aria-label="Sources this reply drew on">
         <svg className={ui.sky} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={`Constellation of ${plural(sources.length, "source")}, sized by contribution`}>
             <rect className={ui.frame} x=".5" y=".5" width={WIDTH - 1} height={HEIGHT - 1} rx="6" />
             <path className={ui.tick} d="M60 1v4M120 1v4M180 1v4M240 1v4M60 87v4M120 87v4M180 87v4M240 87v4M1 31h4M1 61h4M295 31h4M295 61h4" />

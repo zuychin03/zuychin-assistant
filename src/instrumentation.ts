@@ -4,7 +4,10 @@ const CATALOGUE_START_WAIT_MS = 3000;
 export async function register() {
     if (process.env.NEXT_RUNTIME !== "nodejs") return;
     const { enableCatalogueRefresh, refreshCatalogueSnapshot } = await import("@/lib/ai/catalogue/snapshot");
+    const { enableStatsRefresh, refreshStatsSnapshot } = await import("@/lib/ai/models/stats");
     enableCatalogueRefresh();
+    enableStatsRefresh();
+    void refreshStatsSnapshot();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waited = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), CATALOGUE_START_WAIT_MS); });
     const result = await Promise.race([refreshCatalogueSnapshot(), waited]);

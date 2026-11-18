@@ -7,6 +7,7 @@ import { Check, ChevronDown, Search, X } from "lucide-react";
 import { styles } from "./styles";
 import { filterModelGroups, nextModelOption, type ModelPickerGroup } from "./model-picker";
 import controlStyles from "./model-controls.module.css";
+import { TAG_INFO, isPurposeTag } from "@/lib/ai/models/tags";
 
 export { modelSearchTerms } from "./model-picker";
 
@@ -18,6 +19,21 @@ export interface ModelMeta {
   maxOutput?: string;
   params?: string;
   strengths: string[];
+  /** From an approved profile; older payloads omit these. */
+  weaknesses?: string[];
+  measured?: string[];
+  sources?: { title: string; url: string }[];
+  origin?: "profile" | "meta" | "listing";
+  profileApprovedAt?: string | null;
+}
+export interface ModelSpeedInfo {
+  tier: "fast" | "medium" | "slow" | "unknown";
+  firstAnswerMs: number | null;
+  tokensPerSecond: number | null;
+  samples: number;
+  source: "calls" | "test" | "none";
+  calls: number;
+  successRate: number | null;
 }
 export interface ProviderModel {
   id: string;
@@ -34,6 +50,9 @@ export interface ProviderModel {
   meta?: ModelMeta | null;
   /** From the stored catalogue: "new" is a tested model not yet approved for automatic routes. */
   status?: "new" | "missing" | "failing" | null;
+  /** Purpose tags, approved or seeded, else read off the built-in notes. */
+  tags?: string[];
+  speed?: ModelSpeedInfo;
 }
 export interface ProviderInfo {
   id: string;
@@ -312,7 +331,7 @@ const STRENGTH_COLORS: Record<string, string> = {
   Multilingual: "#14b8a6", "Long context": "#6366f1", "Tool use": "#0ea5e9",
   Fast: "#22c55e", Video: "#f43f5e", Knowledge: "#eab308", Research: "#d946ef",
   "Document RAG": "#f97316", Retrieval: "#0ea5e9", "High throughput": "#84cc16",
-  "Visual documents": "#f97316",
+  "Visual documents": "#f97316", Writing: "#f97316",
 };
 const strengthColor = (s: string) => STRENGTH_COLORS[s] ?? "#94a3b8";
 
@@ -364,6 +383,11 @@ export function ModelInfoModal({
   if (meta?.params) specs.push({ label: "Parameters", value: meta.params });
   if (model.dimension) specs.push({ label: "Dimensions", value: String(model.dimension) });
 
+  const tags = (model.tags ?? []).filter(isPurposeTag).map((tag) => TAG_INFO[tag]);
+  const speed = model.speed && model.speed.firstAnswerMs !== null ? model.speed : null;
+  const seconds = (ms: number) => ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+  const fromProfile = meta?.origin === "profile";
+
   const caps: string[] = [];
   if (model.supportsTools) caps.push("Tools");
   if (model.supportsVision) caps.push("Vision");
@@ -396,6 +420,32 @@ export function ModelInfoModal({
         </div>
 
         <p id={descriptionId} style={modal.desc}>{meta?.description || "No details available for this model yet."}</p>
+
+        {tags.length > 0 && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Good for</span>
+            <div style={modal.tagRow}>
+              {tags.map((tag) => (
+                <span key={tag.label} style={modal.strengthTag} title={tag.meaning}>
+                  <span style={{ ...modal.dot, background: strengthColor(tag.label) }} />
+                  {tag.label}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {speed && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Speed</span>
+            <p style={modal.note}>
+              <strong style={modal.strong}>{speed.tier.charAt(0).toUpperCase() + speed.tier.slice(1)}</strong>
+              {speed.source === "calls"
+                ? `: first answer ${seconds(speed.firstAnswerMs!)} (median of ${speed.samples} calls)${speed.tokensPerSecond !== null ? `, ${Math.round(speed.tokensPerSecond)} tokens/s` : ""}${speed.successRate !== null ? `, ${Math.round(speed.successRate * 100)}% succeeded` : ""}. Measured over the last 14 days.`
+                : `: first answer ${seconds(speed.firstAnswerMs!)}. From 1 test.`}
+            </p>
+          </div>
+        )}
 
         {specs.length > 0 && (
           <div style={modal.specGrid}>
@@ -433,14 +483,43 @@ export function ModelInfoModal({
         {meta?.strengths && meta.strengths.length > 0 && (
           <div style={modal.section}>
             <span style={modal.sectionLabel}>Excels at</span>
-            <div style={modal.tagRow}>
-              {meta.strengths.map((s) => (
-                <span key={s} style={modal.strengthTag}>
-                  <span style={{ ...modal.dot, background: strengthColor(s) }} />
-                  {s}
-                </span>
+            {fromProfile ? (
+              <ul style={modal.list}>{meta.strengths.map((s) => <li key={s}>{s}</li>)}</ul>
+            ) : (
+              <div style={modal.tagRow}>
+                {meta.strengths.map((s) => (
+                  <span key={s} style={modal.strengthTag}>
+                    <span style={{ ...modal.dot, background: strengthColor(s) }} />
+                    {s}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!!meta?.weaknesses?.length && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Weak at</span>
+            <ul style={modal.list}>{meta.weaknesses.map((s) => <li key={s}>{s}</li>)}</ul>
+          </div>
+        )}
+
+        {!!meta?.measured?.length && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Measured</span>
+            <ul style={modal.list}>{meta.measured.map((s) => <li key={s}>{s}</li>)}</ul>
+          </div>
+        )}
+
+        {!!meta?.sources?.length && (
+          <div style={modal.section}>
+            <span style={modal.sectionLabel}>Sources</span>
+            <ul style={modal.list}>
+              {meta.sources.map((source) => (
+                <li key={source.url}><a href={source.url} target="_blank" rel="noopener noreferrer" style={modal.link}>{source.title}</a></li>
               ))}
-            </div>
+            </ul>
           </div>
         )}
       </div>
@@ -891,5 +970,30 @@ const modal: Record<string, React.CSSProperties> = {
     height: 8,
     borderRadius: "50%",
     flexShrink: 0,
+  },
+  note: {
+    fontSize: 13,
+    lineHeight: 1.5,
+    color: "var(--color-text-primary)",
+    opacity: 0.9,
+  },
+  strong: {
+    fontWeight: 600,
+  },
+  list: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    margin: 0,
+    paddingLeft: 18,
+    fontSize: 13,
+    lineHeight: 1.5,
+    color: "var(--color-text-primary)",
+  },
+  link: {
+    color: "var(--color-text-primary)",
+    textDecoration: "underline",
+    textUnderlineOffset: 2,
+    overflowWrap: "anywhere",
   },
 };

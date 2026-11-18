@@ -11,7 +11,13 @@ import { buildSkillIndexAsync, getSkillInstructionsAsync } from "@/lib/ai/skills
 import { createDraftSkill } from "@/lib/ai/skills/custom-store";
 import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
 import { isJournalled, journalledCall } from "@/lib/ai/agent/journal";
-import { getProviderApiKey } from "@/lib/ai/providers";
+import { getProviderApiKey, providers, type ResolvedChat } from "@/lib/ai/providers";
+import { createModelToolkit, MODEL_TOOL_NAMES, MODEL_TOOLS, parsePurpose } from "@/lib/ai/agent/model-tools";
+import { currentRoster, formatRosterSummary, type RosterEntry, type RosterPolicy } from "@/lib/ai/models/roster";
+import { consultModel } from "@/lib/ai/models/consult";
+import { insertFeedback } from "@/lib/ai/models/store";
+import { isUnattendedRun } from "@/lib/tasks/unattended-policy";
+import type { PurposeTag } from "@/lib/ai/models/tags";
 import type { AgentEventSink, PlanStep } from "@/lib/ai/agent/events";
 import type { RagContext } from "@/lib/ai/rag-service";
 import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
@@ -23,6 +29,7 @@ const AGENT_SYSTEM = `You are Zuychin's autonomous agent. Resolve the user's req
 4. You alone produce the output files: use create_document (reports/write-ups) or create_code_file / create_code_bundle (code) - never paste large file contents into the chat. Produce exactly what the user asked for and no more: if they asked for "a PDF report", create ONE document. Never create duplicate or overlapping files for the same deliverable.
 5. When everything is done, reply with a concise summary of what you produced (the files are attached automatically).
 6. If you just completed a novel multi-step procedure the user is likely to ask for again, you may call save_skill ONCE to save it as a draft playbook for review - never for one-offs or anything the skill index already covers.
+7. Pick models on purpose: give each run_subagents task a purpose so the app picks the best measured free model for it. Call list_models when the choice matters, and ask_model or compare_models only when a second opinion is worth it (6 calls per run). After you have used sub-agent results, call rate_workers once.
 Be decisive and keep going until the task is fully resolved.`;
 
 // Aborts the worker instead of abandoning it. The previous shape resolved a
@@ -54,6 +61,12 @@ async function withDeadline<T>(
         clearTimeout(timer);
         parent?.removeEventListener("abort", relay);
     }
+}
+
+function resolveEntry(entry: RosterEntry): ResolvedChat | null {
+    const provider = providers().find((candidate) => candidate.id === entry.providerId);
+    const model = provider?.chatModels.find((candidate) => candidate.id === entry.modelId);
+    return provider && model ? { provider, model } : null;
 }
 
 function normalizeSteps(raw: unknown): PlanStep[] {
@@ -99,6 +112,21 @@ export async function runAgent(opts: {
     const onEvent = runBuffer.wrap(opts.onEvent);
     if (runId) onEvent({ type: "run", runId });
 
+    // Hints and consult calls may use paid models only when this orchestrator itself runs on the paid key.
+    const unattended = rag.paidOnly === true || isUnattendedRun();
+    const policy: RosterPolicy = {
+        freeOnly: rag.freeOnly === true,
+        paidOrchestrator: !rag.freeOnly && !unattended && (!isGemini || lead.provider.id === "gemini"),
+        unattended,
+    };
+    const models = createModelToolkit(policy, {
+        roster: () => currentRoster(policy),
+        resolve: resolveEntry,
+        consult: (resolved, prompt, maxTokens, consultSignal) => consultModel(resolved, prompt, maxTokens, rag.embRef, consultSignal),
+        saveFeedback: insertFeedback,
+        now: Date.now,
+    }, { runId, signal });
+
     const artifacts: ArtifactDescriptor[] = [];
     let councilProposal: CouncilProposal | undefined;
     const toolCtx: ToolContext = {
@@ -124,31 +152,47 @@ export async function runAgent(opts: {
         if (tasks.length === 0) return "No worker capacity remaining - handle the rest yourself.";
         subagentsSpawned += tasks.length;
 
+        const autoFeedback: { providerId: string; modelId: string; purpose: PurposeTag | null; reason: string }[] = [];
         const results = await Promise.all(
             tasks.map(async (t) => {
-                const task = t as { objective?: unknown; model?: unknown; needs_tools?: unknown; complexity?: unknown };
+                const task = t as { objective?: unknown; model?: unknown; needs_tools?: unknown; complexity?: unknown; purpose?: unknown };
                 const objective = String(task.objective ?? "").trim();
                 if (!objective) return "(skipped: empty objective)";
                 const modelHint = task.model ? String(task.model) : undefined;
                 const needsTools = task.needs_tools !== false;
                 const complexity = task.complexity === "complex" ? "complex" as const : "simple" as const;
+                const parsed = parsePurpose(task.purpose);
+                const purpose = parsed === "invalid" ? null : parsed;
+                const pick = models.pickWorker({ hint: modelHint, purpose, needsTools });
+                const notes = [parsed === "invalid" ? `Unknown purpose "${String(task.purpose)}" was ignored.` : null, pick.note].filter(Boolean);
+                let lastAttempt: ResolvedChat | null = null;
 
-                onEvent?.({ type: "subagent", objective, model: modelHint ?? "auto", phase: "start" });
+                onEvent?.({ type: "subagent", objective, model: modelHint ?? (purpose ? `auto for ${purpose}` : "auto"), phase: "start" });
                 const { value: res, timedOut } = await withDeadline(
                     (workerSignal) => runWorker({
-                        objective, modelHint, needsTools, complexity, paidOnly: rag.paidOnly, freeOnly: rag.freeOnly,
+                        objective, pick, needsTools, complexity, paidOnly: rag.paidOnly, freeOnly: rag.freeOnly,
                         contextBlock: rag.contextBlock, embRef: rag.embRef, toolCtx, signal: workerSignal,
+                        onAttempt: (resolved) => { lastAttempt = resolved; },
+                        onEmpty: (resolved) => { autoFeedback.push({ providerId: resolved.provider.id, modelId: resolved.model.id, purpose, reason: "Returned an empty answer" }); },
                     }),
                     AGENT_CONFIG.workerTimeoutMs,
                     signal,
-                    { model: modelHint ?? "auto", output: "(stopped at its deadline; no result)", tokens: null },
+                    { providerId: "", model: modelHint ?? "auto", output: "(stopped at its deadline; no result)", tokens: null },
                 );
-                if (timedOut) subagentTimeouts++;
+                if (timedOut) {
+                    subagentTimeouts++;
+                    const stopped = lastAttempt as ResolvedChat | null;
+                    if (stopped) autoFeedback.push({ providerId: stopped.provider.id, modelId: stopped.model.id, purpose, reason: "Stopped at the worker deadline" });
+                }
                 workerTokens = addTokenCounts(workerTokens, res.tokens);
                 onEvent?.({ type: "subagent", objective, model: res.model, phase: "done" });
-                return `### Worker result - ${objective}\n(model: ${res.model})\n${res.output}`;
+                const modelId = res.model.replace(/ \(fallback\)$/, "");
+                const id = res.providerId ? models.registerWorker({ providerId: res.providerId, modelId, purpose }) : null;
+                const key = res.providerId ? `${res.providerId}::${modelId}${res.model.endsWith("(fallback)") ? ", paid fallback" : ""}` : "no model finished";
+                return `### Worker ${id ?? "(unrated)"} (${key}${purpose ? `, purpose ${purpose}` : ""}) - ${objective}\n${notes.length ? `${notes.join(" ")}\n` : ""}${res.output}`;
             })
         );
+        await models.autoFeedback(autoFeedback);
 
         return results.join("\n\n---\n\n");
     }
@@ -161,6 +205,15 @@ export async function runAgent(opts: {
         }
         if (name === "run_subagents") {
             return runSubagents(args);
+        }
+        if (MODEL_TOOL_NAMES.has(name)) {
+            onEvent?.({ type: "tool", name, phase: "start" });
+            const result = name === "list_models" ? models.listModels(args)
+                : name === "ask_model" ? await models.askModel(args)
+                    : name === "compare_models" ? await models.compareModels(args)
+                        : await models.rateWorkers(args);
+            onEvent?.({ type: "tool", name, phase: "done" });
+            return result;
         }
         if (name === "use_skill") {
             onEvent?.({ type: "tool", name, phase: "start" });
@@ -197,15 +250,16 @@ export async function runAgent(opts: {
 
     onEvent?.({ type: "status", message: "Planning…" });
     const skillIndex = await buildSkillIndexAsync();
+    const rosterSummary = formatRosterSummary(currentRoster(policy), policy);
     try {
         const { text: reply, usage, stopReason } = await runGeminiLoop({
             providerId: isGemini ? lead.provider.id : "gemini",
             purpose: "orchestration",
             model,
             apiKey: geminiApiKey,
-            systemPrompt: `${AGENT_SYSTEM}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
+            systemPrompt: `${AGENT_SYSTEM}${rosterSummary ? `\n\n${rosterSummary}` : ""}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
             userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
-            toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS]),
+            toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS, ...MODEL_TOOLS]),
             dispatch,
             maxRounds: AGENT_CONFIG.maxIterations,
             thinking: rag.allowThinking,

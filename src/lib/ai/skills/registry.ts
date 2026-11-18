@@ -204,6 +204,17 @@ Phase 4 - Plan document: after the go-ahead, consolidate into one Markdown plan 
 
 End by telling the user the plan is ready for a coding agent to execute part by part.`,
     },
+    {
+        id: "choose-models",
+        name: "Choose Models",
+        whenToUse: "A task has two or more subtasks of different kinds (for example research plus code), or the user asks which model to use or wants models compared.",
+        instructions: `Match each piece of work to a model on measured evidence, not on names.
+1. Call list_models with the purpose of the main piece of work (research, coding, reasoning, writing, vision, long-context, multilingual or agentic). Read the speed, success rate and ratings. For a model you have not used before, call list_models with model=<key> to read its weaknesses and measured problems.
+2. Split the task into run_subagents tasks and give each one a purpose. Leave model empty so the app picks the best measured free model; name a model key only when one clearly fits better, and remember that paid models are used only when this run's orchestrator is on a paid model.
+3. For an unfamiliar kind of task where the choice matters, call compare_models once with a short sample prompt and 2 or 3 candidate keys, then use the one that answered best and fastest. Use ask_model for a single second opinion. These share 6 calls per run, so spend them on decisions, not on routine work.
+4. After you have synthesised the workers' results, call rate_workers once: useful true or false for each worker id you can judge, with a few words of reason. Ratings steer later automatic picks.
+5. If the user asked which model to use, answer with the top two or three keys, their measured speed, and one line on why each fits.`,
+    },
 ];
 
 const SKILL_BY_ID = new Map(SKILLS.map((s) => [s.id, s]));

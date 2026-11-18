@@ -4,12 +4,14 @@ import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { addTokenCounts } from "@/lib/ai/stream-usage";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, READ_ONLY_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
-import { getProviderApiKey, resolveChatModelByName, resolveWorkerChain, WORKER_GEMINI_FALLBACK, type ResolvedChat } from "@/lib/ai/providers";
+import { getProviderApiKey, resolveWorkerChain, WORKER_GEMINI_FALLBACK, type ResolvedChat } from "@/lib/ai/providers";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
+import type { WorkerPick } from "@/lib/ai/agent/model-tools";
 
 export interface WorkerParams {
     objective: string;
-    modelHint?: string;
+    /** Hint and purpose picks from the roster, already checked against the run's paid-model rule. */
+    pick?: WorkerPick;
     needsTools?: boolean;
     /** Sizes the paid Gemini run; free fast models go first unless paidOnly. */
     complexity?: "simple" | "complex";
@@ -20,6 +22,9 @@ export interface WorkerParams {
     embRef: ResolvedEmbedding;
     toolCtx: ToolContext;
     signal?: AbortSignal;
+    /** The model about to run, so a deadline stop can be pinned on it. */
+    onAttempt?: (resolved: ResolvedChat) => void;
+    onEmpty?: (resolved: ResolvedChat) => void;
 }
 
 const workerSystem = (contextBlock: string, hasTools: boolean) => {
@@ -53,16 +58,21 @@ function guardedDispatch(dispatch: (name: string, args: Record<string, unknown>)
 const EMPTY_REPLY = "(The model returned an empty response.)";
 const isEmptyReply = (out: string) => !out.trim() || out.trim() === EMPTY_REPLY;
 
-export async function runWorker(p: WorkerParams): Promise<{ model: string; output: string; tokens: number | null }> {
+export async function runWorker(p: WorkerParams): Promise<{ providerId: string; model: string; output: string; tokens: number | null }> {
     const needsTools = p.needsTools ?? true;
     const freeOnly = !p.paidOnly && (p.freeOnly === true || p.toolCtx.freeOnly === true);
     const toolCtx = { ...p.toolCtx, freeOnly };
     p.signal?.throwIfAborted();
     let priorTokens: number | null = 0;
 
-    // Candidates: explicit model hint first, then the free fast chain. Paid
+    // Candidates: the hint and purpose picks, then the free fast chain. Paid
     // Gemini runs once they all fail, or straight away on a paid-only run.
-    const pool = p.paidOnly ? [] : [p.modelHint ? resolveChatModelByName(p.modelHint) : null, ...resolveWorkerChain(needsTools), ...(freeOnly ? freeChatCandidates().filter((candidate) => !needsTools || candidate.model.supportsTools) : [])];
+    const defaultChain = p.pick ? p.pick.defaultChain : true;
+    const pool = p.paidOnly ? [] : [
+        ...(p.pick?.candidates ?? []),
+        ...(defaultChain ? resolveWorkerChain(needsTools) : []),
+        ...(freeOnly ? freeChatCandidates().filter((candidate) => !needsTools || candidate.model.supportsTools) : []),
+    ];
     const seen = new Set<string>();
     const candidates: ResolvedChat[] = [];
     for (const c of pool) {
@@ -90,12 +100,13 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
 
     for (const resolved of candidates) {
         let candidateTokens: number | null = null;
+        p.onAttempt?.(resolved);
         try {
             if (freeOnly) assertFreeModel(resolved);
             if (resolved.provider.kind === "gemini") {
                 const { text, usage } = await geminiRun(resolved.model.id, getProviderApiKey(resolved.provider), resolved.provider.id);
                 candidateTokens = usage.totalTokens;
-                if (!isEmptyReply(text)) return { model: resolved.model.id, output: text, tokens: addTokenCounts(priorTokens, candidateTokens) };
+                if (!isEmptyReply(text)) return { providerId: resolved.provider.id, model: resolved.model.id, output: text, tokens: addTokenCounts(priorTokens, candidateTokens) };
             } else {
                 const output = await openaiCompatChat({
                     purpose: "worker",
@@ -109,8 +120,9 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
                     onUsage: (usage) => { candidateTokens = usage.totalTokens; },
                     signal: p.signal,
                 });
-                if (!isEmptyReply(output)) return { model: resolved.model.id, output, tokens: addTokenCounts(priorTokens, candidateTokens) };
+                if (!isEmptyReply(output)) return { providerId: resolved.provider.id, model: resolved.model.id, output, tokens: addTokenCounts(priorTokens, candidateTokens) };
             }
+            p.onEmpty?.(resolved);
             console.warn(`[Worker] ${resolved.model.id} returned nothing, trying next model`);
         } catch (err) {
             // A cancel must abort the whole worker, not fall through to the next model.
@@ -124,5 +136,5 @@ export async function runWorker(p: WorkerParams): Promise<{ model: string; outpu
     if (freeOnly) throw new Error("Free only: all eligible worker routes failed or are unavailable. No paid fallback was used.");
     const fallbackModel = p.complexity === "complex" ? WORKER_GEMINI_FALLBACK.complex : WORKER_GEMINI_FALLBACK.simple;
     const { text, usage } = await geminiRun(fallbackModel);
-    return { model: p.paidOnly ? fallbackModel : `${fallbackModel} (fallback)`, output: text, tokens: addTokenCounts(priorTokens, usage.totalTokens) };
+    return { providerId: "gemini", model: p.paidOnly ? fallbackModel : `${fallbackModel} (fallback)`, output: text, tokens: addTokenCounts(priorTokens, usage.totalTokens) };
 }

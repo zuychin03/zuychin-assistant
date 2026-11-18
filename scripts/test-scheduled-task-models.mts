@@ -158,7 +158,7 @@ async function check(name: string, run: () => Promise<void>) {
 }
 
 try {
-    const { resolvePaidChat, resolveEmbedding, getProviderApiKey } = await import("../src/lib/ai/providers");
+    const { resolvePaidChat, resolveEmbedding, getProviderApiKey, getProvider } = await import("../src/lib/ai/providers");
     const { runWorker } = await import("../src/lib/ai/agent/worker");
     const { ragChat } = await import("../src/lib/ai/rag-service");
     const { runScheduledTask } = await import("../src/lib/tasks/runner");
@@ -184,9 +184,10 @@ try {
         }
     });
 
+    const nim = getProvider("nvidia-nim")!;
     const workerParams = {
         objective: "Summarise the fixture",
-        modelHint: "glm-5.3-flash",
+        pick: { candidates: [{ provider: nim, model: nim.chatModels.find((model) => model.id === "z-ai/glm-5.3-flash")! }], defaultChain: true, note: null },
         complexity: "complex" as const,
         contextBlock: "Fixture context.",
         embRef,
