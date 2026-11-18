@@ -39,6 +39,8 @@ export interface ToolContext {
     onArtifact?: (artifact: ArtifactDescriptor) => void;
     /** Only the web chat renders a proposal card; elsewhere the tool is a no-op. */
     onCouncilProposal?: (proposal: CouncilProposal) => void;
+    /** Plain chat replies report their tool calls here; the agent loop emits its own events. */
+    onTool?: (name: string, phase: "start" | "done") => void;
 }
 
 export const WEB_SEARCH_TOOL: McpTool = {

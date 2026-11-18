@@ -45,8 +45,9 @@ edited and deleted in place.
 - Voice conversations: send a Telegram voice note or tap the web mic, and the reply is spoken
   back with Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
   hands-free loop: silence auto-sends, the reply plays, the mic reopens - say
-  "Zuychin, stop" (or tap the ✕ chip) to end it. Telegram voice notes are answered with a
-  voice note too. Spoken replies fire only on voice input
+  "That's enough, thank you" (or tap the ✕ chip) to end it. While a voice turn waits on
+  tools or agents, a short phrase such as "Just a minute" fills the silence. Telegram voice
+  notes are answered with a voice note too. Spoken replies fire only on voice input
 - On-box speech-to-text: with the optional `stt-service` running, web voice turns are
   transcribed on your own server by Moonshine tiny, so any chat model can answer them and the
   audio never leaves the host. The transcript is sent as a normal message marked "Spoken", and
@@ -412,7 +413,9 @@ npm run dev
 - Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
-  and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
+  and listens again. Say "That's enough, thank you" or tap the ✕ on the status chip to end
+  the loop. When the reply needs tools or agents, it says a short phrase such as "Just a
+  minute" (picked from a small pool) while it works.
   With the speech-to-text service set up, the chip shows "transcribing" while your words are
   read, and your message appears as text marked "Spoken".
 - The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.

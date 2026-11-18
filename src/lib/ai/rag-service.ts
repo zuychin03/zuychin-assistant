@@ -714,6 +714,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
                 userProfileId: profile?.id,
                 onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
                 onCouncilProposal: channel === "web" ? (p) => { councilProposal = p; } : undefined,
+                onTool: onEvent ? (name, phase) => onEvent({ type: "tool", name, phase, chat: true }) : undefined,
             };
             // Chat-path replies stream to the client as they generate; the
             // done event still carries the authoritative final text.
@@ -835,24 +836,32 @@ async function generateGeminiReply(opts: {
     const finalConfig = { ...base, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
     const groundingConfig = { ...base, tools: [{ googleSearch: {} }, { urlContext: {} }] };
     const cite = channel === "telegram" ? undefined : addCitationsText;
+    const runTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
+        if (name !== "search_web") return executeTool(name, args, embRef, ctx);
+        const query = typeof args.query === "string" ? args.query.trim() : "";
+        if (!query) return "Search requires a non-empty query.";
+        recordReplySources([{ kind: "web", label: query, ref: "search_web", weight: 0.6 }]);
+        const location = /\b(near me|nearby|restaurant|cafe|hotel|pharmacy|directions?|map|address|open now|where is|location)\b/i.test(query);
+        const result = await withModelPurpose("search", () => generateGeminiChat({
+            client, model, signal, cite: addCitationsText,
+            contents: [{ role: "user", parts: [{ text: query }] }],
+            initialConfig: { ...base, tools: location ? [{ googleMaps: {} }] : groundingConfig.tools },
+            finalConfig, executeTool: async () => { throw new Error("Native search returned an unexpected tool call."); },
+        }));
+        addModelDataClasses(["public_search"]);
+        return result;
+    };
     return generateGeminiChat({
         client, model, contents, signal, onToken, cite, finalConfig,
         maxToolRounds: RAG_CONFIG.maxToolRounds,
         initialConfig: search ? groundingConfig : { ...base, tools: [{ functionDeclarations: buildGeminiFunctionDeclarations() }] },
         executeTool: async (name, args) => {
-            if (name !== "search_web") return executeTool(name, args, embRef, ctx);
-            const query = typeof args.query === "string" ? args.query.trim() : "";
-            if (!query) return "Search requires a non-empty query.";
-            recordReplySources([{ kind: "web", label: query, ref: "search_web", weight: 0.6 }]);
-            const location = /\b(near me|nearby|restaurant|cafe|hotel|pharmacy|directions?|map|address|open now|where is|location)\b/i.test(query);
-            const result = await withModelPurpose("search", () => generateGeminiChat({
-                client, model, signal, cite: addCitationsText,
-                contents: [{ role: "user", parts: [{ text: query }] }],
-                initialConfig: { ...base, tools: location ? [{ googleMaps: {} }] : groundingConfig.tools },
-                finalConfig, executeTool: async () => { throw new Error("Native search returned an unexpected tool call."); },
-            }));
-            addModelDataClasses(["public_search"]);
-            return result;
+            ctx?.onTool?.(name, "start");
+            try {
+                return await runTool(name, args);
+            } finally {
+                ctx?.onTool?.(name, "done");
+            }
         },
     });
 }

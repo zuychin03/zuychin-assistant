@@ -240,10 +240,15 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
                 } catch { }
                 // Checked on dispatch, not only on the declarations: a model can
                 // emit a name it was never offered.
-                const result = allowTools && !allowTools.has(call.function.name)
-                    ? toolRefusal(call.function.name)
-                    : await executeTool(call.function.name, args, embRef, ctx);
-                return { id: call.id, name: call.function.name, result };
+                if (allowTools && !allowTools.has(call.function.name)) {
+                    return { id: call.id, name: call.function.name, result: toolRefusal(call.function.name) };
+                }
+                ctx?.onTool?.(call.function.name, "start");
+                try {
+                    return { id: call.id, name: call.function.name, result: await executeTool(call.function.name, args, embRef, ctx) };
+                } finally {
+                    ctx?.onTool?.(call.function.name, "done");
+                }
             })
         );
 

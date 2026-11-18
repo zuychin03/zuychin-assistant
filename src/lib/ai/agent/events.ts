@@ -10,7 +10,8 @@ export type AgentEvent =
     | { type: "run"; runId: string }
     | { type: "status"; message: string }
     | { type: "plan"; steps: PlanStep[] }
-    | { type: "tool"; name: string; phase: "start" | "done" }
+    /** chat marks a tool call inside a plain chat reply: it starts the voice filler but adds no agent progress line. */
+    | { type: "tool"; name: string; phase: "start" | "done"; chat?: true }
     | { type: "subagent"; objective: string; model: string; phase: "start" | "done" }
     | { type: "artifact"; artifact: ArtifactDescriptor }
     /** Text delta of the forming reply; reset replaces everything shown so far (new model turn). */

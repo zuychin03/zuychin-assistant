@@ -27,6 +27,7 @@ import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
 import { transcribeVoiceBlob } from "./home/voice-pcm";
+import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, hasStopPhrase, pickFiller, startsWork } from "./home/voice-loop";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 interface ChatMessage {
@@ -274,6 +275,9 @@ export default function Home() {
   const vadCleanupRef = useRef<(() => void) | null>(null);
   const discardRecordingRef = useRef(false);
   const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
+  // The short phrase spoken while a voice turn waits on tools (see sayFiller).
+  const fillerRef = useRef<{ stop: () => void; finished: Promise<void>; playing: boolean } | null>(null);
+  const lastFillerRef = useRef<string | undefined>(undefined);
 
   const loadChatPreferences = useCallback(async () => {
     chatPolicyRef.current.ready = false;
@@ -815,6 +819,9 @@ export default function Home() {
     let streamId = "";
     let started = false;
     let canDrain = false;
+    const micTurn = p.inputMode === "voice" || (!!p.file && isVoiceNote(p.file));
+    const spokenTurn = () => chats.get() === target && micTurn && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off");
+    let fillerTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
       if (p.freeOnly && !p.knowledgeOnly && !requestChatSel) throw new Error("No eligible free chat model is available. Configure a free provider, or turn Free only off and send a new message.");
@@ -913,6 +920,11 @@ export default function Home() {
           let evt: AgentEvent;
           try { evt = JSON.parse(json) as AgentEvent; } catch { continue; }
 
+          if (fillerTimer === undefined && startsWork(evt) && spokenTurn()) {
+            fillerTimer = setTimeout(() => { if (spokenTurn()) void sayFiller(); }, FILLER_DELAY_MS);
+          }
+          if (evt.type === "done" || evt.type === "error") clearTimeout(fillerTimer);
+
           if (evt.type === "run") {
             runId = evt.runId;
           } else if (evt.type === "status") {
@@ -920,7 +932,7 @@ export default function Home() {
           } else if (evt.type === "plan") {
             setAgentRun((r) => ({ ...(r ?? base()), steps: evt.steps }));
           } else if (evt.type === "tool") {
-            if (evt.phase === "start") {
+            if (evt.phase === "start" && !evt.chat) {
               setAgentRun((r) => ({ ...(r ?? base()), lines: [...(r ?? base()).lines, `${friendlyTool(evt.name)}…`] }));
             }
           } else if (evt.type === "subagent") {
@@ -989,7 +1001,6 @@ export default function Home() {
       // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
       // toggleSpeak's completion restarts the mic while the loop is active.
       // With Free only on, /api/tts speaks with the free Gemini key.
-      const micTurn = p.inputMode === "voice" || (!!p.file && isVoiceNote(p.file));
       if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
         void toggleSpeak(assistantMessage);
       }
@@ -1020,6 +1031,7 @@ export default function Home() {
       setMessages((prev) => [...prev.filter((m) => m.id !== errorMessage.id && (!streamId || m.id !== streamId)), errorMessage]);
       recoverDraft();
     } finally {
+      clearTimeout(fillerTimer);
       if (chats.finishRun(target, run) && canDrain && !controller.signal.aborted) resumeQueue(target);
     }
   };
@@ -1113,6 +1125,47 @@ export default function Home() {
     setSpeakingId(null);
   };
 
+  // Best effort: when the phrase cannot be spoken the wait stays silent, as before.
+  const sayFiller = async () => {
+    const phrase = pickFiller(lastFillerRef.current);
+    lastFillerRef.current = phrase;
+    const abort = new AbortController();
+    let ctx: AudioContext | null = null;
+    let settle = () => { };
+    const finished = new Promise<void>((resolve) => { settle = resolve; });
+    const handle = { stop: () => abort.abort(), finished, playing: false };
+    fillerRef.current?.stop();
+    fillerRef.current = handle;
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: phrase, freeOnly: chatPolicyRef.current.freeOnly }),
+        signal: abort.signal,
+      });
+      if (!res.ok) return;
+      const audio = await res.arrayBuffer();
+      if (abort.signal.aborted) return;
+      ctx = new AudioContext();
+      if (ctx.state === "suspended") await ctx.resume();
+      const buffer = await ctx.decodeAudioData(audio);
+      if (abort.signal.aborted) return;
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      handle.playing = true;
+      await new Promise<void>((resolve) => {
+        source.onended = () => resolve();
+        abort.signal.addEventListener("abort", () => resolve(), { once: true });
+        source.start();
+      });
+    } catch { } finally {
+      if (ctx) void ctx.close().catch(() => { });
+      if (fillerRef.current === handle) fillerRef.current = null;
+      settle();
+    }
+  };
+
   // Streams raw PCM from /api/tts into the Web Audio API, scheduling each
   // chunk sample-accurately after the last: sound starts ~2.5s after the
   // click instead of waiting for the whole clip to be synthesized.
@@ -1143,6 +1196,11 @@ export default function Home() {
         signal: abort.signal,
       });
       if (!res.ok || !res.body) throw new Error(`TTS failed (${res.status})`);
+      if (seq !== speakSeqRef.current) return;
+      // A filler already playing finishes first; one not yet audible is dropped.
+      const filler = fillerRef.current;
+      if (filler && !filler.playing) filler.stop();
+      else if (filler) await Promise.race([filler.finished, new Promise((resolve) => setTimeout(resolve, FILLER_MAX_WAIT_MS))]);
       if (seq !== speakSeqRef.current) return;
 
       const sampleRate = Number(res.headers.get("X-Sample-Rate") ?? 24000);
@@ -1220,14 +1278,15 @@ export default function Home() {
 
   // ---- Voice conversation mode ----
   // The mic button starts a hands-free loop: record → silence auto-sends →
-  // reply is spoken → recording restarts. Saying "Zuychin, stop" (detected
-  // via SpeechRecognition where available), tapping the chip's ✕, or leaving
-  // the conversation ends it.
+  // reply is spoken → recording restarts. Saying the stop phrase (heard by
+  // SpeechRecognition where available, and found in the on-box transcript),
+  // tapping the chip's ✕, or leaving the conversation ends it.
 
   const exitVoiceLoop = () => {
     voiceRequestRef.current++;
     voiceLoopRef.current = false;
     setVoiceLoop(false);
+    fillerRef.current?.stop();
     try { srRef.current?.stop(); } catch { }
     srRef.current = null;
     if (recorderRef.current) {
@@ -1311,7 +1370,7 @@ export default function Home() {
             for (let i = e.resultIndex; i < e.results.length; i++) {
               transcript += e.results[i][0].transcript;
             }
-            if (/zuychin[\s,.!]*stop/i.test(transcript)) exitVoiceLoop();
+            if (hasStopPhrase(transcript)) exitVoiceLoop();
           };
           rec.onerror = () => { };
           rec.start();
@@ -1365,6 +1424,11 @@ export default function Home() {
         void transcribeVoiceBlob(blob).then((transcript) => {
           setVoiceTranscribing(false);
           if (!chats.contains(origin)) return;
+          // Browsers without SpeechRecognition (or that miss the phrase) still end the loop here.
+          if (transcript && hasStopPhrase(transcript)) {
+            exitVoiceLoop();
+            return;
+          }
           if (!transcript) {
             sendAudio();
           } else if (voiceLoopRef.current && chats.get() === origin) {
@@ -1388,7 +1452,7 @@ export default function Home() {
 
   const toggleRecording = () => {
     // Tapping mid-recording sends what's captured so far (the loop continues);
-    // the chip's ✕ or "Zuychin, stop" ends the conversation.
+    // the chip's ✕ or the stop phrase ends the conversation.
     if (recorderRef.current) {
       recorderRef.current.stop();
       return;
@@ -1933,7 +1997,7 @@ export default function Home() {
               <div className={ui.chip} data-tone="live">
                 {isRecording ? <Mic size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
                 <strong>Voice chat{isRecording ? ", listening" : voiceTranscribing ? ", transcribing" : speakingId ? ", speaking" : isLoading ? ", thinking" : ""}</strong>
-                <span>Say &ldquo;Zuychin, stop&rdquo; to end</span>
+                <span>Say &ldquo;{STOP_PHRASE}&rdquo; to end</span>
                 <button type="button" onClick={exitVoiceLoop} className={ui.iconButton} aria-label="End voice chat" title="End voice chat">
                   <X size={14} aria-hidden="true" />
                 </button>
@@ -2040,7 +2104,7 @@ export default function Home() {
                   className={ui.iconButton}
                   data-live={isRecording || undefined}
                   aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
-                  title={freeOnly && !sttAvailable ? "Voice with Free only needs the on-box transcriber, which is unavailable" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat. Replies are spoken; say “Zuychin, stop” to end."}
+                  title={freeOnly && !sttAvailable ? "Voice with Free only needs the on-box transcriber, which is unavailable" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : `Start a voice chat. Replies are spoken; say “${STOP_PHRASE}” to end.`}
                 >
                   <Mic size={18} aria-hidden="true" />
                 </button>

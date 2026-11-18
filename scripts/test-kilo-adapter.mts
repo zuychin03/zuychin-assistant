@@ -153,6 +153,29 @@ try {
         assert.match(String(bodies[1].messages[3].content), /^Refused:/);
     });
 
+    await check("An allowed tool call reports start and done to the chat context; a refused one reports nothing", async () => {
+        intercept([
+            streamResponse([
+                { tool_calls: [{ index: 0, id: "time-call", function: { name: "get_current_time", arguments: "{}" } }] },
+            ], "tool_calls"),
+            streamResponse([{ content: "Time handled." }]),
+        ]);
+        const events: string[] = [];
+        const ctx = { onTool: (name: string, phase: "start" | "done") => { events.push(`${name}:${phase}`); } };
+        assert.equal(await openaiCompatChat({ ...base, allowTools: new Set(["get_current_time"]), ctx }), "Time handled.");
+        assert.deepEqual(events, ["get_current_time:start", "get_current_time:done"]);
+
+        intercept([
+            streamResponse([
+                { tool_calls: [{ index: 0, id: "refused-call", function: { name: "get_current_time", arguments: "{}" } }] },
+            ], "tool_calls"),
+            streamResponse([{ content: "Refusal handled." }]),
+        ]);
+        events.length = 0;
+        assert.equal(await openaiCompatChat({ ...base, allowTools: new Set<string>(), ctx }), "Refusal handled.");
+        assert.deepEqual(events, []);
+    });
+
     await check("Muse Spark Responses model is rejected before any fetch", async () => {
         const zen = getProvider("opencode-zen")!;
         const muse = zen.chatModels.find((entry) => entry.id === "muse-spark-1.3-contributor-free");
