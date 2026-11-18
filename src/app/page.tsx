@@ -28,6 +28,8 @@ import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
 import { transcribeVoiceBlob } from "./home/voice-pcm";
 import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, hasStopPhrase, pickFiller, startsWork } from "./home/voice-loop";
+import { ReplySpeaker } from "./home/reply-speaker";
+import { speakableEnd } from "./home/speech-chunks";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 interface ChatMessage {
@@ -822,6 +824,21 @@ export default function Home() {
     const micTurn = p.inputMode === "voice" || (!!p.file && isVoiceNote(p.file));
     const spokenTurn = () => chats.get() === target && micTurn && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off");
     let fillerTimer: ReturnType<typeof setTimeout> | undefined;
+    // A spoken turn speaks each finished sentence while the rest of the reply still streams.
+    let streamedText = "";
+    // Cast so TypeScript does not narrow it to null: feedLive assigns it inside a closure.
+    let live = null as { speaker: ReplySpeaker; seq: number; from: number } | null;
+    let liveClosed = false;
+    let liveFinished = false;
+    const feedLive = (final: boolean) => {
+      if (liveClosed || (live && live.seq !== speakSeqRef.current)) return;
+      const from = live?.from ?? 0;
+      const end = final ? streamedText.length : speakableEnd(streamedText, from);
+      if (end <= from) return;
+      live ??= { ...startSpeaker(streamId), from: 0 };
+      live.from = end;
+      if (!live.speaker.push(streamedText.slice(from, end))) liveClosed = true;
+    };
 
     try {
       if (p.freeOnly && !p.knowledgeOnly && !requestChatSel) throw new Error("No eligible free chat model is available. Configure a free provider, or turn Free only off and send a new message.");
@@ -921,7 +938,7 @@ export default function Home() {
           try { evt = JSON.parse(json) as AgentEvent; } catch { continue; }
 
           if (fillerTimer === undefined && startsWork(evt) && spokenTurn()) {
-            fillerTimer = setTimeout(() => { if (spokenTurn()) void sayFiller(); }, FILLER_DELAY_MS);
+            fillerTimer = setTimeout(() => { if (spokenTurn() && !live) void sayFiller(); }, FILLER_DELAY_MS);
           }
           if (evt.type === "done" || evt.type === "error") clearTimeout(fillerTimer);
 
@@ -952,6 +969,10 @@ export default function Home() {
               const { text, reset } = evt;
               setMessages((prev) => prev.map((m) => (m.id === sid ? { ...m, content: reset ? text : m.content + text } : m)));
             }
+            // A reset starts a new model turn after a tool call: what was spoken stays spoken.
+            streamedText = evt.reset ? evt.text : streamedText + evt.text;
+            if (evt.reset && live) live.from = 0;
+            if (spokenTurn()) feedLive(false);
           } else if (evt.type === "done") {
             done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, replyTrace: evt.replyTrace };
           } else if (evt.type === "error") {
@@ -999,10 +1020,19 @@ export default function Home() {
           : [...prev, assistantMessage]
       );
       // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
-      // toggleSpeak's completion restarts the mic while the loop is active.
+      // the speech's end restarts the mic while the loop is active.
       // With Free only on, /api/tts speaks with the free Gemini key.
-      if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
-        void toggleSpeak(assistantMessage);
+      if (live) {
+        liveFinished = true;
+        if (live.seq === speakSeqRef.current) {
+          // Text the server added after the stream (a daily reminder) is spoken too; citations change the
+          // text, so only an exact continuation counts.
+          if (done.reply.startsWith(streamedText)) streamedText = done.reply;
+          feedLive(true);
+          live.speaker.finish();
+        }
+      } else if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
+        toggleSpeak(assistantMessage);
       }
       canDrain = true;
       void loadConversations();
@@ -1032,6 +1062,8 @@ export default function Home() {
       recoverDraft();
     } finally {
       clearTimeout(fillerTimer);
+      // A turn that failed or was cancelled stops the part of its reply already being spoken.
+      if (live && !liveFinished && live.seq === speakSeqRef.current) stopSpeaking();
       if (chats.finishRun(target, run) && canDrain && !controller.signal.aborted) resumeQueue(target);
     }
   };
@@ -1166,114 +1198,46 @@ export default function Home() {
     }
   };
 
-  // Streams raw PCM from /api/tts into the Web Audio API, scheduling each
-  // chunk sample-accurately after the last: sound starts ~2.5s after the
-  // click instead of waiting for the whole clip to be synthesized.
-  const toggleSpeak = async (msg: ChatMessage) => {
+  // A filler already playing finishes first; one not yet audible is dropped.
+  const waitForFiller = async () => {
+    const filler = fillerRef.current;
+    if (filler && !filler.playing) filler.stop();
+    else if (filler) await Promise.race([filler.finished, new Promise((resolve) => setTimeout(resolve, FILLER_MAX_WAIT_MS))]);
+  };
+
+  // Becomes the current speech (stopping any other). When it ends, a voice conversation listens again,
+  // also after a failure, so a TTS hiccup never ends the loop.
+  const startSpeaker = (messageId: string) => {
+    stopSpeaking();
+    const seq = speakSeqRef.current;
+    setSpeakingId(messageId);
+    const speaker = new ReplySpeaker({
+      freeOnly: chatPolicyRef.current.freeOnly,
+      beforeFirstAudio: waitForFiller,
+      onEnd: (end, error) => {
+        if (seq !== speakSeqRef.current) return;
+        if (end === "error") {
+          console.error("TTS playback failed:", error);
+          setActionError({ message: "The reply could not be spoken, so it is shown as text only." });
+        }
+        setSpeakingId(null);
+        ttsPlayerRef.current = null;
+        if (voiceLoopRef.current) void startVoiceRecording();
+      },
+    });
+    ttsPlayerRef.current = { stop: () => speaker.stop() };
+    return { speaker, seq };
+  };
+
+  const toggleSpeak = (msg: ChatMessage) => {
     if (!chatPolicyRef.current.ready) return;
     if (speakingId === msg.id) {
       stopSpeaking();
       return;
     }
-    stopSpeaking();
-    const seq = speakSeqRef.current;
-    setSpeakingId(msg.id);
-
-    const abort = new AbortController();
-    let ctx: AudioContext | null = null;
-    ttsPlayerRef.current = {
-      stop: () => {
-        abort.abort();
-        if (ctx) void ctx.close().catch(() => { });
-      },
-    };
-
-    try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: msg.content, stream: true, freeOnly: chatPolicyRef.current.freeOnly }),
-        signal: abort.signal,
-      });
-      if (!res.ok || !res.body) throw new Error(`TTS failed (${res.status})`);
-      if (seq !== speakSeqRef.current) return;
-      // A filler already playing finishes first; one not yet audible is dropped.
-      const filler = fillerRef.current;
-      if (filler && !filler.playing) filler.stop();
-      else if (filler) await Promise.race([filler.finished, new Promise((resolve) => setTimeout(resolve, FILLER_MAX_WAIT_MS))]);
-      if (seq !== speakSeqRef.current) return;
-
-      const sampleRate = Number(res.headers.get("X-Sample-Rate") ?? 24000);
-      ctx = new AudioContext();
-      if (ctx.state === "suspended") await ctx.resume();
-      let playhead = ctx.currentTime + 0.1;
-
-      // Coalesce tiny network chunks into ≥0.2s buffers (first one smaller so
-      // sound starts immediately); PCM is 16-bit so buffers must stay even.
-      const scheduleChunk = (bytes: Uint8Array) => {
-        if (!ctx || bytes.length < 2) return;
-        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.length / 2));
-        const buf = ctx.createBuffer(1, int16.length, sampleRate);
-        const ch = buf.getChannelData(0);
-        for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 32768;
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.connect(ctx.destination);
-        if (playhead < ctx.currentTime + 0.05) playhead = ctx.currentTime + 0.05;
-        src.start(playhead);
-        playhead += buf.duration;
-      };
-
-      const reader = res.body.getReader();
-      let pending: Uint8Array[] = [];
-      let pendingBytes = 0;
-      let started = false;
-      const flush = () => {
-        const even = pendingBytes - (pendingBytes % 2);
-        if (even === 0) return;
-        const merged = new Uint8Array(pendingBytes);
-        let off = 0;
-        for (const p of pending) { merged.set(p, off); off += p.length; }
-        scheduleChunk(merged.subarray(0, even));
-        pending = pendingBytes > even ? [merged.subarray(even)] : [];
-        pendingBytes -= even;
-        started = true;
-      };
-      const minBytes = () => (started ? sampleRate * 0.4 : sampleRate * 0.1); // 0.2s / 50ms of 16-bit audio
-
-      for (; ;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (seq !== speakSeqRef.current) return;
-        pending.push(value);
-        pendingBytes += value.length;
-        if (pendingBytes >= minBytes()) flush();
-      }
-      flush();
-
-      // The last buffer is scheduled but still playing; hold the state until then.
-      const remainingMs = Math.max(0, (playhead - ctx.currentTime) * 1000);
-      await new Promise((r) => setTimeout(r, remainingMs + 150));
-      if (seq === speakSeqRef.current) {
-        setSpeakingId(null);
-        ttsPlayerRef.current = null;
-        void ctx.close().catch(() => { });
-        // Voice conversation: the reply has been spoken - listen again.
-        if (voiceLoopRef.current) void startVoiceRecording();
-      }
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        console.error("TTS playback failed:", err);
-        setActionError({ message: "The reply could not be spoken, so it is shown as text only." });
-      }
-      if (seq === speakSeqRef.current) {
-        setSpeakingId(null);
-        ttsPlayerRef.current = null;
-        if (ctx) void ctx.close().catch(() => { });
-        // A TTS hiccup must not kill the conversation loop.
-        if (voiceLoopRef.current) void startVoiceRecording();
-      }
-    }
+    const { speaker } = startSpeaker(msg.id);
+    speaker.push(msg.content);
+    speaker.finish();
   };
 
   // ---- Voice conversation mode ----

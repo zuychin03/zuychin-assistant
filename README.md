@@ -45,7 +45,8 @@ edited and deleted in place.
 - Voice conversations: send a Telegram voice note or tap the web mic, and the reply is spoken
   back with Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
   hands-free loop: silence auto-sends, the reply plays, the mic reopens - say
-  "That's enough, thank you" (or tap the ✕ chip) to end it. While a voice turn waits on
+  "That's enough, thank you" (or tap the ✕ chip) to end it. Each sentence is spoken as soon
+  as it is written, while the rest of the reply still streams. While a voice turn waits on
   tools or agents, a short phrase such as "Just a minute" fills the silence. Telegram voice
   notes are answered with a voice note too. Spoken replies fire only on voice input
 - On-box speech-to-text: with the optional `stt-service` running, web voice turns are
