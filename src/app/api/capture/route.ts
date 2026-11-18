@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { captureProfile, captureService, listCaptures } from "@/lib/capture/store";
+import { captureProfile, captureService, getCapture, listCaptures } from "@/lib/capture/store";
 import { CaptureError } from "@/lib/capture/service";
 import { captureDocuments } from "@/lib/capture/documents";
 import { VaultConflictError } from "@/lib/vault/github";
@@ -35,6 +35,13 @@ export async function POST(req: NextRequest) {
         }
         if (input.action === "preview") return respond(await captureService.preview(profile.id, id, input.review));
         if (input.action === "ingest") return respond(await captureService.ingest(profile.id, { ...input, id }));
-        throw new CaptureError("Choose capture, preview or ingest.");
+        if (input.action === "extract") {
+            const item = await getCapture(profile.id, id);
+            if (!item) throw new CaptureError("Capture not found.", 404);
+            if (item.receipt) throw new CaptureError("This capture is already in knowledge, so its source text is fixed.", 409);
+            const [{ extractCapture }, { withExtractionSlot }] = await Promise.all([import("@/lib/capture/extract"), import("@/lib/capture/extract/gate")]);
+            return respond({ extract: await withExtractionSlot(() => extractCapture(item.source)) });
+        }
+        throw new CaptureError("Choose capture, preview, ingest or extract.");
     } catch (error) { return failure(error); }
 }

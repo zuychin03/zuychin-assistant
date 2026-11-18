@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   // Page-data collection defaults to one worker per core and exhausts RAM on
   // the 16 GB build machine. Raise on a dedicated build runner.
   experimental: { cpus: Number(process.env.NEXT_BUILD_CPUS ?? 2) },
-  serverExternalPackages: ["pdfkit", "fontkit"],
+  serverExternalPackages: ["pdfkit", "fontkit", "pdfjs-dist"],
   // Pin the workspace root to this project so an unrelated lockfile elsewhere
   // on the machine doesn't get picked up as the root.
   turbopack: {
