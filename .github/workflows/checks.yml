@@ -94,6 +94,14 @@ jobs:
       - name: speech-to-text service
         run: npm test --prefix stt-service
 
+      # Fake engine only, so numpy, onnxruntime and the model are not installed. The parity tests skip without the model.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: text-to-speech service
+        run: python -m unittest discover -s tts-service/tests -t tts-service
+
   desktop:
     name: Windows desktop supervisor
     runs-on: windows-latest

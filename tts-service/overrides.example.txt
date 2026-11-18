@@ -1,0 +1,6 @@
+# Pronunciation overrides for dizione. One word per line: the word, two spaces, then its phonemes.
+# Phonemes are IPA (as below) or ARPAbet with stress digits (for example: K OW1 G AH0 N).
+# Point TTS_OVERRIDES at your own copy, kept outside the repository. Lowercase words only.
+zuychin  z w iː tʃ ɪ n
+wollongong  w ˈʊ l ə n ɡ ɔ ŋ
+fremantle  f ɹ ˈiː m æ n t əl

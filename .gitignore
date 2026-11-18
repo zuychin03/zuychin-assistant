@@ -53,6 +53,10 @@ CHANGELOG.md
 /deploy/
 /discord-bot/deploy/
 /stt-service/deploy/
+/tts-service/deploy/
+
+# python bytecode
+__pycache__/
 
 # local supabase project / migration history (use supabase-setup.sql instead)
 /supabase/

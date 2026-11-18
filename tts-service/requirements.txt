@@ -1,0 +1,5 @@
+# Pinned for local runs. The box has no pip, so deploy/deploy.sh ships these as checked wheels instead.
+numpy==2.5.5
+onnxruntime==1.32.0
+# dizione has no PyPI release. Use this commit (Apache-2.0):
+# pip install "git+https://github.com/n4ze3m/dizione@8cd889e4de7be6bd1dd2e6891344a0729fa14dd4"
