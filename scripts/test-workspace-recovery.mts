@@ -4,6 +4,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { eligibleChatProviders, resolveChatSelection } from "../src/app/home/chat-policy.ts";
+import { ChatWorkspace, NEW_CHAT } from "../src/app/home/chat-state.ts";
 
 function extract(path: string, names: string[], guardName?: string) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
@@ -258,6 +259,26 @@ test("unchanged instructions need no discard prompt or navigation warning", () =
     f.actions.closeInstructions();
     assert.equal(f.state.instructionsId, null);
     assert.deepEqual(f.prompts, []);
+});
+
+test("New chat opens a local draft without creating a conversation row", () => {
+    const chats = new ChatWorkspace<unknown, unknown, unknown>();
+    chats.select("existing");
+    const requests: unknown[] = [];
+    let selected: { key: string; projectId: string | null } | null = null;
+    const actions = runInNewContext(extract("../src/app/page.tsx", ["handleNewChat"]), {
+        chats,
+        selectSession: (session: typeof selected) => { selected = session; },
+        requestJson: async (...args: unknown[]) => { requests.push(args); return { id: "created" }; },
+        fetch: async (...args: unknown[]) => { requests.push(args); return new Response("{}"); },
+    }) as { handleNewChat(projectId?: string): void };
+    actions.handleNewChat("project-a");
+    assert.deepEqual(requests, []);
+    assert.equal(selected!.key, NEW_CHAT);
+    assert.equal(selected!.projectId, "project-a");
+    actions.handleNewChat();
+    assert.equal(selected!.projectId, null);
+    assert.deepEqual(requests, []);
 });
 
 test("failed instruction saves name the visible retry control without replaying a stale draft", async () => {

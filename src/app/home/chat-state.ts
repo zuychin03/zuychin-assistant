@@ -21,6 +21,7 @@ export interface ChatSession<Message, Payload, Progress> {
   run: ChatRun | null;
   progress: Progress | null;
   fileRequest: number;
+  projectId: string | null;
 }
 
 export class ChatWorkspace<Message, Payload, Progress> {
@@ -40,10 +41,20 @@ export class ChatWorkspace<Message, Payload, Progress> {
     let session = this.sessions.get(key);
     if (!session) {
       session = { key, messages: [], loaded: key === NEW_CHAT, revision: 0, historyRequest: 0, historyLoading: false, draftRevision: 0,
-        draft: emptyDraft(), queue: [], run: null, progress: null, fileRequest: 0 };
+        draft: emptyDraft(), queue: [], run: null, progress: null, fileRequest: 0, projectId: null };
       this.sessions.set(key, session);
     }
     return session;
+  }
+  // New chats stay local until the first send creates the row, so unsent chats leave no empty rows.
+  startDraft(projectId: string | null = null) {
+    const session = this.get(NEW_CHAT);
+    if (!session.run && !session.queue.length) session.projectId = projectId;
+    return session;
+  }
+  forgetProject(projectId: string) {
+    for (const session of this.sessions.values()) if (session.projectId === projectId) session.projectId = null;
+    this.notify();
   }
   contains(session: ChatSession<Message, Payload, Progress>) { return this.sessions.get(session.key) === session; }
   select(key: string) { this.activeKey = key; this.get(key); this.notify(); }
@@ -162,6 +173,13 @@ export function completedRetry<Message extends { id: string; role: string; conte
   const [user, reply] = messages.slice(-2);
   return !!user && !!reply && user.role === "user" && reply.role === "assistant"
     && user.content === sent && !knownIds.includes(reply.id) && !knownIds.includes(user.id);
+}
+
+// Sidebar label for a just-created chat until the server's generated title arrives.
+export function provisionalTitle(text: string, limit = 60): string {
+  const line = text.trim().split("\n")[0].replace(/\s+/g, " ");
+  if (!line) return "New chat";
+  return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
 }
 
 export function sameDraft(left: ChatDraft, right: ChatDraft): boolean {

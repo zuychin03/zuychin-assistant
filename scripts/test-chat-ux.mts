@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, sameDraft, type ChatDraft } from "../src/app/home/chat-state.ts";
+import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, provisionalTitle, sameDraft, type ChatDraft } from "../src/app/home/chat-state.ts";
 
 type Message = { id: string; role: string; content: string; retry?: boolean };
 type Payload = { text: string };
@@ -66,6 +66,39 @@ test("new-chat creation adopts the origin queue and draft without stealing the v
   assert.equal(origin.queue[0].payload.text, "Follow up");
   assert.equal(origin.draft.file?.name, "notes.txt");
   assert.equal(state.get(NEW_CHAT).draft.text, "");
+});
+
+test("a new chat is a local draft that remembers its project until the first send creates the row", () => {
+  const state = workspace();
+  state.select("existing");
+  const pending = state.startDraft("project-a");
+  assert.equal(pending.key, NEW_CHAT);
+  assert.equal(pending.projectId, "project-a");
+  assert.equal(state.startDraft(), pending);
+  assert.equal(pending.projectId, null);
+  state.startDraft("project-b");
+  state.beginRun(pending);
+  state.startDraft("project-c");
+  assert.equal(pending.projectId, "project-b");
+  state.adopt(pending, "created");
+  assert.equal(state.get("created").projectId, "project-b");
+  assert.equal(state.startDraft().projectId, null);
+  assert.notEqual(state.get(NEW_CHAT), pending);
+});
+
+test("deleting a project releases drafts that would have been created in it", () => {
+  const state = workspace();
+  const pending = state.startDraft("gone");
+  state.get("kept").projectId = "kept-project";
+  state.forgetProject("gone");
+  assert.equal(pending.projectId, null);
+  assert.equal(state.get("kept").projectId, "kept-project");
+});
+
+test("a just-created chat is labelled from its first message until the server title arrives", () => {
+  assert.equal(provisionalTitle("  Plan the   week\nwith details"), "Plan the week");
+  assert.equal(provisionalTitle("x".repeat(80)), `${"x".repeat(59)}…`);
+  assert.equal(provisionalTitle("   "), "New chat");
 });
 
 test("adopting a viewed new chat updates only its key", () => {

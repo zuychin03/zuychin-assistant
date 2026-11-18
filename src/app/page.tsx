@@ -18,7 +18,7 @@ import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, sameDraft, type ChatDraft, type ChatSession } from "./home/chat-state";
+import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, provisionalTitle, sameDraft, type ChatDraft, type ChatSession } from "./home/chat-state";
 import { readChatDrafts, writeChatDraft } from "./home/chat-drafts";
 import { safeReturnTo, documentDestination, withReturnTo } from "@/lib/document-navigation";
 import { eligibleChatProviders, resolveChatSelection } from "./home/chat-policy";
@@ -685,17 +685,8 @@ export default function Home() {
     return true;
   };
 
-  const handleNewChat = async (projectId?: string) => {
-    const origin = chats.get();
-    return runAction("new-chat", "create the conversation", async () => {
-      const data = await requestJson<{ id: string }>("/api/conversations", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId }),
-      });
-      if (!data.id) throw new Error("The server did not return a conversation.");
-      const target = chats.get(data.id);
-      target.loaded = true;
-      if (chats.get() === origin) selectSession(target);
-    }, loadConversations);
+  const handleNewChat = (projectId?: string) => {
+    selectSession(chats.startDraft(projectId ?? null));
   };
 
   const handleCreateProject = (name: string) => runAction("create-project", "create the project", async () => {
@@ -737,6 +728,8 @@ export default function Home() {
         const wasActive = chats.activeKey === confirmation.id;
         chats.remove(chats.get(confirmation.id));
         if (wasActive) { conversationUrl(null); exitVoiceLoop(); }
+      } else {
+        chats.forgetProject(confirmation.id);
       }
     }, refreshLists);
     confirmation.resolve(ok);
@@ -862,17 +855,24 @@ export default function Home() {
       setMessages((previous) => [...previous, userMessage]);
       started = true;
       if (p.knowledgeOnly) setAgentRun(() => ({ status: "Searching saved sources…", steps: [], lines: [] }));
+      let created = false;
       if (target.key === NEW_CHAT) {
-        const data = await requestJson<{ id: string }>("/api/conversations", { method: "POST", signal: controller.signal });
+        const data = await requestJson<{ id: string }>("/api/conversations", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: target.projectId }), signal: controller.signal,
+        });
         controller.signal.throwIfAborted();
         if (!data.id) throw new Error("The conversation could not be created. Please retry.");
         chats.adopt(target, data.id);
+        created = true;
         if (chats.get() === target) conversationUrl(data.id);
       }
       const convId = target.key;
+      const now = new Date().toISOString();
       setConversations((previous) => {
         const item = previous.find((conversation) => conversation.id === convId);
-        return item ? [{ ...item, updatedAt: new Date().toISOString() }, ...previous.filter((conversation) => conversation.id !== convId)] : previous;
+        const next = item ? { ...item, updatedAt: now }
+          : created ? { id: convId, title: provisionalTitle(userMessage.content), updatedAt: now, projectId: target.projectId } : null;
+        return next ? [next, ...previous.filter((conversation) => conversation.id !== convId)] : previous;
       });
       const res = await fetch("/api/chat/stream", {
         method: "POST",
@@ -1536,7 +1536,7 @@ export default function Home() {
     return withReturnTo(`/graph?node=${node}&root=${node}&local=1`, chatHref);
   };
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
-  const activeProject = projects.find((project) => project.id === activeConversation?.projectId);
+  const activeProject = projects.find((project) => project.id === (activeConversation ? activeConversation.projectId : session.projectId));
   const chatTitle = activeConversation?.title ?? (activeConversationId ? "Conversation" : "New chat");
   const todayOpen = todayDocked ? !todayHidden : todaySheetOpen;
   const toggleToday = () => {
@@ -1706,8 +1706,7 @@ export default function Home() {
       <AppSidebar
         current="chat"
         hrefs={sidebarLinks}
-        onNewChat={() => { void handleNewChat(); }}
-        newChatDisabled={pendingActions.includes("new-chat")}
+        onNewChat={() => handleNewChat()}
         search={chatSearch}
         onSearch={setChatSearch}
         docked={sidebar.docked}
@@ -1724,7 +1723,7 @@ export default function Home() {
           deletingConversationIds={[...(deleteConfirm?.kind === "chat" ? [deleteConfirm.id] : []), ...pendingActions.filter((key) => key.startsWith("delete:")).map((key) => key.slice(7))]}
           onSelect={(id) => { void loadConversation(id); }}
           onDelete={handleDeleteConversation}
-          onNewChat={(projectId) => { void handleNewChat(projectId); }}
+          onNewChat={handleNewChat}
           onUpdateProject={handleUpdateProject}
           onDeleteProject={handleDeleteProject}
           onMoveConversation={handleMoveConversation}
@@ -1768,7 +1767,7 @@ export default function Home() {
               {activeProject && <p className={ui.subtitle}>{activeProject.name}</p>}
             </div>
             <TodayToggle open={todayOpen} onToggle={toggleToday} due={dueCount} />
-            <button type="button" onClick={() => { void handleNewChat(); }} disabled={pendingActions.includes("new-chat")} className={ui.iconButton} aria-label="New chat" title="New chat">
+            <button type="button" onClick={() => handleNewChat()} className={ui.iconButton} aria-label="New chat" title="New chat">
               <SquarePen size={18} aria-hidden="true" />
             </button>
           </header>
