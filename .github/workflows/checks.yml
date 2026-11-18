@@ -1,4 +1,6 @@
 # All database fixtures live in a disposable Supabase stack on the runner.
+# Node is pinned to an exact version: older Windows runner images resolve 24 to 24.22.2, which
+# crashed V8 ("jit_page_->allocations_.erase") at the end of the council suites on 18/11/2026.
 
 name: checks
 
@@ -27,7 +29,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.22.3
           cache: npm
 
       - run: npm ci
@@ -82,7 +84,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.22.3
           cache: npm
 
       - run: npm ci
@@ -110,7 +112,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.22.3
       - name: Rust toolchain
         run: |
           rustup update stable --no-self-update
@@ -138,7 +140,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.22.3
           cache: npm
 
       - run: npm ci
