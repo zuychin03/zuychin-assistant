@@ -34,6 +34,7 @@ import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
 import { expandSlashCommand } from "@/lib/commands";
 import { isTextLikeAttachment } from "@/lib/types";
 import { formatTextAttachment } from "@/lib/attachments";
+import { inputModeError, userMessageMetadata, VOICE_TRANSCRIPT_NOTE, type InputMode } from "@/lib/voice/input-mode";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
 import type { MessageChannel, FileAttachment, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
 
@@ -541,6 +542,7 @@ type RagChatParams = {
     /** Keeps lead and worker chat generation on the paid Gemini key. */
     paidOnly?: boolean;
     freeOnly?: boolean;
+    inputMode?: InputMode;
 };
 type RagChatResult = { reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; freeOnly?: boolean; replyTrace?: ReplyTrace };
 
@@ -602,6 +604,8 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     const resumeError = resumeRequestError(params);
     if (resumeError) throw new Error(resumeError);
     if (params.freeOnly !== undefined && typeof params.freeOnly !== "boolean") throw new Error("Free only must be a boolean.");
+    const inputError = inputModeError(params.inputMode);
+    if (inputError) throw new Error(inputError);
     if ((params.paidOnly || isUnattendedRun()) && /^[/!](?:embed-)?model(?:@\S+)?(?:\s|$)/i.test(params.message.trim())) {
         throw new Error("Scheduled tasks cannot change model preferences. Change models interactively instead.");
     }
@@ -654,7 +658,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
             channel,
             userProfileId: profile?.id,
             conversationId,
-            metadata: replyTo ? { replyTo } : undefined,
+            metadata: userMessageMetadata(replyTo, params.inputMode),
         });
         onSavedMessage?.(userMsgId);
     } catch (err) {
@@ -675,6 +679,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
         if (signal?.aborted && userMsgId && !onSavedMessage) await deleteMessage(userMsgId).catch(() => {});
         throw error;
     }
+    if (params.inputMode === "voice") rag.contextBlock += VOICE_TRANSCRIPT_NOTE;
 
     const artifacts: ArtifactDescriptor[] = [];
     // Last one wins: a turn that proposes twice meant to replace the first.

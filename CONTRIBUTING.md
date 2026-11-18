@@ -24,7 +24,8 @@ Then run the suites for the area you changed. These need no credentials or netwo
 
 | Area | Command |
 | --- | --- |
-| Chat, models, Library, Research, Study, Capture and Tasks | `npm run v6:test` |
+| Chat, models, voice, Library, Research, Study, Capture and Tasks | `npm run v6:test` |
+| Speech-to-text service | `npm test --prefix stt-service` |
 | Knowledge Cosmos | `npm run cosmos:test` |
 | Council host, protocol and contracts | `npm run council:v3:test`, `npm run council:contracts:test`, `npm run council:services:test` |
 | Agent credentials | `npm run agents:offline:test` |
@@ -37,7 +38,7 @@ CI runs lint, types and the offline suites on Ubuntu and Windows, the V6 suites,
 
 ## Where things live
 
-The [project structure](README.md#project-structure) in the README maps the main files. In short, `src/app` holds the pages and API routes, `src/lib` the server logic, `src/components` the shared shell, `scripts/` the Council host, migrations and test suites, `src-tauri/` the Windows desktop supervisor, and `discord-bot/` the Discord bot.
+The [project structure](README.md#project-structure) in the README maps the main files. In short, `src/app` holds the pages and API routes, `src/lib` the server logic, `src/components` the shared shell, `scripts/` the Council host, migrations and test suites, `src-tauri/` the Windows desktop supervisor, `discord-bot/` the Discord bot, and `stt-service/` the optional speech-to-text service.
 
 ## Database changes
 

@@ -1,6 +1,6 @@
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { NextRequest, NextResponse } from "next/server";
-import { synthesizeSpeech, synthesizeSpeechStream, getVoicePrefs, FULL_TTS_CHARS } from "@/lib/ai/tts";
+import { synthesizeSpeech, synthesizeSpeechStream, getVoicePrefs, freeSpeechRoute, FULL_TTS_CHARS, PAID_SPEECH } from "@/lib/ai/tts";
 import { getDefaultProfile } from "@/lib/db";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
@@ -25,7 +25,8 @@ export async function POST(req: NextRequest) {
     let userProfileId: string | undefined;
     let persistence: ReturnType<typeof persistModelObservations> | undefined;
     const finish = () => persistence ??= persistModelObservations(calls, { userProfileId });
-    const collect = <T,>(run: () => T) => withModelObservationCollector(calls, () => { configureModelDataPolicy(false); return run(); }, [], ["personal"]);
+    let freeOnly = false;
+    const collect = <T,>(run: () => T) => withModelObservationCollector(calls, () => { configureModelDataPolicy(freeOnly); return run(); }, [], ["personal"]);
     let text = "";
     let voiceName: string | undefined;
     let wantStream = false;
@@ -45,15 +46,17 @@ export async function POST(req: NextRequest) {
     try {
         const profile = await getDefaultProfile();
         userProfileId = profile?.id;
-        if (effectiveFreeOnly(profile, requestedFreeOnly)) return NextResponse.json({ error: "Free only: voice synthesis has no eligible free route." }, { status: 409 });
+        freeOnly = effectiveFreeOnly(profile, requestedFreeOnly);
+        const route = freeOnly ? freeSpeechRoute() : PAID_SPEECH;
+        if (!route) return NextResponse.json({ error: "Free only: voice synthesis has no eligible free route." }, { status: 409 });
         const prefs = getVoicePrefs(profile?.preferences);
         const voice = voiceName ?? prefs.voiceName;
 
         if (!wantStream) {
-            const { buffer, mimeType } = await collect(() => synthesizeSpeech(text, voice, req.signal));
+            const { buffer, mimeType } = await collect(() => synthesizeSpeech(text, voice, req.signal, route));
             await finish();
             return new NextResponse(new Uint8Array(buffer), {
-                headers: { "Content-Type": mimeType, "Cache-Control": "no-store", "X-Model-Provider": "gemini", "X-Model-Id": TTS_MODEL },
+                headers: { "Content-Type": mimeType, "Cache-Control": "no-store", "X-Model-Provider": route.providerId, "X-Model-Id": TTS_MODEL },
             });
         }
 
@@ -64,7 +67,7 @@ export async function POST(req: NextRequest) {
         // Streaming clients can afford the full-reply cap: generation outpaces
         // playback, so long clips still start in ~2.5s.
         const controller = new AbortController();
-        const gen = synthesizeSpeechStream(text, voice, FULL_TTS_CHARS, AbortSignal.any([req.signal, controller.signal]));
+        const gen = synthesizeSpeechStream(text, voice, FULL_TTS_CHARS, AbortSignal.any([req.signal, controller.signal]), route);
         const first = await collect(() => gen.next());
         if (first.done) {
             await finish();
@@ -95,7 +98,7 @@ export async function POST(req: NextRequest) {
                 "Content-Type": "application/octet-stream",
                 "X-Sample-Rate": String(first.value.sampleRate),
                 "Cache-Control": "no-store",
-                "X-Model-Provider": "gemini", "X-Model-Id": TTS_MODEL,
+                "X-Model-Provider": route.providerId, "X-Model-Id": TTS_MODEL,
             },
         });
     } catch {

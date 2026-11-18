@@ -8,6 +8,7 @@ import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/
 import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
+import { inputModeError } from "@/lib/voice/input-mode";
 
 const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest) {
         if (knowledgeError) return NextResponse.json({ error: knowledgeError }, { status: 400 });
         const resumeError = resumeRequestError(body);
         if (resumeError) return NextResponse.json({ error: resumeError }, { status: 400 });
+        const inputError = inputModeError(body.inputMode);
+        if (inputError) return NextResponse.json({ error: inputError }, { status: 400 });
         const { message, channel = "web", imageBase64, conversationId, file, thinking = false, search = false, agent = false, provider, model, embeddingModel, genParams } = body;
 
         if (!message || typeof message !== "string") {
@@ -74,6 +77,7 @@ export async function POST(req: NextRequest) {
             agent,
             resumeRunId: body.resumeRunId,
             freeOnly: body.freeOnly === true,
+            inputMode: body.inputMode === "voice" ? "voice" : undefined,
             knowledgeOnly: body.knowledgeOnly,
             provider,
             model,

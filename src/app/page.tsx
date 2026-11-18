@@ -26,6 +26,7 @@ import { ReplyActivity, SourceChart } from "./home/reply-sources";
 import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
+import { transcribeVoiceBlob } from "./home/voice-pcm";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 interface ChatMessage {
@@ -49,6 +50,8 @@ interface ChatMessage {
   retry?: { payload: OutgoingPayload; userMsgId: string; knownIds: string[] };
   /** Quoted excerpt of the earlier message this one replies to. */
   replyTo?: { role: "user" | "assistant"; content: string };
+  /** The on-box transcript of a voice turn. */
+  spoken?: boolean;
 }
 
 // Minimal surface of the (webkit-prefixed) SpeechRecognition API used for the
@@ -70,6 +73,7 @@ interface OutgoingPayload {
   file: { name: string; mimeType: string; base64: string; size: number } | null;
   replyTo: { role: "user" | "assistant"; content: string } | null;
   resume?: { runId: string; text: string };
+  inputMode?: "voice";
 }
 
 interface ServerMessage {
@@ -84,6 +88,7 @@ interface ServerMessage {
     artifacts?: ArtifactDescriptor[];
     replyTo?: { role: "user" | "assistant"; content: string };
     councilProposal?: CouncilProposal;
+    inputMode?: string;
   };
 }
 
@@ -99,7 +104,11 @@ const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
     at: m.createdAt,
     modelLabel: m.metadata?.knowledgeOnly ? "Saved sources" : m.metadata?.historicalModels?.map((model) => `${model.providerId} / ${model.modelId}`).join(", "),
     replyTrace: m.metadata?.replyTrace,
+    ...(m.metadata?.inputMode === "voice" ? { spoken: true } : {}),
   }));
+
+// Recorder output. With Free only on, a voice note the box could not transcribe goes to the free Gemini key.
+const isVoiceNote = (file: { name: string; mimeType: string }) => file.name.startsWith("voice-note.") && file.mimeType.startsWith("audio/");
 
 interface AgentRun {
   status: string;
@@ -211,6 +220,9 @@ export default function Home() {
   const [cmdIndex, setCmdIndex] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [voiceTranscribing, setVoiceTranscribing] = useState(false);
+  const [sttAvailable, setSttAvailable] = useState(false);
+  const sttAvailableRef = useRef(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   // status: "confirm" shows the warning buttons; anything else is progress text.
   const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
@@ -279,6 +291,20 @@ export default function Home() {
   }, []);
 
   useEffect(() => { void loadChatPreferences(); }, [loadChatPreferences]);
+
+  // Whether the on-box transcriber is up: Free only voice needs it, and elsewhere it decides whether a
+  // voice turn is transcribed first or sent as audio.
+  const refreshSttStatus = useCallback(async () => {
+    try {
+      const data = await requestJson<{ available?: unknown }>("/api/voice/status", { cache: "no-store" });
+      sttAvailableRef.current = data.available === true;
+    } catch {
+      sttAvailableRef.current = false;
+    }
+    setSttAvailable(sttAvailableRef.current);
+  }, []);
+
+  useEffect(() => { void refreshSttStatus(); }, [refreshSttStatus, freeOnly]);
 
   const saveFreeOnly = async (next: boolean) => {
     if (preferencesSaving) return;
@@ -772,6 +798,7 @@ export default function Home() {
       fileName: p.file?.name,
       fileMimeType: p.file?.mimeType,
       ...(p.replyTo ? { replyTo: p.replyTo } : {}),
+      ...(p.inputMode === "voice" ? { spoken: true } : {}),
     };
     let streamId = "";
     let started = false;
@@ -779,7 +806,7 @@ export default function Home() {
 
     try {
       if (p.freeOnly && !p.knowledgeOnly && !requestChatSel) throw new Error("No eligible free chat model is available. Configure a free provider, or turn Free only off and send a new message.");
-      if (p.freeOnly && p.file?.mimeType.startsWith("audio/")) throw new Error("Audio is unavailable with Free only. Remove the audio attachment before sending.");
+      if (p.freeOnly && p.file?.mimeType.startsWith("audio/") && !isVoiceNote(p.file)) throw new Error("Audio is unavailable with Free only. Remove the audio attachment before sending.");
       if (retryMessage?.retry && target.key !== NEW_CHAT) {
         const data = await requestJson<{ messages: ServerMessage[] }>(`/api/conversations?id=${encodeURIComponent(target.key)}`, { signal: controller.signal });
         if (!Array.isArray(data.messages)) throw new Error("Could not check whether the reply was saved. Please retry.");
@@ -824,6 +851,7 @@ export default function Home() {
           agent: p.resume ? true : agentEnabled,
           ...(p.resume && { resumeRunId: p.resume.runId }),
           ...(p.replyTo && { replyTo: p.replyTo }),
+          ...(p.inputMode && { inputMode: p.inputMode }),
           genParams: {
             ...(genParams.temperature !== null && { temperature: genParams.temperature }),
             ...(genParams.topP !== null && { topP: genParams.topP }),
@@ -948,8 +976,9 @@ export default function Home() {
       );
       // Voice turns get the reply spoken back (TTS fires ONLY on voice input);
       // toggleSpeak's completion restarts the mic while the loop is active.
-      const micTurn = !!p.file && p.file.name.startsWith("voice-note.") && p.file.mimeType.startsWith("audio/");
-      if (!p.freeOnly && !chatPolicyRef.current.freeOnly && chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
+      // With Free only on, /api/tts speaks with the free Gemini key.
+      const micTurn = p.inputMode === "voice" || (!!p.file && isVoiceNote(p.file));
+      if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
         void toggleSpeak(assistantMessage);
       }
       canDrain = true;
@@ -1076,7 +1105,7 @@ export default function Home() {
   // chunk sample-accurately after the last: sound starts ~2.5s after the
   // click instead of waiting for the whole clip to be synthesized.
   const toggleSpeak = async (msg: ChatMessage) => {
-    if (!chatPolicyRef.current.ready || chatPolicyRef.current.freeOnly) return;
+    if (!chatPolicyRef.current.ready) return;
     if (speakingId === msg.id) {
       stopSpeaking();
       return;
@@ -1165,6 +1194,7 @@ export default function Home() {
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         console.error("TTS playback failed:", err);
+        setActionError({ message: "The reply could not be spoken, so it is shown as text only." });
       }
       if (seq === speakSeqRef.current) {
         setSpeakingId(null);
@@ -1196,7 +1226,7 @@ export default function Home() {
   };
 
   const startVoiceRecording = async () => {
-    if (!chatPolicyRef.current.ready || chatPolicyRef.current.freeOnly) return;
+    if (!chatPolicyRef.current.ready || (chatPolicyRef.current.freeOnly && !sttAvailableRef.current)) return;
     if (recorderRef.current) return;
     const origin = chats.get();
     if (!origin.loaded || origin.historyLoading) return;
@@ -1299,19 +1329,38 @@ export default function Home() {
         // Codec suffixes ("audio/webm;codecs=opus") fail the whitelist check.
         const mimeType = (blob.type.split(";")[0] || "audio/webm").trim();
         const ext = mimeType === "audio/mp4" ? "m4a" : mimeType.split("/")[1] || "webm";
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (!chats.contains(origin)) return;
-          const base64 = (reader.result as string).split(",")[1] ?? "";
-          const file = { name: `voice-note.${ext}`, mimeType, base64, size: blob.size };
-          if (voiceLoopRef.current && chats.get() === origin) {
-            void sendPayload({ text: "", file, replyTo: null, knowledgeOnly: false, freeOnly: chatPolicyRef.current.freeOnly }, origin);
-          } else {
-            chats.setDraft(origin, { ...origin.draft, file });
-            if (chats.get() === origin) inputRef.current?.focus();
-          }
+        const sendAudio = () => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (!chats.contains(origin)) return;
+            const base64 = (reader.result as string).split(",")[1] ?? "";
+            const file = { name: `voice-note.${ext}`, mimeType, base64, size: blob.size };
+            if (voiceLoopRef.current && chats.get() === origin) {
+              void sendPayload({ text: "", file, replyTo: null, knowledgeOnly: false, freeOnly: chatPolicyRef.current.freeOnly }, origin);
+            } else {
+              chats.setDraft(origin, { ...origin.draft, file });
+              if (chats.get() === origin) inputRef.current?.focus();
+            }
+          };
+          reader.readAsDataURL(blob);
         };
-        reader.readAsDataURL(blob);
+        // The box transcribes first; any failure sends the recording itself, as before.
+        if (!sttAvailableRef.current || !voiceLoopRef.current || chats.get() !== origin) {
+          sendAudio();
+          return;
+        }
+        setVoiceTranscribing(true);
+        void transcribeVoiceBlob(blob).then((transcript) => {
+          setVoiceTranscribing(false);
+          if (!chats.contains(origin)) return;
+          if (!transcript) {
+            sendAudio();
+          } else if (voiceLoopRef.current && chats.get() === origin) {
+            void sendPayload({ text: transcript, file: null, inputMode: "voice", replyTo: null, knowledgeOnly: false, freeOnly: chatPolicyRef.current.freeOnly }, origin);
+          } else {
+            chats.setDraft(origin, { ...origin.draft, text: [origin.draft.text, transcript].filter(Boolean).join(" ") });
+          }
+        });
       };
 
       recorder.start();
@@ -1332,6 +1381,7 @@ export default function Home() {
       recorderRef.current.stop();
       return;
     }
+    if (!voiceLoopRef.current) void refreshSttStatus();
     void startVoiceRecording();
   };
 
@@ -1507,7 +1557,7 @@ export default function Home() {
                 onChange={toggleAgent} title={knowledgeOnly ? "Unavailable while Knowledge only is on" : "Plan and complete multi-step tasks"} />
               <ModeToggle label="Free only" icon={<CircleDollarSign size={15} aria-hidden="true" />} checked={freeOnly}
                 disabled={!preferencesLoaded || preferencesSaving || !!preferencesError} onChange={() => { void saveFreeOnly(!freeOnly); }}
-                title="Use free models for interactive chat. Voice is unavailable. Scheduled tasks use paid models." />
+                title="Use free models for interactive chat. Voice needs the on-box transcriber. Scheduled tasks use paid models." />
               <ModeToggle label="Knowledge only" icon={<BookOpen size={15} aria-hidden="true" />} checked={knowledgeOnly}
                 onChange={() => { if (!knowledgeOnly) exitVoiceLoop(); setKnowledgeOnly(!knowledgeOnly); }}
                 title="Return saved source passages. Agent and thinking modes are unavailable." />
@@ -1731,6 +1781,7 @@ export default function Home() {
                   <div className={ui.bubble}>
                     {renderBubbleExtras(msg.replyTo, { name: msg.fileName, mimeType: msg.fileMimeType })}
                     <p className={ui.bubbleText}>{msg.content}</p>
+                    {msg.spoken && <div className={ui.bubbleMeta}><Mic size={12} aria-hidden="true" />Spoken</div>}
                   </div>
                 </div>
               ) : (
@@ -1869,7 +1920,7 @@ export default function Home() {
             {voiceLoop && (
               <div className={ui.chip} data-tone="live">
                 {isRecording ? <Mic size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
-                <strong>Voice chat{isRecording ? ", listening" : speakingId ? ", speaking" : isLoading ? ", thinking" : ""}</strong>
+                <strong>Voice chat{isRecording ? ", listening" : voiceTranscribing ? ", transcribing" : speakingId ? ", speaking" : isLoading ? ", thinking" : ""}</strong>
                 <span>Say &ldquo;Zuychin, stop&rdquo; to end</span>
                 <button type="button" onClick={exitVoiceLoop} className={ui.iconButton} aria-label="End voice chat" title="End voice chat">
                   <X size={14} aria-hidden="true" />
@@ -1973,11 +2024,11 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={toggleRecording}
-                  disabled={knowledgeOnly || freeOnly || preferencesBlocked || !session.loaded || session.historyLoading}
+                  disabled={knowledgeOnly || (freeOnly && !sttAvailable) || preferencesBlocked || !session.loaded || session.historyLoading}
                   className={ui.iconButton}
                   data-live={isRecording || undefined}
                   aria-label={isRecording ? "Send what was captured" : "Start a voice chat"}
-                  title={freeOnly ? "Voice is unavailable with Free only" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat. Replies are spoken; say “Zuychin, stop” to end."}
+                  title={freeOnly && !sttAvailable ? "Voice with Free only needs the on-box transcriber, which is unavailable" : preferencesBlocked ? "Load or save your chat preference before recording" : knowledgeOnly ? "Turn Knowledge only off to record audio" : isRecording ? "Send what was captured (silence sends automatically)" : "Start a voice chat. Replies are spoken; say “Zuychin, stop” to end."}
                 >
                   <Mic size={18} aria-hidden="true" />
                 </button>

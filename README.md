@@ -42,12 +42,17 @@ edited and deleted in place.
   at a read-only, notes, full, or full-plus-convene access level you choose. The brief carries a short-lived claim rather
   than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
   use, and is revocable on its own
-- Voice conversations: send a Telegram voice note or tap the web mic - the audio is passed
-  to the model natively (it hears you, not a transcript) and the reply is spoken back with
-  Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
+- Voice conversations: send a Telegram voice note or tap the web mic, and the reply is spoken
+  back with Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
   hands-free loop: silence auto-sends, the reply plays, the mic reopens - say
   "Zuychin, stop" (or tap the ✕ chip) to end it. Telegram voice notes are answered with a
   voice note too. Spoken replies fire only on voice input
+- On-box speech-to-text: with the optional `stt-service` running, web voice turns are
+  transcribed on your own server by Moonshine tiny, so any chat model can answer them and the
+  audio never leaves the host. The transcript is sent as a normal message marked "Spoken", and
+  the model is told it may hold recognition errors. If the service is unset, busy or fails, the
+  turn falls back to sending the audio to Gemini as before. Telegram voice notes are still sent
+  as audio
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
@@ -132,8 +137,9 @@ edited and deleted in place.
 - Branches: start a branch from any saved message to try another prompt or model, and compare the
   branches at `/conversations/compare`
 - Knowledge only and Free only: one switch answers only from saved knowledge, with sources;
-  the other keeps interactive chat on free models (scheduled tasks still use paid ones). The
-  dashboard shows each model's recent health
+  the other keeps interactive chat on free models (scheduled tasks still use paid ones). Voice
+  works in Free only while the on-box transcriber is up, and replies are spoken with the free
+  Gemini key. The dashboard shows each model's recent health
 - Knowledge revisions: compare versions of a Library page and restore an earlier one as a new
   revision
 - Obsidian portability: lossless ZIP import/export preserves Markdown, frontmatter,
@@ -191,6 +197,7 @@ edited and deleted in place.
 | Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3 Embed 1B (2048d, default) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
+| Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio |
 | Push | web-push (VAPID) + service worker (PWA) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | 3D graph | 3d-force-graph (three.js + d3-force-3d), three (sprite stars, planet bodies, bloom), HTML label overlay |
@@ -198,7 +205,7 @@ edited and deleted in place.
 | Messaging | Discord.js, Telegram Bot API |
 | Agent council | Agent Client Protocol (`@agentclientprotocol/sdk`) over stdio, `ws` loopback control channel, git worktree isolation |
 | Export | docx, pdfkit |
-| Hosting | Self-hosted standalone Next server (web/API) and an always-on Node process (Discord bot) |
+| Hosting | Self-hosted standalone Next server (web/API) and always-on Node processes (Discord bot, optional speech-to-text service) |
 
 ## Prerequisites
 
@@ -280,6 +287,7 @@ Optional auth, integrations, channels and cron:
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); either unset = push disabled |
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
+| `STT_SERVICE_URL` / `STT_SERVICE_TOKEN` | On-box speech-to-text service, for example `http://127.0.0.1:3010`, and its bearer token (the service's `STT_TOKEN`). Either unset = voice turns send the audio to Gemini, and voice stays off in Free only. See [Speech-to-text service](#speech-to-text-service-optional) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
 | `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
 | `COUNCIL_V2_ASSERTED_IDENTITY` | Leave `false`. `true` lets an owner-scoped key act for a named agent in councils with no protocol version; V3 always needs the seat's own credential |
@@ -388,6 +396,8 @@ npm run dev
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
   and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
+  With the speech-to-text service running, the chip shows "transcribing" while your words are
+  read, and your message appears as text marked "Spoken".
 - The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
   away so chat history fills the sidebar, and the choice is remembered.
@@ -412,7 +422,9 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
-| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM) |
+| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM; Free only uses the free Gemini key, 409 without one) |
+| POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service; 503 `{ fallback: true }` tells the client to send the audio instead |
+| GET | `/api/voice/status` | Whether the speech-to-text service is up and loaded (cached for 30 s) |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
@@ -1058,6 +1070,34 @@ node bot.js
 - Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` (`web: node bot.js`)
   for hosts that read one.
 
+## Speech-to-text service (optional)
+
+`stt-service/` is a small Node server that turns web voice turns into text on your own host. It
+has its own `package.json` and is not part of the Next build.
+
+```bash
+cd stt-service
+npm ci
+STT_TOKEN=<32 or more random characters> STT_MODEL_DIR=<model folder> npm start
+```
+
+- Model: download `sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2` from the
+  [sherpa-onnx `asr-models` release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models)
+  and unpack it. `STT_MODEL_DIR` must hold `encoder_model.ort`, `decoder_model_merged.ort` and
+  `tokens.txt`.
+- It listens on `127.0.0.1` only, on `STT_PORT` (default `3010`). `POST /transcribe` takes the
+  bearer token and 16 kHz 16-bit PCM; `GET /health` says whether the model has loaded. Logs hold
+  sizes and timings, never the words.
+- One transcription runs at a time with up to two waiting. Anything more gets 503, and the web
+  app sends that turn's audio to Gemini instead.
+- Turns longer than `STT_SEGMENT_SEC` (default 15, from 5 to 60) are cut at the quietest point
+  and read in pieces. This kept memory at about 220 MB in local tests, at some cost to accuracy
+  on long turns.
+- `npm start` runs Node with `--expose-gc`, and the server collects garbage after each job,
+  because the recogniser holds native memory that V8 does not count.
+- Set the web app's `STT_SERVICE_URL` and `STT_SERVICE_TOKEN` to match.
+  `npm test --prefix stt-service` runs the offline tests with a fake recogniser.
+
 ## Telegram Bot (optional)
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and set `TELEGRAM_BOT_TOKEN`.
@@ -1256,6 +1296,9 @@ sets out its visual and interaction rules.
   `Authorization: Bearer <CRON_SECRET>`.
 - Discord bot: any always-on host, the web app's machine included, running `node bot.js` (as in
   `discord-bot/Procfile`) with `ZUYCHIN_API_URL` pointing at the deployed web app.
+- Speech-to-text service: run it on the web app's machine, since it only listens on
+  `127.0.0.1`. Allow it about 300 MB of memory. On a small host, a lower CPU weight than the web
+  app keeps transcription from slowing chat.
 
 ## Project Structure
 
@@ -1270,6 +1313,7 @@ src/
 │   │   ├── council-card.tsx            # Proposed-council card in chat, with the Launch button
 │   │   ├── day-starters.ts             # Chat starters drawn from the day
 │   │   ├── reply-sources.tsx           # Chart and list of the sources behind a reply
+│   │   ├── voice-pcm.ts                # Recording → 16 kHz PCM, then the transcribe request
 │   │   └── chat.module.css             # Chat page styles
 │   ├── knowledge/                      # Library: page list, reader, link chart, possible connections
 │   ├── research/ study/ capture/ tasks/ # The other workspaces
@@ -1291,6 +1335,7 @@ src/
 │       ├── todos/route.ts              # Notes checklist backend
 │       ├── today/route.ts              # Today digest (events + todos)
 │       ├── tts/route.ts                # Voice-reply synthesis (blocking or streamed PCM)
+│       ├── voice/                      # Transcribe a voice turn + speech-to-text status
 │       ├── push/subscribe/route.ts     # Web-push subscription registry
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
@@ -1327,6 +1372,7 @@ src/
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
+│   ├── voice/                          # Speech-to-text client + the "Spoken" input mode
 │   └── messaging/                      # Discord + Telegram + web-push services
 ├── components/
 │   ├── app-sidebar.tsx                 # Shared sidebar: workspaces, chat history, theme
@@ -1339,6 +1385,11 @@ public/sw.js                            # Service worker: push display + click-t
 discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
 └── Procfile                            # Process definition (web: node bot.js)
+stt-service/
+├── server.js                           # Local speech-to-text server: token, limits, queue, /health
+├── recognizer.js                       # Moonshine tiny through sherpa-onnx-node
+├── segment.js                          # Cuts long turns at the quietest point
+└── test/                               # Offline tests with a fake recogniser
 scripts/
 ├── council-host.mts                    # Local ACP host: agent sessions, permission gate, dispatch loop, control channel
 ├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill

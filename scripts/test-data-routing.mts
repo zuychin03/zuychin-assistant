@@ -12,6 +12,12 @@ const partition = assessDataRoute({ providerId: "nvidia-nim", modelId: "nvidia/n
 assert.equal(partition.allowed, true); assert.equal(partition.rule, "shared_embedding_partition");
 assert.equal(assessDataRoute({ ...paid, providerId: "jev", classes: ["personal"] }).allowed, false);
 assert.equal(assessDataRoute({ ...paid, classes: ["personal"] }).retention, "not_verified");
+const speech = { modelId: process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview", purpose: "speech", classes: ["personal"] as ["personal"] };
+assert.equal(assessDataRoute({ ...speech, providerId: "gemini" }).tier, "paid");
+assert.equal(assessDataRoute({ ...speech, providerId: "gemini", freeOnly: true }).allowed, false);
+assert.equal(assessDataRoute({ ...speech, providerId: "gemini-free", freeOnly: true }).tier, "free");
+assert.equal(assessDataRoute({ ...speech, providerId: "gemini-free", freeOnly: true }).allowed, true);
+assert.equal(assessDataRoute({ ...speech, providerId: "gemini-free", modelId: "gemini-3.8-flash", purpose: "chat" }).tier, "free");
 const calls: ModelCallObservation[] = [], services: ExternalServiceObservation[] = [];
 let invoked = 0;
 const raw = { models: { generateContent: async () => { invoked++; return { text: "Private answer", candidates: [{ groundingMetadata: { groundingChunks: [{ web: { uri: "https://private.invalid" } }] } }] }; } } } as unknown as ObservedGeminiClient;

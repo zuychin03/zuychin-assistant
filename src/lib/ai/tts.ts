@@ -1,4 +1,4 @@
-import { ai, TTS_MODEL } from "@/lib/gemini";
+import { ai, geminiClient, TTS_MODEL } from "@/lib/gemini";
 import { stripMarkdown } from "@/lib/speech";
 import { observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
@@ -33,6 +33,14 @@ export function getVoicePrefs(preferences: unknown): VoicePrefs {
 // default stays lead-only: the Telegram webhook shares its 60s with the chat
 // generation itself. The timeout is a safety net below the budget so cleanup
 // runs before Vercel's hard kill.
+// Which Gemini project speaks. Free only replies use the free key so they never spend the paid quota.
+export type SpeechRoute = { providerId: "gemini" | "gemini-free"; apiKey?: string };
+export const PAID_SPEECH: SpeechRoute = { providerId: "gemini" };
+export function freeSpeechRoute(): SpeechRoute | null {
+    const apiKey = process.env.GEMINI_FREE_API_KEY;
+    return apiKey ? { providerId: "gemini-free", apiKey } : null;
+}
+
 export const LEAD_TTS_CHARS = 500;
 export const FULL_TTS_CHARS = 1800;
 const TTS_TIMEOUT_MS = 55_000;
@@ -76,11 +84,13 @@ export async function* synthesizeSpeechStream(
     voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
     maxChars: number = LEAD_TTS_CHARS,
     signal?: AbortSignal,
+    route: SpeechRoute = PAID_SPEECH,
 ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const spoken = clampForSpeech(stripMarkdown(text), maxChars);
     if (!spoken) throw new Error("Nothing to speak.");
 
-    const stream = await observeGeminiClient(ai, { providerId: "gemini", purpose: "speech" }).models.generateContentStream({
+    const client = route.apiKey ? geminiClient(route.apiKey) : ai;
+    const stream = await observeGeminiClient(client, { providerId: route.providerId, purpose: "speech" }).models.generateContentStream({
         model: TTS_MODEL,
         contents: [{ role: "user", parts: [{ text: spoken }] }],
         config: {
@@ -107,10 +117,11 @@ export async function synthesizeSpeech(
     text: string,
     voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
     signal?: AbortSignal,
+    route: SpeechRoute = PAID_SPEECH,
 ): Promise<{ buffer: Buffer; mimeType: "audio/wav" }> {
     const parts: Buffer[] = [];
     let rate = 24000;
-    for await (const { pcm, sampleRate } of synthesizeSpeechStream(text, voiceName, LEAD_TTS_CHARS, signal)) {
+    for await (const { pcm, sampleRate } of synthesizeSpeechStream(text, voiceName, LEAD_TTS_CHARS, signal, route)) {
         parts.push(pcm);
         rate = sampleRate;
     }

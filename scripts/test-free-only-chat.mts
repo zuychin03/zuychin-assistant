@@ -45,6 +45,10 @@ globalThis.fetch = async (input, init) => {
     }
     if (url.hostname === "generativelanguage.googleapis.com" && (key === "fixture-free" || (allowPaid && key === "fixture-paid"))) {
         if (generationError) return Response.json({ error: { message: "fixture failure", code: 400 } }, { status: 400 });
+        if (JSON.stringify(body.generationConfig ?? {}).includes('"AUDIO"')) {
+            const audioFrame = { candidates: [{ content: { parts: [{ inlineData: { data: "AQIDBA==", mimeType: "audio/L16;rate=24000" } }] }, finishReason: "STOP" }] };
+            return new Response("data: " + JSON.stringify(audioFrame) + "\n\n", { headers: { "Content-Type": "text/event-stream" } });
+        }
         const parts = nextTool ? [{ functionCall: { name: nextTool, args: { query: "fixture", content: "fixture" } } }] : [{ text: "Fixture answer" }]; nextTool = "";
         const streaming = url.pathname.includes("streamGenerateContent");
         const finishReason = streaming && truncated ? "MAX_TOKENS" : "STOP"; if (streaming) truncated = false;
@@ -153,9 +157,32 @@ for (const stage of ["before", "embedding", "generation"]) await check("cancel h
     controller = new AbortController(); abortAt = stage; if (stage === "before") controller.abort();
     await assert.rejects(ragChat({ ...base, ...nim, signal: controller.signal }), { name: "AbortError" }); assert.equal(modelCalls().length, stage === "generation" ? 1 : 0);
 });
-await check("TTS rejects saved policy and request tightening", async () => {
-    for (const stream of [false, true]) assert.equal((await ttsPost(new NextRequest("https://fixture.invalid/api/tts", { method: "POST", body: JSON.stringify({ text: "fixture", stream }) }))).status, 409);
-    prefs = { freeOnly: false }; assert.equal((await ttsPost(new NextRequest("https://fixture.invalid/api/tts", { method: "POST", body: JSON.stringify({ text: "fixture", freeOnly: true }) }))).status, 409); assert.equal(modelCalls().length, 0);
+await check("TTS speaks saved and requested Free only replies with the free key", async () => {
+    for (const stream of [false, true]) {
+        const r = await ttsPost(new NextRequest("https://fixture.invalid/api/tts", { method: "POST", body: JSON.stringify({ text: "fixture", stream }) }));
+        assert.equal(r.status, 200); assert.equal(r.headers.get("x-model-provider"), "gemini-free"); await r.arrayBuffer();
+    }
+    prefs = { freeOnly: false }; const tightened = await ttsPost(new NextRequest("https://fixture.invalid/api/tts", { method: "POST", body: JSON.stringify({ text: "fixture", freeOnly: true }) }));
+    assert.equal(tightened.status, 200); await tightened.arrayBuffer();
+    assert.equal(modelCalls().length, 3); assert(modelCalls().every((c) => c.key === "fixture-free"));
+});
+await check("TTS refuses Free only without a free Gemini key", async () => {
+    process.env.GEMINI_FREE_API_KEY = "";
+    try { assert.equal((await ttsPost(new NextRequest("https://fixture.invalid/api/tts", { method: "POST", body: JSON.stringify({ text: "fixture" }) }))).status, 409); assert.equal(modelCalls().length, 0); }
+    finally { process.env.GEMINI_FREE_API_KEY = "fixture-free"; }
+});
+const savedUser = () => writes().find((c) => c.url.pathname.endsWith("/messages") && c.body.role === "user");
+const told = () => modelCalls().some((c) => JSON.stringify(c.body).includes("Spoken input"));
+await check("a voice transcript saves the marker and tells the model", async () => {
+    const r = await ragChat({ ...base, message: "remind me to call the bank", inputMode: "voice" }); assert.equal(r.reply, "Fixture answer");
+    assert.deepEqual(savedUser()!.body.metadata, { inputMode: "voice" }); assert.equal(told(), true);
+});
+await check("text turns keep the old message shape and prompt", async () => {
+    await ragChat(base); assert.deepEqual(savedUser()!.body.metadata, {}); assert.equal(told(), false);
+});
+await check("a voice turn keeps its reply quote", async () => {
+    await ragChat({ ...base, inputMode: "voice", replyTo: { role: "assistant", content: "Earlier answer" } });
+    assert.deepEqual(savedUser()!.body.metadata, { replyTo: { role: "assistant", content: "Earlier answer" }, inputMode: "voice" });
 });
 for (const post of [chatPost, streamPost]) {
     await check("HTTP forwards request tightening against saved false", async () => {
@@ -165,6 +192,14 @@ for (const post of [chatPost, streamPost]) {
     });
     await check("HTTP rejects false opt-out and ignores client paidOnly", async () => {
         const r = await post(new NextRequest("https://fixture.invalid/api/chat", { method: "POST", headers: { authorization: "Bearer fixture-chat" }, body: JSON.stringify({ ...base, provider: "gemini", freeOnly: false, paidOnly: true }) })); assert.match(await r.text(), /Free only/); assert.equal(modelCalls().length, 0);
+    });
+    await check("HTTP refuses an unknown input mode before any work", async () => {
+        const r = await post(new NextRequest("https://fixture.invalid/api/chat", { method: "POST", headers: { authorization: "Bearer fixture-chat" }, body: JSON.stringify({ ...base, inputMode: "typing" }) }));
+        assert.equal(r.status, 400); assert.match(await r.text(), /Input mode/); assert.equal(calls.length, 0);
+    });
+    await check("HTTP forwards a voice input mode to the saved message", async () => {
+        const r = await post(new NextRequest("https://fixture.invalid/api/chat", { method: "POST", headers: { authorization: "Bearer fixture-chat" }, body: JSON.stringify({ ...base, inputMode: "voice" }) }));
+        assert.equal(r.status, 200); await r.text(); assert.deepEqual(savedUser()!.body.metadata, { inputMode: "voice" });
     });
     await check("HTTP validates freeOnly", async () => {
         const r = await post(new NextRequest("https://fixture.invalid/api/chat", { method: "POST", headers: { authorization: "Bearer fixture-chat" }, body: JSON.stringify({ ...base, freeOnly: "false" }) })); assert.equal(r.status, 400); assert.equal(calls.length, 0);

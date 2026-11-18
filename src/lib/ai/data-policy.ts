@@ -14,8 +14,9 @@ export const DATA_ROUTE_RULES = {
 } as const;
 export function assessDataRoute(input: { providerId: string; modelId: string; purpose: string; classes: ModelDataClass[]; freeOnly?: boolean }): DataRouteAssessment {
     const provider = getProvider(input.providerId);
-    const speech = input.purpose === "speech" && input.providerId === "gemini" && input.modelId === (process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview");
-    const model = speech ? { free: false } : provider && [...provider.chatModels, ...provider.embeddingModels].find(candidate => candidate.id === input.modelId);
+    const speech = input.purpose === "speech" && (input.providerId === "gemini" || input.providerId === "gemini-free")
+        && input.modelId === (process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview");
+    const model = speech ? { free: input.providerId === "gemini-free" } : provider && [...provider.chatModels, ...provider.embeddingModels].find(candidate => candidate.id === input.modelId);
     const tier = model?.free === true ? "free" : model?.free === false ? "paid" : "unknown";
     const scheduled = input.classes.includes("unattended"), embedding = input.purpose === "embedding";
     const rule = scheduled ? embedding ? "shared_embedding_partition" : "scheduled_generation" : input.classes.length ? "interactive" : "unclassified";

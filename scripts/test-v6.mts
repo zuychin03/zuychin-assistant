@@ -63,6 +63,8 @@ const tests = [
     "data-routing",
     "vault-model-observations",
     "speech-observations",
+    "voice-stt-client",
+    "voice-routes",
     "approval-observations",
     "jev-decisions",
     "owner-profile",

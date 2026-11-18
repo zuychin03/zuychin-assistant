@@ -8,6 +8,7 @@ import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 import { broadcastPush } from "@/lib/messaging/push-service";
 import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
+import { inputModeError } from "@/lib/voice/input-mode";
 
 export const maxDuration = 300;
 
@@ -34,6 +35,8 @@ export async function POST(req: NextRequest) {
     if (knowledgeError) return oneShot({ type: "error", message: knowledgeError }, 400);
     const resumeError = resumeRequestError(body);
     if (resumeError) return oneShot({ type: "error", message: resumeError }, 400);
+    const inputError = inputModeError(body.inputMode);
+    if (inputError) return oneShot({ type: "error", message: inputError }, 400);
     const message = body.message;
     if (!message || typeof message !== "string") {
         return oneShot({ type: "error", message: "Message is required." }, 400);
@@ -89,6 +92,7 @@ export async function POST(req: NextRequest) {
                     search: !!body.search,
                     agent: !!body.agent,
                     freeOnly: body.freeOnly === true,
+                    inputMode: body.inputMode === "voice" ? "voice" : undefined,
                     knowledgeOnly: body.knowledgeOnly === true,
                     resumeRunId: body.resumeRunId as string | undefined,
                     replyTo,
