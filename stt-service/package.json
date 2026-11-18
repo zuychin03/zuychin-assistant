@@ -1,0 +1,17 @@
+{
+    "name": "zuychin-stt-service",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Local speech-to-text service for Zuychin Assistant voice mode",
+    "main": "server.js",
+    "scripts": {
+        "start": "node --expose-gc server.js",
+        "test": "node --test test/*.test.mjs"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "sherpa-onnx-node": "2.0.1"
+    }
+}

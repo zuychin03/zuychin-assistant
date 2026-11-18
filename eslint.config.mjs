@@ -16,6 +16,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // standalone node scripts (CommonJS, not part of the next app)
     "discord-bot/**",
+    "stt-service/**",
     "test-google-auth.js",
     // Gitignored design-review workspace: repo copies and their builds, not source.
     ".impeccable/**",

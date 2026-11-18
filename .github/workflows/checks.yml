@@ -90,6 +90,10 @@ jobs:
       - name: V6 regression suites
         run: npm run v6:test
 
+      # Fake recogniser only, so the service's native dependency is not installed.
+      - name: speech-to-text service
+        run: npm test --prefix stt-service
+
   desktop:
     name: Windows desktop supervisor
     runs-on: windows-latest
