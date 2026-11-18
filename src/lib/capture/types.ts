@@ -13,8 +13,11 @@ export interface CaptureItem {
     sourceHash: string;
     createdAt: string;
     receipt: { path: string; commit: string; indexed: boolean } | null;
+    extract?: CaptureExtract | null;
+    extractStatus?: CaptureExtractStatus | null;
 }
-export interface CaptureReview { title: string; text: string; destination: string }
+export interface CaptureReview { title: string; text: string; destination: string; sourceText?: string }
+export type OcrTier = "free" | "paid";
 export type CaptureExtractStatus = "ok" | "empty" | "scanned" | "locked" | "blocked" | "failed" | "running";
 export type CaptureExtractMethod = "html" | "plain" | "pdf-text" | "tavily" | "ocr-free" | "ocr-paid";
 export interface CaptureExtract {

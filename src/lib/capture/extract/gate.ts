@@ -1,11 +1,13 @@
-import { CaptureError } from "../service";
+// On globalThis so every route bundle in the process shares the slots (1 GB box).
+const KEY = Symbol.for("zuychin.capture.slots");
+const scope = globalThis as unknown as Record<symbol, Set<string> | undefined>;
 
-// On globalThis so every route bundle in the process shares one slot (1 GB box).
-const KEY = Symbol.for("zuychin.capture.extractionSlot");
-const scope = globalThis as unknown as Record<symbol, boolean | undefined>;
+export type SlotName = "extract" | "ocr";
 
-export async function withExtractionSlot<T>(run: () => Promise<T>): Promise<T> {
-    if (scope[KEY]) throw new CaptureError("Another source is being read. Try again in a moment.", 429);
-    scope[KEY] = true;
-    try { return await run(); } finally { scope[KEY] = false; }
+export function acquireSlot(name: SlotName): (() => void) | null {
+    const busy = (scope[KEY] ??= new Set());
+    if (busy.has(name)) return null;
+    busy.add(name);
+    let released = false;
+    return () => { if (!released) { released = true; busy.delete(name); } };
 }

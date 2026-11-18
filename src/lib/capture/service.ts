@@ -2,9 +2,14 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { safeVaultPath } from "@/lib/knowledge/paths";
 import { serializeFrontmatter } from "@/lib/knowledge/markdown";
-import type { CaptureItem, CapturePreview, CaptureReview, CaptureSource } from "./types";
+import type { CaptureExtract, CaptureExtractMethod, CaptureItem, CapturePreview, CaptureReview, CaptureSource, OcrTier } from "./types";
 
 export const MAX_CAPTURE_PDF_BYTES = 2 * 1024 * 1024;
+export const SOURCE_TEXT_MAX = 120_000;
+export const OCR_STALE_MS = 10 * 60_000;
+const EXTRACTED_BY: Record<CaptureExtractMethod, string> = {
+    html: "defuddle", plain: "plain", "pdf-text": "pdf.js", tavily: "tavily", "ocr-free": "gemini-free", "ocr-paid": "gemini-paid",
+};
 export class CaptureError extends Error {
     constructor(message: string, readonly status = 400) { super(message); this.name = "CaptureError"; }
 }
@@ -46,7 +51,17 @@ interface Dependencies {
     read(path: string, head: string): Promise<string | null>;
     commit(changes: { path: string; content?: string; contentBase64?: string }[], head: string): Promise<{ commit: string }>;
     index(path: string, title: string, markdown: string, profile: string): Promise<void>;
+    saveExtract?(profile: string, id: string, extract: CaptureExtract): Promise<void>;
+    extractor?: {
+        read(source: CaptureSource): Promise<CaptureExtract>;
+        ocr(source: CaptureSource, stored: CaptureExtract | null, tier: OcrTier, profile: string): Promise<CaptureExtract>;
+        ocrTiers(profile: string): Promise<Record<OcrTier, boolean>>;
+        acquire(slot: "extract" | "ocr"): (() => void) | null;
+        now?(): Date;
+    };
 }
+export interface ExtractResult { extract: CaptureExtract; background?: () => Promise<void> }
+const isPdfExtract = (extract: CaptureExtract | null) => !!extract && (extract.contentType === "application/pdf" || extract.method === "pdf-text" || extract.method.startsWith("ocr-"));
 export function createCaptureService(deps: Dependencies) {
     async function get(profile: string, id: string) {
         z.string().uuid().parse(id);
@@ -55,18 +70,30 @@ export function createCaptureService(deps: Dependencies) {
         return item;
     }
     async function preview(profile: string, id: string, rawReview: CaptureReview): Promise<CapturePreview> {
-        const review = z.object({ title: z.string().trim().min(1).max(200), text: z.string().max(120_000), destination: z.string().min(1).max(800) }).parse(rawReview);
+        const review = z.object({ title: z.string().trim().min(1).max(200), text: z.string().max(120_000), destination: z.string().min(1).max(800),
+            sourceText: z.string().max(SOURCE_TEXT_MAX).optional() }).parse(rawReview);
         let path: string; try { path = safeVaultPath(review.destination); } catch { throw new CaptureError("Choose a safe destination path."); }
         if (!path.endsWith(".md") || path.startsWith(".") || /[\x00-\x1f]/.test(path)) throw new CaptureError("The destination must be a Markdown path.");
         const item = await get(profile, id);
         const originalPath = item.source.pdf ? `attachments/captures/${id}.pdf` : null;
+        const sourceText = review.sourceText?.replace(/\r\n/g, "\n").trim() ?? "";
         const body = [`# ${review.title.replace(/[\r\n]/g, " ")}`, review.text.replace(/\r\n/g, "\n")];
+        if (sourceText) body.push("## Source text", sourceText);
         if (item.source.url) body.push(`Source: <${item.source.url.replace(/[<>]/g, encodeURIComponent)}>`);
         if (originalPath) body.push(`[Original PDF](/api/capture/original?id=${id})`);
         if (item.source.source) body.push(`Source snapshot: ${item.source.source.path} at ${item.source.source.commitSha}\n\nContent SHA-256: ${item.source.source.contentHash}`);
+        // Only with source text, so documents for older reviews stay byte-identical to their ingest claims.
+        const fetched = item.extract?.status === "running" ? null : item.extract ?? null;
+        const provenance = sourceText ? {
+            ...(item.source.url ? { source_url: item.source.url } : {}),
+            ...(fetched?.finalUrl && fetched.finalUrl !== item.source.url ? { source_final_url: fetched.finalUrl } : {}),
+            ...(fetched ? { fetched_at: fetched.fetchedAt, extracted_by: EXTRACTED_BY[fetched.method] } : {}),
+            ...(fetched?.author ? { source_author: fetched.author } : {}),
+            ...(fetched?.published ? { source_published: fetched.published } : {}),
+        } : {};
         const markdown = serializeFrontmatter({ attributes: { zuychin_id: `capture-${id}`, title: review.title,
             kind: "note", scope: "user", status: "active", trust: "untrusted", sensitivity: "private", capture_id: id,
-            capture_source_hash: item.sourceHash, ...(originalPath ? { original_asset: originalPath } : {}) }, body: body.join("\n\n") + "\n" });
+            capture_source_hash: item.sourceHash, ...(originalPath ? { original_asset: originalPath } : {}), ...provenance }, body: body.join("\n\n") + "\n" });
         const headSha = await deps.head();
         const existing = await deps.read(path, headSha);
         if (existing !== null && existing !== markdown) throw new CaptureError("That destination exists or has changed. Choose a new path; existing content will not be replaced.", 409);
@@ -74,7 +101,52 @@ export function createCaptureService(deps: Dependencies) {
         return { id, review, path, markdown, originalPath, headSha, existing: existing !== null,
             previewHash: digest(JSON.stringify({ sourceHash: item.sourceHash, path, markdown, originalPath, headSha })) };
     }
+    async function extract(profile: string, id: string, options: { refresh?: boolean; ocr?: OcrTier } = {}): Promise<ExtractResult> {
+        const extractor = deps.extractor, save = deps.saveExtract;
+        if (!extractor || !save) throw new CaptureError("Source text is not available on this server.", 503);
+        const item = await get(profile, id);
+        if (item.receipt) throw new CaptureError("This capture is already in knowledge, so its source text is fixed.", 409);
+        if (item.source.kind !== "link" && item.source.kind !== "pdf") throw new CaptureError("Only link and PDF captures have source text.");
+        const now = extractor.now?.() ?? new Date();
+        let stored = item.extract ?? null;
+        if (stored?.status === "running" && now.getTime() - Date.parse(stored.startedAt ?? stored.fetchedAt) > OCR_STALE_MS) {
+            stored = { ...stored, status: "failed", note: "Gemini didn't finish. Try again." };
+            await save(profile, id, stored).catch(() => {});
+        }
+        if (options.ocr) {
+            const tier = options.ocr;
+            if (!(await extractor.ocrTiers(profile))[tier]) {
+                throw new CaptureError(tier === "paid" ? "Paid Gemini is unavailable: Free only is on or the key is not set." : "The free Gemini key is not set.", 403);
+            }
+            if (item.source.kind !== "pdf" && !isPdfExtract(stored)) throw new CaptureError("Gemini reads PDFs only. Read this link first.");
+            if (stored?.status === "running") return { extract: stored };
+            const release = extractor.acquire("ocr");
+            if (!release) throw new CaptureError("Gemini is already reading a PDF. Try again when it finishes.", 429);
+            const started = now.toISOString();
+            const running: CaptureExtract = { version: 1, status: "running", method: tier === "paid" ? "ocr-paid" : "ocr-free", text: "", truncated: false, words: 0,
+                fetchedAt: started, startedAt: started, finalUrl: stored?.finalUrl, contentType: stored?.contentType, pages: stored?.pages };
+            try { await save(profile, id, running); } catch (error) { release(); throw error; }
+            const background = async () => {
+                try { await save(profile, id, await extractor.ocr(item.source, stored, tier, profile)); }
+                catch (error) {
+                    console.error("[Capture] OCR failed:", error instanceof Error ? error.message : error);
+                    const note = error instanceof CaptureError ? error.message : "Gemini could not read the PDF. Try again.";
+                    await save(profile, id, { ...running, status: "failed", note }).catch(() => {});
+                } finally { release(); }
+            };
+            return { extract: running, background };
+        }
+        if (stored && (!options.refresh || stored.status === "running")) return { extract: stored };
+        const release = extractor.acquire("extract");
+        if (!release) throw new CaptureError("Another source is being read. Try again in a moment.", 429);
+        try {
+            const fresh = await extractor.read(item.source);
+            await save(profile, id, fresh);
+            return { extract: fresh };
+        } finally { release(); }
+    }
     return {
+        extract,
         async capture(profile: string, id: string, input: unknown) {
             z.string().uuid().parse(id);
             const source = validateCaptureSource(input), sourceHash = digest(JSON.stringify(source));

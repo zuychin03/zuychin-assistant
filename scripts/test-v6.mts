@@ -45,6 +45,8 @@ const tests = [
     "capture-clear-confirmation",
     "capture-inbox",
     "capture-routes",
+    "capture-extract",
+    "capture-extract-routes",
     "offline-library",
     "offline-shell",
     "offline-privacy",

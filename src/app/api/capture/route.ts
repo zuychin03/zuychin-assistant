@@ -1,13 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { captureProfile, captureService, getCapture, listCaptures } from "@/lib/capture/store";
+import { captureProfile, captureService, listCaptures } from "@/lib/capture/store";
 import { CaptureError } from "@/lib/capture/service";
 import { captureDocuments } from "@/lib/capture/documents";
+import { ocrTiers } from "@/lib/capture/extract/ocr";
+import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { VaultConflictError } from "@/lib/vault/github";
 import { sameOrigin } from "@/lib/auth/config";
 export const maxDuration = 60;
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
+const extractOptions = z.object({ refresh: z.boolean().optional(), ocr: z.enum(["free", "paid"]).optional() });
 function failure(error: unknown) {
     if (error instanceof CaptureError) return respond({ error: error.message }, error.status);
     if (error instanceof z.ZodError || error instanceof SyntaxError) return respond({ error: "Check the capture fields and try again." }, 400);
@@ -16,8 +19,11 @@ function failure(error: unknown) {
 }
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
-    try { const profile = await captureProfile(); const [items, documents] = await Promise.all([listCaptures(profile.id), captureDocuments(profile.id)]); return respond({ profileId: profile.id, items, documents }); }
-    catch (error) { return failure(error); }
+    try {
+        const profile = await captureProfile();
+        const [items, documents] = await Promise.all([listCaptures(profile.id), captureDocuments(profile.id)]);
+        return respond({ profileId: profile.id, items, documents, ocr: ocrTiers(effectiveFreeOnly(profile)) });
+    } catch (error) { return failure(error); }
 }
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
@@ -36,11 +42,10 @@ export async function POST(req: NextRequest) {
         if (input.action === "preview") return respond(await captureService.preview(profile.id, id, input.review));
         if (input.action === "ingest") return respond(await captureService.ingest(profile.id, { ...input, id }));
         if (input.action === "extract") {
-            const item = await getCapture(profile.id, id);
-            if (!item) throw new CaptureError("Capture not found.", 404);
-            if (item.receipt) throw new CaptureError("This capture is already in knowledge, so its source text is fixed.", 409);
-            const [{ extractCapture }, { withExtractionSlot }] = await Promise.all([import("@/lib/capture/extract"), import("@/lib/capture/extract/gate")]);
-            return respond({ extract: await withExtractionSlot(() => extractCapture(item.source)) });
+            const result = await captureService.extract(profile.id, id, extractOptions.parse({ refresh: input.refresh, ocr: input.ocr }));
+            // Gemini can take minutes on a long PDF, past Cloudflare's 100 s cut, so the client polls.
+            if (result.background) after(result.background);
+            return respond({ extract: result.extract }, result.background ? 202 : 200);
         }
         throw new CaptureError("Choose capture, preview, ingest or extract.");
     } catch (error) { return failure(error); }
