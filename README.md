@@ -50,9 +50,10 @@ edited and deleted in place.
 - On-box speech-to-text: with the optional `stt-service` running, web voice turns are
   transcribed on your own server by Moonshine tiny, so any chat model can answer them and the
   audio never leaves the host. The transcript is sent as a normal message marked "Spoken", and
-  the model is told it may hold recognition errors. If the service is unset, busy or fails, the
-  turn falls back to sending the audio to Gemini as before. Telegram voice notes are still sent
-  as audio
+  the model is told it may hold recognition errors. The service runs only while voice is in use:
+  tapping the mic starts it, the model loads while you speak, and it exits after 10 quiet minutes.
+  If the service is unset, busy or fails, the turn falls back to sending the audio to Gemini as
+  before. Telegram voice notes are still sent as audio
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
@@ -396,7 +397,7 @@ npm run dev
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
   and listens again. Say "Zuychin, stop" or tap the ✕ on the status chip to end the loop.
-  With the speech-to-text service running, the chip shows "transcribing" while your words are
+  With the speech-to-text service set up, the chip shows "transcribing" while your words are
   read, and your message appears as text marked "Spoken".
 - The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
@@ -424,7 +425,8 @@ npm run dev
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
 | GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM; Free only uses the free Gemini key, 409 without one) |
 | POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service; 503 `{ fallback: true }` tells the client to send the audio instead |
-| GET | `/api/voice/status` | Whether the speech-to-text service is up and loaded (cached for 30 s) |
+| GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
+| POST | `/api/voice/warm` | Start the speech-to-text service and its model as a voice chat begins; returns `{ available, loaded }` |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
@@ -1086,8 +1088,15 @@ STT_TOKEN=<32 or more random characters> STT_MODEL_DIR=<model folder> npm start
   and unpack it. `STT_MODEL_DIR` must hold `encoder_model.ort`, `decoder_model_merged.ort` and
   `tokens.txt`.
 - It listens on `127.0.0.1` only, on `STT_PORT` (default `3010`). `POST /transcribe` takes the
-  bearer token and 16 kHz 16-bit PCM; `GET /health` says whether the model has loaded. Logs hold
-  sizes and timings, never the words.
+  bearer token and 16 kHz 16-bit PCM; `GET /health` says whether the model has loaded. A
+  transcription that arrives while the model loads waits for it. Logs hold sizes and timings,
+  never the words.
+- On demand under systemd: a socket unit can hold the port and start the service on the first
+  request, which it detects from `LISTEN_FDS`. Started that way, the service exits after
+  `STT_IDLE_EXIT_SEC` (default 600) without requests, which frees all its memory, and the next
+  request starts it again. Loading took about 1 s on a desktop PC and 2.4 to 4.7 s under a
+  one-eighth-core CPU cap. The web app sends a warm-up when the mic is tapped, so the load mostly
+  happens while you speak. Started directly with `npm start`, it stays up.
 - One transcription runs at a time with up to two waiting. Anything more gets 503, and the web
   app sends that turn's audio to Gemini instead.
 - Turns longer than `STT_SEGMENT_SEC` (default 15, from 5 to 60) are cut at the quietest point
@@ -1297,8 +1306,9 @@ sets out its visual and interaction rules.
 - Discord bot: any always-on host, the web app's machine included, running `node bot.js` (as in
   `discord-bot/Procfile`) with `ZUYCHIN_API_URL` pointing at the deployed web app.
 - Speech-to-text service: run it on the web app's machine, since it only listens on
-  `127.0.0.1`. Allow it about 300 MB of memory. On a small host, a lower CPU weight than the web
-  app keeps transcription from slowing chat.
+  `127.0.0.1`. Allow it about 300 MB of memory while it runs. On a small host, start it from a
+  systemd socket unit so it only runs during voice use, and give it a lower CPU weight than the
+  web app so transcription never slows chat.
 
 ## Project Structure
 
@@ -1335,7 +1345,7 @@ src/
 │       ├── todos/route.ts              # Notes checklist backend
 │       ├── today/route.ts              # Today digest (events + todos)
 │       ├── tts/route.ts                # Voice-reply synthesis (blocking or streamed PCM)
-│       ├── voice/                      # Transcribe a voice turn + speech-to-text status
+│       ├── voice/                      # Transcribe a voice turn, warm-up and speech-to-text status
 │       ├── push/subscribe/route.ts     # Web-push subscription registry
 │       ├── export/route.ts             # PDF/DOCX export
 │       ├── telegram/                   # Webhook + config check
@@ -1386,7 +1396,7 @@ discord-bot/
 ├── bot.js                              # Discord Gateway bot + health server
 └── Procfile                            # Process definition (web: node bot.js)
 stt-service/
-├── server.js                           # Local speech-to-text server: token, limits, queue, /health
+├── server.js                           # Local speech-to-text server: token, limits, queue, /health, idle exit
 ├── recognizer.js                       # Moonshine tiny through sherpa-onnx-node
 ├── segment.js                          # Cuts long turns at the quietest point
 └── test/                               # Offline tests with a fake recogniser

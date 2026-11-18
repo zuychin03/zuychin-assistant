@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { STT_MAX_BYTES, sttAvailable, sttConfigured, transcribePcm } from "../src/lib/voice/stt-client";
+import { STT_MAX_BYTES, sttConfigured, sttWarm, sttWarmAvailable, transcribePcm } from "../src/lib/voice/stt-client";
 import { inputModeError, userMessageMetadata, VOICE_TRANSCRIPT_NOTE } from "../src/lib/voice/input-mode";
 import { floatToPcm16, resampledLength } from "../src/app/home/voice-pcm";
 
@@ -50,11 +50,20 @@ const cancelled = new AbortController();
 cancelled.abort();
 await assert.rejects(transcribePcm(pcm, { env, signal: cancelled.signal, fetchImpl: stub(() => { throw new DOMException("cancelled", "AbortError"); }).fetchImpl }), { name: "AbortError" });
 
-assert.equal(await sttAvailable({ env, fetchImpl: stub(() => Response.json({ ok: true, loaded: true })).fetchImpl }), true);
-assert.equal(await sttAvailable({ env, fetchImpl: stub(() => Response.json({ ok: true, loaded: false })).fetchImpl }), false);
-assert.equal(await sttAvailable({ env, fetchImpl: stub(() => new Response("down", { status: 502 })).fetchImpl }), false);
-assert.equal(await sttAvailable({ env, fetchImpl: stub(() => { throw new TypeError("fetch failed"); }).fetchImpl }), false);
-assert.equal(await sttAvailable({ env: {}, fetchImpl: never.fetchImpl }), false);
+const warmed = stub(() => Response.json({ ok: true, loaded: true }));
+assert.equal(await sttWarm({ env, fetchImpl: warmed.fetchImpl }), "ready");
+assert.equal(warmed.seen[0].url, "http://127.0.0.1:3010/health");
+assert.equal(await sttWarm({ env, fetchImpl: stub(() => Response.json({ ok: true, loaded: false })).fetchImpl }), "loading");
+assert.equal(await sttWarm({ env, fetchImpl: stub(() => Response.json({ ok: false })).fetchImpl }), "down");
+assert.equal(await sttWarm({ env, fetchImpl: stub(() => new Response("down", { status: 502 })).fetchImpl }), "down");
+assert.equal(await sttWarm({ env, fetchImpl: stub(() => { throw new TypeError("fetch failed"); }).fetchImpl }), "down", "a refused connection is down");
+const slowStart = stub(({ init }) => new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError")))));
+// AbortSignal.timeout does not hold the event loop open, and the stub has no socket that would.
+const keepAlive = setTimeout(() => { }, 5_000);
+assert.equal(await sttWarm({ env, fetchImpl: slowStart.fetchImpl, timeoutMs: 30 }), "starting", "a cold start slower than the timeout is still coming");
+clearTimeout(keepAlive);
+assert.equal(await sttWarm({ env: {}, fetchImpl: never.fetchImpl }), "unconfigured");
+assert.deepEqual((["unconfigured", "down", "starting", "loading", "ready"] as const).map(sttWarmAvailable), [false, false, true, true, true]);
 
 assert.equal(inputModeError(undefined), null);
 assert.equal(inputModeError("voice"), null);
@@ -72,4 +81,4 @@ assert.equal(resampledLength(1.5), 24000);
 assert.equal(resampledLength(0), 1);
 assert.equal(resampledLength(0.00001), 1);
 
-console.log("Voice STT client: config, request shape, every failure mapped to a fallback, health, input mode and PCM helpers passed offline.");
+console.log("Voice STT client: config, request shape, every failure mapped to a fallback, warm-up states, input mode and PCM helpers passed offline.");

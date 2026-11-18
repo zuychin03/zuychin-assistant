@@ -292,11 +292,23 @@ export default function Home() {
 
   useEffect(() => { void loadChatPreferences(); }, [loadChatPreferences]);
 
-  // Whether the on-box transcriber is up: Free only voice needs it, and elsewhere it decides whether a
+  // Whether the on-box transcriber is set up: Free only voice needs it, and elsewhere it decides whether a
   // voice turn is transcribed first or sent as audio.
   const refreshSttStatus = useCallback(async () => {
     try {
       const data = await requestJson<{ available?: unknown }>("/api/voice/status", { cache: "no-store" });
+      sttAvailableRef.current = data.available === true;
+    } catch {
+      sttAvailableRef.current = false;
+    }
+    setSttAvailable(sttAvailableRef.current);
+  }, []);
+
+  // The transcriber only runs while voice is in use, so starting a voice chat starts it (the model loads
+  // while the first turn is spoken), and the answer replaces the configured-only status.
+  const warmStt = useCallback(async () => {
+    try {
+      const data = await requestJson<{ available?: unknown }>("/api/voice/warm", { method: "POST", cache: "no-store" });
       sttAvailableRef.current = data.available === true;
     } catch {
       sttAvailableRef.current = false;
@@ -1381,7 +1393,7 @@ export default function Home() {
       recorderRef.current.stop();
       return;
     }
-    if (!voiceLoopRef.current) void refreshSttStatus();
+    if (!voiceLoopRef.current) void warmStt();
     void startVoiceRecording();
   };
 

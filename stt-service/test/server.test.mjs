@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 
-const { createServer } = createRequire(import.meta.url)("../server.js");
+const { createServer, activationFd } = createRequire(import.meta.url)("../server.js");
 const TOKEN = "t".repeat(64);
 const RATE = 16000;
 
@@ -140,13 +140,79 @@ test("empty or odd-length PCM is rejected", async () => {
     } finally { await s.close(); }
 });
 
-test("requests get 503 while the model is still loading", async () => {
+test("a request that arrives while the model loads waits for it, then decodes", async () => {
+    const fake = fakeRecognizer();
     const s = await start();
+    try {
+        const pending = post(s.base, pcm(1));
+        await until(async () => (await health(s.base)).waiting === 1);
+        assert.equal(fake.calls.length, 0);
+        s.server.setRecognizer(fake);
+        const response = await pending;
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).text, "words 1");
+    } finally { await s.close(); }
+});
+
+test("a request still waiting for the model at its deadline gets 503 and is never decoded", async () => {
+    const fake = fakeRecognizer();
+    const s = await start({ timeoutMs: 100 });
     try {
         const response = await post(s.base, pcm(1));
         assert.equal(response.status, 503);
-        assert.deepEqual(await response.json(), { error: "loading" });
+        assert.deepEqual(await response.json(), { error: "timeout" });
+        assert.equal(s.logs.find((l) => l.status === 503).error, "queue_timeout");
+        s.server.setRecognizer(fake);
+        await until(async () => !(await health(s.base)).busy);
+        assert.equal(fake.calls.length, 0);
     } finally { await s.close(); }
+});
+
+test("every response closes its connection, so no socket outlives an idle exit", async () => {
+    const s = await start({ recognizer: fakeRecognizer() });
+    try {
+        assert.equal((await fetch(`${s.base}/health`)).headers.get("connection"), "close");
+        assert.equal((await post(s.base, pcm(1))).headers.get("connection"), "close");
+        assert.equal((await post(s.base, Buffer.alloc(3))).headers.get("connection"), "close");
+    } finally { await s.close(); }
+});
+
+test("the idle exit fires once nothing has happened for the idle time, and never mid-decode", async () => {
+    const fake = fakeRecognizer({ hold: true });
+    let idled = 0;
+    const s = await start({ recognizer: fake, idleMs: 400, onIdle: () => { idled += 1; } });
+    try {
+        const running = post(s.base, pcm(1));
+        await until(async () => fake.calls.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        assert.equal(idled, 0, "a decode longer than the idle time does not count as idle");
+        fake.hold = false;
+        fake.release();
+        assert.equal((await running).status, 200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await health(s.base);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        assert.equal(idled, 0, "a health check restarts the countdown");
+        await until(async () => idled === 1, 2000);
+        assert.ok(s.logs.some((l) => l.event === "idle_exit"));
+    } finally { await s.close(); }
+});
+
+test("without an idle time the service never exits on its own", async () => {
+    let idled = 0;
+    const s = await start({ recognizer: fakeRecognizer(), onIdle: () => { idled += 1; } });
+    try {
+        await post(s.base, pcm(1));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        assert.equal(idled, 0);
+    } finally { await s.close(); }
+});
+
+test("socket activation is used only when systemd passed a socket to this process", () => {
+    assert.equal(activationFd({ LISTEN_PID: "42", LISTEN_FDS: "1" }, 42), 3);
+    assert.equal(activationFd({ LISTEN_PID: "41", LISTEN_FDS: "1" }, 42), null);
+    assert.equal(activationFd({ LISTEN_PID: "42", LISTEN_FDS: "0" }, 42), null);
+    assert.equal(activationFd({}, 42), null);
 });
 
 test("a transcript comes back, and the log holds timings but no text", async () => {

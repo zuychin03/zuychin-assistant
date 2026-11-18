@@ -23,6 +23,7 @@ console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); }
 
 const { POST } = await import("../src/app/api/voice/transcribe/route");
 const { GET } = await import("../src/app/api/voice/status/route");
+const { POST: WARM } = await import("../src/app/api/voice/warm/route");
 const { NextRequest } = await import("next/server");
 
 const pcm = (bytes: number) => new Uint8Array(bytes).fill(1);
@@ -72,14 +73,33 @@ try {
     assert.equal(transcribeLogs.length, 4);
     assert.ok(transcribeLogs.every((line) => !line.includes("PRIVATE")), "logs carry no transcript text");
 
+    const healthCalls = () => seen.filter((call) => call.url.pathname === "/health").length;
     const statusReq = (auth = true) => new NextRequest("https://fixture.invalid/api/voice/status", { headers: auth ? { authorization: "Bearer fixture-chat" } : {} });
     assert.equal((await GET(statusReq(false))).status, 401);
     assert.deepEqual(await json(await GET(statusReq())), { status: 200, body: { available: true } });
-    const healthCalls = seen.filter((call) => call.url.pathname === "/health").length;
+    process.env.STT_SERVICE_URL = "";
+    try { assert.deepEqual(await json(await GET(statusReq())), { status: 200, body: { available: false } }); }
+    finally { process.env.STT_SERVICE_URL = "http://127.0.0.1:3010"; }
+    assert.equal(healthCalls(), 0, "status never contacts the service, which would start it");
+
+    const warmReq = (options: { auth?: boolean; origin?: string } = {}) => {
+        const headers: Record<string, string> = {};
+        if (options.auth !== false) headers.authorization = "Bearer fixture-chat";
+        if (options.origin) headers.origin = options.origin;
+        return new NextRequest("https://fixture.invalid/api/voice/warm", { method: "POST", headers });
+    };
+    assert.equal((await WARM(warmReq({ auth: false }))).status, 401);
+    assert.equal((await WARM(warmReq({ origin: "https://sibling.fixture.invalid" }))).status, 403);
+    assert.equal(healthCalls(), 0, "refused warm-ups never reach the service");
     health = () => Response.json({ ok: true, loaded: false });
-    assert.deepEqual(await json(await GET(statusReq())), { status: 200, body: { available: true } }, "status is cached for 30 s");
-    assert.equal(seen.filter((call) => call.url.pathname === "/health").length, healthCalls);
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: false } }, "a loading model counts as available");
+    health = () => Response.json({ ok: true, loaded: true });
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true } });
+    health = () => { throw new TypeError("fetch failed"); };
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: false, loaded: false } }, "a refused connection is unavailable");
+    assert.equal(healthCalls(), 3);
+    assert.equal(logs.filter((line) => line.includes("voice_warm")).length, 3);
 } finally {
     console.log = log;
 }
-console.log("Voice routes: auth, same origin, content type, size and PCM checks, transcript success, fallback mapping, private logs and cached status passed offline.");
+console.log("Voice routes: auth, same origin, content type, size and PCM checks, transcript success, fallback mapping, private logs, config-only status and warm-up passed offline.");

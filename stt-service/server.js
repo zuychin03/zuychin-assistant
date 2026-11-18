@@ -29,17 +29,38 @@ function readBody(req, limit) {
     });
 }
 
+// Connection: close, so the app never reuses a socket to a process that has since exited on idle.
 function send(res, status, body) {
     if (res.headersSent || res.destroyed) return;
-    res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", Connection: "close" });
     res.end(JSON.stringify(body));
 }
 
+// systemd socket activation hands over the listening socket as fd 3 (sd_listen_fds).
+function activationFd(env = process.env, pid = process.pid) {
+    return env.LISTEN_PID === String(pid) && Number(env.LISTEN_FDS) >= 1 ? 3 : null;
+}
+
 // Logs carry sizes and timings only, never transcript text.
-function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiting = 2, timeoutMs = 14000, segmentOptions, log = (entry) => console.log(JSON.stringify(entry)) }) {
+function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiting = 2, timeoutMs = 14000, segmentOptions,
+    idleMs = 0, onIdle = () => { }, log = (entry) => console.log(JSON.stringify(entry)) }) {
     if (!token) throw new Error("A token is required.");
-    const state = { recognizer, active: 0, queue: [] };
+    const state = { recognizer, active: 0, queue: [], open: 0, idleTimer: null };
     const waiting = () => state.queue.filter((job) => !job.done).length;
+    const busy = () => state.open > 0 || state.active > 0 || waiting() > 0;
+
+    function armIdle() {
+        clearTimeout(state.idleTimer);
+        state.idleTimer = null;
+        if (!idleMs || busy()) return;
+        state.idleTimer = setTimeout(() => {
+            state.idleTimer = null;
+            if (busy()) return;
+            log({ event: "idle_exit", idleSec: Math.round(idleMs / 1000) });
+            onIdle();
+        }, idleMs);
+        state.idleTimer.unref();
+    }
 
     async function run(job) {
         try {
@@ -54,8 +75,9 @@ function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiti
         }
     }
 
+    // Jobs wait here while the model loads; the request deadline still applies.
     function pump() {
-        if (state.active || !state.queue.length) return;
+        if (state.active || !state.queue.length || !state.recognizer) return;
         const job = state.queue.shift();
         if (job.done) return pump();
         state.active = 1;
@@ -65,6 +87,7 @@ function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiti
             // Streams hold native memory V8 cannot see; without this, 140 turns peaked at 372 MB instead of 301 MB.
             if (global.gc) global.gc();
             pump();
+            armIdle();
         });
     }
 
@@ -79,7 +102,6 @@ function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiti
             return reject(res, error.status || 400, error.status === 413 ? "too_large" : "read_failed");
         }
         if (!body.length || body.length % 2) return reject(res, 400, "bad_pcm");
-        if (!state.recognizer) return reject(res, 503, "loading");
         if (state.active + waiting() >= 1 + maxWaiting) return reject(res, 503, "busy");
 
         const samples = pcm16ToFloat32(body);
@@ -126,6 +148,12 @@ function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiti
     }
 
     const server = http.createServer((req, res) => {
+        state.open += 1;
+        armIdle();
+        res.on("close", () => {
+            state.open -= 1;
+            armIdle();
+        });
         if (req.method !== "POST") req.resume();
         const { pathname } = new URL(req.url, "http://127.0.0.1");
         if (pathname === "/health") {
@@ -140,7 +168,12 @@ function createServer({ token, recognizer = null, maxBytes = MAX_BYTES, maxWaiti
         req.resume();
         send(res, 404, { error: "not_found" });
     });
-    server.setRecognizer = (value) => { state.recognizer = value; };
+    server.setRecognizer = (value) => {
+        state.recognizer = value;
+        pump();
+    };
+    server.on("listening", armIdle);
+    server.on("close", () => clearTimeout(state.idleTimer));
     return server;
 }
 
@@ -149,15 +182,26 @@ async function main() {
     const modelDir = process.env.STT_MODEL_DIR || "";
     const port = Number(process.env.STT_PORT || 3010);
     const segmentSec = Number(process.env.STT_SEGMENT_SEC || 15);
+    const idleSec = Number(process.env.STT_IDLE_EXIT_SEC || 600);
     if (token.length < 32) throw new Error("STT_TOKEN must be set to at least 32 characters.");
     if (!(segmentSec >= 5 && segmentSec <= 60)) throw new Error("STT_SEGMENT_SEC must be between 5 and 60.");
+    if (!(idleSec >= 0 && idleSec <= 86400)) throw new Error("STT_IDLE_EXIT_SEC must be between 0 and 86400.");
     for (const file of ["encoder_model.ort", "decoder_model_merged.ort", "tokens.txt"]) {
         if (!modelDir || !fs.existsSync(path.join(modelDir, file))) throw new Error(`STT_MODEL_DIR must hold ${file}.`);
     }
-    const server = createServer({ token, segmentOptions: { maxSec: segmentSec, minSec: segmentSec / 2 } });
+    const fd = activationFd();
+    // Exiting is what hands the model's native memory back to the box, and only the systemd socket can
+    // start the service again, so a directly started service never idles out.
+    const idleMs = fd === null ? 0 : idleSec * 1000;
+    const exit = () => {
+        server.close(() => process.exit(0));
+        // Longer than the 14 s request deadline, so a request accepted just before the close still finishes.
+        setTimeout(() => process.exit(0), 20000).unref();
+    };
+    const server = createServer({ token, segmentOptions: { maxSec: segmentSec, minSec: segmentSec / 2 }, idleMs, onIdle: exit });
     // Loopback only: the app is the sole client, and the service is never added to the tunnel.
-    await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-    console.log(JSON.stringify({ event: "listening", port }));
+    await new Promise((resolve) => (fd === null ? server.listen(port, "127.0.0.1", resolve) : server.listen({ fd }, resolve)));
+    console.log(JSON.stringify({ event: "listening", ...(fd === null ? { port } : { socket: "systemd" }), idleExitSec: idleMs / 1000 }));
     const startedAt = Date.now();
     const { loadRecognizer } = require("./recognizer.js");
     server.setRecognizer(await loadRecognizer(modelDir));
@@ -174,4 +218,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { createServer, MAX_BYTES, SAMPLE_RATE };
+module.exports = { createServer, activationFd, MAX_BYTES, SAMPLE_RATE };

@@ -5,7 +5,7 @@ export const STT_SAMPLE_RATE = 16000;
 export const STT_MAX_SECONDS = 60;
 export const STT_MAX_BYTES = STT_MAX_SECONDS * STT_SAMPLE_RATE * 2;
 const TRANSCRIBE_TIMEOUT_MS = 15_000;
-const HEALTH_TIMEOUT_MS = 2_000;
+const WARM_TIMEOUT_MS = 5_000;
 
 export type SttFailure = "unconfigured" | "unavailable" | "busy" | "timeout" | "too_large" | "empty" | "error";
 export type SttResult =
@@ -60,15 +60,23 @@ export async function transcribePcm(pcm: Uint8Array<ArrayBuffer>, options: Optio
     };
 }
 
-export async function sttAvailable(options: Omit<Options, "signal"> = {}): Promise<boolean> {
+export type SttWarmState = "unconfigured" | "down" | "starting" | "loading" | "ready";
+
+// Any request starts the service through its systemd socket, so this also loads the model ahead of the
+// first voice turn.
+export async function sttWarm(options: Omit<Options, "signal"> & { timeoutMs?: number } = {}): Promise<SttWarmState> {
     const settings = config(options.env);
-    if (!settings) return false;
+    if (!settings) return "unconfigured";
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? WARM_TIMEOUT_MS);
     try {
-        const response = await (options.fetchImpl ?? fetch)(`${settings.url}/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS), cache: "no-store" });
-        if (!response.ok) return false;
-        const body = await response.json() as { ok?: unknown; loaded?: unknown };
-        return body.ok === true && body.loaded === true;
+        const response = await (options.fetchImpl ?? fetch)(`${settings.url}/health`, { signal: timeout, cache: "no-store" });
+        if (!response.ok) return "down";
+        const body = await response.json().catch(() => ({})) as { ok?: unknown; loaded?: unknown };
+        return body.ok !== true ? "down" : body.loaded === true ? "ready" : "loading";
     } catch {
-        return false;
+        // A cold start (process start plus the native addon) can outlast the timeout; a refused connection throws at once.
+        return timeout.aborted ? "starting" : "down";
     }
 }
+
+export const sttWarmAvailable = (state: SttWarmState) => state === "ready" || state === "loading" || state === "starting";

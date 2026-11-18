@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { sttAvailable } from "@/lib/voice/stt-client";
+import { sttConfigured } from "@/lib/voice/stt-client";
 
-const CACHE_MS = 30_000;
-let cached: { at: number; available: boolean } | null = null;
-
+// Config only: probing the service would start it through its socket on every page load. /api/voice/warm
+// does the live check when the mic is tapped.
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
-    if (!cached || Date.now() - cached.at > CACHE_MS) cached = { at: Date.now(), available: await sttAvailable() };
-    return NextResponse.json({ available: cached.available }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ available: sttConfigured() }, { headers: { "Cache-Control": "no-store" } });
 }
