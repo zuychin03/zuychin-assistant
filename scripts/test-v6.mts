@@ -66,6 +66,8 @@ const tests = [
     "speech-observations",
     "voice-stt-client",
     "voice-routes",
+    "voice-tts-client",
+    "voice-speech-routes",
     "approval-observations",
     "jev-decisions",
     "owner-profile",

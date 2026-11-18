@@ -4,7 +4,7 @@ import { ragChat } from "@/lib/ai/rag-service";
 import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
-import { getVoicePrefs, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
+import { replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
 import { getDefaultProfile } from "@/lib/db";
 import { allowedTelegramChats, telegramSecretMatches, updateChatId } from "@/lib/messaging/telegram-access";
 import type { FileAttachment } from "@/lib/types";
@@ -45,13 +45,11 @@ async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boo
     if (!reply) return;
     try {
         const profile = await getDefaultProfile();
-        if (effectiveFreeOnly(profile, freeOnly)) return;
-        const voice = getVoicePrefs(profile?.preferences);
-        if (voice.replyWithVoice === "off") return;
-        if (voice.replyWithVoice === "onVoiceInput" && !audioTurn) return;
+        const plan = replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: effectiveFreeOnly(profile, freeOnly) });
+        if (!plan) return;
 
         await sendTelegramChatAction(chatId, "upload_document");
-        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, voice.voiceName));
+        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan));
         const ok = await sendTelegramDocument(chatId, {
             filename: "reply.wav",
             mimeType,

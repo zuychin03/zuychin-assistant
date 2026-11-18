@@ -2,6 +2,7 @@ import { ai, geminiClient, TTS_MODEL } from "@/lib/gemini";
 import { stripMarkdown } from "@/lib/speech";
 import { observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
+import { isLocalVoice, LOCAL_SPEECH_MODEL, streamLocalSpeech, ttsConfigured, type LocalVoice } from "@/lib/voice/tts-client";
 
 export async function observeSpeech<T>(userProfileId: string | undefined, run: () => Promise<T>): Promise<T> {
     const calls: ModelCallObservation[] = [];
@@ -9,14 +10,22 @@ export async function observeSpeech<T>(userProfileId: string | undefined, run: (
     finally { await persistModelObservations(calls, { userProfileId }); }
 }
 
+// "auto" speaks with the on-box voice when it is up and falls back to Gemini; "gemini" and "local" force one.
+export type SpeechEngine = "auto" | "gemini" | "local";
+const SPEECH_ENGINES: readonly SpeechEngine[] = ["auto", "gemini", "local"];
+
 export type VoicePrefs = {
     replyWithVoice: "off" | "onVoiceInput" | "always";
     voiceName: string;
+    speechEngine: SpeechEngine;
+    localVoice: LocalVoice;
 };
 
 export const DEFAULT_VOICE_PREFS: VoicePrefs = {
     replyWithVoice: "onVoiceInput",
     voiceName: "Kore",
+    speechEngine: "auto",
+    localVoice: "M2",
 };
 
 export function getVoicePrefs(preferences: unknown): VoicePrefs {
@@ -24,7 +33,10 @@ export function getVoicePrefs(preferences: unknown): VoicePrefs {
         preferences && typeof preferences === "object"
             ? (preferences as { voice?: Partial<VoicePrefs> }).voice
             : undefined;
-    return { ...DEFAULT_VOICE_PREFS, ...(voice ?? {}) };
+    const merged = { ...DEFAULT_VOICE_PREFS, ...(voice ?? {}) };
+    if (!SPEECH_ENGINES.includes(merged.speechEngine)) merged.speechEngine = DEFAULT_VOICE_PREFS.speechEngine;
+    if (!isLocalVoice(merged.localVoice)) merged.localVoice = DEFAULT_VOICE_PREFS.localVoice;
+    return merged;
 }
 
 // Caps keep synthesis inside the 60s serverless budget. Streaming generates
@@ -44,6 +56,39 @@ export function freeSpeechRoute(): SpeechRoute | null {
 export const LEAD_TTS_CHARS = 500;
 export const FULL_TTS_CHARS = 1800;
 const TTS_TIMEOUT_MS = 55_000;
+
+// What may speak a reply: the on-box voice, Gemini, or both (local first). Both null means nothing is eligible.
+export type SpeechPlan = {
+    local: LocalVoice | null;
+    gemini: { route: SpeechRoute; voiceName: string } | null;
+};
+
+type PlanOptions = {
+    freeOnly: boolean;
+    voiceName?: string;
+    // Telegram and Discord never use the Gemini free key; in Free only they speak only with the on-box voice.
+    geminiFree?: boolean;
+    env?: Record<string, string | undefined>;
+};
+
+export function planSpeech(prefs: VoicePrefs, options: PlanOptions): SpeechPlan {
+    const local = prefs.speechEngine !== "gemini" && ttsConfigured(options.env) ? prefs.localVoice : null;
+    let gemini: SpeechPlan["gemini"] = null;
+    if (prefs.speechEngine !== "local") {
+        const route = options.freeOnly ? (options.geminiFree === false ? null : freeSpeechRoute()) : PAID_SPEECH;
+        if (route) gemini = { route, voiceName: options.voiceName ?? prefs.voiceName };
+    }
+    return { local, gemini };
+}
+
+// Plan for a reply sent over Telegram or Discord, or null when the saved preference says to stay silent.
+export function replyVoicePlan(preferences: unknown, options: { audioTurn: boolean; freeOnly: boolean }): SpeechPlan | null {
+    const prefs = getVoicePrefs(preferences);
+    if (prefs.replyWithVoice === "off") return null;
+    if (prefs.replyWithVoice === "onVoiceInput" && !options.audioTurn) return null;
+    const plan = planSpeech(prefs, { freeOnly: options.freeOnly, geminiFree: false });
+    return plan.local || plan.gemini ? plan : null;
+}
 
 // Truncate on a sentence boundary where possible, else a word boundary, so
 // the spoken lead never ends mid-word.
@@ -79,16 +124,12 @@ function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample =
  * model generates them. Measured: first chunk ~2.4s in, generation ~2.3x
  * realtime - so a consumer can start playback almost immediately.
  */
-export async function* synthesizeSpeechStream(
-    text: string,
-    voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
-    maxChars: number = LEAD_TTS_CHARS,
+async function* geminiSpeechStream(
+    spoken: string,
+    voiceName: string,
+    route: SpeechRoute,
     signal?: AbortSignal,
-    route: SpeechRoute = PAID_SPEECH,
 ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    const spoken = clampForSpeech(stripMarkdown(text), maxChars);
-    if (!spoken) throw new Error("Nothing to speak.");
-
     const client = route.apiKey ? geminiClient(route.apiKey) : ai;
     const stream = await observeGeminiClient(client, { providerId: route.providerId, purpose: "speech" }).models.generateContentStream({
         model: TTS_MODEL,
@@ -110,21 +151,52 @@ export async function* synthesizeSpeechStream(
     }
 }
 
-// Aggregates the stream into one WAV (Telegram needs a whole file). The
-// streaming call also finishes ~3x sooner than blocking generateContent for
-// the same text, so this path stays on it.
+export type SpeechChunk = { pcm: Buffer; sampleRate: number; provider: string; model: string };
+
+/**
+ * Speaks with the plan: the on-box voice first, then Gemini if the on-box voice fails before any audio.
+ * Once audio has started it is never switched mid-reply; a later failure ends the stream with an error.
+ * Logs carry engine, sizes and timings only, never text.
+ */
+export async function* speechStream(text: string, plan: SpeechPlan, maxChars: number = LEAD_TTS_CHARS, signal?: AbortSignal): AsyncGenerator<SpeechChunk> {
+    const spoken = clampForSpeech(stripMarkdown(text), maxChars);
+    if (!spoken) throw new Error("Nothing to speak.");
+
+    if (plan.local) {
+        const started = performance.now();
+        let firstMs: number | undefined;
+        try {
+            for await (const chunk of streamLocalSpeech(spoken, plan.local, { signal })) {
+                firstMs ??= Math.round(performance.now() - started);
+                yield { ...chunk, provider: "local", model: LOCAL_SPEECH_MODEL };
+            }
+            console.log(JSON.stringify({ event: "voice_speak", engine: "local", ok: true, chars: spoken.length, firstMs, ms: Math.round(performance.now() - started) }));
+            return;
+        } catch (error) {
+            signal?.throwIfAborted();
+            const reason = (error as { reason?: unknown })?.reason;
+            console.warn(JSON.stringify({ event: "voice_speak", engine: "local", ok: false, chars: spoken.length, started: firstMs !== undefined, reason: typeof reason === "string" ? reason : "error", ms: Math.round(performance.now() - started) }));
+            if (firstMs !== undefined || !plan.gemini) throw error;
+        }
+    }
+    if (!plan.gemini) throw new Error("No speech route is available.");
+    const { route, voiceName } = plan.gemini;
+    for await (const chunk of geminiSpeechStream(spoken, voiceName, route, signal)) yield { ...chunk, provider: route.providerId, model: TTS_MODEL };
+}
+
+// Aggregates the stream into one WAV (Telegram and Discord need a whole file). Local audio streams per
+// sentence, and Gemini's streaming call finishes ~3x sooner than blocking generateContent, so this stays on streams.
 export async function synthesizeSpeech(
     text: string,
-    voiceName: string = DEFAULT_VOICE_PREFS.voiceName,
+    plan: SpeechPlan,
     signal?: AbortSignal,
-    route: SpeechRoute = PAID_SPEECH,
-): Promise<{ buffer: Buffer; mimeType: "audio/wav" }> {
+): Promise<{ buffer: Buffer; mimeType: "audio/wav"; provider: string; model: string }> {
     const parts: Buffer[] = [];
-    let rate = 24000;
-    for await (const { pcm, sampleRate } of synthesizeSpeechStream(text, voiceName, LEAD_TTS_CHARS, signal, route)) {
-        parts.push(pcm);
-        rate = sampleRate;
+    let rate = 24000, provider = "", model = "";
+    for await (const chunk of speechStream(text, plan, LEAD_TTS_CHARS, signal)) {
+        parts.push(chunk.pcm);
+        ({ sampleRate: rate, provider, model } = chunk);
     }
     if (parts.length === 0) throw new Error("TTS returned no audio.");
-    return { buffer: pcmToWav(Buffer.concat(parts), rate), mimeType: "audio/wav" };
+    return { buffer: pcmToWav(Buffer.concat(parts), rate), mimeType: "audio/wav", provider, model };
 }

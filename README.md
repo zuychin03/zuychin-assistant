@@ -54,6 +54,14 @@ edited and deleted in place.
   tapping the mic starts it, the model loads while you speak, and it exits after 10 quiet minutes.
   If the service is unset, busy or fails, the turn falls back to sending the audio to Gemini as
   before. Telegram voice notes are still sent as audio
+- On-box speech out: with the optional `tts-service` running, replies are spoken by a small local
+  model (tiny-voca, English) instead of Gemini TTS. First audio takes about half a second on a
+  1 GB box, and the reply text never leaves the host. If the service is unset, busy, loading or
+  cannot read the text (not English), the same request falls back to Gemini before any audio
+  plays. Telegram voice replies follow the same rules. Discord gets a `reply.wav` attachment when
+  the saved voice preference is "always". The `voice` preference takes `speechEngine` (`auto`,
+  `gemini` or `local`) and `localVoice` (`M2` or `F2`). In Free only, the local voice needs no
+  Gemini key
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
@@ -201,7 +209,7 @@ edited and deleted in place.
 | Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Nemotron, Gemma 4, GLM-5.3 Flash, Laguna XS) |
 | Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3 Embed 1B (2048d, default) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
-| Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio |
+| Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio; or tiny-voca through a local `tts-service` (Python, onnxruntime), same PCM stream |
 | Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio |
 | Push | web-push (VAPID) + service worker (PWA) |
 | Database | Supabase (PostgreSQL + pgvector) |
@@ -294,6 +302,7 @@ Optional auth, integrations, channels and cron:
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `STT_SERVICE_URL` / `STT_SERVICE_TOKEN` | On-box speech-to-text service, for example `http://127.0.0.1:3010`, and its bearer token (the service's `STT_TOKEN`). Either unset = voice turns send the audio to Gemini, and voice stays off in Free only. See [Speech-to-text service](#speech-to-text-service-optional) |
+| `TTS_SERVICE_URL` / `TTS_SERVICE_TOKEN` | On-box text-to-speech service, for example `http://127.0.0.1:3011`, and its bearer token (the service's `TTS_TOKEN`). Either unset = replies are spoken by Gemini. See [Text-to-speech service](#text-to-speech-service-optional) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
 | `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
 | `COUNCIL_V2_ASSERTED_IDENTITY` | Leave `false`. `true` lets an owner-scoped key act for a named agent in councils with no protocol version; V3 always needs the seat's own credential |
@@ -430,10 +439,10 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
-| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM; Free only uses the free Gemini key, 409 without one) |
+| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM). Speaks with the on-box voice when set up, else Gemini; `X-Model-Provider` says which. Free only uses the on-box voice or the free Gemini key, 409 without either |
 | POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service; 503 `{ fallback: true }` tells the client to send the audio instead |
 | GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
-| POST | `/api/voice/warm` | Start the speech-to-text service and its model as a voice chat begins; returns `{ available, loaded }` |
+| POST | `/api/voice/warm` | Start the speech-to-text and text-to-speech services and their models as a voice chat begins; returns `{ available, loaded }` for speech-to-text |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |
@@ -1114,6 +1123,27 @@ STT_TOKEN=<32 or more random characters> STT_MODEL_DIR=<model folder> npm start
   because the recogniser holds native memory that V8 does not count.
 - Set the web app's `STT_SERVICE_URL` and `STT_SERVICE_TOKEN` to match.
   `npm test --prefix stt-service` runs the offline tests with a fake recogniser.
+
+## Text-to-speech service (optional)
+
+`tts-service/` is a small Python server that speaks replies on your own host with
+[tiny-voca](https://huggingface.co/n4ze3m/tiny-voca) (English, two voices, Apache-2.0) and
+[dizione](https://github.com/n4ze3m/dizione) for text to phonemes. It is not part of the Next build.
+Its README has the API, limits and settings.
+
+- It listens on `127.0.0.1` only (`TTS_PORT`, default `3011`) and takes a bearer token
+  (`TTS_TOKEN`). `POST /speak` streams 24 kHz 16-bit PCM one sentence at a time, so the first
+  sentence plays while the rest is made. Logs hold sizes and timings, never the text.
+- It needs Python 3.12 with `numpy` and `onnxruntime`, and the model files (`onnx/model.onnx` and
+  `phonemizer/`) from the tiny-voca repository in `TTS_MODEL_DIR`. Measured on a 1 GB, 2 vCPU box:
+  about 0.45 s to first audio for an 80-character sentence, about 130 MB loaded and 170 MB at peak.
+- Like the speech-to-text service, it can run on demand under systemd socket activation and exit
+  after `TTS_IDLE_EXIT_SEC` (default 900) of quiet. The web app warms it when a voice chat starts.
+- The web app tries it first and falls back to Gemini, so set `TTS_SERVICE_URL` and
+  `TTS_SERVICE_TOKEN` to match. To always use one engine, set `voice.speechEngine` in the saved
+  preferences to `local` or `gemini`.
+- Pronunciation fixes go in a file named by `TTS_OVERRIDES` (see `tts-service/overrides.example.txt`).
+  Run the offline tests with `python -m unittest discover -s tts-service/tests -t tts-service`.
 
 ## Telegram Bot (optional)
 

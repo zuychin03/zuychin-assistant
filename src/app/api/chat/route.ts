@@ -9,6 +9,7 @@ import type { FileAttachment } from "@/lib/types";
 import type { MessageChannel } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
 import { inputModeError } from "@/lib/voice/input-mode";
+import { discordSpeechAttachment } from "@/lib/voice/discord-speech";
 
 const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
 
@@ -98,7 +99,8 @@ export async function POST(req: NextRequest) {
             })
         );
 
-        return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: artifactsWithData });
+        const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal) : null;
+        return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: speech ? [...artifactsWithData, speech] : artifactsWithData });
     } catch (error: unknown) {
         console.error("[Chat API Error]", error);
 
