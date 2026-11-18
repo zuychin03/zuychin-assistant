@@ -3,6 +3,7 @@ import { uniqueShortName, type ProviderDiscovery } from "@/lib/ai/catalogue/sour
 import { catalogueSnapshot, type CatalogueOrigin, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
 import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
+import { removedModelKeys } from "@/lib/ai/models/profiles";
 
 export type ProviderKind = "gemini" | "openai-compatible";
 
@@ -12,6 +13,8 @@ export interface ChatModelCatalogue {
     approved: boolean;
     status: "new" | "missing" | "failing" | null;
     probeChatMs: number | null;
+    /** Removed from the selectable list on the dashboard. */
+    removed?: boolean;
 }
 
 export interface ChatModel {
@@ -320,7 +323,7 @@ function chatModelFromRow(row: CatalogueRow, name: string): ChatModel {
 }
 
 /** Code entries win field by field; rows add discovered models and status. Untested or failed rows stay out unless approved. */
-export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly CatalogueRow[]): ProviderConfig[] {
+export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly CatalogueRow[], removed: ReadonlySet<string> = new Set()): ProviderConfig[] {
     if (!rows.length) return [...config];
     return config.map((provider) => {
         const own = rows.filter((row) => row.providerId === provider.id);
@@ -338,6 +341,7 @@ export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly
                     approved: true,
                     status: row.missingSince ? "missing" : row.probeStatus === "failed" ? "failing" : null,
                     probeChatMs: row.probeChatMs,
+                    ...(removed.has(`${provider.id}::${model.id}`) ? { removed: true } : {}),
                 },
             };
         });
@@ -350,7 +354,8 @@ export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly
             .map((row) => {
                 const name = uniqueShortName(row.shortName, taken);
                 taken.add(name);
-                return chatModelFromRow(row, name);
+                const model = chatModelFromRow(row, name);
+                return removed.has(`${provider.id}::${row.modelId}`) ? { ...model, catalogue: { ...model.catalogue!, removed: true } } : model;
             });
         return { ...provider, chatModels: [...chatModels, ...added] };
     });
@@ -362,7 +367,7 @@ let mergedProviders: { version: number; list: ProviderConfig[] } | null = null;
 export function providers(): ProviderConfig[] {
     const snapshot = catalogueSnapshot();
     if (mergedProviders?.version !== snapshot.version) {
-        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, snapshot.rows) };
+        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, snapshot.rows, removedModelKeys(snapshot.profiles)) };
     }
     return mergedProviders.list;
 }
@@ -395,10 +400,19 @@ export function chatModelUsable(model: ChatModel): boolean {
     return !chatModelUnavailableReason(model);
 }
 
-function chatModelUnavailableReason(model: ChatModel): string | undefined {
-    return model.apiFormat === "responses"
-        ? "Requires the Responses API, which this app does not yet support."
-        : undefined;
+export const REMOVED_MODEL_REASON = "Removed from the model list on the dashboard.";
+
+/** Why a model cannot be removed from the selectable list, or null when it can. */
+export function removalBlockedReason(providerId: string, modelId: string): string | null {
+    // Kept selectable so resolveChat() and resolvePaidChat() always resolve.
+    const pinned = [DEFAULT_CHAT, PAID_CHAT].some((ref) => ref.providerId === providerId && ref.modelId === modelId);
+    return pinned ? "The app's default chat model cannot be removed." : null;
+}
+
+/** Every selection path, automatic or by name, skips a model with a reason. */
+export function chatModelUnavailableReason(model: ChatModel): string | undefined {
+    if (model.apiFormat === "responses") return "Requires the Responses API, which this app does not yet support.";
+    return model.catalogue?.removed ? REMOVED_MODEL_REASON : undefined;
 }
 
 export interface ResolvedChat {
@@ -644,7 +658,7 @@ export function listProvidersPublic() {
                 speed,
             };
         }),
-        unavailableChatModels: p.chatModels.filter((m) => chatModelUnavailableReason(m)).map((m) => ({
+        unavailableChatModels: p.chatModels.filter((m) => !m.catalogue?.removed && chatModelUnavailableReason(m)).map((m) => ({
             id: m.id,
             label: m.label,
             free: m.free === true,

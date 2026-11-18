@@ -1,11 +1,11 @@
 import { PROVIDERS, getProviderApiKey, retiredChatModelIds, type ProviderConfig } from "@/lib/ai/providers";
 import { listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName, type ListedModel, type ListingResult, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
 import { probeModel, type ProbeResult, type ProbeTarget } from "@/lib/ai/catalogue/probe";
-import { refreshCatalogueSnapshot, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { catalogueSnapshot, refreshCatalogueSnapshot, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import { collectModelObservations } from "@/lib/ai/model-observations";
 import type { DiscoveryTrigger, SavedRow, StartRunResult, StorageFailure } from "@/lib/ai/catalogue/store";
 import { findSibling, lookupQueue, siblingDraft, type LookupOutcome } from "@/lib/ai/models/lookup";
-import type { ProfileRecord } from "@/lib/ai/models/profiles";
+import { removedModelKeys, type ProfileRecord } from "@/lib/ai/models/profiles";
 
 const RETEST_AFTER_MS = 7 * 24 * 60 * 60_000;
 const MAX_INCONCLUSIVE = 3;
@@ -57,6 +57,8 @@ export interface DiscoveryDeps {
     reviewLink: string;
     /** Absent: no profile lookups. */
     lookups?: RunLookups;
+    /** Keys the owner removed: still tracked for Missing, never tested or announced. */
+    removedKeys?(): ReadonlySet<string>;
 }
 
 export type ListingState = "ok" | "failed" | "no_key" | "unavailable";
@@ -259,6 +261,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
 
     const before = new Map(read.rows.map((row) => [keyOf(row), row]));
     const after = new Map(before);
+    const removed = deps.removedKeys?.() ?? new Set<string>();
     const summary: RunSummary = {
         kind: "run", trigger, providers: {}, added: [], passed: [], newlyMissing: [], failedRetests: [],
         notified: false, budgetReached: false, durationMs: 0, drafted: [], draftFailed: [], lookupsDeferred: 0,
@@ -330,7 +333,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         }
 
         const queue = [...after.values()]
-            .filter((row) => row.providerId === provider.id && !retired.has(row.modelId))
+            .filter((row) => row.providerId === provider.id && !retired.has(row.modelId) && !removed.has(keyOf(row)))
             .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), listing.has(row.modelId), startedMs) }))
             .filter((item): item is { row: CatalogueRow; priority: number } => item.priority !== null)
             .sort((a, b) => a.priority - b.priority
@@ -372,7 +375,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         const codeIds = new Set(provider.chatModels.map((model) => model.id));
         const retired = retiredChatModelIds(provider.id);
         for (const row of after.values()) {
-            if (row.providerId !== provider.id || retired.has(row.modelId)) continue;
+            if (row.providerId !== provider.id || retired.has(row.modelId) || removed.has(keyOf(row))) continue;
             const old = before.get(keyOf(row));
             const inCode = codeIds.has(row.modelId);
             if (old?.probeStatus !== "passed" && row.probeStatus === "passed" && row.origin === "discovered" && row.approvedAt === null) {
@@ -562,6 +565,7 @@ export async function liveDiscoveryDeps(): Promise<DiscoveryDeps> {
         maxProbes: maxProbesFromEnv(),
         runBudgetMs: RUN_BUDGET_MS,
         reviewLink: publicUrl.ownerLink("/admin#models"),
+        removedKeys: () => removedModelKeys(catalogueSnapshot().profiles),
         lookups: {
             maxPerRun: lookupEnabled() ? maxLookupsFromEnv() : 0,
             budgetMs: LOOKUP_BUDGET_MS,

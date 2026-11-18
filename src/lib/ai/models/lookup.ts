@@ -292,7 +292,7 @@ export function lookupQueue(rows: readonly CatalogueRow[], profiles: readonly Pr
         const code = inCode(row);
         if (!code && row.approvedAt === null && row.probeStatus !== "passed") continue;
         const profile = byKey.get(`${row.providerId}::${row.modelId}`);
-        if (profile?.draftStatus === "ready") continue;
+        if (profile?.removedAt || profile?.draftStatus === "ready") continue;
         if (profile?.draftStatus === "failed") {
             if (profile.lookupAttempts < MAX_LOOKUP_ATTEMPTS) out.push({ row, priority: 2 });
             continue;

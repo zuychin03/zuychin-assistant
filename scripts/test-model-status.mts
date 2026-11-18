@@ -49,7 +49,7 @@ function speed(key: string, ms: number, succeeded = 10, failed = 0): SpeedStats 
 }
 function profile(key: string, tags: ProfileRecord["tags"], draftStatus: ProfileRecord["draftStatus"] = "none"): ProfileRecord {
     const [providerId, modelId] = key.split("::");
-    return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus, draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null };
+    return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus, draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null };
 }
 const PROFILES = [profile(LAGUNA, ["coding", "agentic"]), profile(GLM, ["coding", "research"], "ready"), profile(PAID_FLASH, ["coding", "reasoning"])];
 const SPEEDS = [speed(LAGUNA, 1500), speed(GLM, 30_000, 3, 7), speed(FREE_FLASH, 9000)];

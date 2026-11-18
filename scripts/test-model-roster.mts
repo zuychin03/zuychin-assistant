@@ -6,6 +6,7 @@ import { feedbackScore, modelSpeed, setStatsSnapshotForTests, speedTier, type Mo
 import { gateTags, tagsFromMeta } from "../src/lib/ai/models/tags";
 import { getModelMeta } from "../src/lib/ai/model-meta";
 import type { ProfileRecord } from "../src/lib/ai/models/profiles";
+import { formatModelStatus } from "../src/lib/ai/models/status";
 
 for (const provider of PROVIDERS) process.env[provider.apiKeyEnv] = "roster-test-key";
 let checks = 0;
@@ -37,7 +38,7 @@ function row(overrides: Partial<CatalogueRow> & Pick<CatalogueRow, "providerId" 
     };
 }
 function profile(providerId: string, modelId: string, overrides: Partial<ProfileRecord> = {}): ProfileRecord {
-    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, ...overrides };
+    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null, ...overrides };
 }
 function roster(policy: RosterPolicy, speed: SpeedStats[] = [], feedback: Map<string, ModelFeedback> = new Map(), rows: CatalogueRow[] = [], profiles: ProfileRecord[] = []) {
     setCatalogueSnapshotForTests(rows, "ok", profiles);
@@ -137,6 +138,17 @@ check("missing, failing and unapproved catalogue models are kept out of purpose 
     assert.equal(entry(approved, "openrouter::cohere/north-mini-code:free").autoEligible, true);
 });
 
+check("a removed model is out of purpose picks, hints, list_models and the model_status problem lists", () => {
+    const [providerId, modelId] = NIM_ULTRA.split("::");
+    const list = roster(PAID, [stats(providerId, modelId, { medianFirstAnswerMs: 40_000 })], new Map(), [row({ providerId, modelId, origin: "seed" })],
+        [profile(providerId, modelId, { removedAt: "2026-11-19T00:00:00.000Z" })]);
+    const ultra = entry(list, NIM_ULTRA);
+    assert.deepEqual([ultra.removed, ultra.hintEligible, ultra.autoEligible], [true, false, false]);
+    assert.match(ultra.reason!, /Removed from the model list/);
+    assert.ok(!formatRoster(list, PAID, null, { tools: false, vision: false }).includes(NIM_ULTRA));
+    assert.ok(!formatModelStatus({ roster: list, runs: [], profiles: [], show: "all", purpose: null }).includes(NIM_ULTRA), "a removed slow model is not reported");
+});
+
 check("profile tags replace the derived ones, still gated, and an approved profile drives the view", () => {
     const profiles = [profile("nvidia-nim", "nvidia/nemotron-3-ultra-550b-a55b", { tags: ["vision", "writing"], tagsSource: "owner",
         profile: { description: "Approved text.", developer: "NVIDIA", params: null, strengths: ["Long reports"], weaknesses: ["Slow to start"], sources: [{ title: "Card", url: "https://example.com/card" }] },
@@ -182,4 +194,4 @@ check("the public provider list carries tags and speed for every chat model", ()
     assert.ok(nim.chatModels.every((model) => Array.isArray(model.tags) && model.speed));
 });
 
-console.log(`\nModel roster: ${checks} checks passed (speed tiers, feedback, tags, eligibility under each policy, ranking, names, text formats, provider list). No live services were used.`);
+console.log(`\nModel roster: ${checks} checks passed (speed tiers, feedback, tags, eligibility under each policy, removal, ranking, names, text formats, provider list). No live services were used.`);

@@ -46,7 +46,7 @@ function row(overrides: Partial<CatalogueRow> & Pick<CatalogueRow, "providerId" 
     };
 }
 function profile(providerId: string, modelId: string, overrides: Partial<ProfileRecord> = {}): ProfileRecord {
-    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, ...overrides };
+    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null, ...overrides };
 }
 function target(overrides: Partial<CatalogueRow> = {}, caps = { supportsTools: true, supportsVision: false }): LookupTarget {
     return { providerId: "acme", providerLabel: "Acme", row: row({ providerId: "acme", modelId: "acme/widget-7b", description: "A small model.", developer: "Acme", ...overrides }), caps, measurements: ["Test on 19/11/2026: passed"] };
@@ -185,7 +185,7 @@ try {
         assert.equal(lookup.matchOpenRouter(entries, "acme/widget-7b"), null, "another vendor's model of the same name is not a match");
     });
 
-    await check("the queue orders new passed models first and skips drafts waiting for review", () => {
+    await check("the queue orders new passed models first and skips drafts waiting for review and removed models", () => {
         const rows = [
             row({ providerId: "acme", modelId: "acme/code-model", origin: "seed", firstSeenAt: iso(START - 90 * DAY) }),
             row({ providerId: "acme", modelId: "acme/new-passed" }),
@@ -197,6 +197,7 @@ try {
             row({ providerId: "acme", modelId: "acme/has-profile" }),
             row({ providerId: "acme", modelId: "acme/missing", missingSince: iso(START - DAY) }),
             row({ providerId: "acme", modelId: "acme/stale-pending" }),
+            row({ providerId: "acme", modelId: "acme/removed" }),
         ];
         const profiles = [
             profile("acme", "acme/ready", { draftStatus: "ready" }),
@@ -204,6 +205,7 @@ try {
             profile("acme", "acme/failed-thrice", { draftStatus: "failed", lookupAttempts: 3 }),
             profile("acme", "acme/has-profile", { approvedAt: iso(START - DAY), profile: { description: "x", developer: null, params: null, strengths: [], weaknesses: [], sources: [] } }),
             profile("acme", "acme/stale-pending", { draftStatus: "pending" }),
+            profile("acme", "acme/removed", { removedAt: iso(START - DAY) }),
         ];
         const queue = lookup.lookupQueue(rows, profiles, (entry) => entry.modelId === "acme/code-model", () => true);
         assert.deepEqual(queue.map((entry) => `${entry.priority} ${entry.row.modelId}`), [

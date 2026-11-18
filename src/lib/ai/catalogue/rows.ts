@@ -71,7 +71,7 @@ export function catalogueRowToDb(row: CatalogueRow, now: string, probeDetail?: u
 
 export function catalogueStorageFailure(error: unknown): Exclude<CatalogueStorage, "empty" | "ok"> {
     const code = record(error).code;
-    return code === "PGRST202" || code === "PGRST204" || code === "PGRST205" || code === "42P01" || code === "42883"
+    return code === "PGRST202" || code === "PGRST204" || code === "PGRST205" || code === "42P01" || code === "42883" || code === "42703"
         ? "migration_required"
         : "unavailable";
 }

@@ -22,7 +22,8 @@ edited and deleted in place.
   call, forced tool call, vision) and adds those that pass to the picker marked New. A model that
   drops off its provider's list twice is marked Missing but stays selectable. Worker runs and
   fallbacks use a discovered model only after you approve it in `/admin`; paid models are tested
-  only when you press Test
+  only when you press Test. Remove takes any model except the default out of every selectable
+  list until you restore it, and a discovered model its provider has retired can be deleted
 - Model awareness: every chat model has purpose tags (research, coding, reasoning and more) and
   a speed measured from recent calls. A lookup on free sources drafts each model's profile, which
   you approve in `/admin` before the info modal or the agent uses it. Agent mode picks sub-agents
@@ -363,13 +364,15 @@ safe to run again. Without these tables the app serves the models in code and `/
 which file to apply.
 
 The `-- ===== V7 model awareness =====` block adds `model_profiles` (purpose tags, the drafted
-and approved profile, and its vault state per model route, seeded for the models in code),
-`model_feedback` (worker ratings), the `assistant_model_speed` and `assistant_model_feedback`
-functions, the `model_profile_approve` function behind one-click Approve, and the `lookup` and
-`consult` purposes in model health. On an existing project, run
+and approved profile, its vault state and whether you removed it, per model route, seeded for
+the models in code), `model_feedback` (worker ratings), the `assistant_model_speed` and
+`assistant_model_feedback` functions, the `model_profile_approve` function behind one-click
+Approve, the `lookup` and `consult` purposes in model health, and the delete grant on
+`model_catalogue` that Delete needs. On an existing project, run
 [`scripts/migrations/v7-model-awareness.sql`](scripts/migrations/v7-model-awareness.sql); it is
 safe to run again. Without it, tags come from the models in code, speed from the latest test,
-ratings are not stored, and `/admin` says which file to apply.
+ratings are not stored, Remove and Delete are unavailable, and `/admin` says which file to apply.
+If you applied an earlier copy, run it again to add the removal column and the grant.
 
 
 ### Web authentication
@@ -531,7 +534,7 @@ npm run dev
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
 | GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
 | GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
-| GET/PATCH | `/api/admin/models` | Model catalogue rows and the last 10 checks / approve or unapprove a model for automatic routes |
+| GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows and the last 10 checks / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
 | POST | `/api/admin/models/refresh` | Start a model check now (202; 409 while one runs) |
 | POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
 | POST | `/api/admin/models/lookup` | Draft one model's profile from free sources (202; 409 while a check runs) |
@@ -619,6 +622,12 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
 - Picker: a discovered model joins the picker once it passes (marked New) or once you approve
   it. A model missing from its provider's list in two checks running is marked Missing but stays
   selectable, so saved choices keep working.
+- Removal: Remove on a row takes the model out of the picker, `/model`, worker picks, fallbacks
+  and the agent's model tools, and the daily check stops testing and announcing it. It still
+  counts the model as Missing when its provider drops it. Saved choices fall back to the default
+  model. Restore brings it back. The default chat model cannot be removed. Once a discovered
+  model is Missing, Delete removes its row and profile for good; built-in models are deleted in
+  `providers.ts`.
 - Automatic routes: worker recruitment, the Free only fallback and the messaging fallback use
   models in code and approved catalogue models only.
 - Messages: at most one Discord message per check, in the `DISCORD_CH_SYSTEM` channel, and only

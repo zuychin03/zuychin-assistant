@@ -1,4 +1,4 @@
-// Offline checks for the dashboard's profile view, the vault page builder and the approve route. No live services.
+// Offline checks for the dashboard's profile view, the vault page builder, and the approve, remove and delete routes. No live services.
 import assert from "node:assert/strict";
 Object.assign(process.env, {
     NEXT_PUBLIC_SUPABASE_URL: "https://profiles-fixture.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "fixture-anon",
@@ -33,7 +33,7 @@ function row(overrides: Partial<CatalogueRow> & Pick<CatalogueRow, "providerId" 
     };
 }
 function profile(providerId: string, modelId: string, overrides: Partial<ProfileRecord> = {}): ProfileRecord {
-    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, ...overrides };
+    return { providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null, ...overrides };
 }
 const speed = (overrides: Partial<ModelSpeed> = {}): ModelSpeed => ({ tier: "fast", firstAnswerMs: 1200, p90FirstAnswerMs: null, tokensPerSecond: 80, samples: 12, source: "calls", calls: 12, successRate: 1, reliable: true, ...overrides });
 
@@ -47,7 +47,7 @@ async function check(name: string, run: () => void | Promise<void>) {
 try {
     await check("the admin view blocks tags the route cannot carry and passes the stored profile through", () => {
         const stored = row({ providerId: "acme", modelId: "acme/plain", supportsTools: false });
-        const info = adminModelInfo(stored, rowModel(stored, undefined), profile("acme", "acme/plain", { draftStatus: "failed", draftError: "No source answered.", lookupAttempts: 2 }), undefined, undefined);
+        const info = adminModelInfo(stored, rowModel(stored, undefined), profile("acme", "acme/plain", { draftStatus: "failed", draftError: "No source answered.", lookupAttempts: 2 }), undefined, undefined, false);
         assert.deepEqual(Object.keys(info.blockedTags).sort(), ["agentic", "research", "vision"]);
         assert.equal(info.profile?.draftStatus, "failed");
         assert.equal(info.profile?.lookupAttempts, 2);
@@ -61,7 +61,7 @@ try {
         const nim = PROVIDERS.find((entry) => entry.id === "nvidia-nim")!;
         const code = nim.chatModels.find((model) => model.id === "nvidia/nemotron-3-ultra-550b-a55b")!;
         const stored = row({ providerId: "nvidia-nim", modelId: code.id, origin: "seed", supportsTools: null });
-        const info = adminModelInfo(stored, rowModel(stored, code), profile("nvidia-nim", code.id, { tags: ["coding", "long-context"], tagsSource: "owner" }), undefined, { all: { useful: 3, notUseful: 1 } });
+        const info = adminModelInfo(stored, rowModel(stored, code), profile("nvidia-nim", code.id, { tags: ["coding", "long-context"], tagsSource: "owner" }), undefined, { all: { useful: 3, notUseful: 1 } }, true);
         assert.deepEqual(info.tags, ["coding", "long-context"]);
         assert.equal(info.tagsSource, "owner");
         assert.ok(!("agentic" in info.blockedTags), "the code model's audited tool support counts, not the empty test column");
@@ -191,6 +191,78 @@ try {
         const missing = await post({ providerId: stored.providerId, modelId: stored.modelId, tags: ["coding"] });
         assert.equal(missing.status, 503);
         assert.match((await missing.json()).error, /v7-model-awareness\.sql/);
+    });
+
+    await check("the admin view offers Delete only for a retired discovered model and blocks removing the default", () => {
+        const retired = row({ providerId: "openrouter", modelId: "acme/gone:free", missingSince: NOW });
+        const info = adminModelInfo(retired, rowModel(retired, undefined), profile("openrouter", "acme/gone:free", { removedAt: NOW }), undefined, undefined, false);
+        assert.deepEqual([info.removedAt, info.removeBlocked, info.deletable], [NOW, null, true]);
+        assert.equal(adminModelInfo(row({ providerId: "openrouter", modelId: "acme/live:free" }), rowModel(row({ providerId: "openrouter", modelId: "acme/live:free" }), undefined), undefined, undefined, undefined, false).deletable, false, "still listed");
+        const flash = PROVIDERS.find((entry) => entry.id === "gemini")!.chatModels.find((model) => model.id === "gemini-3.5-flash-lite")!;
+        const builtIn = row({ providerId: "gemini", modelId: flash.id, origin: "seed", missingSince: NOW });
+        const blocked = adminModelInfo(builtIn, rowModel(builtIn, flash), undefined, undefined, undefined, true);
+        assert.equal(blocked.deletable, false, "built-in models are deleted in code");
+        assert.match(blocked.removeBlocked ?? "", /default chat model/);
+    });
+
+    const models = await import("../src/app/api/admin/models/route");
+    const URL_MODELS = "https://fixture.invalid/api/admin/models";
+    const send = (method: "PATCH" | "DELETE", body: unknown, withCookie = true) => models[method](new NextRequest(URL_MODELS, {
+        method, headers: { ...(withCookie ? { cookie } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    let writes: { method: string; url: URL; body: Record<string, unknown> | null }[] = [];
+    function serveRemoval(options: { writeError?: string; deleted?: boolean } = {}) {
+        writes = [];
+        supabaseHandler = async (url, init) => {
+            const method = (init?.method ?? "GET").toUpperCase();
+            if (method === "GET") return url.pathname.endsWith("/model_catalogue") ? Response.json([catalogueRowToDb(stored, NOW)]) : Response.json([]);
+            writes.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+            if (options.writeError) return Response.json({ code: options.writeError, message: "fixture failure" }, { status: 400 });
+            return method === "DELETE" ? Response.json(options.deleted ? [{ model_id: stored.modelId }] : []) : new Response(null, { status: 201 });
+        };
+    }
+    const ref = { providerId: stored.providerId, modelId: stored.modelId };
+
+    await check("Remove and Restore set removed_at on the profile row, and the default model is refused", async () => {
+        serveRemoval();
+        assert.equal((await send("PATCH", { ...ref, removed: true }, false)).status, 401);
+        assert.equal((await send("PATCH", { ...ref, removed: true })).status, 200);
+        assert.equal(writes[0].method, "POST");
+        assert.ok(writes[0].url.pathname.endsWith("/model_profiles") && writes[0].url.searchParams.get("on_conflict") === "provider_id,model_id");
+        assert.equal(typeof writes[0].body?.removed_at, "string");
+        assert.equal((await send("PATCH", { ...ref, removed: false })).status, 200);
+        assert.equal(writes.at(-1)?.body?.removed_at, null);
+        serveRemoval();
+        const pinned = await send("PATCH", { providerId: "gemini", modelId: "gemini-3.5-flash-lite", removed: true });
+        assert.equal(pinned.status, 400);
+        assert.match((await pinned.json()).error, /default chat model/);
+        assert.equal(writes.length, 0);
+        assert.equal((await send("PATCH", ref)).status, 400, "approved or removed is required");
+        serveRemoval({ writeError: "23503" });
+        assert.equal((await send("PATCH", { ...ref, removed: true })).status, 404);
+        serveRemoval({ writeError: "42P01" });
+        const missing = await send("PATCH", { ...ref, removed: true });
+        assert.equal(missing.status, 503);
+        assert.match((await missing.json()).error, /v7-model-awareness\.sql/);
+    });
+
+    await check("Delete matches only a retired discovered row and refuses built-in models", async () => {
+        serveRemoval();
+        const builtIn = await send("DELETE", { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" });
+        assert.equal(builtIn.status, 400);
+        assert.match((await builtIn.json()).error, /code change/);
+        assert.equal(writes.length, 0);
+        assert.equal((await send("DELETE", ref)).status, 409, "a model the provider still lists is not deleted");
+        const filters = writes[0].url.searchParams;
+        assert.deepEqual([filters.get("origin"), filters.get("missing_since"), filters.get("provider_id")], ["eq.discovered", "not.is.null", `eq.${stored.providerId}`]);
+        serveRemoval({ deleted: true });
+        const deleted = await send("DELETE", ref);
+        assert.equal(deleted.status, 200);
+        assert.equal((await deleted.json()).deleted, true);
+        serveRemoval({ writeError: "42501" });
+        const grant = await send("DELETE", ref);
+        assert.equal(grant.status, 503);
+        assert.match((await grant.json()).error, /v7-model-awareness\.sql/);
     });
 } finally {
     globalThis.fetch = realFetch;

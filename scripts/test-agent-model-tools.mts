@@ -28,7 +28,7 @@ function speed(key: string, ms: number): SpeedStats {
 }
 function profile(key: string, tags: ProfileRecord["tags"]): ProfileRecord {
     const [providerId, modelId] = key.split("::");
-    return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null };
+    return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null };
 }
 const roster = (policy: RosterPolicy) => buildRoster({
     providers: providers(), rows: [], profiles: [profile(LAGUNA, ["coding", "agentic"]), profile(GLM, ["research", "agentic"])],

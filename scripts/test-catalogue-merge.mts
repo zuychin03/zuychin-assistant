@@ -8,11 +8,14 @@ import {
     listProvidersPublic,
     providers,
     resolveChat,
+    resolveChatByName,
     resolveChatModelByName,
     resolveMessagingDefault,
     resolveModelKey,
     resolveWorkerChain,
+    removalBlockedReason,
 } from "../src/lib/ai/providers";
+import type { ProfileRecord } from "../src/lib/ai/models/profiles";
 import { catalogueRowFromDb } from "../src/lib/ai/catalogue/rows";
 import { setCatalogueSnapshotForTests, type CatalogueRow } from "../src/lib/ai/catalogue/snapshot";
 
@@ -196,6 +199,34 @@ try {
         assert.ok(!listed.has("acme/failed:free"));
         const code = PROVIDERS.find((provider) => provider.id === "openrouter")!.chatModels[0];
         assert.equal(listed.get(code.label)?.status, undefined);
+    });
+
+    check("a removed model leaves every selection path, comes back on restore, and the default model cannot be removed", () => {
+        const at = "2026-11-19T00:00:00.000Z";
+        const removed = (providerId: string, modelId: string): ProfileRecord => ({
+            providerId, modelId, tags: [], tagsSource: "seed", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null,
+            draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: at,
+        });
+        const glm = { providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash" };
+        const rows = [row({ ...glm, origin: "seed" }), row({ providerId: "openrouter", modelId: "acme/approved:free", approvedAt: at })];
+        setCatalogueSnapshotForTests(rows, "ok", [removed(glm.providerId, glm.modelId), removed("openrouter", "acme/approved:free")]);
+        const ids = (providerId: string) => availableChatModels().find((entry) => entry.providerId === providerId)!.models.map((model) => model.id);
+        assert.ok(!ids("nvidia-nim").includes(glm.modelId), "/model");
+        assert.ok(!ids("openrouter").includes("acme/approved:free"), "a removed discovered model");
+        const nim = listProvidersPublic().find((provider) => provider.id === "nvidia-nim")!;
+        assert.ok(!nim.chatModels.some((model) => model.id === glm.modelId), "picker");
+        assert.ok(!nim.unavailableChatModels.some((model) => model.id === glm.modelId), "not shown as unavailable either");
+        assert.equal(resolveModelKey(`${glm.providerId}::${glm.modelId}`), null, "a saved choice falls back");
+        assert.equal(resolveChatByName("nvidia-nim", glm.modelId), null);
+        assert.throws(() => resolveChat(glm.providerId, glm.modelId), /Removed from the model list/);
+        assert.ok(!resolveWorkerChain(true).some((entry) => entry.model.id === glm.modelId), "worker chain");
+        assert.equal(resolveMessagingDefault().model.id, "nvidia/nemotron-3-ultra-550b-a55b");
+
+        setCatalogueSnapshotForTests(rows);
+        assert.equal(resolveModelKey(`${glm.providerId}::${glm.modelId}`)?.model.id, glm.modelId, "restored");
+        assert.ok(ids("openrouter").includes("acme/approved:free"));
+        assert.match(removalBlockedReason("gemini", "gemini-3.5-flash-lite") ?? "", /default chat model/);
+        assert.equal(removalBlockedReason(glm.providerId, glm.modelId), null);
     });
 } finally {
     setCatalogueSnapshotForTests([]);

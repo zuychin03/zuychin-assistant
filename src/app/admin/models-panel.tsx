@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, FlaskConical, Layers, Pencil, RefreshCw, Search, Undo2 } from "lucide-react";
+import { Check, EyeOff, FlaskConical, Layers, Pencil, RefreshCw, RotateCcw, Search, Trash2, Undo2 } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import type { CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import type { DiscoveryRunRecord } from "@/lib/ai/catalogue/store";
@@ -22,14 +22,14 @@ interface CataloguePayload {
     rows: ModelRow[];
     runs: DiscoveryRunRecord[];
 }
-type Filter = "all" | "attention" | "review" | "picker" | "hidden";
+type Filter = "all" | "attention" | "review" | "picker" | "hidden" | "removed";
 interface Notice { tone?: "danger"; text: string }
 interface ProfileText { description: string; strengths: string; weaknesses: string }
 interface ProfileSave { tags?: PurposeTag[]; profile?: { description: string; strengths: string[]; weaknesses: string[]; developer: string | null; params: string | null; sources: { title: string; url: string }[] }; approveModel?: boolean }
 
 const FILTERS: { value: Filter; label: string }[] = [
     { value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "review", label: "Profile to review" },
-    { value: "picker", label: "In the picker" }, { value: "hidden", label: "Not in the picker" },
+    { value: "picker", label: "In the picker" }, { value: "hidden", label: "Not in the picker" }, { value: "removed", label: "Removed" },
 ];
 const POLL_MS = 4000;
 const STEP_LABELS: Record<string, string> = { chat: "Chat", tools: "Tool call", forced: "Forced tool call", vision: "Vision" };
@@ -56,12 +56,13 @@ const yesNo = (value: boolean | null) => value === null ? "Unknown" : value ? "Y
 const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 const sameTags = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((tag) => b.includes(tag));
 
-const inPicker = (row: ModelRow) => row.inCode || row.approvedAt !== null || row.probeStatus === "passed";
+const inPicker = (row: ModelRow) => !row.removedAt && (row.inCode || row.approvedAt !== null || row.probeStatus === "passed");
 const isNew = (row: ModelRow) => row.origin === "discovered" && row.approvedAt === null && row.probeStatus === "passed" && !row.missingSince;
-const draftReady = (row: ModelRow) => row.profile?.draftStatus === "ready" && row.profile.draft !== null;
+const draftReady = (row: ModelRow) => !row.removedAt && row.profile?.draftStatus === "ready" && row.profile.draft !== null;
 
-/** Lower sorts first: New or a draft to review, Missing, Failing, Untested paid, then the rest. */
+/** Lower sorts first: New or a draft to review, Missing, Failing, Untested paid, then the rest, removed last. */
 function rank(row: ModelRow): number {
+    if (row.removedAt) return 7;
     if (isNew(row) || draftReady(row)) return 0;
     if (row.missingSince && inPicker(row)) return 1;
     if (row.probeStatus === "failed" && (row.inCode || row.approvedAt !== null)) return 2;
@@ -193,19 +194,23 @@ function ProfileBlock({ row, tagList, open, onToggle, selected, setSelected, tex
     );
 }
 
-function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, onTest, onLookup, onApprove, onUnapprove, onSave, onCancel }: {
+function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, confirmingDelete, onTest, onLookup, onApprove, onUnapprove, onSave, onCancel, onRemove, onDelete, onCancelDelete }: {
     row: ModelRow;
     tagList: TagEntry[];
     profilesReady: boolean;
     locked: boolean;
     busy: boolean;
     confirming: boolean;
+    confirmingDelete: boolean;
     onTest: () => void;
     onLookup: () => void;
     onApprove: (save: ProfileSave | null) => void;
     onUnapprove: () => void;
     onSave: (save: ProfileSave, done: string) => void;
     onCancel: () => void;
+    onRemove: (removed: boolean) => void;
+    onDelete: () => void;
+    onCancelDelete: () => void;
 }) {
     const draft = draftReady(row) ? row.profile!.draft! : null;
     const approvedProfile = row.profile?.approvedAt ? row.profile.profile : null;
@@ -250,12 +255,17 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, onT
                     <button type="button" className="btn" disabled={locked || busy} onClick={onTest} aria-label={`Test ${row.label}${row.free ? "" : ", a paid model"}`}>
                         <FlaskConical size={14} aria-hidden="true" />{row.free ? "Test" : "Test (paid)"}
                     </button>
-                    {profilesReady && <button type="button" className="btn" disabled={locked || busy || row.profile?.draftStatus === "pending"} onClick={onLookup} aria-label={`${lookedUp ? "Look up again" : "Look up"} ${row.label}`}>
+                    {profilesReady && !row.removedAt && <button type="button" className="btn" disabled={locked || busy || row.profile?.draftStatus === "pending"} onClick={onLookup} aria-label={`${lookedUp ? "Look up again" : "Look up"} ${row.label}`}>
                         <Search size={14} aria-hidden="true" />{lookedUp ? "Look up again" : "Look up"}
                     </button>}
-                    {!row.inCode && (row.approvedAt
+                    {!row.inCode && !row.removedAt && (row.approvedAt
                         ? <button type="button" className="btn" disabled={busy} onClick={onUnapprove} aria-label={`Unapprove ${row.label}`}><Undo2 size={14} aria-hidden="true" />Unapprove</button>
                         : <button type="button" className="btn" disabled={busy} onClick={approve} aria-label={`Approve ${row.label}${draft ? " with its profile and tags" : ""}`}><Check size={14} aria-hidden="true" />Approve</button>)}
+                    {profilesReady && (row.removedAt
+                        ? <button type="button" className="btn" disabled={busy} onClick={() => onRemove(false)} aria-label={`Restore ${row.label} to the model list`}><RotateCcw size={14} aria-hidden="true" />Restore</button>
+                        : <button type="button" className="btn" disabled={busy || row.removeBlocked !== null} onClick={() => onRemove(true)} title={row.removeBlocked ?? undefined}
+                            aria-label={row.removeBlocked ? `Remove ${row.label}: ${row.removeBlocked}` : `Remove ${row.label} from the model list`}><EyeOff size={14} aria-hidden="true" />Remove</button>)}
+                    {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
                 </div>
             </div>
             <div style={styles.pills}>
@@ -264,12 +274,22 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, onT
                 {row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
                 {row.inCode ? <span className="pill">Built in</span> : row.approvedAt && <span className="pill" data-tone="success"><Check size={12} aria-hidden="true" />Approved</span>}
                 {profilePill}
+                {row.removedAt && <span className="pill" data-tone="warning">Removed</span>}
             </div>
             {confirming && <div className="notice" role="alert" style={styles.confirm}>
                 <span>This test sends a few short requests to a paid model, which costs a little. Run it?</span>
                 <button type="button" className="btn" data-tone="primary" disabled={locked || busy} onClick={onTest}>Run paid test</button>
                 <button type="button" className="btn" onClick={onCancel}>Cancel</button>
             </div>}
+            {confirmingDelete && <div className="notice" data-tone="danger" role="alert" style={styles.confirm}>
+                <span>Delete {row.label} for good? Its profile and tags go with it, and this cannot be undone. Its provider no longer lists it, so the daily check adds it back only if it returns.</span>
+                <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete}>Delete for good</button>
+                <button type="button" className="btn" onClick={onCancelDelete}>Cancel</button>
+            </div>}
+            {row.removedAt && <p className="meta" style={styles.line}>
+                Removed from the model list on {melbourneDate(row.removedAt)}. It stays out of the picker, /model and worker picks until you restore it.
+                {row.missingSince ? row.deletable ? " Its provider no longer lists it, so you can delete it." : " Its provider no longer lists it. Built-in models are deleted by a code change in providers.ts." : ""}
+            </p>}
             <p className="meta" style={styles.line}>
                 {row.probedAt
                     ? `Tested ${melbourneTime(row.probedAt)}${row.probeChatMs !== null ? `, first answer in ${duration(row.probeChatMs)}` : ""}.`
@@ -320,6 +340,7 @@ export default function ModelsPanel() {
     const [filter, setFilter] = useState<Filter>("all");
     const [busyKey, setBusyKey] = useState<string | null>(null);
     const [confirmKey, setConfirmKey] = useState<string | null>(null);
+    const [deleteKey, setDeleteKey] = useState<string | null>(null);
     const [pending, setPending] = useState<{ key: string; label: string; runId: string; kind: "test" | "lookup" } | null>(null);
     const requestRef = useRef<AbortController | null>(null);
 
@@ -365,7 +386,7 @@ export default function ModelsPanel() {
         setPending(null);
     }, [data, pending]);
 
-    const send = async (url: string, method: "POST" | "PATCH", body?: object) => {
+    const send = async (url: string, method: "POST" | "PATCH" | "DELETE", body?: object) => {
         const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
         const payload = await response.json().catch(() => ({})) as { error?: string; runId?: string };
         return { ok: response.ok, error: payload.error, runId: payload.runId };
@@ -412,6 +433,28 @@ export default function ModelsPanel() {
         setBusyKey(null);
     };
 
+    const setRemoved = async (row: ModelRow, removed: boolean) => {
+        setBusyKey(keyOf(row));
+        setNotice(null);
+        const result = await send("/api/admin/models", "PATCH", { providerId: row.providerId, modelId: row.modelId, removed });
+        setNotice(result.ok
+            ? { text: removed ? `${nameOf(row)} is removed from the model list. Chats and channels that had it selected use the default model now. Show Removed to restore it.` : `${nameOf(row)} is back in the model list.` }
+            : { tone: "danger", text: result.error ?? "The change could not be saved." });
+        await load();
+        setBusyKey(null);
+    };
+
+    const remove = async (row: ModelRow) => {
+        if (deleteKey !== keyOf(row)) { setDeleteKey(keyOf(row)); return; }
+        setDeleteKey(null);
+        setBusyKey(keyOf(row));
+        setNotice(null);
+        const result = await send("/api/admin/models", "DELETE", { providerId: row.providerId, modelId: row.modelId });
+        setNotice(result.ok ? { text: `${nameOf(row)} is deleted.` } : { tone: "danger", text: result.error ?? "The model could not be deleted." });
+        await load();
+        setBusyKey(null);
+    };
+
     const saveProfile = async (row: ModelRow, save: ProfileSave, done: string) => {
         if (!save.tags?.length && (save.profile || save.approveModel)) {
             setNotice({ tone: "danger", text: `Choose at least one purpose tag for ${nameOf(row)} under Profile and tags, then approve.` });
@@ -428,7 +471,8 @@ export default function ModelsPanel() {
     const profilesReady = data?.profileStorage === "ok";
     const needle = query.trim().toLocaleLowerCase();
     const visible = rows.filter((row) => (!provider || row.providerId === provider)
-        && (filter === "all" || (filter === "attention" ? rank(row) <= 3 : filter === "review" ? draftReady(row) : filter === "picker" ? inPicker(row) : !inPicker(row)))
+        && (filter === "removed" ? !!row.removedAt : !row.removedAt
+            && (filter === "all" || (filter === "attention" ? rank(row) <= 3 : filter === "review" ? draftReady(row) : filter === "picker" ? inPicker(row) : !inPicker(row))))
         && (!needle || `${row.label} ${row.modelId} ${providerLabels.get(row.providerId) ?? row.providerId}`.toLocaleLowerCase().includes(needle)));
     const groups = (data?.providers ?? [])
         .map((entry) => ({ entry, rows: visible.filter((row) => row.providerId === entry.id).sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)) }))
@@ -436,6 +480,7 @@ export default function ModelsPanel() {
     const lastCheck = data?.runs.find((run) => run.id !== pending?.runId && run.summary.kind !== "test" && run.summary.kind !== "lookup");
     const attentionCount = rows.filter((row) => rank(row) <= 3).length;
     const reviewCount = rows.filter(draftReady).length;
+    const removedCount = rows.filter((row) => row.removedAt).length;
 
     return (
         <div>
@@ -463,7 +508,7 @@ export default function ModelsPanel() {
                     </p>
                     {!data.settings.enabled && <p className="meta" style={styles.runLine}>The daily check is off (MODEL_DISCOVERY=off). Check now still works.</p>}
                     <p className="meta" style={styles.runLine}>
-                        {rows.length} models, {attentionCount} need attention{profilesReady ? `, ${reviewCount} ${reviewCount === 1 ? "profile" : "profiles"} to review` : ""}. Up to {data.settings.maxProbes} free models per provider are tested each run
+                        {rows.length} models, {attentionCount} need attention{profilesReady ? `, ${reviewCount} ${reviewCount === 1 ? "profile" : "profiles"} to review` : ""}{removedCount ? `, ${removedCount} removed` : ""}. Up to {data.settings.maxProbes} free models per provider are tested each run
                         {profilesReady ? data.settings.lookups ? `, and up to ${data.settings.lookups} profiles are drafted.` : ". Daily profile lookups are off (MODEL_LOOKUP=off); Look up still works." : "."}
                     </p>
                     {!profilesReady && <p className="meta" style={styles.runLine}>Profiles and purpose tags need {PROFILE_MIGRATION}. Until it is applied, tags are read off the built-in notes and Approve works as before.</p>}
@@ -473,7 +518,7 @@ export default function ModelsPanel() {
                     <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model catalogue provider" className="field" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider}
                         options={[{ value: "", label: "All providers" }, ...data.providers.filter((entry) => rows.some((row) => row.providerId === entry.id)).map((entry) => ({ value: entry.id, label: entry.label }))]} /></label>
                     <label style={styles.filter}><span>Show</span><Dropdown ariaLabel="Model catalogue filter" className="field" style={{ ...styles.input, flex: "none" }} value={filter} onChange={(value) => setFilter(value as Filter)}
-                        options={profilesReady ? FILTERS : FILTERS.filter((entry) => entry.value !== "review")} /></label>
+                        options={profilesReady ? FILTERS : FILTERS.filter((entry) => entry.value !== "review" && entry.value !== "removed")} /></label>
                 </div>
                 <div className="list scroll" style={styles.list}>
                     {groups.map(({ entry, rows: providerRows }) => (
@@ -488,11 +533,13 @@ export default function ModelsPanel() {
                                 const key = keyOf(row);
                                 // Remounts when the stored profile changes, so the chips and text start from the saved state.
                                 const version = `${key}|${row.tags.join(",")}|${row.profile?.draftedAt ?? ""}|${row.profile?.approvedAt ?? ""}|${row.profile?.draftStatus ?? ""}`;
-                                return <ModelEntry key={version} row={row} tagList={data.tags} profilesReady={profilesReady} locked={running} busy={busyKey === key || pending?.key === key} confirming={confirmKey === key}
+                                return <ModelEntry key={version} row={row} tagList={data.tags} profilesReady={profilesReady} locked={running} busy={busyKey === key || pending?.key === key}
+                                    confirming={confirmKey === key} confirmingDelete={deleteKey === key}
                                     onTest={() => { void test(row); }} onLookup={() => { void startRun(row, "lookup"); }}
                                     onApprove={(save) => { void (save ? saveProfile(row, save, save.profile ? "approved with its profile and tags" : "approved with its tags") : setApproval(row, true)); }}
                                     onUnapprove={() => { void setApproval(row, false); }}
-                                    onSave={(save, done) => { void saveProfile(row, save, done); }} onCancel={() => setConfirmKey(null)} />;
+                                    onSave={(save, done) => { void saveProfile(row, save, done); }} onCancel={() => setConfirmKey(null)}
+                                    onRemove={(removed) => { void setRemoved(row, removed); }} onDelete={() => { void remove(row); }} onCancelDelete={() => setDeleteKey(null)} />;
                             })}
                         </section>
                     ))}

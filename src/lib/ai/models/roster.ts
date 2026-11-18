@@ -24,6 +24,8 @@ export interface RosterEntry {
     free: boolean;
     paid: boolean;
     approved: boolean;
+    /** Removed from the selectable list on the dashboard. */
+    removed: boolean;
     status: "new" | "missing" | "failing" | null;
     tags: PurposeTag[];
     tagsSource: TagsSource;
@@ -57,6 +59,7 @@ function isPaid(provider: ProviderConfig, model: ChatModel): boolean {
 }
 
 function blockedReason(provider: ProviderConfig, model: ChatModel, available: boolean, policy: RosterPolicy): string | null {
+    if (model.catalogue?.removed) return "Removed from the model list on the dashboard";
     if (!available) return provider.unavailableReason ? `${provider.label} is unavailable` : `${provider.label} has no API key`;
     if (!chatModelUsable(model)) return "Needs the Responses API, which this app does not support yet";
     if (model.catalogue?.status === "missing") return "Missing from the provider's model list";
@@ -85,7 +88,7 @@ export function buildRoster(inputs: RosterInputs, policy: RosterPolicy): RosterE
             const order = preferred.indexOf(key);
             entries.push({
                 key, providerId: provider.id, providerLabel: provider.label, providerKind: provider.kind, modelId: model.id, name: model.name, label: model.label,
-                free: model.free === true, paid, approved: automaticRouteEligible(model), status, tags, tagsSource: source, speed,
+                free: model.free === true, paid, approved: automaticRouteEligible(model), removed: model.catalogue?.removed === true, status, tags, tagsSource: source, speed,
                 caps: { tools: model.supportsTools, vision: model.supportsVision, search: model.supportsSearch, structured: model.supportsStructuredOutput === true },
                 feedback: inputs.feedback.get(key) ?? {}, view: modelView(model, profile, row, speed), measured: measuredFacts(model, row, speed),
                 // Gemini stays the worker's explicit final fallback, as in resolveWorkerChain.

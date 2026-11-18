@@ -90,6 +90,7 @@ function harness(options: {
     providers?: ProviderConfig[];
     tick?: number;
     now?: number;
+    removed?: string[];
 }): Harness {
     const db = new Map((options.rows ?? []).map((entry) => [`${entry.providerId}::${entry.modelId}`, entry]));
     const saved: SavedRow[][] = [], notifications: string[] = [], probed: string[] = [];
@@ -126,6 +127,7 @@ function harness(options: {
         maxProbes: options.maxProbes ?? 10,
         runBudgetMs: options.runBudgetMs ?? 20 * 60_000,
         reviewLink: "https://owner.invalid/admin#models",
+        removedKeys: () => new Set(options.removed ?? []),
     };
     return {
         deps, db, saved, notifications, probed, finished,
@@ -300,6 +302,18 @@ try {
         const h = harness({ rows: [neverProbedSeed, stale, recent, paid, failedUnapproved], listings: { acme: listing } });
         await h.run();
         assert.deepEqual(h.probed, ["acme::acme/pinned", "acme::acme/stale"]);
+    });
+
+    await check("a removed model is still tracked for Missing but never tested or announced", async () => {
+        const stale = row({ providerId: "acme", modelId: "acme/stale", approvedAt: iso(START - 30 * DAY), probedAt: iso(START - 8 * DAY) });
+        const fresh = row({ providerId: "acme", modelId: "acme/fresh", probeStatus: "untested", probedAt: null });
+        const h = harness({ rows: [pinned(), stale, fresh], listings: { acme: okListing("acme/stale", "acme/fresh") }, removed: ["acme::acme/pinned", "acme::acme/stale", "acme::acme/fresh"] });
+        await h.run();
+        const second = await h.run();
+        assert.deepEqual(h.probed, []);
+        assert.equal(h.db.get("acme::acme/pinned")!.missingSince, iso(START), "Missing still counts, which is what makes Delete available");
+        assert.deepEqual(second.newlyMissing, []);
+        assert.equal(h.notifications.length, 0);
     });
 
     await check("new models are probed before re-tests when the cap is tight", async () => {

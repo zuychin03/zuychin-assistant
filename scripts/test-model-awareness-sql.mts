@@ -138,8 +138,23 @@ try {
         await insertCall({ model: "fast-model", purpose: "consult", firstMs: 100, durationMs: 200 });
         await assert.rejects(insertCall({ model: "fast-model", purpose: "unknown", firstMs: 100, durationMs: 200 }), /purpose_check/);
     });
+
+    await check("a re-run adds removed_at to an earlier table, only service_role may delete catalogue rows, and a delete takes the profile with it", async () => {
+        await db.exec("alter table model_profiles drop column removed_at");
+        await db.exec(migration);
+        const column = (await db.query<{ count: number }>("select count(*)::int as count from information_schema.columns where table_name = 'model_profiles' and column_name = 'removed_at'")).rows[0].count;
+        assert.equal(column, 1);
+        const privileges = (await db.query<{ service: boolean; anon: boolean }>(`select has_table_privilege('service_role', 'model_catalogue', 'DELETE') as service,
+            has_table_privilege('anon', 'model_catalogue', 'DELETE') as anon`)).rows[0];
+        assert.deepEqual(privileges, { service: true, anon: false });
+        const key = ["openrouter", "cohere/north-mini-code:free"];
+        await db.query("update model_profiles set removed_at = now() where provider_id = $1 and model_id = $2", key);
+        await db.query("delete from model_catalogue where provider_id = $1 and model_id = $2", key);
+        const left = (await db.query<{ count: number }>("select count(*)::int as count from model_profiles where provider_id = $1 and model_id = $2", key)).rows[0].count;
+        assert.equal(left, 0);
+    });
 } finally {
     await db.close();
 }
 
-console.log(`\nModel awareness SQL: ${passed} checks passed (migration order, seeds, constraints, speed and feedback functions, profile approval). Ran in PGlite; no live database was used.`);
+console.log(`\nModel awareness SQL: ${passed} checks passed (migration order, seeds, constraints, speed and feedback functions, profile approval, removal and delete). Ran in PGlite; no live database was used.`);

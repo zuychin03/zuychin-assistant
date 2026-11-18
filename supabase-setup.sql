@@ -6743,10 +6743,13 @@ create table if not exists public.model_profiles (
   vault_path text check (char_length(vault_path) <= 300),
   vault_synced_at timestamptz,
   vault_error text check (char_length(vault_error) <= 500),
+  removed_at timestamptz,
   updated_at timestamptz not null default now(),
   primary key (provider_id, model_id),
   foreign key (provider_id, model_id) references public.model_catalogue (provider_id, model_id) on delete cascade
 );
+-- Owner removal from the selectable list; added separately so a re-run upgrades an earlier copy of this table.
+alter table public.model_profiles add column if not exists removed_at timestamptz;
 
 create table if not exists public.model_feedback (
   id uuid primary key default gen_random_uuid(),
@@ -6768,6 +6771,8 @@ revoke all on public.model_profiles from public, anon, authenticated;
 revoke all on public.model_feedback from public, anon, authenticated;
 grant select, insert, update on public.model_profiles to service_role;
 grant select, insert on public.model_feedback to service_role;
+-- The dashboard deletes discovered models their provider has retired.
+grant delete on public.model_catalogue to service_role;
 drop policy if exists model_profiles_service_access on public.model_profiles;
 create policy model_profiles_service_access on public.model_profiles
   for all to service_role using (true) with check (true);

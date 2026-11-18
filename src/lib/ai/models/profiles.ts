@@ -43,11 +43,13 @@ export interface ProfileRecord {
     vaultPath: string | null;
     vaultSyncedAt: string | null;
     vaultError: string | null;
+    /** Set when the owner removed the route from the selectable list. */
+    removedAt: string | null;
 }
 
 export const PROFILE_COLUMNS = [
     "provider_id", "model_id", "tags", "tags_source", "profile", "approved_at", "draft", "draft_status", "draft_error",
-    "drafted_at", "lookup_attempts", "vault_path", "vault_synced_at", "vault_error",
+    "drafted_at", "lookup_attempts", "vault_path", "vault_synced_at", "vault_error", "removed_at",
 ].join(", ");
 
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,199}$/;
@@ -159,7 +161,13 @@ export function profileRecordFromDb(raw: unknown): ProfileRecord | null {
         vaultPath: cleanLine(row.vault_path, 300),
         vaultSyncedAt: stamp(row.vault_synced_at),
         vaultError: cleanLine(row.vault_error, 500),
+        removedAt: stamp(row.removed_at),
     };
+}
+
+/** Routes the owner removed from the selectable list, as `provider::model` keys. */
+export function removedModelKeys(profiles: readonly ProfileRecord[]): Set<string> {
+    return new Set(profiles.filter((profile) => profile.removedAt).map((profile) => `${profile.providerId}::${profile.modelId}`));
 }
 
 /** The same model on another provider shares this key: the id without vendor prefix and free suffix. */

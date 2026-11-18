@@ -83,6 +83,20 @@ export async function setCatalogueApproval(providerId: string, modelId: string, 
     }
 }
 
+/** Deletes a discovered model its provider no longer lists; its profile goes with it. Built-in and still-listed models are never matched. */
+export async function deleteRetiredModel(providerId: string, modelId: string): Promise<"ok" | "not_found" | StorageFailure> {
+    try {
+        const { data, error } = await supabaseAdmin.from("model_catalogue").delete()
+            .eq("provider_id", providerId).eq("model_id", modelId).eq("origin", "discovered").not("missing_since", "is", null)
+            .select("model_id").abortSignal(AbortSignal.timeout(WRITE_TIMEOUT_MS));
+        // 42501: the delete grant in v7-model-awareness.sql is not applied yet.
+        if (error) return (error as { code?: string }).code === "42501" ? "migration_required" : catalogueStorageFailure(error);
+        return Array.isArray(data) && data.length ? "ok" : "not_found";
+    } catch {
+        return "unavailable";
+    }
+}
+
 export async function startDiscoveryRun(trigger: DiscoveryTrigger): Promise<StartRunResult> {
     try {
         const now = Date.now();

@@ -57,6 +57,21 @@ export async function markDraftPending(providerId: string, modelId: string): Pro
     if (error) throw new Error(`Saving the lookup state failed: ${error.message}`);
 }
 
+/** Creates the profile row when the model has none; its empty seed tags keep the derived ones. */
+export async function setModelRemoved(providerId: string, modelId: string, removed: boolean): Promise<"ok" | "not_found" | StorageFailure> {
+    try {
+        const now = new Date().toISOString();
+        const { error } = await supabaseAdmin.from("model_profiles")
+            .upsert({ provider_id: providerId, model_id: modelId, removed_at: removed ? now : null, updated_at: now }, { onConflict: "provider_id,model_id" })
+            .abortSignal(AbortSignal.timeout(WRITE_TIMEOUT_MS));
+        if (!error) return "ok";
+        // 23503: no catalogue row for this model.
+        return (error as { code?: string }).code === "23503" ? "not_found" : catalogueStorageFailure(error);
+    } catch {
+        return "unavailable";
+    }
+}
+
 /** Upserts each lookup result; a new row keeps the default tags until the owner approves. */
 export async function saveDrafts(results: readonly DraftSave[]): Promise<void> {
     const now = new Date().toISOString();

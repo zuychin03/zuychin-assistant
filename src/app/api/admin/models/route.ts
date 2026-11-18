@@ -1,16 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { PROVIDERS, isProviderAvailable, retiredChatModelIds } from "@/lib/ai/providers";
+import { PROVIDERS, isProviderAvailable, removalBlockedReason, retiredChatModelIds } from "@/lib/ai/providers";
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
-import { listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval } from "@/lib/ai/catalogue/store";
+import { deleteRetiredModel, listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval, type StorageFailure } from "@/lib/ai/catalogue/store";
 import { refreshCatalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
 import { discoveryEnabled, lookupEnabled, maxLookupsFromEnv, maxProbesFromEnv, startFailure } from "@/lib/ai/catalogue/run";
-import { readModelStats, readProfiles } from "@/lib/ai/models/store";
+import { readModelStats, readProfiles, setModelRemoved } from "@/lib/ai/models/store";
 import { statsKey } from "@/lib/ai/models/stats";
 import { adminModelInfo, rowModel } from "@/lib/ai/models/admin-view";
 import { PURPOSE_TAGS, TAG_INFO } from "@/lib/ai/models/tags";
 
 const NO_STORE = { "Cache-Control": "no-store" };
+
+function removalFailure(reason: StorageFailure) {
+    const error = reason === "migration_required"
+        ? "Removing and deleting models needs scripts/migrations/v7-model-awareness.sql. Apply it in the Supabase SQL editor."
+        : "The model catalogue is unavailable. Try again shortly.";
+    return NextResponse.json({ error }, { status: 503 });
+}
 
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req);
@@ -38,7 +45,7 @@ export async function GET(req: NextRequest) {
                 ...row,
                 inCode: code !== undefined,
                 retired: retiredChatModelIds(row.providerId).has(row.modelId),
-                ...adminModelInfo(row, rowModel(row, code), profileByKey.get(key), stats.ok ? stats.speed.get(key) : undefined, stats.ok ? stats.feedback.get(key) : undefined),
+                ...adminModelInfo(row, rowModel(row, code), profileByKey.get(key), stats.ok ? stats.speed.get(key) : undefined, stats.ok ? stats.feedback.get(key) : undefined, code !== undefined),
             };
         }),
         runs: runs.ok ? runs.runs : [],
@@ -50,9 +57,18 @@ export async function PATCH(req: NextRequest) {
     if (denied) return denied;
     const body: unknown = await req.json().catch(() => null);
     const ref = catalogueModelRef(body);
-    const approved = (body as { approved?: unknown } | null)?.approved;
+    const { approved, removed } = (body ?? {}) as { approved?: unknown; removed?: unknown };
+    if (ref && typeof removed === "boolean") {
+        const blocked = removed ? removalBlockedReason(ref.providerId, ref.modelId) : null;
+        if (blocked) return NextResponse.json({ error: blocked }, { status: 400 });
+        const result = await setModelRemoved(ref.providerId, ref.modelId, removed);
+        if (result === "not_found") return NextResponse.json({ error: "That model is not in the catalogue." }, { status: 404 });
+        if (result !== "ok") return removalFailure(result);
+        await refreshCatalogueSnapshot();
+        return NextResponse.json({ ok: true, ...ref, removed });
+    }
     if (!ref || typeof approved !== "boolean") {
-        return NextResponse.json({ error: "Send providerId, modelId and approved (true or false)." }, { status: 400 });
+        return NextResponse.json({ error: "Send providerId, modelId and approved or removed (true or false)." }, { status: 400 });
     }
     const result = await setCatalogueApproval(ref.providerId, ref.modelId, approved);
     if (result === "not_found") return NextResponse.json({ error: "That model is not in the catalogue." }, { status: 404 });
@@ -62,4 +78,22 @@ export async function PATCH(req: NextRequest) {
     }
     await refreshCatalogueSnapshot();
     return NextResponse.json({ ok: true, ...ref, approved });
+}
+
+/** Deletes a discovered model its provider has retired. Removal is the reversible option. */
+export async function DELETE(req: NextRequest) {
+    const denied = await requireChatAuth(req);
+    if (denied) return denied;
+    const ref = catalogueModelRef(await req.json().catch(() => null));
+    if (!ref) return NextResponse.json({ error: "Send providerId and modelId." }, { status: 400 });
+    if (PROVIDERS.some((provider) => provider.id === ref.providerId && provider.chatModels.some((model) => model.id === ref.modelId))) {
+        return NextResponse.json({ error: "Built-in models live in providers.ts, so deleting one is a code change. Remove it from the list instead." }, { status: 400 });
+    }
+    const result = await deleteRetiredModel(ref.providerId, ref.modelId);
+    if (result === "not_found") {
+        return NextResponse.json({ error: "Only a discovered model that its provider no longer lists can be deleted. Remove it from the list instead." }, { status: 409 });
+    }
+    if (result !== "ok") return removalFailure(result);
+    await refreshCatalogueSnapshot();
+    return NextResponse.json({ ok: true, ...ref, deleted: true });
 }

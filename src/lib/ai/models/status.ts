@@ -31,7 +31,7 @@ const names = (entries: readonly RosterEntry[]) => entries.slice(0, LIST_MAX).ma
 
 /** Read-only digest for chat and the channels: no model is called. */
 export function formatModelStatus(input: { roster: readonly RosterEntry[]; runs: readonly StatusRun[]; profiles: readonly ProfileRecord[]; show: StatusView; purpose: PurposeTag | null }): string {
-    const live = input.roster.filter((entry) => entry.reason === null || !/unavailable|no API key/.test(entry.reason));
+    const live = input.roster.filter((entry) => !entry.removed && (entry.reason === null || !/unavailable|no API key/.test(entry.reason)));
     const lastRun = input.runs.find((run) => run.summary.kind !== "test" && run.summary.kind !== "lookup");
     const lines = [runLine(lastRun)];
 
