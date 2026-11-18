@@ -170,7 +170,7 @@ await check("PDF text, scanned, locked, malformed and page cap", async () => {
 
 const profile = "owner-1";
 const rows = new Map<string, CaptureItem>(), files = new Map<string, string>(), saved: CaptureExtract[] = [];
-let clock = new Date("2026-11-18T01:00:00.000Z"), reads = 0, ocrCalls = 0, ocrFails: Error | null = null, tiers = { free: true, paid: false };
+let clock = new Date("2026-11-18T01:00:00.000Z"), reads = 0, ocrCalls = 0, indexCalls = 0, ocrFails: Error | null = null, tiers = { free: true, paid: false };
 const linkId = "11111111-1111-4111-8111-111111111111", pdfId = "22222222-2222-4222-8222-222222222222", textId = "33333333-3333-4333-8333-333333333333";
 const htmlExtract: CaptureExtract = { version: 1, status: "ok", method: "html", text: "Fetched article body.", truncated: false, words: 3, fetchedAt: "2026-11-18T00:30:00.000Z",
     finalUrl: "https://example.test/final", contentType: "text/html", title: "Fetched", author: "Ada Fixture", published: "2026-11-01" };
@@ -181,7 +181,7 @@ const service = createCaptureService({
     claim: async (_owner, _key, claim) => claim,
     head: async () => "a".repeat(40), read: async (path) => files.get(path) ?? null,
     commit: async (changes) => { changes.forEach(change => files.set(change.path, change.content ?? change.contentBase64!)); return { commit: "b".repeat(40) }; },
-    index: async () => {},
+    index: async () => { indexCalls++; },
     saveExtract: async (owner, key, extract) => { const row = rows.get(`${owner}:${key}`); if (row && !row.receipt) { row.extract = extract; saved.push(extract); } },
     extractor: {
         read: async (source) => { reads++; return source.kind === "pdf" ? { ...htmlExtract, method: "pdf-text", status: "scanned", text: "", words: 0, contentType: "application/pdf", pages: 2, finalUrl: undefined } : htmlExtract; },
@@ -221,7 +221,10 @@ await check("source text adds its section and provenance frontmatter, and ingest
     item.extract = htmlExtract;
     await assert.rejects(service.preview(profile, linkId, { ...review, sourceText: "x".repeat(120_001) }));
     const receipt = await service.ingest(profile, preview);
-    assert.equal(files.get(preview.path), preview.markdown); assert.equal(receipt.indexed, true);
+    assert.equal(files.get(preview.path), preview.markdown); assert.equal(receipt.indexed, false); assert.equal(indexCalls, 0);
+    assert.equal(rows.get(`${profile}:${linkId}`)!.receipt?.indexed, false);
+    await receipt.background!();
+    assert.equal(indexCalls, 1); assert.equal(rows.get(`${profile}:${linkId}`)!.receipt?.indexed, true);
 });
 await check("extract reads once, keeps the stored record, refreshes on request and refuses the wrong captures", async () => {
     const pdfRow = rows.get(`${profile}:${pdfId}`)!;

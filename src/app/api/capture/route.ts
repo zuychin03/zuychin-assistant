@@ -40,7 +40,11 @@ export async function POST(req: NextRequest) {
             return respond({ item: { ...saved, source: { ...saved.source, ...(saved.source.pdf ? { pdf: { name: saved.source.pdf.name, base64: "" } } : {}) } } });
         }
         if (input.action === "preview") return respond(await captureService.preview(profile.id, id, input.review));
-        if (input.action === "ingest") return respond(await captureService.ingest(profile.id, { ...input, id }));
+        if (input.action === "ingest") {
+            const { background, ...result } = await captureService.ingest(profile.id, { ...input, id });
+            if (background) after(background);
+            return respond(result);
+        }
         if (input.action === "extract") {
             const result = await captureService.extract(profile.id, id, extractOptions.parse({ refresh: input.refresh, ocr: input.ocr }));
             // Gemini can take minutes on a long PDF, past Cloudflare's 100 s cut, so the client polls.

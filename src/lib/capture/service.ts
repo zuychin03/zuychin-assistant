@@ -158,7 +158,7 @@ export function createCaptureService(deps: Dependencies) {
         async ingest(profile: string, input: Pick<CapturePreview, "id" | "review" | "headSha" | "previewHash">) {
             sha.parse(input.headSha); hash.parse(input.previewHash);
             const item = await get(profile, input.id);
-            if (item.receipt) return { ...item.receipt, warning: item.receipt.indexed ? null : "The source was saved, but indexing needs reconciliation." };
+            if (item.receipt) return { ...item.receipt, background: undefined, warning: item.receipt.indexed ? null : "The source was saved, but search indexing has not finished. If it stays this way, use Reconcile in Knowledge." };
             const plan = await preview(profile, input.id, input.review);
             if (!plan.existing && (plan.headSha !== input.headSha || plan.previewHash !== input.previewHash)) throw new CaptureError("The vault or preview changed. Review the destination again.", 409);
             const wanted = { path: plan.path, contentHash: digest(plan.markdown) };
@@ -166,12 +166,16 @@ export function createCaptureService(deps: Dependencies) {
             if (claim.path !== wanted.path || claim.contentHash !== wanted.contentHash) throw new CaptureError("This capture is reserved for an earlier reviewed destination and content. Retry that review, or create a separate capture.", 409);
             const changes = [{ path: plan.path, content: plan.markdown }, ...(item.source.pdf && plan.originalPath ? [{ path: plan.originalPath, contentBase64: item.source.pdf.base64 }] : [])];
             const commit = plan.existing ? plan.headSha : (await deps.commit(changes, plan.headSha)).commit;
-            let indexed = true;
-            try { await deps.index(plan.path, plan.review.title, plan.markdown, profile); } catch { indexed = false; }
-            const receipt = { path: plan.path, commit, indexed };
+            const receipt = { path: plan.path, commit, indexed: false };
             let recorded = true; try { await deps.receipt(profile, input.id, receipt); } catch { recorded = false; }
-            return { ...receipt, warning: !indexed ? "The source was saved, but indexing failed. Reconcile the knowledge library before relying on recall."
-                : !recorded ? "The source was saved, but the inbox status could not be updated. Retrying will not create a duplicate source." : null };
+            // Source text can embed hundreds of chunks one by one, past Cloudflare's 100 s cut.
+            const background = async () => {
+                try { await deps.index(plan.path, plan.review.title, plan.markdown, profile); }
+                catch (error) { console.error("[Capture] Indexing failed:", error instanceof Error ? error.message : error); return; }
+                await deps.receipt(profile, input.id, { ...receipt, indexed: true })
+                    .catch((error) => console.error("[Capture] Indexed receipt not saved:", error instanceof Error ? error.message : error));
+            };
+            return { ...receipt, background, warning: !recorded ? "The source was saved, but the inbox status could not be updated. Retrying will not create a duplicate source." : null };
         },
     };
 }

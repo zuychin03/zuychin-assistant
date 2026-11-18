@@ -293,7 +293,7 @@ function captureFixture() {
         refreshOffline: async () => undefined,
         request: async () => { throw new Error("Inbox unavailable"); },
     };
-    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy"]);
+    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy", "ocrTiers"]);
     const actions = runInNewContext(extract("../src/app/capture/page.tsx", ["load", "action"]), state) as {
         load: () => Promise<void>; action: (name: string, run: () => Promise<void>) => Promise<void>;
     };
@@ -311,7 +311,7 @@ function inboxText(state: Record<string, unknown>) {
     }
     visit(tree); assert(section);
     const code = ts.transpileModule(`(${section});`, { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
-    return runInNewContext(code, { ...state, selected: undefined, styles: {}, RefreshCw: "icon",
+    return runInNewContext(code, { ...state, selected: undefined, sourceBusy: "", styles: {}, RefreshCw: "icon",
         React: { createElement: (_tag: unknown, _props: unknown, ...children: unknown[]) => children.flat(Infinity).filter(value => typeof value === "string").join(" ") },
     }) as string;
 }

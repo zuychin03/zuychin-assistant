@@ -6,7 +6,8 @@ import { WorkspaceShell } from "@/components/workspace-shell";
 import { Dropdown } from "@/components/dropdown";
 import { ConfirmModal } from "../home/controls";
 import { useUnsavedChanges } from "@/components/use-unsaved-changes";
-import type { CaptureItem, CapturePreview, CaptureReview, CaptureSource } from "@/lib/capture/types";
+import type { CaptureExtract, CaptureItem, CapturePreview, CaptureReview, CaptureSource, OcrTier } from "@/lib/capture/types";
+import { EXTRACT_LABEL, fillsSourceText, offersGemini, readableCapture, sourceStatus, type SourceActivity } from "@/lib/capture/review-source";
 import type { OfflineDocument, OfflineState, OfflineToken } from "@/lib/offline/library";
 import { clearConfirmedOfflinePrivateData, clearOfflinePrivateData, offlineLibrary, OFFLINE_PRIVACY_EVENT } from "@/lib/offline/storage";
 import styles from "./capture.module.css";
@@ -31,7 +32,8 @@ function fileData(file: File) {
     });
 }
 function captureReview(item: CaptureItem): CaptureReview {
-    return { title: item.source.title, text: item.source.text, destination: `captures/${item.source.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "note"}-${item.id.slice(0, 8)}.md` };
+    return { title: item.source.title, text: item.source.text, destination: `captures/${item.source.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "note"}-${item.id.slice(0, 8)}.md`,
+        ...(readableCapture(item) ? { sourceText: "" } : {}) };
 }
 export default function CapturePage() {
     const [items, setItems] = useState<CaptureItem[]>([]), [documents, setDocuments] = useState<{ id: string; title: string; path: string }[]>([]);
@@ -43,11 +45,14 @@ export default function CapturePage() {
     const [error, setError] = useState(""), [notice, setNotice] = useState(""), [busy, setBusy] = useState("loading");
     const [withPdf, setWithPdf] = useState(false), [pdfUrl, setPdfUrl] = useState<string>();
     const [clearRequest, setClearRequest] = useState<{ epoch: string } | null>(null);
-    const reviewHeading = useRef<HTMLHeadingElement>(null), readerHeading = useRef<HTMLHeadingElement>(null);
+    const [baseline, setBaseline] = useState<CaptureReview>(), [extract, setExtract] = useState<CaptureExtract>();
+    const [sourceBusy, setSourceBusy] = useState<SourceActivity>(""), [sourceError, setSourceError] = useState("");
+    const [ocrTiers, setOcrTiers] = useState<Record<OcrTier, boolean>>({ free: false, paid: false });
+    const reviewHeading = useRef<HTMLHeadingElement>(null), readerHeading = useRef<HTMLHeadingElement>(null), sourceLine = useRef<HTMLParagraphElement>(null);
     const captureId = useRef<string | null>(null), active = useRef(true), locked = useRef(false), privacyRevision = useRef(0);
-    const inboxRequest = useRef(0);
+    const inboxRequest = useRef(0), selectedId = useRef<string | undefined>(undefined);
     useUnsavedChanges(() => Boolean(source.title.trim() || source.text.trim() || source.url?.trim() || source.pdf || note.trim()
-        || (selected && !selected.receipt && review && JSON.stringify(review) !== JSON.stringify(captureReview(selected)))));
+        || (selected && !selected.receipt && review && JSON.stringify(review) !== JSON.stringify(baseline))));
     const request = useCallback(async (path: string, body?: unknown) => {
         const revision = privacyRevision.current;
         const result = await httpRequest(path, body);
@@ -68,6 +73,7 @@ export default function CapturePage() {
             if (!current()) return;
             if (!Array.isArray(inbox.items) || typeof inbox.profileId !== "string") throw new Error("The inbox response could not be read. Reload to try again.");
             setProfileId(inbox.profileId); setItems(inbox.items); setDocuments(inbox.documents ?? []);
+            setOcrTiers({ free: inbox.ocr?.free === true, paid: inbox.ocr?.paid === true });
             setInboxLoaded(true); inboxRead = true;
             if (before) {
                 const identity = await offlineLibrary.bindProfile(inbox.profileId, before.epoch);
@@ -85,12 +91,38 @@ export default function CapturePage() {
     useEffect(() => {
         active.current = true;
         void load().catch(async reason => { if (active.current) setError(message(reason)); try { await refreshOffline(); } catch {} }).finally(() => { if (active.current) setBusy(""); });
-        const cleared = () => { privacyRevision.current++; setClearRequest(null); setOffline(undefined); setToken(undefined); setProfileId(undefined); setItems([]); setInboxLoaded(false); setInboxLoading(false); setInboxError(""); setDocuments([]); setSelected(undefined); setReview(undefined); setPreview(undefined); readCopy(undefined); setNote(""); setPdfUrl(undefined); setSource({ kind: "text", title: "", text: "" }); captureId.current = null; };
+        const cleared = () => { privacyRevision.current++; setClearRequest(null); setOffline(undefined); setToken(undefined); setProfileId(undefined); setItems([]); setInboxLoaded(false); setInboxLoading(false); setInboxError(""); setDocuments([]); setSelected(undefined); setReview(undefined); setPreview(undefined); readCopy(undefined); setNote(""); setPdfUrl(undefined); setSource({ kind: "text", title: "", text: "" }); captureId.current = null;
+            selectedId.current = undefined; setBaseline(undefined); setExtract(undefined); setSourceBusy(""); setSourceError(""); setOcrTiers({ free: false, paid: false }); };
         window.addEventListener(OFFLINE_PRIVACY_EVENT, cleared);
         const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(OFFLINE_PRIVACY_EVENT) : null;
         if (channel) channel.onmessage = cleared;
         return () => { active.current = false; window.removeEventListener(OFFLINE_PRIVACY_EVENT, cleared); channel?.close(); };
     }, [load, refreshOffline]);
+    const applyExtract = useCallback((id: string, value: CaptureExtract) => {
+        setExtract(value);
+        setItems(list => list.map(item => item.id === id ? { ...item, extractStatus: value.status } : item));
+        if (fillsSourceText(value)) {
+            setReview(current => current && { ...current, sourceText: value.text });
+            setBaseline(current => current && { ...current, sourceText: value.text });
+            setPreview(undefined);
+        }
+    }, []);
+    const polling = extract?.status === "running" ? selected?.id : undefined;
+    useEffect(() => {
+        if (!polling) return;
+        let stopped = false, timer: ReturnType<typeof setTimeout> | undefined;
+        const tick = async () => {
+            try {
+                const result = await request("/api/capture", { action: "extract", profileId, id: polling });
+                if (stopped || selectedId.current !== polling) return;
+                setSourceError("");
+                if (result.extract?.status !== "running") { applyExtract(polling, result.extract); return; }
+            } catch (reason) { if (!stopped && selectedId.current === polling) setSourceError(message(reason)); }
+            if (!stopped) timer = setTimeout(tick, 3_000);
+        };
+        timer = setTimeout(tick, 3_000);
+        return () => { stopped = true; clearTimeout(timer); };
+    }, [polling, profileId, request, applyExtract]);
     useEffect(() => { if (selected) reviewHeading.current?.focus(); }, [selected]);
     useEffect(() => { if (reading) readerHeading.current?.focus(); }, [reading]);
     useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); }, [pdfUrl]);
@@ -111,8 +143,29 @@ export default function CapturePage() {
     }
     function choose(item: CaptureItem) {
         if (selected?.id === item.id) { reviewHeading.current?.focus(); return; }
-        if (selected && review && JSON.stringify(review) !== JSON.stringify(captureReview(selected)) && !window.confirm("Discard your unsaved destination review and open another capture?")) return;
-        setSelected(item); setPreview(undefined); setReview(captureReview(item));
+        if (selected && review && JSON.stringify(review) !== JSON.stringify(baseline) && !window.confirm("Discard your unsaved destination review and open another capture?")) return;
+        const base = captureReview(item);
+        selectedId.current = item.id;
+        setSelected(item); setPreview(undefined); setReview(base); setBaseline(base); setExtract(undefined); setSourceError(""); setSourceBusy("");
+        if (readableCapture(item) && !item.receipt) void readSource(item.id);
+    }
+    async function readSource(id: string, options: { refresh?: boolean; ocr?: OcrTier } = {}) {
+        setSourceBusy(options.ocr ?? "read"); setSourceError("");
+        try {
+            const result = await request("/api/capture", { action: "extract", profileId, id, ...options });
+            if (selectedId.current === id) applyExtract(id, result.extract);
+        } catch (reason) {
+            if (active.current && selectedId.current === id) setSourceError(message(reason));
+        } finally { if (active.current && selectedId.current === id) setSourceBusy(""); }
+    }
+    function refreshSource() {
+        if (!selected || !review) return;
+        if ((review.sourceText ?? "") !== (baseline?.sourceText ?? "") && !window.confirm("Replace your edited source text with a fresh copy?")) return;
+        sourceLine.current?.focus(); void readSource(selected.id, { refresh: true });
+    }
+    function readWithGemini(tier: OcrTier) {
+        if (!selected) return;
+        sourceLine.current?.focus(); void readSource(selected.id, { ocr: tier });
     }
     function readCopy(documentId?: string) { setReading(documentId); setPdfUrl(undefined); setNote(""); }
     function leaveOfflineNote() { return !note.trim() || window.confirm("Discard this unqueued note? The saved document will remain unchanged."); }
@@ -158,8 +211,8 @@ export default function CapturePage() {
                     <label>Capture type<Dropdown ariaLabel="Capture type" className={styles.dropdown} style={{ flex: "none", width: "100%" }} value={source.kind} disabled={!!busy} onChange={value => { if (value === source.kind) return; setSource({ kind: value as CaptureSource["kind"], title: source.title, text: source.text }); captureId.current = null; }} options={[{ value: "text", label: "Passage or note" }, { value: "link", label: "Link" }, { value: "pdf", label: "PDF" }]} /></label>
                     <label>Title<input required maxLength={200} value={source.title} disabled={!!busy} onChange={event => setSource({ ...source, title: event.target.value })} /></label>
                     </div>
-                    {source.kind === "link" && <><label>Source URL<input type="url" required value={source.url ?? ""} disabled={!!busy} onChange={event => setSource({ ...source, url: event.target.value })} /></label><p>The link is saved as a reference. Paste the passage you want to keep below.</p></>}
-                    {source.kind === "pdf" && <><label>PDF original (up to 2 MB)<input type="file" accept="application/pdf,.pdf" disabled={!!busy} onChange={event => { const file = event.target.files?.[0]; if (file) void action("pdf", async () => { const revision = privacyRevision.current; const base64 = await fileData(file); if (revision === privacyRevision.current && active.current) setSource(value => ({ ...value, pdf: { name: file.name, base64 } })); }); }} /></label><p>The original PDF is kept with your note. Text is not extracted automatically; add the passage or notes you have reviewed.</p>{source.pdf && <p>{source.pdf.name} ready to capture.</p>}</>}
+                    {source.kind === "link" && <><label>Source URL<input type="url" required value={source.url ?? ""} disabled={!!busy} onChange={event => setSource({ ...source, url: event.target.value })} /></label><p>The page text is fetched when you review it. Add your own notes below (optional).</p></>}
+                    {source.kind === "pdf" && <><label>PDF original (up to 2 MB)<input type="file" accept="application/pdf,.pdf" disabled={!!busy} onChange={event => { const file = event.target.files?.[0]; if (file) void action("pdf", async () => { const revision = privacyRevision.current; const base64 = await fileData(file); if (revision === privacyRevision.current && active.current) setSource(value => ({ ...value, pdf: { name: file.name, base64 } })); }); }} /></label><p>The text is read from the PDF when you review it.</p>{source.pdf && <p>{source.pdf.name} ready to capture.</p>}</>}
                     <label>Passage or notes<textarea rows={5} maxLength={120000} required={source.kind === "text"} value={source.text} disabled={!!busy} onChange={event => setSource({ ...source, text: event.target.value })} /></label>
                     <button className={styles.primary} disabled={!!busy || !profileId || (source.kind === "pdf" && !source.pdf)}>{busy === "capture" ? "Saving…" : "Save to inbox"}</button>
                     {captureId.current && <button type="button" disabled={!!busy} onClick={() => { captureId.current = null; setNotice("A new capture ID will be used. The existing inbox entry is retained."); }}>Keep this as a separate capture</button>}
@@ -171,19 +224,36 @@ export default function CapturePage() {
                 {!inboxLoading && !inboxError && !inboxLoaded && <p>Reload the inbox to view your captures.</p>}
                 {!inboxLoading && !inboxError && inboxLoaded && !items.length && <p>No captures yet. Saving here does not add material to knowledge until you review it.</p>}
                 {!!items.length && <ul className={styles.list}>{items.map(item => <li key={item.id}>
-                    <button disabled={!!busy} aria-controls="capture-review" aria-pressed={selected?.id === item.id} onClick={() => choose(item)}><strong>{item.source.title}</strong><span>{item.source.kind.replace("_", " ")} · {item.receipt ? "Added to knowledge" : "Awaiting review"}</span></button>
+                    <button disabled={!!busy || sourceBusy === "read"} aria-controls="capture-review" aria-pressed={selected?.id === item.id} onClick={() => choose(item)}><strong>{item.source.title}</strong><span>{item.source.kind.replace("_", " ")} · {item.receipt ? item.receipt.indexed ? "Added to knowledge" : "Added to knowledge · Not indexed yet" : "Awaiting review"}{!item.receipt && item.extractStatus ? ` · ${EXTRACT_LABEL[item.extractStatus]}` : ""}</span></button>
                     {item.source.pdf && <a download href={`/api/capture/original?id=${item.id}`}>Download original PDF</a>}
                 </li>)}</ul>}
             </section>
         </div>
         {selected && review && <section id="capture-review" className={styles.section} aria-labelledby="review-capture"><h2 id="review-capture" ref={reviewHeading} tabIndex={-1}>Review destination</h2><p>New captures are private and untrusted. Existing pages are never replaced.</p>
-            {selected.receipt ? <p>Already saved at <Link href={`/knowledge?path=${encodeURIComponent(selected.receipt.path)}`}>{selected.receipt.path}</Link>.</p> : <>
+            {selected.receipt ? <><p>Already saved at <Link href={`/knowledge?path=${encodeURIComponent(selected.receipt.path)}`}>{selected.receipt.path}</Link>.</p>
+                {!selected.receipt.indexed && <p>Search indexing had not finished when the inbox loaded. Reload to check. If it stays this way, use Reconcile in Knowledge.</p>}</> : <>
                 <div className={styles.columns}><label>Title<input value={review.title} disabled={!!busy} onChange={event => { setReview({ ...review, title: event.target.value }); setPreview(undefined); }} /></label><label>New Markdown path<input value={review.destination} disabled={!!busy} onChange={event => { setReview({ ...review, destination: event.target.value }); setPreview(undefined); }} /></label></div>
                 <label>Reviewed notes<textarea rows={6} value={review.text} disabled={!!busy} onChange={event => { setReview({ ...review, text: event.target.value }); setPreview(undefined); }} /></label>
+                {readableCapture(selected) && <div className={styles.source}>
+                    <h3 id="source-text">Source text</h3>
+                    <p id="source-status" role="status" ref={sourceLine} tabIndex={-1} className={styles.status}>{sourceStatus(selected, extract, sourceBusy)}</p>
+                    {sourceError && <p role="alert" className={styles.error}>{sourceError}</p>}
+                    {!sourceBusy && offersGemini(selected, extract) && <div className={styles.gemini}>
+                        {ocrTiers.free && <div><button type="button" disabled={!!busy} aria-describedby="gemini-free-note" onClick={() => readWithGemini("free")}>Read with Gemini (free)</button><p id="gemini-free-note">Google may use free-tier content to improve its products.</p></div>}
+                        {ocrTiers.paid && <div><button type="button" disabled={!!busy} aria-describedby="gemini-paid-note" onClick={() => readWithGemini("paid")}>Read with Gemini (paid)</button><p id="gemini-paid-note">Billed to your paid key, about 560 tokens a page.</p></div>}
+                        {!ocrTiers.free && !ocrTiers.paid && <p>Gemini isn&apos;t set up on the server, so scanned pages can&apos;t be read here. Paste the passage instead.</p>}
+                    </div>}
+                    <textarea rows={10} maxLength={120000} aria-labelledby="source-text" aria-describedby="source-status" value={review.sourceText ?? ""}
+                        disabled={!!busy || !!sourceBusy || extract?.status === "running"} onChange={event => { setReview({ ...review, sourceText: event.target.value }); setPreview(undefined); }} />
+                    <div className={styles.actions}>
+                        <button type="button" disabled={!!busy || !!sourceBusy || extract?.status === "running"} onClick={refreshSource}><RefreshCw size={15} aria-hidden="true" /> {selected.source.kind === "pdf" ? "Read again" : "Fetch again"}</button>
+                        <button type="button" disabled={!!busy || !!sourceBusy || !review.sourceText} onClick={() => { setReview({ ...review, sourceText: "" }); setPreview(undefined); }}>Clear source text</button>
+                    </div>
+                </div>}
                 <button disabled={!!busy} onClick={() => void action("preview", async () => setPreview(await request("/api/capture", { action: "preview", profileId, id: selected.id, review })))}>{busy === "preview" ? "Preparing preview…" : "Preview destination"}</button>
                 {preview && <div className={styles.preview}><p>Will save to <strong>{preview.path}</strong>{preview.originalPath ? ` with the original PDF at ${preview.originalPath}.` : "."}</p><pre tabIndex={0} aria-label="Capture preview">{preview.markdown}</pre><button disabled={!!busy} onClick={() => void action("ingest", async () => {
                     const result = await request("/api/capture", { action: "ingest", profileId, ...preview });
-                    setPreview(undefined); setSelected(undefined); await load(); setNotice(result.warning || "Added to knowledge as a new document.");
+                    setPreview(undefined); setSelected(undefined); selectedId.current = undefined; setExtract(undefined); await load(); setNotice(result.warning || "Added to knowledge as a new document. Search indexing finishes in the background.");
                 })}>{busy === "ingest" ? "Adding…" : "Add reviewed capture to knowledge"}</button></div>}
             </>}
         </section>}

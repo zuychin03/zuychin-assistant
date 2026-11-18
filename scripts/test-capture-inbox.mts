@@ -28,7 +28,10 @@ await assert.rejects(service.ingest(profile, { ...preview, previewHash: "0".repe
 failIndex = true;
 const receipt = await service.ingest(profile, preview);
 assert.equal(receipt.indexed, false); assert.equal(commits, 1);
-assert.equal((await service.ingest(profile, preview)).commit, receipt.commit); assert.equal(commits, 1);
+await receipt.background?.();
+assert.equal(rows.get(`${profile}:${id}`)!.receipt?.indexed, false);
+const replay = await service.ingest(profile, preview);
+assert.equal(replay.commit, receipt.commit); assert.equal(commits, 1); assert.match(replay.warning ?? "", /Reconcile/);
 files.set(preview.path, "Newer source content");
 await assert.rejects(service.preview(profile, id, preview.review), /exists|changed/i);
 await assert.rejects(service.preview(profile, id, { ...preview.review, destination: "../secret.md" }), /path|destination/i);
