@@ -502,6 +502,21 @@ test("migration: re-runnable, after or before model awareness, and setup lists c
     const setup = await read("../supabase-setup.sql");
     const lastPurposes = setup.slice(setup.lastIndexOf("model_call_observations_purpose_check\n"));
     assert.match(lastPurposes.split("\n")[1], /'consult', 'council'\)\);$/);
+    // A migration that rewrites the purpose check with a shorter list fails on re-run once later purposes have rows.
+    const { readdir } = await import("node:fs/promises");
+    const health = await read("../src/lib/ai/model-health.ts");
+    const purposes = [.../const PURPOSES = \[(.*?)\]/.exec(health)![1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+    assert.ok(purposes.includes("council"));
+    let rewrites = 0;
+    for (const file of (await readdir(new URL("./migrations/", import.meta.url))).filter((f) => f.endsWith(".sql"))) {
+        const sql = await read(`./migrations/${file}`);
+        for (const m of sql.matchAll(/add constraint model_call_observations_purpose_check\s+check \(purpose in \((.*?)\)\)/g)) {
+            rewrites++;
+            const listed = [...m[1].matchAll(/'([a-z]+)'/g)].map((p) => p[1]);
+            assert.deepEqual(listed, purposes, `${file} lists every purpose in code order`);
+        }
+    }
+    assert.ok(rewrites >= 5, `found ${rewrites} purpose check rewrites`);
     for (const order of [["online", "awareness"], ["awareness", "online"]]) {
         const db = new PGlite();
         try {
@@ -516,9 +531,10 @@ test("migration: re-runnable, after or before model awareness, and setup lists c
                 values (gen_random_uuid(), 'nim', 'alpha', $1, now(), 10, 'success', 'unavailable')`, [purpose]);
             await insert("council");
             await assert.rejects(insert("bogus"), /purpose_check/);
-            // The catalogue migration rewrites the same check, so a re-run must keep the later purposes.
+            // Earlier migrations rewrite the same check, so a re-run must keep the later purposes.
+            await db.exec(await read("./migrations/v6-model-health.sql"));
             await db.exec(await read("./migrations/v7-model-catalogue.sql"));
-            for (const purpose of ["council", "lookup", "consult"]) await insert(purpose);
+            for (const purpose of ["council", "lookup", "consult", "probe", "study"]) await insert(purpose);
         } finally {
             await db.close();
         }

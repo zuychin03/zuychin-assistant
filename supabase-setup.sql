@@ -4190,7 +4190,7 @@ create table if not exists public.model_call_observations (
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
 
 create index if not exists idx_model_observations_latest
   on public.model_call_observations (provider_id, model_id, started_at desc, id desc);
@@ -4797,7 +4797,7 @@ alter table public.study_reviews add column if not exists feedback_id uuid refer
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
 
 create or replace function public.assistant_study_feedback(p_user_id uuid,p_body jsonb)
 returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
@@ -6649,7 +6649,7 @@ create policy model_discovery_runs_service_access on public.model_discovery_runs
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
 
 insert into public.model_catalogue (
   provider_id, model_id, label, short_name, description, developer, free, metered, max_output_tokens, inputs,
