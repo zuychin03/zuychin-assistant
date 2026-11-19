@@ -14,6 +14,8 @@ Approved on 22/09/2026: angular Z frame, connected robot side blocks and one ope
 - Transparent, white 72 px notification badge.
 - Existing Windows desktop PNG and four-frame ICO source assets.
 
+The in-app mark is not one of these files: `src/components/zuychin-mark.tsx` draws it inline from the paths in `public/zuychin-logo.svg`, split so the lens and side blocks can move. After a geometry change, copy the new paths there too.
+
 Light foreground is black. Reversed foreground is `#f8fafc` on the existing `#0f172a` dark background. The ivory background in the approved presentation is not an app theme change. Header dimensions remain 46×36 px and 35×27 px.
 
 ## Regeneration

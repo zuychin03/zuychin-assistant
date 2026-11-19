@@ -52,9 +52,12 @@ edited and deleted in place.
 - Voice conversations: send a Telegram voice note or tap the web mic, and the reply is spoken
   back with Gemini TTS, streamed so speech starts in a couple of seconds. The web mic runs a
   hands-free loop: silence auto-sends, the reply plays, the mic reopens - say
-  "That's enough, thank you" (or tap the ✕ chip) to end it. Each sentence is spoken as soon
+  "That's enough, thank you" (or tap End) to end it. Each sentence is spoken as soon
   as it is written, while the rest of the reply still streams. While a voice turn waits on
-  tools or agents, a short phrase such as "Just a minute" fills the silence. Telegram voice
+  tools or agents, a short phrase such as "Just a minute" fills the silence. During a voice
+  chat a star chart takes the message bar's place and shows each step: a wave runs out
+  through the stars as you speak, lights hop between stars while it thinks, a red route
+  traces tool use, and the whole field pulses with the spoken reply. Telegram voice
   notes are answered with a voice note too. Spoken replies fire only on voice input
 - On-box speech-to-text: with the optional `stt-service` running, web voice turns are
   transcribed on your own server by Moonshine tiny, so any chat model can answer them and the
@@ -190,7 +193,9 @@ edited and deleted in place.
   design system
 - Assistant identity: one source SVG generates the navigation mark, theme-aware favicon,
   Apple and PWA icons, notification badge and desktop icon assets; see the
-  [brand asset guide](scripts/ASSISTANT_BRAND.md) for regeneration and verification
+  [brand asset guide](scripts/ASSISTANT_BRAND.md) for regeneration and verification. In the
+  app the mark moves: it blinks now and then, its lens follows the pointer on the welcome
+  screen, and the newest reply's mark turns red and moves while Zuychin thinks, writes or speaks
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
 - Cron jobs: daily briefing (LLM-triaged inbox - only the emails that matter, icon-coded
   by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
@@ -452,11 +457,12 @@ npm run dev
 - Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
   to pick). Commands expand into full prompts server-side; the raw command stays in history.
 - Tap the mic for a hands-free voice chat: it auto-sends when you pause, speaks the reply,
-  and listens again. Say "That's enough, thank you" or tap the ✕ on the status chip to end
-  the loop. When the reply needs tools or agents, it says a short phrase such as "Just a
-  minute" (picked from a small pool) while it works.
-  With the speech-to-text service set up, the chip shows "transcribing" while your words are
-  read, and your message appears as text marked "Spoken".
+  and listens again. Say "That's enough, thank you" or tap **End** to end the loop.
+  **Send now** sends what it has heard without waiting for a pause, and **Skip** stops the
+  reply being spoken and listens again. When the reply needs tools or agents, it says a
+  short phrase such as "Just a minute" (picked from a small pool) while it works.
+  With the speech-to-text service set up, the voice stage shows Transcribing while your
+  words are read, and your message appears as text marked "Spoken".
 - The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
   away so chat history fills the sidebar, and the choice is remembered.
@@ -1503,6 +1509,9 @@ src/
 │   │   ├── day-starters.ts             # Chat starters drawn from the day
 │   │   ├── reply-sources.tsx           # Chart and list of the sources behind a reply
 │   │   ├── voice-pcm.ts                # Recording → 16 kHz PCM, then the transcribe request
+│   │   ├── voice-stage.tsx             # Voice chat stage: phase label, Send now / Skip / End
+│   │   ├── voice-constellation.ts      # The stage's canvas star chart, one look per voice phase
+│   │   ├── audio-level.ts              # Mic and speaker loudness, 0 to 1
 │   │   └── chat.module.css             # Chat page styles
 │   ├── knowledge/                      # Library: page list, reader, link chart, possible connections
 │   ├── research/ study/ capture/ tasks/ # The other workspaces
@@ -1568,6 +1577,7 @@ src/
 │   └── messaging/                      # Discord + Telegram + web-push services
 ├── components/
 │   ├── app-sidebar.tsx                 # Shared sidebar: workspaces, chat history, theme
+│   ├── zuychin-mark.tsx                # Animated Zuychin mark: blink, pointer follow, live states
 │   ├── workspace-shell.tsx             # Top bar with title, tabs and actions for each workspace
 │   ├── today-panel.tsx                 # Today panel: the day, due items, to-dos, scheduled tasks
 │   └── dropdown.tsx                    # Shared listbox used by every select in the app

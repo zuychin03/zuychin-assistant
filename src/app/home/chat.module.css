@@ -654,6 +654,22 @@
   color: var(--ink);
 }
 
+/* The welcome rises in a short stagger; the starters reveal themselves once loaded. */
+.empty > :is(svg, h2, p) {
+  animation: rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.empty > h2 { animation-delay: 70ms; }
+.empty > p { animation-delay: 140ms; }
+.empty > p:last-child { animation-delay: 320ms; }
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
 .empty h2 {
   margin: 0;
   font-size: 24px;
@@ -738,10 +754,6 @@
 .chip > svg {
   flex: none;
   color: var(--muted);
-}
-
-.chip[data-tone="live"] > svg {
-  color: var(--accent-text);
 }
 
 .chip strong {
@@ -901,6 +913,35 @@
   color: var(--page);
 }
 
+/* Voice chat: the latest exchange stays in focus and the thread fades into the voice stage. */
+.userRow,
+.aiRow {
+  transition: opacity 0.4s ease;
+}
+
+.thread[data-voice] [data-past] {
+  opacity: 0.4;
+}
+
+.thread[data-voice] [data-past]:is(:hover, :focus-within) {
+  opacity: 1;
+}
+
+.composerWrap[data-voice] {
+  position: relative;
+}
+
+.composerWrap[data-voice]::before {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 40px;
+  background: linear-gradient(to bottom, transparent, var(--page));
+  content: "";
+  pointer-events: none;
+}
+
 @media (max-width: 1100px) {
   .agent { display: none; }
   .agent + .vsep { display: none; }
@@ -929,5 +970,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .switch, .switch::after, .hoverAction { transition: none; }
+  .switch, .switch::after, .hoverAction, .userRow, .aiRow { transition: none; }
+  .empty > :is(svg, h2, p) { animation: none; }
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 import { ChevronsDown, ChevronsUp, GraduationCap, Inbox, LayoutDashboard, Library, ListChecks, MessageSquare, Monitor, Moon, PanelLeft, PanelLeftClose, Search, SquarePen, Sun, Telescope, UsersRound, X } from "lucide-react";
 import { WorkspaceLink as Link } from "@/components/workspace-link";
 import styles from "./app-sidebar.module.css";
+import { ZuychinMark } from "./zuychin-mark";
 
 export type Destination = "chat" | "library" | "research" | "study" | "capture" | "tasks" | "dashboard" | "council" | "cosmos";
 
@@ -17,9 +18,7 @@ const PRIMARY = [
     { id: "dashboard", href: "/admin", label: "Dashboard", icon: LayoutDashboard },
 ] as const;
 
-export function ZuychinMark({ size = 22, className }: { size?: number; className?: string }) {
-    return <span aria-hidden="true" className={`${styles.mark} ${className ?? ""}`} style={{ width: Math.round(size * 1.28), height: size }} />;
-}
+export { ZuychinMark };
 
 export function CosmosIcon({ size = 16 }: { size?: number }) {
     return <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
@@ -201,7 +200,7 @@ export function AppSidebar({
             role={modal ? "dialog" : undefined} aria-modal={modal || undefined}
         >
             <div className={styles.brand}>
-                <Link href="/" className={styles.brandLink} aria-label="Zuychin, new chat"><ZuychinMark size={20} /><span>Zuychin</span></Link>
+                <Link href="/" className={styles.brandLink} aria-label="Zuychin Assistant, new chat"><ZuychinMark size={20} /><span>Zuychin Assistant</span></Link>
                 <button type="button" className={styles.iconButton} onClick={onClose} aria-label={docked ? "Hide sidebar" : "Close navigation"} title={docked ? "Hide sidebar" : "Close"}>
                     {docked ? <PanelLeftClose size={17} aria-hidden="true" /> : <X size={18} aria-hidden="true" />}
                 </button>

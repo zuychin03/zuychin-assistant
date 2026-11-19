@@ -1,0 +1,123 @@
+.mark {
+  display: inline-block;
+  flex: none;
+  overflow: visible;
+}
+
+/* Lengths below are logo units: the logo is 974 units wide however large it is drawn. */
+.body,
+.look,
+.lid,
+.eye,
+.armLeft,
+.armRight {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.look {
+  translate: var(--look-x, 0px) var(--look-y, 0px);
+  transition: translate 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.eye {
+  rotate: var(--glint, 0deg);
+  transition: rotate 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), fill 0.3s ease;
+}
+
+.mark[data-follow] {
+  cursor: pointer;
+}
+
+/* Live states turn the eye red, as the other live states in Atlas do. */
+.mark:is([data-state="thinking"], [data-state="writing"], [data-state="speaking"]) .eye {
+  fill: var(--accent);
+}
+
+.mark[data-state="idle"] .lid {
+  animation: blink 6.5s ease-in-out 1.2s infinite;
+}
+
+.mark[data-state="thinking"] .eye {
+  animation: turn 1.8s linear infinite;
+}
+
+.mark:is([data-state="thinking"], [data-state="speaking"]) .armLeft {
+  animation: arm-left 1.3s ease-in-out infinite;
+}
+
+.mark:is([data-state="thinking"], [data-state="speaking"]) .armRight {
+  animation: arm-right 1.3s ease-in-out infinite;
+}
+
+.mark[data-state="writing"] .eye {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.mark[data-state="speaking"] .eye {
+  animation: pulse 0.55s ease-in-out infinite;
+}
+
+.mark[data-state="speaking"] :is(.armLeft, .armRight) {
+  animation-duration: 0.55s;
+}
+
+.mark[data-poke] .body {
+  animation: poke 0.6s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+.mark[data-poke] .lid {
+  animation: blink-once 0.6s ease-in-out;
+}
+
+:where(a, button):hover > .mark .lid {
+  animation: blink-once 0.45s ease-in-out;
+}
+
+/* One upper lid: the eye closes from the top down and opens back up, never from both sides. */
+.lid {
+  transform-origin: 50% 100%;
+}
+
+@keyframes blink {
+  0%, 92%, 100% { scale: 1 1; }
+  94.5% { scale: 1 0.06; }
+}
+
+@keyframes blink-once {
+  0%, 100% { scale: 1 1; }
+  45% { scale: 1 0.06; }
+}
+
+@keyframes turn {
+  to { rotate: 360deg; }
+}
+
+@keyframes pulse {
+  0%, 100% { scale: 1; }
+  50% { scale: 1.14; }
+}
+
+@keyframes arm-left {
+  0%, 100% { translate: 0 0; }
+  50% { translate: -40px 0; }
+}
+
+@keyframes arm-right {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 40px 0; }
+}
+
+@keyframes poke {
+  0%, 100% { rotate: 0deg; scale: 1; }
+  30% { rotate: -9deg; scale: 1.08; }
+  60% { rotate: 6deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark,
+  .mark * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

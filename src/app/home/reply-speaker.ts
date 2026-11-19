@@ -1,4 +1,5 @@
 import { stripMarkdown } from "@/lib/speech";
+import { levelMeter } from "./audio-level";
 
 // Speaks a reply through /api/tts in chunks, scheduling each chunk's PCM straight after the last so playback
 // has no gaps. One request runs at a time because the on-box voice has a single synthesis slot.
@@ -22,6 +23,8 @@ export class ReplySpeaker {
     private readonly abort = new AbortController();
     private readonly queue: string[] = [];
     private ctx: AudioContext | null = null;
+    private output: AnalyserNode | null = null;
+    private meter: (() => number) | null = null;
     private playhead = 0;
     private pushedChars = 0;
     private running = false;
@@ -48,6 +51,11 @@ export class ReplySpeaker {
         if (this.ended || this.finished) return;
         this.finished = true;
         void this.pump();
+    }
+
+    /** Loudness of the audio playing now, 0 to 1. */
+    level(): number {
+        return this.meter?.() ?? 0;
     }
 
     stop(): void {
@@ -93,6 +101,10 @@ export class ReplySpeaker {
             await this.options.beforeFirstAudio?.();
             this.abort.signal.throwIfAborted();
             this.ctx = new AudioContext();
+            this.output = this.ctx.createAnalyser();
+            this.output.fftSize = 512;
+            this.output.connect(this.ctx.destination);
+            this.meter = levelMeter(this.output);
             if (this.ctx.state === "suspended") await this.ctx.resume();
             this.playhead = this.ctx.currentTime + 0.1;
         }
@@ -132,7 +144,7 @@ export class ReplySpeaker {
         for (let i = 0; i < int16.length; i++) channel[i] = int16[i] / 32768;
         const source = ctx.createBufferSource();
         source.buffer = buffer;
-        source.connect(ctx.destination);
+        source.connect(this.output ?? ctx.destination);
         if (this.playhead < ctx.currentTime + 0.05) this.playhead = ctx.currentTime + 0.05;
         source.start(this.playhead);
         this.playhead += buffer.duration;
@@ -158,5 +170,7 @@ export class ReplySpeaker {
     private closeAudio(): void {
         if (this.ctx) void this.ctx.close().catch(() => { });
         this.ctx = null;
+        this.output = null;
+        this.meter = null;
     }
 }

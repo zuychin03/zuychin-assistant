@@ -343,7 +343,7 @@ Quiet, bordered and compact.
 
 ### Chips
 - **Style:** raised or surface fill, 1px rule border, 10px radius (composer context chips) or 8px (artifact chips).
-- **State:** a live chip shows its icon in accent-text; everything else stays neutral.
+- **State:** chips stay neutral. A voice chat's live state is shown by the Voice Stage, not a chip.
 
 ### Cards / Containers
 - **Corner Style:** 10px.
@@ -369,6 +369,12 @@ The day drawn to scale. Hour rules in line colour, a strong-rule axis, mono hour
 
 ### Chat Starters
 Five 44px cards under the empty-state heading, centred and wrapping on desktop, stacked full width under 900px. Live starters lead: the next timed event ("Prepare for …" with its time), the most urgent to-do due by the end of tomorrow (no more than a week overdue) with its due state, and study cards still reviewable today, which links to Study. Fixed starters fill the rest. Each card is a muted icon, a 14px label clipped at 30ch and an optional 13px tabular meta, accent-text for due today and danger for overdue, as in the Today panel. The set stays hidden, holding its space, until the live data is known (at most 2.5 seconds), then fades in once and does not change under the pointer.
+
+### Voice Stage
+Replaces the message bar while a voice chat runs. A surface card with a strong-rule border, 20px radius and the composer shadow, rising 6px as it enters. A 132px canvas (112px under 640px) sits over a bar with a 15px/600 ink phase label, a 13px muted detail line and 32px bordered buttons (Send now while listening, Skip while speaking, End always); under 480px the buttons become 44px icons. The canvas is a slowly turning field of ink stars and links around a red core, coloured from `--ink` and `--accent`, with additive glow in dark mode. Each phase has its own motion and none borrows another's: listening sends one wave out from the core through every star at once on each syllable; transcribing lays the field along a shimmering line; thinking hops lights from star to star; tools trace a red route that leaves marked stars; speaking swells and brightens the whole field in unison with the voice. No rings ever spread from the core. A tap rings the nearest star and bursts from it, and the pointer pulls nearby stars toward it. Earlier messages drop to 40% opacity during a voice chat and come back on hover or focus. With reduced motion the field holds a settled frame per phase and only the core shows loudness.
+
+### Zuychin Mark
+The mark is an inline `currentColor` SVG. Idle, it blinks every few seconds with one upper lid that closes top down and opens back up, never from both sides. On the welcome screen the lens follows the pointer and a tap pokes it. Only the newest reply's mark moves: its lens turns red, turning while thinking and pulsing while writing or speaking, and the side blocks move while thinking or speaking. Hovering a link or button that holds the mark blinks it once. Reduced motion keeps it still.
 
 ### Reply Sources Constellation
 The signature component. Under a reply, a muted disclosure opens a 300px star chart beside a numbered source list. The chart is a framed plate with ticks and a dotted graticule; sources are numbered points joined by thin chart-line strokes, highlighted to chart-line-on with an ink ring when their list row is hovered. Each list row shows a tabular number, a family dot and the page title; "Open in Cosmos" closes the list as an accent-text link. Under 560px of container width or 900px of viewport, the chart stacks above the list.

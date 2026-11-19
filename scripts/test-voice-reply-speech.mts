@@ -37,6 +37,9 @@ class FakeAudioContext {
     createBufferSource() {
         return { buffer: null, connect() { }, start(at: number) { starts.push(at); } };
     }
+    createAnalyser() {
+        return { fftSize: 2048, connect() { }, getFloatTimeDomainData() { } };
+    }
     get destination() { return {}; }
 }
 Object.assign(globalThis, { AudioContext: FakeAudioContext });

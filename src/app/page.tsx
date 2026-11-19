@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
 import { AppSidebar, SidebarToggle, ZuychinMark, useMediaQuery, useSidebarState, useStoredFlag } from "@/components/app-sidebar";
 import { TODAY_DOCKED_QUERY, TodayPanel, TodayToggle, useDueCount } from "@/components/today-panel";
-import { ArrowUp, Bot, Check, Circle, X, Paperclip, FileText, FileCode, FileArchive, Folder, Image as ImageIcon, LoaderCircle, Music, Video, File, Brain, Download, SlidersHorizontal, Database, Info, ArrowDown, ChevronRight, RotateCcw, Reply, Square, SquarePen, Mic, Volume2, BookOpen, CircleDollarSign } from "lucide-react";
+import { ArrowUp, Bot, Check, Circle, X, Paperclip, FileText, FileCode, FileArchive, Folder, Image as ImageIcon, LoaderCircle, Music, Video, File, Brain, Download, SlidersHorizontal, Database, Info, ArrowDown, ChevronRight, RotateCcw, Reply, Square, SquarePen, Mic, BookOpen, CircleDollarSign } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, modelSearchTerms, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -30,6 +30,10 @@ import { transcribeVoiceBlob } from "./home/voice-pcm";
 import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, hasStopPhrase, pickFiller, startsWork } from "./home/voice-loop";
 import { ReplySpeaker } from "./home/reply-speaker";
 import { speakableEnd } from "./home/speech-chunks";
+import { levelMeter } from "./home/audio-level";
+import { VoiceStage } from "./home/voice-stage";
+import type { VoicePhase } from "./home/voice-constellation";
+import type { MarkState } from "@/components/zuychin-mark";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 
 interface ChatMessage {
@@ -224,6 +228,8 @@ export default function Home() {
   const [cmdDismissed, setCmdDismissed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceTranscribing, setVoiceTranscribing] = useState(false);
+  // What the current turn's running tool is doing; null when no tool is running.
+  const [voiceActivity, setVoiceActivity] = useState<string | null>(null);
   const [sttAvailable, setSttAvailable] = useState(false);
   const sttAvailableRef = useRef(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
@@ -266,7 +272,9 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
-  const ttsPlayerRef = useRef<{ stop: () => void } | null>(null);
+  const ttsPlayerRef = useRef<{ stop: () => void; level: () => number } | null>(null);
+  // Loudness of the open mic, for the voice stage; null while not recording.
+  const micLevelRef = useRef<(() => number) | null>(null);
   // Guards a stale TTS fetch from playing over a newer one.
   const speakSeqRef = useRef(0);
   // Hands-free voice conversation mode (see startVoiceRecording).
@@ -278,7 +286,7 @@ export default function Home() {
   const discardRecordingRef = useRef(false);
   const voicePrefsRef = useRef<{ replyWithVoice: string; voiceName: string }>({ replyWithVoice: "onVoiceInput", voiceName: "Kore" });
   // The short phrase spoken while a voice turn waits on tools (see sayFiller).
-  const fillerRef = useRef<{ stop: () => void; finished: Promise<void>; playing: boolean } | null>(null);
+  const fillerRef = useRef<{ stop: () => void; finished: Promise<void>; playing: boolean; level: () => number } | null>(null);
   const lastFillerRef = useRef<string | undefined>(undefined);
 
   const loadChatPreferences = useCallback(async () => {
@@ -817,6 +825,7 @@ export default function Home() {
     const micTurn = p.inputMode === "voice" || (!!p.file && isVoiceNote(p.file));
     const spokenTurn = () => chats.get() === target && micTurn && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off");
     let fillerTimer: ReturnType<typeof setTimeout> | undefined;
+    let runningTools = 0;
     // A spoken turn speaks each finished sentence while the rest of the reply still streams.
     let streamedText = "";
     // Cast so TypeScript does not narrow it to null: feedLive assigns it inside a closure.
@@ -941,6 +950,16 @@ export default function Home() {
             fillerTimer = setTimeout(() => { if (spokenTurn() && !live) void sayFiller(); }, FILLER_DELAY_MS);
           }
           if (evt.type === "done" || evt.type === "error") clearTimeout(fillerTimer);
+          if (evt.type === "tool" || evt.type === "subagent") {
+            runningTools = Math.max(0, runningTools + (evt.phase === "start" ? 1 : -1));
+            if (chats.get() === target) {
+              if (runningTools === 0) setVoiceActivity(null);
+              else if (evt.phase === "start") setVoiceActivity(evt.type === "tool" ? FRIENDLY_TOOL[evt.name] ?? "Running a tool" : "Delegating to another model");
+            }
+          } else if (evt.type === "token" && runningTools > 0) {
+            runningTools = 0;
+            setVoiceActivity(null);
+          }
 
           if (evt.type === "run") {
             runId = evt.runId;
@@ -1062,6 +1081,7 @@ export default function Home() {
       recoverDraft();
     } finally {
       clearTimeout(fillerTimer);
+      if (runningTools > 0) setVoiceActivity(null);
       // A turn that failed or was cancelled stops the part of its reply already being spoken.
       if (live && !liveFinished && live.seq === speakSeqRef.current) stopSpeaking();
       if (chats.finishRun(target, run) && canDrain && !controller.signal.aborted) resumeQueue(target);
@@ -1165,7 +1185,7 @@ export default function Home() {
     let ctx: AudioContext | null = null;
     let settle = () => { };
     const finished = new Promise<void>((resolve) => { settle = resolve; });
-    const handle = { stop: () => abort.abort(), finished, playing: false };
+    const handle = { stop: () => abort.abort(), finished, playing: false, level: () => 0 };
     fillerRef.current?.stop();
     fillerRef.current = handle;
     try {
@@ -1184,7 +1204,11 @@ export default function Home() {
       if (abort.signal.aborted) return;
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.connect(ctx.destination);
+      source.connect(analyser);
+      handle.level = levelMeter(analyser);
       handle.playing = true;
       await new Promise<void>((resolve) => {
         source.onended = () => resolve();
@@ -1225,7 +1249,7 @@ export default function Home() {
         if (voiceLoopRef.current) void startVoiceRecording();
       },
     });
-    ttsPlayerRef.current = { stop: () => speaker.stop() };
+    ttsPlayerRef.current = { stop: () => speaker.stop(), level: () => speaker.level() };
     return { speaker, seq };
   };
 
@@ -1260,6 +1284,14 @@ export default function Home() {
     stopSpeaking();
   };
 
+  // Stops the reply being spoken and listens again at once; the reply stays on screen.
+  const skipSpeech = () => {
+    stopSpeaking();
+    if (voiceLoopRef.current) void startVoiceRecording();
+  };
+
+  const readVoiceLevel = () => Math.max(micLevelRef.current?.() ?? 0, ttsPlayerRef.current?.level() ?? 0, fillerRef.current?.level() ?? 0);
+
   const startVoiceRecording = async () => {
     if (!chatPolicyRef.current.ready || (chatPolicyRef.current.freeOnly && !sttAvailableRef.current)) return;
     if (recorderRef.current) return;
@@ -1289,6 +1321,7 @@ export default function Home() {
       const analyser = ac.createAnalyser();
       analyser.fftSize = 1024;
       source.connect(analyser);
+      micLevelRef.current = levelMeter(analyser);
       const samples = new Float32Array(analyser.fftSize);
       let spoke = false;
       let silenceSince = 0;
@@ -1313,6 +1346,7 @@ export default function Home() {
       }, 150);
       vadCleanupRef.current = () => {
         clearInterval(vadTimer);
+        micLevelRef.current = null;
         void ac.close().catch(() => { });
       };
 
@@ -1669,6 +1703,15 @@ export default function Home() {
     }}
   />;
 
+  const voicePhase: VoicePhase = isRecording ? "listening" : voiceTranscribing ? "transcribing" : speakingId ? "speaking" : isLoading ? (voiceActivity ? "tools" : "thinking") : "idle";
+  // A voice chat keeps the latest exchange in focus; earlier messages recede.
+  const voiceFocusFrom = voiceLoop ? messages.findLastIndex((m) => m.role === "user") : -1;
+  // Only the newest reply's mark moves, so a long thread stays calm.
+  const markState = (msg: ChatMessage, index: number): MarkState =>
+    speakingId === msg.id ? "speaking"
+      : isLoading && msg.id.startsWith("stream-") ? "writing"
+        : index === messages.length - 1 ? "idle" : "still";
+
   return (
     <div className={ui.app}>
       {modelInfoOpen && currentChatModel && (
@@ -1796,14 +1839,14 @@ export default function Home() {
         )}
 
         <div className={ui.threadWrap}>
-          <main onScroll={handleMessagesScroll} className={ui.thread}>
+          <main onScroll={handleMessagesScroll} className={ui.thread} data-voice={voiceLoop || undefined}>
             <div className={ui.column}>
               <BranchNavigation conversationId={session.key === NEW_CHAT ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
               {session.historyLoading && <p role="status" className={ui.status}>Loading conversation…</p>}
               {!session.loaded && !session.historyLoading && <p role="status" className={ui.status}>Load this conversation before sending a message. Your draft is safe.</p>}
               {messages.length === 0 && session.loaded && (
                 <div className={ui.empty}>
-                  <ZuychinMark size={34} className={ui.emptyMark} />
+                  <ZuychinMark size={34} className={ui.emptyMark} state="idle" follow />
                   <h2>What should we work on?</h2>
                   <p>Ask about your day, your notes or what you are studying. Zuychin can plan, research and keep track of things for you.</p>
                   <DayStarters onFill={applySuggestion} />
@@ -1811,8 +1854,8 @@ export default function Home() {
                 </div>
               )}
 
-              {messages.map((msg) => msg.role === "user" ? (
-                <div key={msg.id} className={ui.userRow}>
+              {messages.map((msg, index) => msg.role === "user" ? (
+                <div key={msg.id} className={ui.userRow} data-past={index < voiceFocusFrom || undefined}>
                   {msg.persisted && session.key !== NEW_CHAT && <span className={ui.hoverAction}>{branchAction(msg)}</span>}
                   <button type="button" onClick={() => startReply(msg)} className={`${ui.iconButton} ${ui.hoverAction}`} aria-label="Reply to this message" title="Reply to this message">
                     <Reply size={15} aria-hidden="true" />
@@ -1824,8 +1867,8 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <article key={msg.id} className={ui.aiRow} aria-label="Zuychin">
-                  <ZuychinMark size={18} className={ui.aiMark} />
+                <article key={msg.id} className={ui.aiRow} aria-label="Zuychin" data-past={index < voiceFocusFrom || undefined}>
+                  <ZuychinMark size={18} className={ui.aiMark} state={markState(msg, index)} />
                   <div className={ui.aiBody}>
                     {msg.replyTrace && <ReplyActivity trace={msg.replyTrace} />}
                     {msg.replyTo && renderBubbleExtras(msg.replyTo)}
@@ -1890,7 +1933,7 @@ export default function Home() {
 
               {isLoading && (
                 <article className={ui.aiRow} aria-label="Zuychin is replying">
-                  <ZuychinMark size={18} className={ui.aiMark} />
+                  <ZuychinMark size={18} className={ui.aiMark} state="thinking" />
                   <div className={ui.aiBody}>
                     {agentRun ? (
                       <div className={ui.agentRun} role="status">
@@ -1954,20 +1997,9 @@ export default function Home() {
           )}
         </div>
 
-        <footer className={ui.composerWrap}>
+        <footer className={ui.composerWrap} data-voice={voiceLoop || undefined}>
           <div className={ui.composerStack}>
-            {voiceLoop && (
-              <div className={ui.chip} data-tone="live">
-                {isRecording ? <Mic size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
-                <strong>Voice chat{isRecording ? ", listening" : voiceTranscribing ? ", transcribing" : speakingId ? ", speaking" : isLoading ? ", thinking" : ""}</strong>
-                <span>Say &ldquo;{STOP_PHRASE}&rdquo; to end</span>
-                <button type="button" onClick={exitVoiceLoop} className={ui.iconButton} aria-label="End voice chat" title="End voice chat">
-                  <X size={14} aria-hidden="true" />
-                </button>
-              </div>
-            )}
-
-            {replyTo && (
+            {replyTo && !voiceLoop && (
               <div className={ui.chip}>
                 <Reply size={14} aria-hidden="true" />
                 <strong>Replying to {replyTo.role === "user" ? "you" : "Zuychin"}</strong>
@@ -1978,7 +2010,7 @@ export default function Home() {
               </div>
             )}
 
-            {pendingFile && (
+            {pendingFile && !voiceLoop && (
               <div className={ui.chip}>
                 {getFileIcon(pendingFile.mimeType)}
                 <strong>{pendingFile.name}</strong>
@@ -1989,7 +2021,7 @@ export default function Home() {
               </div>
             )}
 
-            {slashMatches.length > 0 && (
+            {slashMatches.length > 0 && !voiceLoop && (
               <div id="chat-command-list" role="listbox" aria-label="Commands" className={`${ui.cmdMenu} animate-fade-in-scale`}>
                 {slashMatches.map((c, i) => (
                   <button
@@ -2021,7 +2053,20 @@ export default function Home() {
               <button type="button" onClick={() => setGenerationOpen(true)}>Open settings</button>
             </div>}
 
-            <form onSubmit={handleSubmit} className={ui.composer}>
+            {voiceLoop && (
+              <VoiceStage
+                phase={voicePhase}
+                activity={voiceActivity}
+                readLevel={readVoiceLevel}
+                stopPhrase={STOP_PHRASE}
+                onSendNow={toggleRecording}
+                onSkip={skipSpeech}
+                onEnd={exitVoiceLoop}
+              />
+            )}
+
+            {/* Hidden, not unmounted, so its refs and the textarea's size survive a voice chat. */}
+            <form onSubmit={handleSubmit} className={ui.composer} hidden={voiceLoop}>
               <input ref={fileInputRef} type="file" onChange={handleFileSelect} hidden accept={UPLOAD_ACCEPT} />
               <textarea
                 ref={inputRef}
