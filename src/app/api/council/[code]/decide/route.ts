@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { finalizeCouncil } from "@/lib/council/close";
 import { continueTheCouncil } from "@/lib/council/owner-channel";
 import { getSessionByCode } from "@/lib/council/store";
+import { isOnlineCouncil } from "@/lib/council/online/store";
+import { ensureOnlineRunner } from "@/lib/council/online/service";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
@@ -33,6 +35,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         const outcome = await continueTheCouncil({ session, directive });
         if (!outcome.ok) {
             return NextResponse.json({ error: outcome.reason ?? "Could not reopen it." }, { status: 409 });
+        }
+        // The runner stopped when the verdict was proposed; the reopened rounds need it back.
+        if (session.protocolVersion === 3 && session.councilType === "debate" && await isOnlineCouncil(session.id).catch(() => false)) {
+            ensureOnlineRunner(session.id);
         }
         return NextResponse.json({ decision: "continue", ...outcome });
     } catch (error) {

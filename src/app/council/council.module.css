@@ -205,6 +205,17 @@
 .modelGrid:empty { display: none; }
 .modelRow { display: grid; grid-template-columns: minmax(90px, .7fr) minmax(150px, 1.4fr) minmax(130px, 1fr); align-items: center; gap: 8px; }
 .modelAgent { color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.fieldLabel { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; white-space: nowrap; }
+.checkLabel { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; white-space: nowrap; }
+.checkLabel input { accent-color: var(--accent); }
+.checkLabel:has(input:disabled) { color: var(--muted); }
+.seatGrid { display: flex; flex-direction: column; gap: 6px; }
+.seatRow {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.6fr) minmax(110px, .8fr) minmax(130px, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+}
 .formNote { color: var(--muted); font-size: 12.5px; line-height: 1.55; }
 .remoteBrief {
     max-height: 380px;
@@ -369,6 +380,9 @@
 }
 @container council (max-width: 600px) {
     .modelRow { grid-template-columns: minmax(0, 1fr); padding-block: 6px; }
+    .seatRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding-block: 8px; border-top: 1px solid var(--line); }
+    .seatRow > :first-child { grid-column: 1 / -1; }
+    .seatRow > :last-child { justify-self: end; }
     .evidenceGrid { grid-template-columns: minmax(0, 1fr); }
     .permissionButtons { margin-left: 0; }
     .rowMeta { flex-basis: 100%; margin-left: 0; }

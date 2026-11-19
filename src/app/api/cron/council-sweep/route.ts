@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { notify } from "@/lib/messaging/router";
 import { finalizeCouncil, proposeCouncilVerdict } from "@/lib/council/close";
 import { requireCron } from "@/lib/auth/guard";
+import { resumeOnlineCouncils } from "@/lib/council/online/service";
 import {
     countSweepCandidates, expireOverdueSessions, listStandbyExpired, listUnfiledArchives,
     listSessionsNeedingVerdict, readTranscript,
@@ -26,11 +27,18 @@ export async function POST(req: NextRequest) {
         const denied = requireCron(req);
         if (denied) return denied;
 
+        // Backstop for the in-process resume scan: an online council whose
+        // runner died with nobody watching is picked back up here.
+        const resumed = await resumeOnlineCouncils().catch((error) => {
+            console.warn("[CouncilSweep] online resume failed:", error);
+            return 0;
+        });
+
         // Nothing to do is the normal outcome at this cadence, and one indexed
         // count replaces four full-row queries to discover it. null is the count
         // itself failing, so fall through rather than skip the sweep.
         const candidates = await countSweepCandidates();
-        if (candidates === 0) return NextResponse.json({ idle: true });
+        if (candidates === 0) return NextResponse.json(resumed ? { idle: true, resumed } : { idle: true });
 
         const expired = await expireOverdueSessions();
 
@@ -82,7 +90,7 @@ export async function POST(req: NextRequest) {
             if (await refileClosed(session.id)) refiled++;
         }
 
-        return NextResponse.json({ expired: expired.length, autoVerdicts, autoAccepted, refiled });
+        return NextResponse.json({ expired: expired.length, autoVerdicts, autoAccepted, refiled, resumed });
     } catch (error) {
         console.error("[CouncilSweep] Error:", error);
         return NextResponse.json({ error: "Sweep failed." }, { status: 500 });

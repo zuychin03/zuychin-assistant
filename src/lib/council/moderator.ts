@@ -12,7 +12,12 @@ import { appendMessage, listParticipants, readTick, readTranscript } from "./sto
 
 const MAX_NOTE_CHARS = 400;
 
-export async function moderateRound(params: { sessionId: string; round: number }): Promise<void> {
+export async function moderateRound(params: {
+    sessionId: string;
+    round: number;
+    /** Online councils pass a generator that follows their model policy; others use paid Gemini. */
+    generate?: (prompt: string) => Promise<string>;
+}): Promise<void> {
     try {
         // Silence during a pause is the owner's doing. Nudging agents that were
         // deliberately stopped reads as the moderator arguing with the room.
@@ -51,8 +56,10 @@ Write ONE note of at most ${MAX_NOTE_CHARS} characters, plain text, doing exactl
 2. Name any point now made twice and declare it settled.
 3. State the one question round ${params.round + 1} should decide.`;
 
-        const res = await ai.models.generateContent({ model: MODEL, contents: prompt });
-        const note = (res.text ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, MAX_NOTE_CHARS);
+        const text = params.generate
+            ? await params.generate(prompt)
+            : (await ai.models.generateContent({ model: MODEL, contents: prompt })).text ?? "";
+        const note = text.replace(/[\r\n]+/g, " ").trim().slice(0, MAX_NOTE_CHARS);
         if (!note) return;
 
         // unique (session_id, speaker, client_key) collapses two racing waiters

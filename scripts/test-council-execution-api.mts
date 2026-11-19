@@ -23,6 +23,8 @@ function load(relative: string, reader: Record<string, unknown>) {
             listParticipants: async () => [],
             readTranscript: async () => [{ seq: 1, executionId, body: "Keep the transcript visible" }, { seq: 2, executionId: null, body: "Old message" }],
         };
+        if (id === "@/lib/council/online/store") return { latestSeatModels: async () => new Map(), readLease: async () => null };
+        if (id === "@/lib/ai/providers") return { resolveModelKey: () => null };
         if (id === "@/lib/council/campaign") return {
             getCampaignForSession: async () => ({ id: "campaign", integrationReport: "private legacy command output", integrationManifest: { version: 1, campaignId: "campaign", baseSha: "base", items: [{ itemId: "task", sequence: 1, agentName: "seat", commitSha: "accepted", acceptedExecutionId: executionId, executionEvidence: frozen, private: "private" }] } }),
             listCampaignWorkItems: async () => [{ id: "task", submittedExecutionId: "00000000-0000-4000-8000-000000000002", acceptedExecutionId: executionId, hostVerification: "private legacy arguments" }],
@@ -42,6 +44,7 @@ test("detail API preserves transcript on evidence errors, resolves exact binding
     assert.equal(body.messages[0].body, "Keep the transcript visible");
     assert.equal(body.messages[1].executionId, null);
     assert.equal(body.executions.historyStatus, "unavailable");
+    assert.equal(body.online, null, "an agent council is never reported as online");
     assert.equal(body.campaign.workItems[0].submittedExecutionId, "00000000-0000-4000-8000-000000000002");
     assert.equal(body.campaign.integrationManifest.items[0].executionEvidence.effectiveModel, "observed");
     assert(!JSON.stringify(body).includes("private"));

@@ -1,10 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionByCode, listParticipants, readTranscript } from "@/lib/council/store";
+import { getSessionByCode, listParticipants, readTranscript, type CouncilParticipant, type CouncilSession } from "@/lib/council/store";
 import { getCampaignForSession, listCampaignWorkItems } from "@/lib/council/campaign";
 import { readExecutionEvidence } from "@/lib/council/execution-reader";
 import { parseExecutionEvidence } from "@/lib/council/execution-evidence";
+import { latestSeatModels, readLease } from "@/lib/council/online/store";
+import { resolveModelKey } from "@/lib/ai/providers";
 
 const headers = { "Cache-Control": "private, no-store" };
+
+// Online councils are debates whose every seat is a managed_api model run.
+async function readOnlineState(session: CouncilSession, participants: CouncilParticipant[]) {
+    if (session.protocolVersion !== 3 || session.councilType !== "debate") return null;
+    const agents = participants.filter((p) => p.kind === "agent");
+    const models = await latestSeatModels(session.id).catch(() => new Map());
+    if (agents.length === 0 || agents.some((p) => !models.has(p.name))) return null;
+    const lease = ["open", "concluding"].includes(session.status) ? await readLease(session.id) : null;
+    const state = session.status === "awaiting_owner" ? "waiting_owner"
+        : !["open", "concluding"].includes(session.status) ? "ended"
+            : session.pausedAt ? "paused"
+                : lease?.live ? "running" : "restarting";
+    return {
+        seats: agents.map((p) => {
+            const key: string = models.get(p.name)!.modelKey;
+            const resolved = resolveModelKey(key);
+            return { name: p.name, modelKey: key, label: resolved?.model.label ?? key, available: resolved !== null };
+        }),
+        runner: { state, leaseExpiresAt: lease?.leaseExpiresAt ?? null },
+    };
+}
 
 // Polled every couple of seconds by /council, so it stays a plain read: no
 // touch, no election, no cursor write. Watching must never change whose turn it
@@ -24,9 +47,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
             readTranscript({ sessionId: session.id, fromSeq: sinceSeq, limit: 200 }),
             campaign ? listCampaignWorkItems(campaign.id) : Promise.resolve([]),
         ]);
-        const executions = await readExecutionEvidence(session.id, {
-            referencedIds: [...messages.map(message => message.executionId), ...workItems.flatMap(item => [item.submittedExecutionId, item.acceptedExecutionId])],
-        });
+        const [executions, online] = await Promise.all([
+            readExecutionEvidence(session.id, {
+                referencedIds: [...messages.map(message => message.executionId), ...workItems.flatMap(item => [item.submittedExecutionId, item.acceptedExecutionId])],
+            }),
+            readOnlineState(session, participants),
+        ]);
 
         // Obligations are already machine-computed by the protocol, so the page
         // reads them rather than re-deriving what "unanswered" means.
@@ -70,6 +96,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
             })),
             messages,
             executions,
+            online,
             openObligations,
             campaign: campaign ? {
                 id: campaign.id, status: campaign.status, repoPath: campaign.repoPath, baseBranch: campaign.baseBranch,

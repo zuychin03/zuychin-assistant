@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listAwaitingOwnerCouncils, listCampaignCouncils, listOpenCouncils, listParticipants, type CouncilSession } from "@/lib/council/store";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { isOnlineCouncil } from "@/lib/council/online/store";
 
 // Read-only: the page must never be able to advance a debate, so nothing here
 // touches presence, the floor or the cursor.
@@ -29,10 +30,12 @@ export async function GET() {
         const toOpenItem = async (s: CouncilSession) => {
             const parts = await listParticipants(s.id);
             const agents = parts.filter((p) => p.kind === "agent");
+            const online = s.protocolVersion === 3 && s.councilType === "debate" && await isOnlineCouncil(s.id).catch(() => false);
             return {
                 code: s.code,
                 topic: s.topic,
                 councilType: s.councilType,
+                online,
                 status: s.status,
                 campaignRunning: liveCampaigns.has(s.id),
                 round: s.round,

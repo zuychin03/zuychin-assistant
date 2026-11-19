@@ -33,10 +33,15 @@ export interface ReplyRef {
 export interface CouncilProposal {
     topic: string;
     brief: string;
-    participants: { name: string; expertise: string }[];
+    /** modelKey and source are set on online proposals, where each seat is a model. */
+    participants: { name: string; expertise: string; modelKey?: string; source?: string }[];
     closerName: string;
     councilType: string;
     maxRounds?: number;
+    /** Seats are chat models the server runs; started from the card with no host. */
+    online?: boolean;
+    allowPaid?: boolean;
+    purpose?: string;
 }
 
 export interface MessageMetadata {

@@ -296,7 +296,9 @@ export async function createCouncilSession(params: {
     return refreshed ?? mapSession(session);
 }
 
-async function selectSession(column: "id" | "code", value: string): Promise<CouncilSession | null> {
+// strict: a failed read throws instead of looking like a missing row. The online
+// runner needs that, or one network blip reads as "council gone".
+async function selectSession(column: "id" | "code", value: string, strict = false): Promise<CouncilSession | null> {
     try {
         const { data, error } = await supabase
             .from("council_sessions")
@@ -309,6 +311,7 @@ async function selectSession(column: "id" | "code", value: string): Promise<Coun
         const message = err instanceof Error ? err.message : String(err);
         console.error("[Council] getSession failed:", message);
         if (schemaUnavailable(message)) throw new CouncilSchemaError();
+        if (strict) throw err;
         return null;
     }
 }
@@ -317,8 +320,8 @@ export async function getSessionByCode(code: string): Promise<CouncilSession | n
     return selectSession("code", code.trim().toUpperCase());
 }
 
-export async function getSessionById(id: string): Promise<CouncilSession | null> {
-    return selectSession("id", id);
+export async function getSessionById(id: string, opts: { strict?: boolean } = {}): Promise<CouncilSession | null> {
+    return selectSession("id", id, opts.strict);
 }
 
 // A single primary-key point read. Never { count: "exact", head: true }: a count
@@ -382,6 +385,8 @@ export async function appendMessage(params: {
     replyToSeq?: number;
     ackSeq?: number;
     identity?: CouncilWriteIdentity;
+    /** Online councils take one post per seat per round; everyone else keeps the protocol default. */
+    postsPerRound?: number;
 }): Promise<{
     ok: boolean; seq?: number; round: number; reason?: string;
     duplicate?: boolean; advanced?: boolean; posts?: number;
@@ -402,7 +407,7 @@ export async function appendMessage(params: {
             p_addressed_to: params.addressedTo ?? "all",
             p_reply_to_seq: params.replyToSeq ?? null,
             p_ack_seq: params.ackSeq ?? null,
-            p_posts_per_round: POSTS_PER_ROUND,
+            p_posts_per_round: params.postsPerRound ?? POSTS_PER_ROUND,
             p_stale_seconds: PARTICIPANT_STALE_SECONDS,
             ...(identity ? { p_seat_token_hash: identity.tokenHash, p_expected_execution_id: identity.executionId } : {}),
         });
@@ -605,7 +610,7 @@ export async function leaveCouncil(sessionId: string, agentName: string): Promis
     if (error) console.warn("[Council] leaveCouncil failed:", error.message);
 }
 
-export async function listParticipants(sessionId: string): Promise<CouncilParticipant[]> {
+export async function listParticipants(sessionId: string, opts: { strict?: boolean } = {}): Promise<CouncilParticipant[]> {
     const { data, error } = await supabase
         .from("council_participants")
         .select(PARTICIPANT_COLUMNS)
@@ -613,6 +618,7 @@ export async function listParticipants(sessionId: string): Promise<CouncilPartic
         .order("joined_seq", { ascending: true });
     if (error) {
         console.error("[Council] listParticipants failed:", error.message);
+        if (opts.strict) throw new Error(`listParticipants failed: ${error.message}`);
         return [];
     }
     return (data as unknown as ParticipantRow[]).map(mapParticipant);
@@ -622,6 +628,8 @@ export async function readTranscript(params: {
     sessionId: string;
     fromSeq?: number;
     limit?: number;
+    /** Throw on a failed read instead of returning an empty transcript. */
+    strict?: boolean;
 }): Promise<CouncilMessage[]> {
     const { data, error } = await supabase
         .from("council_messages")
@@ -632,6 +640,7 @@ export async function readTranscript(params: {
         .limit(params.limit ?? 30);
     if (error) {
         console.error("[Council] readTranscript failed:", error.message);
+        if (params.strict) throw new Error(`readTranscript failed: ${error.message}`);
         return [];
     }
     return (data as unknown as MessageRow[]).map(mapMessage);

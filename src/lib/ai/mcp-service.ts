@@ -76,18 +76,19 @@ export const COUNCIL_TOOLS: McpTool[] = [
             },
             participants: {
                 type: "array",
-                description: "2-5 agents. Use the instance names his host advertises (claude-a, codex-1, ...) when you know them; he can edit them before launching.",
+                description: "2-5 agents. Use the instance names his host advertises (claude-a, codex-1, ...) when you know them; he can edit them before launching. For an online council these are model seats: name and modelKey are optional.",
                 required: true,
                 items: {
                     type: "object",
                     description: "One participant.",
                     properties: {
-                        name: { type: "string", description: "Agent instance name, e.g. 'codex-1'." },
-                        expertise: { type: "string", description: "One line on what it brings and what it should own." },
+                        name: { type: "string", description: "Agent instance name, e.g. 'codex-1'. Online seats default to the model's short name." },
+                        expertise: { type: "string", description: "One line on what it brings and what it should own. For an online seat, the angle it argues from." },
+                        modelKey: { type: "string", description: "Online councils only: provider::model key from model_status." },
                     },
                 },
             },
-            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names.", required: true },
+            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names. Online councils may omit it; the first seat closes.", required: false },
             councilType: {
                 type: "string",
                 enum: ["debate", "code", "research", "audit", "debug"],
@@ -95,30 +96,55 @@ export const COUNCIL_TOOLS: McpTool[] = [
                 required: true,
             },
             maxRounds: { type: "number", description: "Rounds before it must conclude. Omit to take the type's default.", required: false },
+            online: {
+                type: "boolean",
+                description: "true for an online council: a debate between chat models from his selectable list, run on the server with no host or agents to start. It keeps running if he closes the app. Give each participant a modelKey from model_status, or leave modelKey out (or send no participants) to auto-fill free models from different vendors.",
+                required: false,
+            },
+            purpose: {
+                type: "string",
+                enum: ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"],
+                description: "Online councils only: what auto-fill picks models for. Defaults to reasoning.",
+                required: false,
+            },
+            allowPaid: { type: "boolean", description: "Online councils only: allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
         },
     },
     {
         name: "council_convene",
         description:
-            "Open a council immediately: a live multi-round debate between the user's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
+            "Open a council immediately: a live multi-round debate between the user's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. With online: true it instead starts a debate between chat models right away, run on the server, and returns its code: use that when he asks for an online or model council outside the web app (Telegram, Discord). Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
         parameters: {
             topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
             brief: { type: "string", description: "Context every participant needs: constraints, what has been tried, what a good answer looks like.", required: true },
             participants: {
                 type: "array",
-                description: "2-5 agents to invite. Short lowercase handles he will type into each agent.",
+                description: "2-5 agents to invite. Short lowercase handles he will type into each agent. For an online council these are model seats: name and modelKey are optional.",
                 required: true,
                 items: {
                     type: "object",
                     description: "One participant.",
                     properties: {
-                        name: { type: "string", description: "Agent handle, e.g. 'codex'." },
-                        expertise: { type: "string", description: "One line on what it brings." },
+                        name: { type: "string", description: "Agent handle, e.g. 'codex'. Online seats default to the model's short name." },
+                        expertise: { type: "string", description: "One line on what it brings. For an online seat, the angle it argues from." },
+                        modelKey: { type: "string", description: "Online councils only: provider::model key from model_status." },
                     },
                 },
             },
-            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names.", required: true },
-            maxRounds: { type: "number", description: "Rounds before it must conclude (default 6).", required: false },
+            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names. Online councils may omit it; the first seat closes.", required: false },
+            maxRounds: { type: "number", description: "Rounds before it must conclude (default 6; online councils default to 4).", required: false },
+            online: {
+                type: "boolean",
+                description: "true for an online council: a debate between chat models from his selectable list, run on the server with no host or agents to start. It keeps running if he closes the app. Give each participant a modelKey from model_status, or leave modelKey out (or send no participants) to auto-fill free models from different vendors.",
+                required: false,
+            },
+            purpose: {
+                type: "string",
+                enum: ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"],
+                description: "Online councils only: what auto-fill picks models for. Defaults to reasoning.",
+                required: false,
+            },
+            allowPaid: { type: "boolean", description: "Online councils only: allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
         },
     },
     {
@@ -1602,13 +1628,65 @@ function conveneRefusal(rejection: ConveneRejection, closerName: string, outcome
     }
 }
 
+const ONLINE_PURPOSES = ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"] as const;
+
+async function onlineSeatsFromArgs(args: Record<string, unknown>) {
+    const { chatSeats, checkOnlineSeats } = await import("@/lib/council/online/service");
+    const purpose = (ONLINE_PURPOSES as readonly string[]).includes(String(args.purpose)) ? args.purpose as typeof ONLINE_PURPOSES[number] : "reasoning";
+    const assembled = chatSeats(args.participants, purpose);
+    if (!assembled.ok) return { ok: false as const, error: assembled.error };
+    const allowPaid = args.allowPaid === true;
+    const checked = await checkOnlineSeats(assembled.seats, allowPaid);
+    if (!checked.ok) return { ok: false as const, error: checked.error };
+    const wanted = String(args.closerName ?? "").trim().toLowerCase();
+    const closer = (wanted && checked.seats.find((seat) => seat.name.toLowerCase() === wanted)) || checked.seats[0];
+    return { ok: true as const, seats: checked.seats, closer, allowPaid, purpose };
+}
+
+async function executeOnlinePropose(args: Record<string, unknown>, onCouncilProposal: NonNullable<ToolContext["onCouncilProposal"]>): Promise<string> {
+    const topic = String(args.topic ?? "").trim();
+    const brief = String(args.brief ?? "").trim();
+    if (!topic) return "A council needs a topic. Nothing was proposed.";
+    if (!brief) return "A council needs a brief. Nothing was proposed.";
+    const built = await onlineSeatsFromArgs(args);
+    if (!built.ok) return `${built.error} Nothing was proposed.`;
+    const maxRounds = typeof args.maxRounds === "number" && args.maxRounds > 0 ? Math.floor(args.maxRounds) : undefined;
+    onCouncilProposal({
+        topic, brief, councilType: "debate", closerName: built.closer.name, online: true, allowPaid: built.allowPaid, purpose: built.purpose,
+        participants: built.seats.map((seat) => ({ name: seat.name, expertise: seat.expertise, modelKey: seat.modelKey, source: seat.source })),
+        ...(maxRounds ? { maxRounds } : {}),
+    });
+    return `Proposed an online council on "${topic}" with ${built.seats.map((seat) => `${seat.name} (${seat.resolved.model.label})`).join(", ")}, closed by ${built.closer.name}. `
+        + "The card is under your reply with a Start button; he can change the models first. Nothing has been created and there is no session code yet; "
+        + "summarise what you proposed and stop.";
+}
+
+async function executeOnlineConvene(args: Record<string, unknown>): Promise<string> {
+    const { startOnlineCouncil } = await import("@/lib/council/online/service");
+    const { ownerLink } = await import("@/lib/public-url");
+    const built = await onlineSeatsFromArgs(args);
+    if (!built.ok) return `${built.error} Nothing was created.`;
+    const result = await startOnlineCouncil({
+        topic: String(args.topic ?? ""), brief: String(args.brief ?? ""), closerName: built.closer.name,
+        maxRounds: typeof args.maxRounds === "number" ? args.maxRounds : undefined, allowPaid: built.allowPaid,
+        seats: built.seats.map((seat) => ({ modelKey: seat.modelKey, name: seat.name, expertise: seat.expertise, source: seat.source })),
+    });
+    if (!result.ok) return result.error;
+    return `Online council ${result.code} is running on the server: ${result.seats.map((seat) => `${seat.name} (${seat.label}${seat.paid ? ", paid" : ""})`).join(", ")}; `
+        + `${result.closerName} writes the verdict after ${result.maxRounds} rounds. It keeps going without him and asks for his decision when the verdict is ready. `
+        + `Watch it at ${ownerLink("/council")}, or ask for council_status ${result.code}.`;
+}
+
 async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
     const { conveneRejection } = await import("@/lib/council/operations");
     const { COUNCIL_TYPES } = await import("@/lib/council/templates");
 
     if (!ctx?.onCouncilProposal) {
-        return "A proposal card can only be shown in the web chat. Use council_convene here and give him the kickoff blocks instead.";
+        return args.online === true
+            ? "A proposal card can only be shown in the web chat. Use council_convene with online: true here to start it straight away."
+            : "A proposal card can only be shown in the web chat. Use council_convene here and give him the kickoff blocks instead.";
     }
+    if (args.online === true) return executeOnlinePropose(args, ctx.onCouncilProposal);
 
     const participants = readParticipants(args);
     const names = participants.map((p) => p.name);
@@ -1636,6 +1714,7 @@ async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolCo
 }
 
 async function executeCouncilConvene(args: Record<string, unknown>): Promise<string> {
+    if (args.online === true) return executeOnlineConvene(args);
     const { conveneCouncil } = await import("@/lib/council/operations");
     const { renderConveneResult } = await import("@/lib/council/render");
     const { OWNER_SCOPES } = await import("@/lib/agents/scopes");
@@ -1672,18 +1751,22 @@ async function executeCouncilStatus(sessionCode?: string): Promise<string> {
     const {
         getSessionByCode, listOpenCouncils, listParticipants, readTranscript,
     } = await import("@/lib/council/store");
+    const { latestSeatModels } = await import("@/lib/council/online/store");
+    const seatModels = async (sessionId: string) => latestSeatModels(sessionId).catch(() => new Map<string, { modelKey: string }>());
 
     if (!sessionCode) {
         const open = await listOpenCouncils();
         if (open.length === 0) return "No councils are open.";
         const lines: string[] = [];
         for (const s of open) {
-            const parts = await listParticipants(s.id);
-            const waiting = parts
-                .filter((p) => p.kind === "agent" && p.status !== "left" && p.postsThisRound === 0)
+            const [parts, models] = await Promise.all([listParticipants(s.id), seatModels(s.id)]);
+            const agents = parts.filter((p) => p.kind === "agent");
+            const online = agents.length > 0 && agents.every((p) => models.has(p.name));
+            const waiting = agents
+                .filter((p) => p.status !== "left" && p.postsThisRound === 0)
                 .map((p) => p.name);
             lines.push(
-                `${s.code} · round ${s.round}/${s.maxRounds} · ${waiting.length ? `waiting on ${waiting.join(", ")}` : "all posted this round"}`
+                `${s.code}${online ? " · online" : ""} · round ${s.round}/${s.maxRounds} · ${waiting.length ? `waiting on ${waiting.join(", ")}` : "all posted this round"}`
                 + ` (quiet ${quietFor(s.lastMessageAt)}) · ${s.lastSeq} msgs · ${s.topic}`,
             );
         }
@@ -1692,13 +1775,14 @@ async function executeCouncilStatus(sessionCode?: string): Promise<string> {
 
     const session = await getSessionByCode(sessionCode);
     if (!session) return `No council found with code "${sessionCode}".`;
-    const [parts, messages] = await Promise.all([
+    const [parts, messages, models] = await Promise.all([
         listParticipants(session.id),
         readTranscript({ sessionId: session.id, limit: 12 }),
+        seatModels(session.id),
     ]);
     const roster = parts
         .filter((p) => p.kind === "agent")
-        .map((p) => `${p.name} (${p.status}, ${p.postsTotal} posts, seen ${quietFor(p.lastSeenAt)} ago)`)
+        .map((p) => `${p.name} (${models.has(p.name) ? `model ${models.get(p.name)!.modelKey}, ` : ""}${p.status}, ${p.postsTotal} posts, seen ${quietFor(p.lastSeenAt)} ago)`)
         .join("\n");
     const recent = messages.map((m) => `[${m.seq}] ${m.speaker} → ${m.addressedTo} (${m.intent}): ${m.body.slice(0, 300)}`).join("\n");
     return `${session.code} - ${session.topic}\nStatus ${session.status}, round ${session.round}/${session.maxRounds}, ${session.lastSeq} messages, quiet ${quietFor(session.lastMessageAt)}.\n\nParticipants:\n${roster}\n\nRecent:\n${recent || "(nothing yet)"}`

@@ -9,6 +9,9 @@ export async function registerNode() {
     enableStatsRefresh();
     enableProviderKeyRefresh();
     void refreshStatsSnapshot();
+    // Online councils run in this process, so a restart picks them back up here.
+    const { startOnlineResumeScheduler } = await import("@/lib/council/online/service");
+    startOnlineResumeScheduler();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waited = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), START_WAIT_MS); });
     const [catalogue, keys] = await Promise.all([Promise.race([refreshCatalogueSnapshot(), waited]), Promise.race([refreshProviderKeys(), waited])]);

@@ -16,6 +16,7 @@ import { remoteAgentSetup } from "./remote-setup";
 import { OwnerChannelPanel } from "./owner-channel-panel";
 import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
+import { OnlineCouncilPanel } from "./online-council-panel";
 import { IntegrationPanel } from "./integration-panel";
 import { ExecutionEvidence, ExecutionHistory, ExecutionRecord } from "./execution-evidence";
 import { executionIdentityLabel, type CouncilExecutionPage, type CouncilExecutionRecord } from "@/lib/council/execution-evidence";
@@ -40,6 +41,8 @@ interface OpenCouncil {
     messages: number; lastMessageAt: string; closerName: string; expiresAt: string;
     /** Closed, but its work campaign is still running, so a host can adopt it. */
     campaignRunning?: boolean;
+    /** Seats are catalogue models the server runs; no host can adopt it. */
+    online?: boolean;
     waitingOn: string[]; participants: string[];
 }
 interface RecentCouncil {
@@ -69,6 +72,10 @@ interface Detail {
     participants: Participant[];
     messages: Message[];
     executions: CouncilExecutionPage;
+    online: {
+        seats: { name: string; modelKey: string; label: string; available: boolean }[];
+        runner: { state: "waiting_owner" | "ended" | "paused" | "running" | "restarting"; leaseExpiresAt: string | null };
+    } | null;
     openObligations: { seq: number; from: string; to: string; intent: string }[];
     campaign: {
         id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
@@ -109,6 +116,18 @@ const INTENT_TONE: Record<string, "success" | "warning"> = {
 
 // One per --fam-* token in council.module.css.
 const SEAT_COLOURS = 4;
+
+type RunnerState = NonNullable<Detail["online"]>["runner"]["state"];
+const RUNNER_LABEL: Record<RunnerState, string> = {
+    running: "Online · running on the server",
+    restarting: "Online · resuming after a restart",
+    paused: "Online · paused",
+    waiting_owner: "Online · waiting for your decision",
+    ended: "Online · ended",
+};
+const RUNNER_TONE: Record<RunnerState, "success" | "warning" | undefined> = {
+    running: "success", restarting: "warning", paused: "warning", waiting_owner: "warning", ended: undefined,
+};
 
 export default function CouncilPage() {
     const [open, setOpen] = useState<OpenCouncil[]>([]);
@@ -332,7 +351,7 @@ export default function CouncilPage() {
         <WorkspaceShell
             current="council"
             title="Council"
-            description="Watch your coding agents deliberate. Viewing never advances a turn."
+            description="Watch agents and models deliberate. Viewing never advances a turn."
             actions={<>
                 <button type="button" onClick={() => setLive((v) => !v)} aria-pressed={live} className={ui.liveToggle}>
                     <RefreshCw size={15} className={live ? ui.spin : undefined} />
@@ -597,6 +616,8 @@ export default function CouncilPage() {
                     )}
                 </section>
 
+                <OnlineCouncilPanel onStarted={(code) => { void fetchList(); selectCouncil(code); }} />
+
                 <section className={ui.panel}>
                     <div className={ui.panelHeadRow}>
                         <PanelHeader
@@ -663,9 +684,9 @@ export default function CouncilPage() {
                     <section className={ui.panel}>
                         <PanelHeader title="No councils yet" description="Nothing has been convened" icon={<Users size={16} />} />
                         <div className={ui.emptyText}>
-                            Ask Zuychin to convene one: <em>&ldquo;convene a council on X with codex and
-                            claude-code; claude-code closes it&rdquo;</em>. Paste each generated block into
-                            that agent, then watch here.
+                            Start an online council above, or ask Zuychin to convene one with coding agents:
+                            <em>&ldquo;convene a council on X with codex and claude-code; claude-code closes
+                            it&rdquo;</em>. Paste each generated block into that agent, then watch here.
                         </div>
                     </section>
                 )}
@@ -692,7 +713,7 @@ export default function CouncilPage() {
                                                 <time className={ui.railTime} dateTime={c.lastMessageAt}>{ago(c.lastMessageAt)}</time>
                                             </span>
                                             <span className={ui.railMeta}>
-                                                <code>{c.code}</code> · {c.messages} {c.messages === 1 ? "msg" : "msgs"}
+                                                <code>{c.code}</code>{c.online ? " · online" : ""} · {c.messages} {c.messages === 1 ? "msg" : "msgs"}
                                                 {c.campaignRunning ? " · campaign running" : ` · r${c.round}/${c.maxRounds}`}
                                                 {/* expires_at stops governing once a verdict is proposed;
                                                     standby_expires_at does, and it is not in this payload.
@@ -704,7 +725,7 @@ export default function CouncilPage() {
                                                 <span className={ui.railWaiting}>waiting on {c.waitingOn.join(", ")}</span>
                                             )}
                                         </button>
-                                        {canAdopt && (
+                                        {canAdopt && !c.online && (
                                             <button
                                                 type="button"
                                                 onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
@@ -757,9 +778,14 @@ export default function CouncilPage() {
                                         <div className={ui.detailHead}>
                                             <h2 className={ui.detailTitle}>{s.topic}</h2>
                                             <p className={ui.detailMeta}>
-                                                <code>{s.code}</code> · {s.councilType} council · {s.paused ? "stalled" : s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"} · closer {s.closerName}
+                                                <code>{s.code}</code> · {detail.online ? "online " : ""}{s.councilType} council · {s.paused ? "stalled" : s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"} · closer {s.closerName}
                                             </p>
                                         </div>
+                                        {detail.online && (
+                                            <div className={ui.pillRow}>
+                                                <span className={ui.pill} data-tone={RUNNER_TONE[detail.online.runner.state]}>{RUNNER_LABEL[detail.online.runner.state]}</span>
+                                            </div>
+                                        )}
                                         <p className={ui.brief}>{s.brief}</p>
                                         {s.status === "awaiting_owner" && (
                                             <DecisionPanel
@@ -778,7 +804,7 @@ export default function CouncilPage() {
                                                 onStateChange={() => { void fetchDetail(s.code); }}
                                             />
                                         )}
-                                        {isRunning && (
+                                        {isRunning && !detail.online && (
                                             <SeatKeysPanel key={s.code}
                                                 code={s.code}
                                                 agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
@@ -787,6 +813,7 @@ export default function CouncilPage() {
                                         <div className={ui.list}>
                                             {detail.participants.filter((p) => p.kind === "agent").map((p) => {
                                                 const latestRun = detail.executions?.records.find(record => record.agentName === p.name);
+                                                const seatModel = detail.online?.seats.find((seat) => seat.name === p.name);
                                                 return (
                                                     <div key={p.name} className={ui.row}>
                                                         <span className={ui.dot} data-tone={presence(p)} />
@@ -794,9 +821,10 @@ export default function CouncilPage() {
                                                             {p.name}
                                                             {p.name === s.closerName && <span className={ui.pill}>closer</span>}
                                                             {s.floorHolder === p.name && <span className={ui.pill} data-tone="success">has floor</span>}
+                                                            {seatModel && <span className={ui.pill} data-tone={seatModel.available ? undefined : "warning"} title={seatModel.modelKey}>{seatModel.label}{seatModel.available ? "" : " (no longer offered)"}</span>}
                                                         </span>
                                                         <span className={ui.rowMeta}>
-                                                            {p.postsThisRound}/2 this round · {p.postsTotal} total · seen {ago(p.lastSeenAt)} ago
+                                                            {p.postsThisRound}/{detail.online ? 1 : 2} this round · {p.postsTotal} total · seen {ago(p.lastSeenAt)} ago
                                                         </span>
                                                         <div className={ui.wide}>
                                                             {latestRun ? <ExecutionRecord record={latestRun} label="Latest recorded run" />

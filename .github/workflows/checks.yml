@@ -60,6 +60,9 @@ jobs:
       - name: launch preflight
         run: npm run council:preflight:test
 
+      - name: online council runner, seats and reply repair
+        run: npm run council:online:test
+
       # Linux only: its POSIX signal-forwarding case is skipped on Windows.
       - name: verification build wrapper
         if: runner.os == 'Linux'

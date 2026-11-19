@@ -8,6 +8,7 @@ import { findHost, launchCouncil, pair, type HostSnapshot } from "@/app/council/
 import { Dropdown } from "@/components/dropdown";
 import { prepareProposalSelections, proposalSeatChoices, type ProposalSelections } from "./council-proposal-selection";
 import type { CouncilProposal } from "@/lib/types";
+import { OnlineProposalCard } from "./online-council-card";
 
 // Reuse host discovery across proposal cards in the same page.
 type Found = Awaited<ReturnType<typeof findHost>>;
@@ -23,6 +24,10 @@ const BRIEF_CLAMP_CHARS = 320;
 type Phase = "probing" | "absent" | "unpaired" | "ready" | "busy" | "launching" | "launched";
 
 export function CouncilProposalCard({ proposal }: { proposal: CouncilProposal }) {
+    return proposal.online ? <OnlineProposalCard proposal={proposal} /> : <HostProposalCard proposal={proposal} />;
+}
+
+function HostProposalCard({ proposal }: { proposal: CouncilProposal }) {
     const [phase, setPhase] = useState<Phase>("probing");
     const [port, setPort] = useState<number | null>(null);
     const [token, setToken] = useState<string | null>(null);

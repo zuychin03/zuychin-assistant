@@ -43,6 +43,8 @@ edited and deleted in place.
   recovery path
 - Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
   at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
+- Online councils: a debate between chat models from the selectable list, run on the server with no
+  host, so it can be started from a phone or Telegram and keeps going after the page closes
 - Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
   at a read-only, notes, full, or full-plus-convene access level you choose. The brief carries a short-lived claim rather
   than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
@@ -317,6 +319,7 @@ Optional auth, integrations, channels and cron:
 | `TTS_SERVICE_URL` / `TTS_SERVICE_TOKEN` | On-box text-to-speech service, for example `http://127.0.0.1:3011`, and its bearer token (the service's `TTS_TOKEN`). Either unset = replies are spoken by Gemini. See [Text-to-speech service](#text-to-speech-service-optional) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
 | `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
+| `COUNCIL_ONLINE_RESUME` | `on` or `off`. Whether this process picks up online councils whose runner stopped, such as after a restart. Unset means on in production and off in development, so a dev server sharing the database never takes a council from the box |
 | `COUNCIL_V2_ASSERTED_IDENTITY` | Leave `false`. `true` lets an owner-scoped key act for a named agent in councils with no protocol version; V3 always needs the seat's own credential |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
@@ -383,6 +386,13 @@ tags, and deletes the four retired OpenCode free-model rows. On an existing proj
 `model_catalogue` and `model_profiles` first, then run
 [`scripts/migrations/v7-provider-keys.sql`](scripts/migrations/v7-provider-keys.sql); it is safe
 to run again. Without it, env keys work as before and `/admin` says which file to apply.
+
+Online councils record their model calls in model health under a `council` purpose. The
+model awareness file and `supabase-setup.sql` already list it; if you applied model awareness
+before it was added, run
+[`scripts/migrations/v7-online-council.sql`](scripts/migrations/v7-online-council.sql), which
+only widens that purpose check and is safe to run again. Without it online councils still run,
+and their calls are just not stored in model health.
 
 
 ### Web authentication
@@ -493,7 +503,9 @@ npm run dev
 | GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
 | GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
 | GET | `/api/council` | Open councils and participant rosters for the council dashboard |
-| GET | `/api/council/[code]` | One council's status and transcript for the council dashboard |
+| GET | `/api/council/[code]` | One council's status and transcript for the council dashboard; `online` names each seat's model and the runner state |
+| POST | `/api/council/online` | Start an online council: `{ topic, brief, seats: [{ modelKey, name?, expertise? }], closerName? or closerIndex?, maxRounds?, allowPaid? }`. Returns once the seats are recorded; the debate runs in the server process |
+| GET | `/api/council/online/options` | Chat models a seat may use, Free only, round limits and an auto-fill suggestion (`?purpose=`) |
 | GET/POST | `/api/council/[code]/owner` | The owner's private thread into a running council / send a turn (never exposed over MCP) |
 | POST | `/api/council/[code]/decide` | Accept the result or send the council back to work while it awaits the owner |
 | POST | `/api/council/[code]/pause` | Pause or resume a council (`{ resume: true }`) |
@@ -767,9 +779,9 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `vault_delete` | Permanently delete a wiki page + every reference to it, in one commit |
 | `vault_lint` | Vault health check / auto-fix curator |
 | `model_status` | Read-only model health: the last model check, failing, missing, unreliable and slow models, drafts waiting for review, and the best free picks for a purpose |
-| `council_propose` | Draft a council and render a Launch card in chat; creates nothing until you click |
-| `council_convene` | Open a council now and return a paste-in kickoff block per agent |
-| `council_status` | How the open councils are going, or one council's state and recent transcript |
+| `council_propose` | Draft a council and render a Launch card in chat; creates nothing until you click. `online: true` drafts model seats instead, with a Start card |
+| `council_convene` | Open a council now and return a paste-in kickoff block per agent. `online: true` starts an online council straight away (Telegram, Discord) |
+| `council_status` | How the open councils are going, or one council's state and recent transcript; names each online seat's model |
 | `council_close` | Force a council closed and file the outcome, writing a verdict if none was given |
 
 Agent runs additionally get `create_document` / `create_code_file` / `create_code_bundle`
@@ -850,6 +862,30 @@ silence election, a 50 s floor TTL, an SQL-derived escalation ladder, hard caps 
 5-minute sweep cron. Agents driven by the local ACP host skip the long poll entirely - the host
 has no per-tool-call timeout, so it pushes their turns instead - but they go through the same
 server-side ordering, which is what lets pushed and hand-attached agents share one council.
+
+#### Online councils
+
+An online council is a debate whose seats are chat models from the selectable list. The server
+runs it, so nothing has to run on your machine and it carries on when you close the page. Start
+one from the **Online council** panel on `/council`, or ask the assistant for an online council:
+in the web chat it drafts a card with a **Start** button, and in Telegram or Discord it starts
+straight away. **Auto-fill** picks free models from different vendors for a purpose (reasoning
+by default), and each seat's model can be changed before starting.
+
+- Round 1 openings are written blind and at the same time. Later rounds take turns, one post per
+  seat, with the opener rotating. After each round a moderator note names what is owed and what
+  the next round should settle. The closer then writes the verdict, which waits for your Accept
+  or Continue like any council.
+- A seat that fails gets one retry after 5 s, then passes the round with the error. Two failed
+  rounds in a row and it leaves; under two seats left, the closer writes the verdict early. A
+  seat whose model is removed from the list leaves at its next turn.
+- Paid models need **Allow paid** ticked for that council, and Free only always wins, checked again
+  every turn. Auto-fill only picks free models.
+- Seats see only the brief and the transcript: no tools, files or knowledge base. Calls are
+  recorded in model health under the `council` purpose.
+- The server holds the council's host lease. After a restart or deploy, a scan in the server
+  process (and the council sweep as a backstop) picks the council up again once the old lease
+  lapses, within about two minutes. Set `COUNCIL_ONLINE_RESUME` to change that.
 
 Council output is filed to the vault as `trust: untrusted`, `status: suggested` at
 `wiki/synthesis/council-<code>.md`, so an unreviewed agent debate cannot outrank

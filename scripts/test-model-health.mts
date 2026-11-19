@@ -128,7 +128,7 @@ await check("unknown usage is preserved as null without invented zeroes", async 
 });
 for (const patch of [
     { id: "not-a-uuid" }, { durationMs: -1 }, { durationMs: Infinity }, { firstAnswerMs: 3000 }, { providerId: "Bearer secret" },
-    { purpose: "council" }, { status: "healthy" }, { errorClass: "raw secret" }, { startedAt: "invalid" }, { httpStatus: 999 },
+    { purpose: "gossip" }, { status: "healthy" }, { errorClass: "raw secret" }, { startedAt: "invalid" }, { httpStatus: 999 },
     { capabilities: { streaming: "true" } }, { usage: { ...valid.usage, promptTokens: -1 } }, { status: "retired", httpStatus: 404 },
 ]) await check(`invalid observation is dropped: ${Object.keys(patch)[0]}`, async () => {
     const result = await persistModelObservations([{ ...valid, ...patch }]);
