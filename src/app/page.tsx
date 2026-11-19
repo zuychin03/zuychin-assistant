@@ -27,7 +27,7 @@ import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
 import { transcribeVoiceBlob } from "./home/voice-pcm";
-import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, WARMUP_MAX_MS, WARMUP_POLL_MS, WARMUP_REVEAL_MS, hasStopPhrase, pickFiller, startsWork, warmupDetail } from "./home/voice-loop";
+import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, WARMUP_MAX_MS, WARMUP_POLL_MS, WARMUP_REVEAL_MS, hasStopPhrase, pickFiller, startsWork } from "./home/voice-loop";
 import { ReplySpeaker } from "./home/reply-speaker";
 import { speakableEnd } from "./home/speech-chunks";
 import { levelMeter } from "./home/audio-level";
@@ -230,8 +230,8 @@ export default function Home() {
   const [voiceTranscribing, setVoiceTranscribing] = useState(false);
   // What the current turn's running tool is doing; null when no tool is running.
   const [voiceActivity, setVoiceActivity] = useState<string | null>(null);
-  // Which on-box voice model a starting voice chat is waiting for; null when not waiting.
-  const [voiceWarmup, setVoiceWarmup] = useState<string | null>(null);
+  // A starting voice chat is waiting for the on-box transcriber to load.
+  const [voiceWarming, setVoiceWarming] = useState(false);
   const [sttAvailable, setSttAvailable] = useState(false);
   const sttAvailableRef = useRef(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
@@ -321,37 +321,28 @@ export default function Home() {
   }, []);
 
   // The on-box transcriber and voice only run while voice is in use, so starting a voice chat starts them, and
-  // the mic waits while their models load so a cold start never slows the first turn. The answer also
-  // replaces the configured-only transcriber status.
+  // the mic waits while the transcriber loads so a cold start never slows the first turn (the voice loads
+  // next, while the turn is spoken). The answer also replaces the configured-only transcriber status.
   const warmVoice = useCallback(async (isCurrent: () => boolean) => {
     const started = Date.now();
-    let detail = warmupDetail(false, false);
-    let shown = false;
-    const reveal = setTimeout(() => {
-      if (!isCurrent()) return;
-      shown = true;
-      setVoiceWarmup(detail);
-    }, WARMUP_REVEAL_MS);
+    const reveal = setTimeout(() => { if (isCurrent()) setVoiceWarming(true); }, WARMUP_REVEAL_MS);
     try {
       for (;;) {
-        let data: { available?: unknown; loaded?: unknown; speakerLoading?: unknown } | null = null;
+        let data: { available?: unknown; loaded?: unknown } | null = null;
         try {
           data = await requestJson("/api/voice/warm", { method: "POST", cache: "no-store" });
         } catch { }
         sttAvailableRef.current = data?.available === true;
         setSttAvailable(sttAvailableRef.current);
-        const listener = data?.available === true && data.loaded !== true;
-        const speaker = data?.speakerLoading === true;
-        if (!isCurrent() || (!listener && !speaker) || Date.now() - started > WARMUP_MAX_MS) return;
-        detail = warmupDetail(listener, speaker);
-        if (shown) setVoiceWarmup(detail);
+        const loading = data?.available === true && data.loaded !== true;
+        if (!isCurrent() || !loading || Date.now() - started > WARMUP_MAX_MS) return;
         await new Promise((resolve) => setTimeout(resolve, WARMUP_POLL_MS));
         if (!isCurrent()) return;
       }
     } finally {
       clearTimeout(reveal);
-      // A newer voice chat may already own the warm-up line.
-      if (isCurrent() || !voiceLoopRef.current) setVoiceWarmup(null);
+      // A newer voice chat may already own the warm-up.
+      if (isCurrent() || !voiceLoopRef.current) setVoiceWarming(false);
     }
   }, []);
 
@@ -1744,7 +1735,7 @@ export default function Home() {
     }}
   />;
 
-  const voicePhase: VoicePhase = isRecording ? "listening" : voiceTranscribing ? "transcribing" : voiceWarmup ? "warming" : speakingId ? "speaking" : isLoading ? (voiceActivity ? "tools" : "thinking") : "idle";
+  const voicePhase: VoicePhase = isRecording ? "listening" : voiceTranscribing ? "transcribing" : voiceWarming ? "warming" : speakingId ? "speaking" : isLoading ? (voiceActivity ? "tools" : "thinking") : "idle";
   // A voice chat keeps the latest exchange in focus; earlier messages recede.
   const voiceFocusFrom = voiceLoop ? messages.findLastIndex((m) => m.role === "user") : -1;
   // Only the newest reply's mark moves, so a long thread stays calm.
@@ -2097,7 +2088,7 @@ export default function Home() {
             {voiceLoop && (
               <VoiceStage
                 phase={voicePhase}
-                activity={voiceWarmup ?? voiceActivity}
+                activity={voiceActivity}
                 readLevel={readVoiceLevel}
                 stopPhrase={STOP_PHRASE}
                 onSendNow={toggleRecording}

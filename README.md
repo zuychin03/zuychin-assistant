@@ -63,9 +63,10 @@ edited and deleted in place.
   transcribed on your own server by Moonshine tiny, so any chat model can answer them and the
   audio never leaves the host. The transcript is sent as a normal message marked "Spoken", and
   the model is told it may hold recognition errors. The service runs only while voice is in use:
-  tapping the mic starts it and the on-box voice, and it exits after 10 quiet minutes. While
-  either model loads, the voice stage says "Getting ready" and its stars switch on one by one;
-  the mic opens once both are ready (or after 15 seconds), so the first turn is not slowed.
+  tapping the mic starts it, and it exits after 10 quiet minutes. While its model loads, the
+  voice stage says "Getting ready" and its stars switch on one by one; the mic opens once it is
+  ready (or after 15 seconds), so the first turn is not slowed. The on-box voice starts loading
+  next, while you speak: the box's small CPU loads the two faster one after the other.
   If the service is unset, busy or fails, the turn falls back to sending the audio to Gemini as
   before. Telegram voice notes are still sent as audio
 - On-box speech out: with the optional `tts-service` running, replies are spoken by a small local
@@ -492,7 +493,7 @@ npm run dev
 | GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM). Speaks with the on-box voice when set up, else Gemini; `X-Model-Provider` says which. Free only uses the on-box voice or the free Gemini key, 409 without either |
 | POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service; 503 `{ fallback: true }` tells the client to send the audio instead |
 | GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
-| POST | `/api/voice/warm` | Start the speech-to-text and text-to-speech services and their models as a voice chat begins; returns `{ available, loaded }` for speech-to-text and `speakerLoading` for the voice. The page polls it and opens the mic once neither model is loading |
+| POST | `/api/voice/warm` | Start the speech-to-text and text-to-speech services and their models as a voice chat begins; returns `{ available, loaded }` for speech-to-text. The voice is started only once speech-to-text is no longer loading. The page polls it and opens the mic once speech-to-text has loaded |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
 | GET | `/api/artifacts/[id]` | Download a generated file (report, code, zip) |
 | POST | `/api/export` | Export a conversation to PDF or DOCX |

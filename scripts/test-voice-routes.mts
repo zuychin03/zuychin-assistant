@@ -9,12 +9,15 @@ type Seen = { url: URL; headers: Headers; body: Uint8Array };
 const seen: Seen[] = [];
 let reply: () => Response = () => Response.json({ text: "PRIVATE SPOKEN WORDS", audioSec: 2, decodeMs: 90, model: "moonshine-tiny-en" });
 let health: () => Response = () => Response.json({ ok: true, model: "moonshine-tiny-en", loaded: true, busy: false, waiting: 0 });
-let speakerHealth: () => Response = () => Response.json({ ok: true, loaded: true });
+let speakerWakes = 0;
 globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : undefined;
     const url = new URL(request?.url ?? String(input));
     // The speech service is only configured for the warm-up's speaker checks.
-    if (url.host === "127.0.0.1:3011" && url.pathname === "/health") return speakerHealth();
+    if (url.host === "127.0.0.1:3011" && url.pathname === "/health") {
+        speakerWakes += 1;
+        return Response.json({ ok: true, loaded: false });
+    }
     assert.equal(url.host, "127.0.0.1:3010", `unexpected request to ${url.host}`);
     const body = init?.body instanceof Uint8Array ? init.body : new Uint8Array();
     seen.push({ url, headers: new Headers(init?.headers), body });
@@ -95,23 +98,26 @@ try {
     assert.equal((await WARM(warmReq({ origin: "https://sibling.fixture.invalid" }))).status, 403);
     assert.equal(healthCalls(), 0, "refused warm-ups never reach the service");
     health = () => Response.json({ ok: true, loaded: false });
-    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: false, speakerLoading: false } }, "a loading model counts as available");
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: false } }, "a loading model counts as available");
     health = () => Response.json({ ok: true, loaded: true });
-    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true, speakerLoading: false } });
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true } });
     health = () => { throw new TypeError("fetch failed"); };
-    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: false, loaded: false, speakerLoading: false } }, "a refused connection is unavailable");
+    assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: false, loaded: false } }, "a refused connection is unavailable");
     assert.equal(healthCalls(), 3);
     assert.equal(logs.filter((line) => line.includes("voice_warm")).length, 3);
 
     Object.assign(process.env, { TTS_SERVICE_URL: "http://127.0.0.1:3011", TTS_SERVICE_TOKEN: "fixture-tts-token" });
     try {
+        health = () => Response.json({ ok: true, loaded: false });
+        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: false } });
+        assert.equal(speakerWakes, 0, "the voice waits while speech-to-text loads");
         health = () => Response.json({ ok: true, loaded: true });
-        speakerHealth = () => Response.json({ ok: true, loaded: false });
-        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true, speakerLoading: true } }, "a loading speaker keeps the mic waiting");
-        speakerHealth = () => Response.json({ ok: true, loaded: true });
-        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true, speakerLoading: false } });
-        speakerHealth = () => Response.json({ ok: false });
-        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true, speakerLoading: false } }, "a speaker that is down is not waited for");
+        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: true, loaded: true } });
+        assert.equal(speakerWakes, 1, "the voice starts once speech-to-text has loaded");
+        health = () => { throw new TypeError("fetch failed"); };
+        assert.deepEqual(await json(await WARM(warmReq())), { status: 200, body: { available: false, loaded: false } });
+        assert.equal(speakerWakes, 2, "a missing transcriber does not hold the voice back");
+        assert.ok(logs.some((line) => line.includes('"speaker":"deferred"')) && logs.some((line) => line.includes('"speaker":"started"')));
     } finally {
         delete process.env.TTS_SERVICE_URL;
         delete process.env.TTS_SERVICE_TOKEN;

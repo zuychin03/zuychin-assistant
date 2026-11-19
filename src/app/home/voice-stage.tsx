@@ -21,7 +21,7 @@ const STILL_FRAME_MS = 120;
 
 type Props = {
     phase: VoicePhase;
-    /** While warming, which model is loading; while using tools, what the running tool is doing. */
+    /** What the running tool is doing, shown while using tools. */
     activity: string | null;
     /** Mic or speaker loudness, 0 to 1; read every frame. */
     readLevel: () => number;
@@ -111,7 +111,7 @@ export function VoiceStage({ phase, activity, readLevel, stopPhrase, onSendNow, 
 
     const detail = {
         idle: "Starting the mic",
-        warming: activity ?? "Waking the voice models",
+        warming: "Loading speech recognition",
         listening: `Say “${stopPhrase}” to end`,
         transcribing: "Writing down what you said",
         thinking: "Working on a reply",
