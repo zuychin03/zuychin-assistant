@@ -8,6 +8,7 @@ import styles from "./voice-stage.module.css";
 
 const PHASE_LABEL: Record<VoicePhase, string> = {
     idle: "Voice chat",
+    warming: "Getting ready",
     listening: "Listening",
     transcribing: "Transcribing",
     thinking: "Thinking",
@@ -20,7 +21,7 @@ const STILL_FRAME_MS = 120;
 
 type Props = {
     phase: VoicePhase;
-    /** What the running tool is doing, shown while using tools. */
+    /** While warming, which model is loading; while using tools, what the running tool is doing. */
     activity: string | null;
     /** Mic or speaker loudness, 0 to 1; read every frame. */
     readLevel: () => number;
@@ -110,6 +111,7 @@ export function VoiceStage({ phase, activity, readLevel, stopPhrase, onSendNow, 
 
     const detail = {
         idle: "Starting the mic",
+        warming: activity ?? "Waking the voice models",
         listening: `Say “${stopPhrase}” to end`,
         transcribing: "Writing down what you said",
         thinking: "Working on a reply",

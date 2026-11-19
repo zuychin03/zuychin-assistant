@@ -5,6 +5,20 @@ export const FILLER_DELAY_MS = 700;
 // A reply never waits longer than this for a filler that is already playing.
 export const FILLER_MAX_WAIT_MS = 4000;
 
+// The warm-up shows only when the on-box models are not ready this soon, so a warm start never flashes it.
+export const WARMUP_REVEAL_MS = 400;
+export const WARMUP_POLL_MS = 600;
+// Transcription waits for its model anyway, so the mic opens after this even if a model is still loading.
+export const WARMUP_MAX_MS = 15_000;
+
+/** What the voice stage says while the on-box models load; listener is speech-to-text, speaker the voice. */
+export function warmupDetail(listener: boolean, speaker: boolean): string {
+    if (listener && speaker) return "Loading speech recognition and the voice";
+    if (listener) return "Loading speech recognition";
+    if (speaker) return "Loading the voice";
+    return "Waking the voice models";
+}
+
 // Spoken while a voice turn waits on tools or agents, so the wait is not silent.
 export const VOICE_FILLERS = [
     "Just a minute.",

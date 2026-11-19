@@ -1,7 +1,8 @@
 // The voice stage's star chart: a slowly turning field of stars around a red core. Phase changes and
 // loudness ease every value toward a target, so the field never jumps between states.
 
-export type VoicePhase = "idle" | "listening" | "transcribing" | "thinking" | "tools" | "speaking";
+// warming: the mic waits while the on-box voice models load.
+export type VoicePhase = "idle" | "warming" | "listening" | "transcribing" | "thinking" | "tools" | "speaking";
 
 type Rgb = readonly [number, number, number];
 export type ConstellationPalette = { ink: Rgb; accent: Rgb; dark: boolean };
@@ -20,10 +21,11 @@ const EDGE_SCALE = (() => {
     return widest;
 })();
 // Radians per second.
-const SPIN: Record<VoicePhase, number> = { idle: 0.08, listening: 0.06, transcribing: 0.16, thinking: 0.3, tools: 0.2, speaking: 0.1 };
+const SPIN: Record<VoicePhase, number> = { idle: 0.08, warming: 0.05, listening: 0.06, transcribing: 0.16, thinking: 0.3, tools: 0.2, speaking: 0.1 };
 
 // radial: distance from the core on screen, in shares of the stage's width and height.
-type Star = { x: number; y: number; z: number; size: number; sx: number; sy: number; depth: number; heat: number; mark: number; radial: number };
+// rank: when the star switches on as the field powers up, 0 first. litAt: when it did; null while dark.
+type Star = { x: number; y: number; z: number; size: number; sx: number; sy: number; depth: number; heat: number; mark: number; radial: number; rank: number; litAt: number | null };
 // Faint background specks across the whole stage; x and y are fractions of its size.
 type Dust = { x: number; y: number; size: number; alpha: number; drift: number; phase: number };
 const DUST_COUNT = 48;
@@ -122,12 +124,16 @@ export class VoiceConstellation {
     // Speaking: the whole field swells and brightens in unison. beat jumps on each syllable and fades.
     private beat = 0;
     private throb = 0;
+    // Share of the stars switched on. It starts dark and never falls, so a pause between turns keeps it lit.
+    private power = 0;
+    // Wall clock, not frame time, so the lit share follows the real wait on a slow device too.
+    private warmStart: number | null = null;
     private spawnWait = 0;
     private readonly pointer = { x: 0, y: 0, targetX: 0, targetY: 0, inside: false, presence: 0 };
 
     constructor() {
         const r = seeded(7);
-        this.pool.push({ x: 0, y: 0, z: 0, size: 0, sx: 0, sy: 0, depth: 1, heat: 0, mark: 0, radial: 0 });
+        this.pool.push({ x: 0, y: 0, z: 0, size: 0, sx: 0, sy: 0, depth: 1, heat: 0, mark: 0, radial: 0, rank: -1, litAt: null });
         // A thick disc about the turning axis, weighted toward its rim: seen side on, a uniform disc thins
         // out at both ends, while this spreads the stars evenly across a wide stage.
         while (this.pool.length <= MAX_STARS) {
@@ -135,10 +141,8 @@ export class VoiceConstellation {
             const radius = 0.2 + 0.8 * Math.pow(r(), 0.55);
             this.pool.push({
                 x: Math.cos(angle) * radius, y: r() * 2 - 1, z: Math.sin(angle) * radius,
-                size: 0.65 + r() * 0.85, sx: 0, sy: 0, depth: 0.5, heat: 0, mark: 0, radial: 0,
+                size: 0.65 + r() * 0.85, sx: 0, sy: 0, depth: 0.5, heat: 0, mark: 0, radial: 0, rank: r(), litAt: null,
             });
-            // Unused draw, kept so the seeded field keeps its layout.
-            r();
         }
         for (let i = 0; i < DUST_COUNT; i++) {
             this.dust.push({ x: r(), y: 0.08 + r() * 0.84, size: 0.35 + r() * 0.55, alpha: 0.1 + r() * 0.22, drift: 0.2 + r() * 0.8, phase: r() * TAU });
@@ -244,6 +248,7 @@ export class VoiceConstellation {
         this.time += dt;
         this.spinRate += (SPIN[phase] - this.spinRate) * approach(1.2, dt);
         this.spin += this.spinRate * dt;
+        this.advancePower(dt, phase);
         this.advanceOnsets(dt, phase);
         const throb = phase === "speaking" ? clamp01(0.45 * this.level + 0.75 * this.beat) : 0;
         this.throb += (throb - this.throb) * approach(throb > this.throb ? 22 : 7, dt);
@@ -285,7 +290,7 @@ export class VoiceConstellation {
         ctx.fillStyle = rgba(palette.ink, 1);
         for (const d of this.dust) {
             const x = (((d.x - this.spin * d.drift * 0.025) % 1) + 1) % 1;
-            ctx.globalAlpha = d.alpha * (0.75 + 0.25 * Math.sin(this.time * 0.7 + d.phase) + throb * 0.9) * (palette.dark ? 1 : 0.8) * (1 - this.flatten * 0.5);
+            ctx.globalAlpha = d.alpha * (0.75 + 0.25 * Math.sin(this.time * 0.7 + d.phase) + throb * 0.9) * (palette.dark ? 1 : 0.8) * (1 - this.flatten * 0.5) * (0.4 + 0.6 * this.power);
             ctx.beginPath();
             ctx.arc(x * w, d.y * h, d.size * unit, 0, TAU);
             ctx.fill();
@@ -309,6 +314,11 @@ export class VoiceConstellation {
         for (const link of this.links) {
             const a = this.stars[link.a];
             const b = this.stars[link.b];
+            if (a.litAt === null || b.litAt === null) continue;
+            // A link draws in from the star that lit first once both are on.
+            const [from, to] = a.litAt <= b.litAt ? [a, b] : [b, a];
+            const drawn = easeInOut((this.time - Math.max(a.litAt, b.litAt)) / 0.45);
+            if (drawn <= 0) continue;
             const depth = (a.depth + b.depth) / 2;
             const glow = Math.max(link.glow, this.waveAt((a.radial + b.radial) / 2));
             // Long links fade so the field reads as clusters rather than a mesh.
@@ -317,8 +327,8 @@ export class VoiceConstellation {
             ctx.strokeStyle = rgba(mix(palette.ink, palette.accent, Math.min(1, glow * 1.2 + throb * 0.6)), alpha * (1 - this.flatten * 0.55));
             ctx.lineWidth = (0.6 + glow * 0.7 + throb * 0.5) * unit;
             ctx.beginPath();
-            ctx.moveTo(a.sx, a.sy);
-            ctx.lineTo(b.sx, b.sy);
+            ctx.moveTo(from.sx, from.sy);
+            ctx.lineTo(from.sx + (to.sx - from.sx) * drawn, from.sy + (to.sy - from.sy) * drawn);
             ctx.stroke();
         }
 
@@ -356,9 +366,10 @@ export class VoiceConstellation {
         for (const i of this.order) {
             if (i === 0) continue;
             const s = this.stars[i];
+            const on = this.lightOf(s);
             const near = this.phase === "listening" ? level * (1 - Math.min(1, Math.hypot(s.x, s.y, s.z))) : 0;
-            const heat = Math.max(s.heat, s.mark * 0.8, this.waveAt(s.radial));
-            const radius = s.size * unit * (0.7 + 0.65 * s.depth) * (1 + heat * 0.6 + throb * 0.55 + near * 0.6);
+            const heat = Math.max(s.heat, s.mark * 0.8, this.waveAt(s.radial)) * on;
+            const radius = s.size * unit * (0.7 + 0.65 * s.depth) * (1 + heat * 0.6 + throb * 0.55 + near * 0.6) * (0.6 + 0.4 * on);
             const halo = heat * 0.55 + throb * 0.4;
             if (halo > 0.06) {
                 const size = radius * 8;
@@ -368,7 +379,7 @@ export class VoiceConstellation {
                 ctx.globalAlpha = 1;
                 ctx.globalCompositeOperation = "source-over";
             }
-            ctx.fillStyle = rgba(mix(palette.ink, palette.accent, Math.max(heat, throb * 0.55)), 0.3 + 0.62 * s.depth + heat * 0.4 + throb * 0.3 + near * 0.3);
+            ctx.fillStyle = rgba(mix(palette.ink, palette.accent, Math.max(heat, throb * 0.55)), (0.3 + 0.62 * s.depth + heat * 0.4 + throb * 0.3 + near * 0.3) * (0.14 + 0.86 * on));
             ctx.beginPath();
             ctx.arc(s.sx, s.sy, radius, 0, TAU);
             ctx.fill();
@@ -386,7 +397,7 @@ export class VoiceConstellation {
         const coreRadius = 3 * unit * (1 + level * 0.5 + throb * 0.35 + breath);
         const haloSize = (26 + 30 * level + 34 * throb) * unit * (1 + breath);
         ctx.globalCompositeOperation = glowMode;
-        ctx.globalAlpha = clamp01((palette.dark ? 0.55 : 0.35) + level * 0.35);
+        ctx.globalAlpha = clamp01(((palette.dark ? 0.55 : 0.35) + level * 0.35) * (0.35 + 0.65 * this.power));
         ctx.drawImage(sprites.accent, core.sx - haloSize / 2, core.sy - haloSize / 2, haloSize, haloSize);
         ctx.globalAlpha = 1;
         ctx.globalCompositeOperation = "source-over";
@@ -432,9 +443,12 @@ export class VoiceConstellation {
         this.scale = 1;
         this.flatten = phase === "transcribing" ? 1 : 0;
         this.pointer.presence = 0;
+        // Warming holds a part-lit field; a settled star is fully on, with its links drawn.
+        this.power = phase === "warming" ? 0.4 : 1;
         for (const star of this.stars) {
             star.heat = 0;
             star.mark = 0;
+            star.litAt = star.rank < this.power ? this.time - 10 : null;
         }
         // A still hint of the work: the core's links lit, brighter for tools.
         const lit = phase === "tools" ? 0.9 : phase === "thinking" ? 0.4 : 0;
@@ -485,6 +499,29 @@ export class VoiceConstellation {
         if (!pool.length) return;
         const link = pool[Math.floor(this.random() * pool.length)];
         this.pulses.push({ link, from, t: 0, duration: PULSE_SECONDS[kind], kind });
+    }
+
+    // Warming switches the stars on one at a time in random order as the wait goes on; once the models are
+    // ready, the rest switch on together.
+    private advancePower(dt: number, phase: VoicePhase): void {
+        if (phase === "warming") this.warmStart ??= performance.now();
+        const waited = this.warmStart === null ? 0 : (performance.now() - this.warmStart) / 1000;
+        const target = phase === "warming" ? 0.9 * (1 - Math.exp(-waited / 2)) : phase === "idle" ? this.power : 1;
+        if (target > this.power) this.power += (target - this.power) * approach(6, dt);
+        if (this.power > 0.995) this.power = 1;
+        for (const star of this.stars) {
+            if (star.litAt !== null || star.rank >= this.power) continue;
+            star.litAt = this.time;
+            star.heat = Math.max(star.heat, 0.45);
+        }
+    }
+
+    /** 0 dark to 1 lit; a star flickers as it switches on. */
+    private lightOf(star: Star): number {
+        if (star.litAt === null) return 0;
+        const t = (this.time - star.litAt) / 0.32;
+        if (t >= 1) return 1;
+        return t * (Math.sin(t * 26 + star.rank * 40) > -0.3 ? 1 : 0.35);
     }
 
     /** How strongly the listening waves light a point this far from the core, 0 to 1. */

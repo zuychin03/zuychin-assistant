@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { STOP_PHRASE, VOICE_FILLERS, hasStopPhrase, pickFiller, startsWork } from "../src/app/home/voice-loop";
+import { STOP_PHRASE, VOICE_FILLERS, hasStopPhrase, pickFiller, startsWork, warmupDetail } from "../src/app/home/voice-loop";
 
 for (const said of [
     STOP_PHRASE,
@@ -43,4 +43,9 @@ assert.equal(startsWork({ type: "subagent", objective: "o", model: "m", phase: "
 assert.equal(startsWork({ type: "token", text: "Hi" }), false);
 assert.equal(startsWork({ type: "error", message: "x" }), false);
 
-console.log("voice loop: stop phrase, fillers and work events ok");
+assert.equal(warmupDetail(true, true), "Loading speech recognition and the voice");
+assert.equal(warmupDetail(true, false), "Loading speech recognition");
+assert.equal(warmupDetail(false, true), "Loading the voice");
+assert.equal(warmupDetail(false, false), "Waking the voice models");
+
+console.log("voice loop: stop phrase, fillers, work events and warm-up text ok");

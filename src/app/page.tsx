@@ -27,7 +27,7 @@ import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
 import { transcribeVoiceBlob } from "./home/voice-pcm";
-import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, hasStopPhrase, pickFiller, startsWork } from "./home/voice-loop";
+import { FILLER_DELAY_MS, FILLER_MAX_WAIT_MS, STOP_PHRASE, WARMUP_MAX_MS, WARMUP_POLL_MS, WARMUP_REVEAL_MS, hasStopPhrase, pickFiller, startsWork, warmupDetail } from "./home/voice-loop";
 import { ReplySpeaker } from "./home/reply-speaker";
 import { speakableEnd } from "./home/speech-chunks";
 import { levelMeter } from "./home/audio-level";
@@ -230,6 +230,8 @@ export default function Home() {
   const [voiceTranscribing, setVoiceTranscribing] = useState(false);
   // What the current turn's running tool is doing; null when no tool is running.
   const [voiceActivity, setVoiceActivity] = useState<string | null>(null);
+  // Which on-box voice model a starting voice chat is waiting for; null when not waiting.
+  const [voiceWarmup, setVoiceWarmup] = useState<string | null>(null);
   const [sttAvailable, setSttAvailable] = useState(false);
   const sttAvailableRef = useRef(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
@@ -318,16 +320,39 @@ export default function Home() {
     setSttAvailable(sttAvailableRef.current);
   }, []);
 
-  // The transcriber only runs while voice is in use, so starting a voice chat starts it (the model loads
-  // while the first turn is spoken), and the answer replaces the configured-only status.
-  const warmStt = useCallback(async () => {
+  // The on-box transcriber and voice only run while voice is in use, so starting a voice chat starts them, and
+  // the mic waits while their models load so a cold start never slows the first turn. The answer also
+  // replaces the configured-only transcriber status.
+  const warmVoice = useCallback(async (isCurrent: () => boolean) => {
+    const started = Date.now();
+    let detail = warmupDetail(false, false);
+    let shown = false;
+    const reveal = setTimeout(() => {
+      if (!isCurrent()) return;
+      shown = true;
+      setVoiceWarmup(detail);
+    }, WARMUP_REVEAL_MS);
     try {
-      const data = await requestJson<{ available?: unknown }>("/api/voice/warm", { method: "POST", cache: "no-store" });
-      sttAvailableRef.current = data.available === true;
-    } catch {
-      sttAvailableRef.current = false;
+      for (;;) {
+        let data: { available?: unknown; loaded?: unknown; speakerLoading?: unknown } | null = null;
+        try {
+          data = await requestJson("/api/voice/warm", { method: "POST", cache: "no-store" });
+        } catch { }
+        sttAvailableRef.current = data?.available === true;
+        setSttAvailable(sttAvailableRef.current);
+        const listener = data?.available === true && data.loaded !== true;
+        const speaker = data?.speakerLoading === true;
+        if (!isCurrent() || (!listener && !speaker) || Date.now() - started > WARMUP_MAX_MS) return;
+        detail = warmupDetail(listener, speaker);
+        if (shown) setVoiceWarmup(detail);
+        await new Promise((resolve) => setTimeout(resolve, WARMUP_POLL_MS));
+        if (!isCurrent()) return;
+      }
+    } finally {
+      clearTimeout(reveal);
+      // A newer voice chat may already own the warm-up line.
+      if (isCurrent() || !voiceLoopRef.current) setVoiceWarmup(null);
     }
-    setSttAvailable(sttAvailableRef.current);
   }, []);
 
   useEffect(() => { void refreshSttStatus(); }, [refreshSttStatus, freeOnly]);
@@ -1448,15 +1473,31 @@ export default function Home() {
     }
   };
 
+  // The voice stage shows at once and holds the mic until the on-box models are ready.
+  const startVoiceChat = async () => {
+    const origin = chats.get();
+    if (!chatPolicyRef.current.ready || !origin.loaded || origin.historyLoading) return;
+    const request = ++voiceRequestRef.current;
+    voiceLoopRef.current = true;
+    setVoiceLoop(true);
+    await warmVoice(() => request === voiceRequestRef.current && voiceLoopRef.current && chats.get() === origin);
+    if (request !== voiceRequestRef.current || !voiceLoopRef.current) return;
+    if (chats.get() !== origin || (chatPolicyRef.current.freeOnly && !sttAvailableRef.current)) {
+      exitVoiceLoop();
+      return;
+    }
+    void startVoiceRecording();
+  };
+
   const toggleRecording = () => {
     // Tapping mid-recording sends what's captured so far (the loop continues);
-    // the chip's ✕ or the stop phrase ends the conversation.
+    // End or the stop phrase ends the conversation.
     if (recorderRef.current) {
       recorderRef.current.stop();
       return;
     }
-    if (!voiceLoopRef.current) void warmStt();
-    void startVoiceRecording();
+    if (voiceLoopRef.current) void startVoiceRecording();
+    else void startVoiceChat();
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1703,7 +1744,7 @@ export default function Home() {
     }}
   />;
 
-  const voicePhase: VoicePhase = isRecording ? "listening" : voiceTranscribing ? "transcribing" : speakingId ? "speaking" : isLoading ? (voiceActivity ? "tools" : "thinking") : "idle";
+  const voicePhase: VoicePhase = isRecording ? "listening" : voiceTranscribing ? "transcribing" : voiceWarmup ? "warming" : speakingId ? "speaking" : isLoading ? (voiceActivity ? "tools" : "thinking") : "idle";
   // A voice chat keeps the latest exchange in focus; earlier messages recede.
   const voiceFocusFrom = voiceLoop ? messages.findLastIndex((m) => m.role === "user") : -1;
   // Only the newest reply's mark moves, so a long thread stays calm.
@@ -2056,7 +2097,7 @@ export default function Home() {
             {voiceLoop && (
               <VoiceStage
                 phase={voicePhase}
-                activity={voiceActivity}
+                activity={voiceWarmup ?? voiceActivity}
                 readLevel={readVoiceLevel}
                 stopPhrase={STOP_PHRASE}
                 onSendNow={toggleRecording}
