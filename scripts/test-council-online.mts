@@ -516,6 +516,9 @@ test("migration: re-runnable, after or before model awareness, and setup lists c
                 values (gen_random_uuid(), 'nim', 'alpha', $1, now(), 10, 'success', 'unavailable')`, [purpose]);
             await insert("council");
             await assert.rejects(insert("bogus"), /purpose_check/);
+            // The catalogue migration rewrites the same check, so a re-run must keep the later purposes.
+            await db.exec(await read("./migrations/v7-model-catalogue.sql"));
+            for (const purpose of ["council", "lookup", "consult"]) await insert(purpose);
         } finally {
             await db.close();
         }
