@@ -60,6 +60,8 @@ export interface ProviderConfig {
     extraHeaders?: Record<string, string>;
     /** Excludes paid providers from automatic worker recruitment. */
     metered?: boolean;
+    /** Tokens per minute per model on the provider's free plan; ./request-budget keeps requests inside it. */
+    requestTokenLimit?: number;
     discovery?: ProviderDiscovery;
     chatModels: ChatModel[];
     embeddingModels: EmbeddingModel[];
@@ -155,6 +157,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "openai-compatible",
         baseUrl: "https://api.groq.com/openai/v1",
         apiKeyEnv: "GROQ_API_KEY",
+        requestTokenLimit: 8000,
         discovery: { source: "openai-list", include: "all", pricing: "all-free" },
         chatModels: [],
         embeddingModels: [],

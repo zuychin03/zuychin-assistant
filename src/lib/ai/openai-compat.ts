@@ -14,6 +14,7 @@ import type { FileAttachment } from "@/lib/types";
 import { aggregateUsage, requestUsage, type CompatUsage } from "@/lib/ai/stream-usage";
 import { groqBody } from "@/lib/ai/groq";
 import { beginModelObservation, type ModelCallPurpose } from "@/lib/ai/model-observations";
+import { budgetKey, estimateTokens, planRequest, recordTokens, RequestLimitError, MIN_REPLY_TOKENS } from "@/lib/ai/request-budget";
 
 interface ToolCall {
     id?: string;
@@ -217,7 +218,8 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
         opts.onToken = nextTurnSink();
         data = await postChat(provider, apiKey, model.id, messages, tools, opts, forceSearch);
     } catch (err) {
-        if (params.signal?.aborted) throw err;
+        // A smaller request without tools would fit, but the caller can do better on a model that keeps them.
+        if (params.signal?.aborted || err instanceof RequestLimitError) throw err;
         if (tools || opts.thinking) {
             console.warn(`[${provider.id}] request failed, retrying without tools/reasoning:`, err);
             data = await postChat(provider, apiKey, model.id, messages, undefined, { ...opts, thinking: false, onToken: nextTurnSink() });
@@ -226,6 +228,7 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
         }
     }
 
+    const toolsRun: string[] = [];
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const msg = data.choices?.[0]?.message;
         const calls = msg?.tool_calls;
@@ -244,6 +247,7 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
                 if (allowTools && !allowTools.has(call.function.name)) {
                     return { id: call.id, name: call.function.name, result: toolRefusal(call.function.name) };
                 }
+                toolsRun.push(call.function.name);
                 ctx?.onTool?.(call.function.name, "start");
                 try {
                     return { id: call.id, name: call.function.name, result: await executeTool(call.function.name, args, embRef, ctx) };
@@ -258,7 +262,12 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
         }
 
         opts.onToken = nextTurnSink();
-        data = await postChat(provider, apiKey, model.id, messages, tools, opts);
+        try {
+            data = await postChat(provider, apiKey, model.id, messages, tools, opts);
+        } catch (err) {
+            if (err instanceof RequestLimitError) err.toolsRun = [...toolsRun];
+            throw err;
+        }
     }
 
     // Resumes an answer the provider cut off. Continuations run tool-free and
@@ -418,10 +427,22 @@ async function postChat(
         if (thinking) body.reasoning_effort = "high";
     }
 
+    // Checked before sending so an oversized request costs nothing; the reply cap matters because a provider
+    // can count the requested maximum against the minute up front.
+    const limit = provider.requestTokenLimit;
+    const budget = budgetKey(provider.id, model);
+    const estimate = limit ? estimateTokens({ messages, tools }) : 0;
+    if (limit) {
+        const plan = planRequest(limit, budget, estimate, body.max_tokens);
+        if (!plan.ok) throw new RequestLimitError(plan.reason, provider.label, model, limit, estimate, plan.used);
+        body.max_tokens = plan.maxTokens;
+    }
+
     const payload = provider.id === "groq" ? groqBody(body, model, !!thinking) : body;
 
     let latestUsage: unknown;
     let streamFinished = false;
+    let accepted = false;
     const observation = beginModelObservation({ providerId: provider.id, modelId: model, purpose: opts.purpose ?? "chat" });
     const timeoutMs = requestTimeoutMs(provider.id);
     const controller = new AbortController();
@@ -444,8 +465,15 @@ async function postChat(
 
         if (!res.ok) {
             const detail = await res.text().catch(() => "");
+            if (limit && (res.status === 413 || res.status === 429)) {
+                console.warn(`[${provider.id}] ${model} refused at ${res.status}: ${detail.slice(0, 200)}`);
+                // Our estimate was low or another client shares the key; sit this model out for the minute.
+                recordTokens(budget, limit);
+                throw new RequestLimitError("upstream", provider.label, model, limit, estimate, limit, res.status);
+            }
             throw Object.assign(new Error(`${provider.label} ${res.status}: ${detail.slice(0, 400)}`), { status: res.status });
         }
+        accepted = true;
         if (!res.body) {
             throw new Error(`${provider.label}: empty stream body.`);
         }
@@ -476,7 +504,9 @@ async function postChat(
         }
         throw err;
     } finally {
-        opts.onRequestUsage?.(requestUsage(latestUsage, streamFinished));
+        const usage = requestUsage(latestUsage, streamFinished);
+        if (limit && accepted) recordTokens(budget, usage.totalTokens ?? estimate + MIN_REPLY_TOKENS);
+        opts.onRequestUsage?.(usage);
         clearTimeout(timeout);
         opts.signal?.removeEventListener("abort", onCallerAbort);
     }

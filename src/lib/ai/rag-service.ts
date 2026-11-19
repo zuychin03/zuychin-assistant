@@ -14,7 +14,8 @@ import { rankReplySources, recordReplySources, withReplySources } from "@/lib/ai
 import { saveReplyTrace } from "@/lib/ai/reply-trace-store";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { generateGeminiChat } from "@/lib/ai/gemini-chat";
-import { buildGeminiFunctionDeclarations, executeTool, type ToolContext } from "@/lib/ai/mcp-service";
+import { buildGeminiFunctionDeclarations, executeTool, READ_ONLY_TOOLS, type ToolContext } from "@/lib/ai/mcp-service";
+import { canRepeatElsewhere, fallbackNote, stoppedAfterTools, RequestLimitError } from "@/lib/ai/request-budget";
 import { classifyIntent } from "@/lib/ai/agent/router";
 import { runAgent } from "@/lib/ai/agent/orchestrator";
 import { getScopedResumeRun, type AgentRunDetail } from "@/lib/ai/agent/run-store";
@@ -734,31 +735,41 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
             const onToken: TokenSink | undefined = onEvent
                 ? (text, reset) => onEvent({ type: "token", text, ...(reset ? { reset: true } : {}) })
                 : undefined;
+            const generate = (chat: ResolvedChat, allowThinking: boolean, allowSearch: boolean, sink?: TokenSink) =>
+                chat.provider.kind === "gemini"
+                    ? generateGeminiReply({
+                        contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
+                        thinking: allowThinking, search: allowSearch,
+                        model: chat.model.id, providerId: chat.provider.id, apiKey: getProviderApiKey(chat.provider),
+                        embRef: rag.embRef, genParams, ctx: toolCtx, signal,
+                        onToken: sink,
+                    })
+                    : openaiCompatChat({
+                        provider: chat.provider,
+                        model: chat.model,
+                        systemText: rag.contextBlock.trim(),
+                        userText: effectiveMessage,
+                        imageBase64,
+                        file,
+                        embRef: rag.embRef,
+                        thinking: allowThinking,
+                        search: allowSearch,
+                        genParams,
+                        ctx: toolCtx,
+                        signal,
+                        onToken: sink,
+                    });
             if (freeOnly) assertFreeModel(rag.chat);
-            if (rag.chat.provider.kind === "gemini") {
-                reply = await generateGeminiReply({
-                    contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
-                    thinking: rag.allowThinking, search: rag.allowSearch,
-                    model: rag.chat.model.id, providerId: rag.chat.provider.id, apiKey: getProviderApiKey(rag.chat.provider),
-                    embRef: rag.embRef, genParams, ctx: toolCtx, signal,
-                    onToken,
-                });
-            } else {
-                reply = await openaiCompatChat({
-                    provider: rag.chat.provider,
-                    model: rag.chat.model,
-                    systemText: rag.contextBlock.trim(),
-                    userText: effectiveMessage,
-                    imageBase64,
-                    file,
-                    embRef: rag.embRef,
-                    thinking: rag.allowThinking,
-                    search: rag.allowSearch,
-                    genParams,
-                    ctx: toolCtx,
-                    signal,
-                    onToken,
-                });
+            try {
+                reply = await generate(rag.chat, rag.allowThinking, rag.allowSearch, onToken);
+            } catch (err) {
+                if (signal?.aborted || !(err instanceof RequestLimitError)) throw err;
+                if (!canRepeatElsewhere(err, READ_ONLY_TOOLS)) throw stoppedAfterTools(err);
+                const fallback = requestLimitFallback(rag.chat, freeOnly);
+                if (!fallback) throw err;
+                console.warn(`[RAG] ${err.message} Answering with ${fallback.provider.id}::${fallback.model.id}.`);
+                const answer = await generate(fallback, thinking && fallback.model.supportsThinking, search && fallback.model.supportsSearch, resetOnFirst(onToken));
+                reply = answer + fallbackNote(err, fallback.model.label);
             }
         }
     } catch (err) {
@@ -824,6 +835,27 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
 }
 
 export type TokenSink = (text: string, reset?: boolean) => void;
+
+// Same default as an audio turn on a non-Gemini pick. Null when there is nowhere else to go.
+function requestLimitFallback(chat: ResolvedChat, freeOnly: boolean): ResolvedChat | null {
+    let fallback: ResolvedChat;
+    try {
+        fallback = freeOnly ? resolveFreeChat(null, true) : resolveChat();
+    } catch {
+        return null;
+    }
+    return fallback.provider.id === chat.provider.id && fallback.model.id === chat.model.id ? null : fallback;
+}
+
+// The refused model may have streamed a tool-round preamble; the fallback's answer replaces it.
+function resetOnFirst(sink?: TokenSink): TokenSink | undefined {
+    if (!sink) return undefined;
+    let first = true;
+    return (text, reset) => {
+        sink(text, reset || first);
+        first = false;
+    };
+}
 
 async function generateGeminiReply(opts: {
     contextBlock: string; message: string; imageBase64?: string; file?: FileAttachment;

@@ -20,6 +20,7 @@ const tests = [
     "graph-mutation-state",
     "scheduled-task-models",
     "kilo-adapter",
+    "request-budget",
     "model-observations",
     "model-health",
     "seat-key-load-gate",
