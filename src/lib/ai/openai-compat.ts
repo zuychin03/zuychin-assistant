@@ -407,7 +407,7 @@ async function postChat(
     }
 
     if (thinking) {
-        if (provider.id === "nvidia-nim") {
+        if (provider.id === "nvidia-nim" || provider.id === "agnes") {
             body.chat_template_kwargs = { enable_thinking: true };
         } else if (provider.id === "openrouter") {
             body.reasoning = { effort: "high" };

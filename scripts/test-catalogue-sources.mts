@@ -105,6 +105,15 @@ await check("Groq: free key, inactive, speech and guard models left out, complet
     assert.equal(models.find((model) => model.modelId === "gemma2-9b-it")!.chat, false);
 });
 
+await check("Agnes AI: free key, image and video models and the retired 2.0 and 2.5 left out", () => {
+    const models = parseOpenAiModelList(fixture("agnes"), true);
+    const agnes = getProvider("agnes")!;
+    const tracked = selectDiscoverable(models, agnes.discovery!, retiredChatModelIds("agnes"));
+    assert.deepEqual(ids(tracked).sort(), ["agnes-1.5-flash", "agnes-3.0-flash"]);
+    assert.ok(tracked.every((model) => model.free && model.developer === "Agnes AI"));
+    assert.deepEqual(agnes.chatModels, [], "no built-in models, so automatic routes wait for Approve");
+});
+
 await check("OpenCode Console: only paid Chat Completions models are chat, with price, limits and inputs read", () => {
     const models = parseOpenCodeModels(fixture("opencode"));
     const opencode = getProvider("opencode-zen")!;
@@ -161,9 +170,10 @@ await check("listing: OpenAI-style providers send the bearer key and extra heade
     assert.ok(calls[0].headers["X-Title"]);
 });
 
-await check("listing: Groq and OpenCode Console list from their own base URL with the bearer key", async () => {
+await check("listing: Groq, Agnes AI and OpenCode Console list from their own base URL with the bearer key", async () => {
     for (const [id, name, url] of [
         ["groq", "groq", "https://api.groq.com/openai/v1/models"],
+        ["agnes", "agnes", "https://apihub.agnes-ai.com/v1/models"],
         ["opencode-zen", "opencode", "https://opencode.ai/inference/openai/v1/models"],
     ] as const) {
         const calls: Call[] = [];

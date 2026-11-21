@@ -43,6 +43,10 @@ edited and deleted in place.
   recovery path
 - Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
   at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
+- Council supervision: the host restarts a seat whose turn goes quiet for 15 minutes or runs past
+  90, up to twice, then blocks its task and sends a notice. During a campaign, a "Note to agents"
+  panel on `/council` reaches all seats or one, delivered once at the seat's next heartbeat or
+  prompt, and a blocked task can be requeued, which restarts its stalled seat
 - Online councils: a debate between chat models from the selectable list, run on the server with no
   host, so it can be started from a phone or Telegram and keeps going after the page closes
 - Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
@@ -298,6 +302,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): canonical `deepseek-flash` and `deepseek-v4-pro`. Metered and excluded from the free worker pool |
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
 | `GROQ_API_KEY` | Groq free-tier key ([console.groq.com](https://console.groq.com)). Its free models are seeded unapproved: they join the picker once a test passes, and automatic routes wait for Approve. The free tier allows 8K tokens per minute |
+| `AGNES_API_KEY` | Agnes AI key ([platform.agnes-ai.com](https://platform.agnes-ai.com)), or save it on `/admin`. Its models come from discovery: they join the picker once a test passes, and automatic routes wait for Approve. Free at an "experience price" that may end; no data-use policy is published |
 | `OPENCODE_API_KEY` | OpenCode Console key (paid credits). Replaces `OPENCODE_ZEN_API_KEY`. Metered; no built-in models. See [setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
 | `PROVIDER_KEYS_SECRET` | Dev only. 32 random bytes, base64 (`openssl rand -base64 32`), that encrypt provider keys saved on `/admin`. Production reads a systemd credential instead. Unset = saving keys is off and env keys work as before |
 | `PROVIDER_KEYS_SECRET_PREVIOUS` | Dev only, during a master key change: the old value, so saved keys are re-encrypted on start |
@@ -425,6 +430,13 @@ safe to run again, and it must run again after any re-run of `v6-scheduled-actio
 it, Telegram keeps one shared history, approvals send no buttons, and email and calendar
 changes asked for in a Telegram chat are refused.
 
+The `-- ===== Council owner notes =====` block adds `council_owner_notes` (notes the owner sends
+to campaign seats, server-only) and the functions behind sending, delivering each note once and
+requeueing a blocked task. On an existing project, run
+[`scripts/migrations/council-owner-notes.sql`](scripts/migrations/council-owner-notes.sql); it is
+safe to run again. Without it, the notes panel and Requeue say which file to apply, and the
+watchdog still runs.
+
 
 ### Web authentication
 
@@ -545,6 +557,8 @@ npm run dev
 | POST | `/api/council/[code]/integrator` | Nominate the agent that assembles accepted work |
 | GET | `/api/council/[code]/executions` | Paged execution history (`?cursor=`) |
 | GET | `/api/council/[code]/integration-attempts` | Integration attempts, with `/[attemptId]` and `/[attemptId]/verification/[runId]` for one attempt and one verification run |
+| GET/POST | `/api/council/[code]/notes` | Owner notes sent during a campaign, with each seat's delivery state / send one (`{ text, agent? }`) |
+| POST | `/api/council/[code]/work/[itemId]/requeue` | Put a blocked task back in the queue and reopen a blocked campaign |
 | GET | `/api/council/runtime-inventory` | Paged list of councils with their host generation, policy version and whether they have execution history (`?cursor=`) |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange (signed in only) |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret header, chat allowlist, owner sender), messages and approval taps |
@@ -622,13 +636,14 @@ is not evidence that a model has retired.
 | NVIDIA NIM | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.3-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. Kimi K3, GLM-5.3, DeepSeek V4.1 Flash and DiffusionGemma reached end of life on NIM (HTTP 410 on 18/11/2026); saved choices resolve to replacements |
 | Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
 | Groq | OpenAI-compatible | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` | Free tier (8K tokens per minute). Seeded as catalogue rows, not code models, so automatic routes wait for Approve. Requests drop `messages[].name` and send `max_completion_tokens` |
+| Agnes AI | OpenAI-compatible | From discovery (`agnes-3.0-flash` expected) | $0 at an early-user "experience price" with no end date, about 20 requests per minute; no published data-use policy. No built-in models: discovery adds them once a key is saved, and automatic routes wait for Approve. `agnes-2.0-flash` and `agnes-2.5-flash` (offline 30/11/2026) are retired |
 | OpenCode Console | OpenAI-compatible | none until a key is set | Paid only (credits); metered. Discovery tracks paid Chat Completions models; each needs Test and Approve. Free models answer 403 outside OpenCode, so the old free ids are retired and saved choices of them fall back to the default. [Setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
 | TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
-  OpenRouter, Kilo, NVIDIA NIM, Groq, DeepSeek and OpenCode Console chat-completion models with
+  OpenRouter, Kilo, NVIDIA NIM, Groq, Agnes AI, DeepSeek and OpenCode Console chat-completion models with
   streamed responses. Gemini keeps its own native path.
 - Tool dispatch follows each model's declared capability. Some endpoints remain unverified
   under load; successful HTTP responses alone do not prove a tool was executed. If a model
@@ -636,7 +651,7 @@ How it works:
 - Each model declares `supportsThinking` and `supportsSearch`. `/think` and `/search` are
   enforced on the server (so they hold on every channel) and the UI hides toggles a model
   can't use. Reasoning (`/think`) maps to Gemini `thinkingConfig`, OpenRouter `reasoning`,
-  NIM `chat_template_kwargs.enable_thinking`, DeepSeek `thinking` + `reasoning_effort`, and Groq
+  NIM and Agnes AI `chat_template_kwargs.enable_thinking`, DeepSeek `thinking` + `reasoning_effort`, and Groq
   `reasoning_effort` (GPT-OSS always reasons, so off means low effort with the reasoning hidden).
   DeepSeek is the one provider that reasons unless told not to, so its branch runs on every
   request rather than only when `/think` is on.
@@ -669,8 +684,8 @@ discovered models and a status. The server loads the catalogue at start-up and r
 background once it is more than 5 minutes old, so model lookups stay synchronous.
 
 - Listing: the daily check lists Gemini (both keys), OpenRouter and Kilo (free models only),
-  NVIDIA NIM, DeepSeek, Groq and OpenCode Console (paid Chat Completions models only, tested
-  only when you press Test). TokenRouter is not listed. Saving a provider key on `/admin` starts
+  NVIDIA NIM, DeepSeek, Groq, Agnes AI (no image or video models) and OpenCode Console (paid
+  Chat Completions models only, tested only when you press Test). TokenRouter is not listed. Saving a provider key on `/admin` starts
   a check straight away.
 - Testing: each check tests up to `MODEL_DISCOVERY_MAX_PROBES` free models per provider: new
   ones first, then retries of unclear results, then picker models last tested over 7 days ago.
@@ -856,8 +871,8 @@ that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only
 | `council_wait` | council | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
 | `council_pass` | council | Nothing to add this round, or leave the council for good |
 | `council_conclude` | council | Closer-only: write the verdict, optionally create assigned implementation tasks, mirror to Discord and file a quarantined vault page |
-| `council_work_next` | council | Claim or resume the caller's assigned implementation task |
-| `council_work_heartbeat` | council | Record meaningful progress on an active task |
+| `council_work_next` | council | Claim or resume the caller's assigned implementation task, with its recorded progress and any owner notes |
+| `council_work_heartbeat` | council | Record meaningful progress on an active task; the reply carries any owner notes |
 | `council_work_complete` | council | Submit a committed, verified task for closer review |
 | `council_work_block` | council | Record a human or external dependency blocker |
 | `council_work_review` | council | Closer-only: accept a task, subject to the exact-commit gate, or return it with feedback |
@@ -872,6 +887,8 @@ that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only
 | `council_execution_stop` | host | Close an execution record with its outcome |
 | `council_work_unverified` | host | List submitted work items still waiting on host evidence |
 | `council_work_verify` | host | Record exact-commit verification evidence for one item |
+| `council_work_stall` | host | Block a stuck seat's task after the watchdog gives up, and send a notice |
+| `council_owner_notes_take` | host | Take one seat's undelivered owner notes for its next campaign prompt |
 | `council_integration_manifest` | host | Freeze the accepted-SHA manifest once every item is verified |
 | `council_integration_begin` | host | Capture an immutable integration attempt and its nominated integrator |
 | `council_integration_finish` | host | Finalise an attempt with exact-tip checks and redacted command receipts |
@@ -1103,7 +1120,8 @@ must keep `npm run dev` running. Both hit the same Supabase, so the councils are
 
 **Desktop shell (Windows preview).** The Tauri shell can start, stop and restart its own local
 host while loading the deployed web app. See [desktop setup and recovery](src-tauri/README.md).
-It uses the existing supervision contract and leaves separately launched hosts alone.
+It uses the existing supervision contract and leaves separately launched hosts alone. It runs as a
+single instance: a second launch brings the open window to the front.
 
 **Council CI.** Offline process tests and their harness guards run on Linux and Windows. Database
 checks create a disposable Supabase stack inside the GitHub runner, apply the full setup SQL and
@@ -1188,6 +1206,15 @@ accepted SHA are immutable evidence. When all items pass, the database freezes a
 accepted-commit manifest. The host either assembles those exact SHAs deterministically or gives a
 nominated integrator a dedicated integration worktree, then independently verifies the resulting
 tip. No automated path updates `main`.
+
+The host watches every ACP turn. A turn with no update for `turnIdleMs` (15 minutes) or running
+past `turnMaxMs` (90 minutes), both set per adapter, is cancelled and the seat restarted with a
+fresh session, up to `watchdogRestarts` (2) times. A running host terminal pauses the idle clock.
+After the last restart the host calls `council_work_stall`, which blocks the seat's task and
+sends a notice; **Requeue** on `/council` puts the task back and the host restarts the seat. Owner
+notes from the "Note to agents" panel (apply
+[`scripts/migrations/council-owner-notes.sql`](scripts/migrations/council-owner-notes.sql) first)
+reach a seat once, in its next heartbeat, `council_work_next` reply or campaign prompt.
 
 If the host or the machine restarts, reattach to a running council - the agents get fresh sessions,
 keep their worktrees, and are redelivered whatever they never acknowledged:
@@ -1590,7 +1617,7 @@ src/
 │   │   ├── catalogue/                  # Model discovery: provider lists, tests, stored catalogue, daily check
 │   │   ├── models/                     # Model awareness: tags, speed, roster, lookups, profiles, model_status, /model text
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
-│   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, DeepSeek, OpenCode) + tool loop
+│   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, Agnes, DeepSeek, OpenCode) + tool loop
 │   │   ├── groq.ts                     # Groq request quirks (field names, reasoning switches)
 │   │   ├── provider-keys/              # Encrypted provider keys: master key, AES-GCM, store, snapshot, key checks, admin actions
 │   │   ├── reply-sources.ts            # Records the sources each reply used

@@ -9,6 +9,8 @@ export interface ProviderDiscovery {
     /** "listed" reads the price from the list; the others apply to every model on the key. */
     pricing: "listed" | "all-free" | "all-paid";
     nameSuffix?: string;
+    /** Ids the list carries that are not chat models and that the shared filters miss. */
+    exclude?: RegExp;
 }
 
 export interface ListedModel {
@@ -240,7 +242,7 @@ export function parseListing(discovery: ProviderDiscovery, raw: unknown): Listed
 export function selectDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set()): ListedModel[] {
     const seen = new Set<string>();
     return models.filter((model) => {
-        if (!model.chat || retiredIds.has(model.modelId) || seen.has(model.modelId)) return false;
+        if (!model.chat || retiredIds.has(model.modelId) || seen.has(model.modelId) || discovery.exclude?.test(model.modelId)) return false;
         if (discovery.include === "free" && !model.free) return false;
         seen.add(model.modelId);
         return true;

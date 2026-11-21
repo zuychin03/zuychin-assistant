@@ -7,7 +7,7 @@ export interface DataRouteAssessment {
     retention: "not_verified";
     rule: "interactive" | "scheduled_generation" | "shared_embedding_partition" | "unclassified";
 }
-const APPROVED_PROVIDERS = new Set(["gemini", "gemini-free", "openrouter", "kilo", "nvidia-nim", "groq", "deepseek", "opencode-zen"]);
+const APPROVED_PROVIDERS = new Set(["gemini", "gemini-free", "openrouter", "kilo", "nvidia-nim", "groq", "agnes", "deepseek", "opencode-zen"]);
 export const DATA_ROUTE_RULES = {
     personal: ["free", "paid"], knowledge: ["free", "paid"], public_search: ["free", "paid"],
     unattended: ["paid_generation", "shared_embedding_partition"],

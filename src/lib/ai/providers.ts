@@ -163,6 +163,18 @@ export const PROVIDERS: ProviderConfig[] = [
         embeddingModels: [],
     },
     {
+        // $0 is an early-user "experience price" with no end date, and no data-use policy is published
+        // (checked 21/11/2026). No built-in models: discovery adds them once a key is saved.
+        id: "agnes",
+        label: "Agnes AI",
+        kind: "openai-compatible",
+        baseUrl: "https://apihub.agnes-ai.com/v1",
+        apiKeyEnv: "AGNES_API_KEY",
+        discovery: { source: "openai-list", include: "all", pricing: "all-free", exclude: /(image|video)/ },
+        chatModels: [],
+        embeddingModels: [],
+    },
+    {
         id: "deepseek",
         label: "DeepSeek",
         kind: "openai-compatible",
@@ -290,6 +302,8 @@ const LEGACY_CHAT_MODELS: Record<string, Record<string, string>> = {
 
 // Saved ids with no replacement: OpenCode's free models, which answer 403 outside OpenCode (19/11/2026).
 const RETIRED_CHAT_MODELS: Record<string, readonly string[]> = {
+    // 2.0 is deprecated and 2.5 goes offline on 30/11/2026 (Agnes docs, 21/11/2026).
+    agnes: ["agnes-2.0-flash", "agnes-2.5-flash"],
     "opencode-zen": [
         "mimo-v2.6-flash-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free",
         "mimo-v2.5-free", "deepseek-v4-flash-free", "laguna-s-2.1-free", "ling-3.0-flash-free",

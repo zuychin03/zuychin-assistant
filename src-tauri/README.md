@@ -27,6 +27,8 @@ Stop and restart require fresh idle health. Closing the app stops its owned host
 
 On Windows, ownership is released only after the parent exits and the owned job reports zero active processes. A forced descendant cleanup blocks automatic restart. If job accounting fails or cleanup exceeds its deadline, ownership remains held and the window reports the failure.
 
+The app runs as a single instance: a second launch exits and brings the open window to the front. Isolated runs with `ZUYCHIN_DESKTOP_CONFIG` set skip this, so the native smoke can open its own app beside yours.
+
 A separately launched terminal host is never taken over or stopped by the native supervisor. Its existing singleton lock prevents a second host from starting. Stop that host from its terminal first when deliberately switching to desktop ownership.
 
 Pairing is still the existing web flow. Pair once using the code printed by a manual host launched against the same repository, stop it, then start the desktop host. The host reuses that repository's pairing identity. A Tauri webview has its own browser storage, so an existing browser pairing does not automatically carry over. Native status deliberately omits credentials and raw output. The terminal launcher remains the recovery path:
@@ -49,13 +51,13 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 $env:COUNCIL_TEST_NODE = (Get-Command node).Source
 cargo test --manifest-path src-tauri/Cargo.toml -- --include-ignored
 cargo build --manifest-path src-tauri/Cargo.toml
-npx tsx scripts/test-council-desktop.mts
+npm run council:desktop:smoke
 npx tsc --noEmit
 npm run lint
 npm run council:supervisor:test
 ```
 
-The native smoke uses an isolated home, Git workspace, host configuration, fake credential and loopback fixture. It exercises actual webview IPC, permission denial, the existing paired HTTP/WebSocket path, restart, clean stop and repeated window-close cleanup. It makes no hosted database calls and leaves any existing host alone. The ignored Rust process tests require an explicit Node path and exercise deadlines, busy refusal, queue saturation, unreported death and descendant cleanup, including abrupt supervisor exit, with fake hosts.
+`CARGO_TARGET_DIR` points the smoke at a build folder outside OneDrive. The same smoke runs on a hosted Windows runner from the manual **desktop smoke** workflow in GitHub Actions. The native smoke uses an isolated home, Git workspace, host configuration, fake credential and loopback fixture. It exercises actual webview IPC, permission denial, the existing paired HTTP/WebSocket path, restart, clean stop and repeated window-close cleanup. It makes no hosted database calls and leaves any existing host alone. The ignored Rust process tests require an explicit Node path and exercise deadlines, busy refusal, queue saturation, unreported death and descendant cleanup, including abrupt supervisor exit, with fake hosts.
 
 ## Before distribution
 

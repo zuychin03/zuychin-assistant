@@ -20,6 +20,7 @@ export const KEY_CHECKS: Readonly<Record<string, KeyCheck>> = {
     "nvidia-nim": { kind: "chat", model: "nvidia/nemotron-3.5-lightning-30b-a3b" },
     deepseek: { kind: "get", path: "/models" },
     groq: { kind: "get", path: "/models" },
+    agnes: { kind: "get", path: "/models" },
     // Paid: about a millionth of a dollar per check at the 19/11/2026 price.
     "opencode-zen": { kind: "chat", model: "glm-5.3-flash" },
 };

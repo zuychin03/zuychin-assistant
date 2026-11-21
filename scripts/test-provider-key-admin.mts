@@ -72,6 +72,9 @@ await check("every usable provider declares a key check, and checks send the key
     await checkProviderKey(nim, "nvapi-fixture-123", fakeFetch(200, "{}", seen));
     assert.equal(seen.url, "https://integrate.api.nvidia.com/v1/chat/completions");
     assert.equal(JSON.parse(String(seen.init?.body)).max_tokens, 1);
+    const agnes = getProvider("agnes")!;
+    await checkProviderKey(agnes, "agnes-fixture-123", fakeFetch(200, "{}", seen));
+    assert.equal(seen.url, "https://apihub.agnes-ai.com/v1/models");
     const gemini = getProvider("gemini")!;
     await checkProviderKey(gemini, "AIza-fixture-123", fakeFetch(200, "{}", seen));
     const geminiUrl = String(seen.url);

@@ -1,0 +1,12 @@
+{
+  "_source": "Assumed OpenAI-style shape: /v1/models answers 401 without a key, so no live list was read. Ids from the Agnes docs and GitHub model catalogue on 21/11/2026. Not a live response.",
+  "object": "list",
+  "data": [
+    { "id": "agnes-3.0-flash", "object": "model", "created": 1782000000, "owned_by": "Agnes AI" },
+    { "id": "agnes-2.5-flash", "object": "model", "created": 1776000000, "owned_by": "Agnes AI" },
+    { "id": "agnes-2.0-flash", "object": "model", "created": 1770000000, "owned_by": "Agnes AI" },
+    { "id": "agnes-1.5-flash", "object": "model", "created": 1765000000, "owned_by": "Agnes AI" },
+    { "id": "agnes-image-2.1-flash", "object": "model", "created": 1780000000, "owned_by": "Agnes AI" },
+    { "id": "agnes-video-v2.0", "object": "model", "created": 1775000000, "owned_by": "Agnes AI" }
+  ]
+}
