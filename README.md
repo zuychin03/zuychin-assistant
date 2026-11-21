@@ -47,7 +47,7 @@ edited and deleted in place.
   **Research first** runs one web search (and, if ticked, a search of your notes) before round 1,
   so seats argue from cited sources. Councils of coding agents on your own machine have moved to Converoom
 - Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
-  at a read-only, notes, full, or full-plus-convene access level you choose. The brief carries a short-lived claim rather
+  at a read-only, notes or full access level you choose. The brief carries a short-lived claim rather
   than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
   use, and is revocable on its own
 - Voice conversations: send a Telegram voice note or tap the web mic, and the reply is spoken

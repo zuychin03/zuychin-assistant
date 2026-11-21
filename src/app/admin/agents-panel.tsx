@@ -10,7 +10,6 @@ import { ConfirmModal } from "../home/controls";
 // and the key itself only exists after the agent exchanges it.
 
 type AccessLevel = "read" | "notes" | "full" | "council";
-type ClientKind = "local_host" | "remote_agent" | "owner_tool";
 
 interface AgentKey {
     id: string;
@@ -26,7 +25,6 @@ interface AgentKey {
 interface AgentClient {
     id: string;
     displayName: string;
-    kind: ClientKind;
     providerHint: string | null;
     note: string | null;
     createdAt: string;
@@ -35,12 +33,6 @@ interface AgentClient {
 }
 
 type Revocation = { kind: "agent"; id: string; name: string } | { kind: "key"; id: string; name: string; credential: string };
-
-const KIND_OPTIONS = [
-    { value: "remote_agent", label: "Remote agent" },
-    { value: "local_host", label: "Local host" },
-    { value: "owner_tool", label: "Owner tool" },
-];
 
 const ACCESS_OPTIONS = [
     { value: "read", label: "Read-only" },
@@ -68,7 +60,6 @@ export default function AgentsPanel() {
     const [clients, setClients] = useState<AgentClient[]>([]);
     const [loading, setLoading] = useState(true);
     const [name, setName] = useState("");
-    const [kind, setKind] = useState<ClientKind>("remote_agent");
     const [access, setAccess] = useState<AccessLevel>("notes");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
@@ -103,7 +94,7 @@ export default function AgentsPanel() {
             const created = await fetch("/api/agents", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ displayName, kind }),
+                body: JSON.stringify({ displayName }),
             });
             const client = await created.json() as { id?: string; error?: string };
             if (!created.ok || !client.id) {
@@ -189,8 +180,6 @@ export default function AgentsPanel() {
                     aria-label="Agent name"
                     placeholder="Agent name, such as codex-laptop"
                 />
-                <Dropdown ariaLabel="Kind" className="field" style={styles.select} value={kind} disabled={busy}
-                    onChange={(v) => setKind(v as ClientKind)} options={KIND_OPTIONS} />
                 <Dropdown ariaLabel="Access level" className="field" style={styles.select} value={access} disabled={busy}
                     onChange={(v) => setAccess(v as AccessLevel)} options={ACCESS_OPTIONS} />
                 <button className="btn" style={styles.square} onClick={add} disabled={busy || !name.trim()} title="Add agent">
@@ -231,7 +220,6 @@ export default function AgentsPanel() {
                     <div key={c.id} className="row" style={styles.row}>
                         <div className="row-head">
                             <span className="row-title">{c.displayName}</span>
-                            <span className="pill">{c.kind.replace("_", " ")}</span>
                             <span className="meta" style={styles.grow}>{c.lastSeenAt ? ago(c.lastSeenAt) : "never seen"}</span>
                             <button className="icon-btn" onClick={() => reissue(c)} disabled={busy}
                                 title="Issue a fresh claim">
