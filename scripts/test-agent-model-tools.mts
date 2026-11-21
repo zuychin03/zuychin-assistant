@@ -10,9 +10,11 @@ import { getSkill } from "../src/lib/ai/skills/registry";
 import type { FeedbackInput } from "../src/lib/ai/models/store";
 import type { SpeedStats } from "../src/lib/ai/models/stats";
 import type { ProfileRecord } from "../src/lib/ai/models/profiles";
+import { CODE_SEED_ROWS } from "./fixtures/catalogue-seeds.mts";
 
 for (const provider of PROVIDERS) process.env[provider.apiKeyEnv] = "agent-tools-test-key";
-setCatalogueSnapshotForTests([]);
+const LAGUNA_ROW = CODE_SEED_ROWS.find((row) => row.providerId === "nvidia-nim" && row.modelId === "poolside/laguna-xs-2.1")!;
+setCatalogueSnapshotForTests([LAGUNA_ROW]);
 
 const FREE: RosterPolicy = { freeOnly: false, paidOrchestrator: false, unattended: false };
 const PAID: RosterPolicy = { freeOnly: false, paidOrchestrator: true, unattended: false };
@@ -31,7 +33,7 @@ function profile(key: string, tags: ProfileRecord["tags"]): ProfileRecord {
     return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus: "none", draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null };
 }
 const roster = (policy: RosterPolicy) => buildRoster({
-    providers: providers(), rows: [], profiles: [profile(LAGUNA, ["coding", "agentic"]), profile(GLM, ["research", "agentic"])],
+    providers: providers(), rows: [LAGUNA_ROW], profiles: [profile(LAGUNA, ["coding", "agentic"]), profile(GLM, ["research", "agentic"])],
     speed: new Map([speed(LAGUNA, 1500), speed(GLM, 30_000)].map((entry) => [`${entry.providerId}::${entry.modelId}`, entry])),
     feedback: new Map(), available: isProviderAvailable,
 }, policy);

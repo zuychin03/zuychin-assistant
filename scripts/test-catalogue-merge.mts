@@ -176,10 +176,29 @@ try {
     });
 
     check("short names stay unique within a provider", () => {
-        setCatalogueSnapshotForTests([row({ providerId: "nvidia-nim", modelId: "google/gemma-4-new", shortName: "gemma-4" })]);
-        const added = getProvider("nvidia-nim")!.chatModels.find((model) => model.id === "google/gemma-4-new")!;
-        assert.equal(added.name, "gemma-4-2");
-        assert.equal(resolveChatModelByName("gemma-4-2")?.model.id, "google/gemma-4-new");
+        setCatalogueSnapshotForTests([row({ providerId: "nvidia-nim", modelId: "z-ai/glm-5.3-flash-new", shortName: "glm-5.3-flash" })]);
+        const added = getProvider("nvidia-nim")!.chatModels.find((model) => model.id === "z-ai/glm-5.3-flash-new")!;
+        assert.equal(added.name, "glm-5.3-flash-2");
+        assert.equal(resolveChatModelByName("glm-5.3-flash-2")?.model.id, "z-ai/glm-5.3-flash-new");
+    });
+
+    check("a seed row with no code entry keeps its seeded values, its saved key and its approval", () => {
+        const gemma = { providerId: "openrouter", modelId: "google/gemma-4-26b-a4b-it" };
+        assert.equal(resolveModelKey(`${gemma.providerId}::${gemma.modelId}`), null, "pins only without a snapshot");
+        setCatalogueSnapshotForTests([row({
+            ...gemma, origin: "seed", label: "Gemma 4 26B A4B", shortName: "gemma-4-26b", free: false, metered: true,
+            maxOutputTokens: 16384, supportsVision: true, supportsThinking: true, supportsStructured: true,
+            probeStatus: "untested", probedAt: null, probeChatMs: null, approvedAt: "2026-11-18T00:00:00.000Z",
+        })]);
+        const model = resolveModelKey(`${gemma.providerId}::${gemma.modelId}`)!.model;
+        assert.equal(model.name, "gemma-4-26b");
+        assert.equal(model.maxOutputTokens, 16384);
+        assert.equal(model.supportsStructuredOutput, true);
+        assert.equal(model.metered, true);
+        assert.equal(model.catalogue?.origin, "seed");
+        assert.equal(model.catalogue?.status, null);
+        assert.equal(resolveChatByName("openrouter", "gemma-4-26b")?.model.id, gemma.modelId);
+        assert.ok(!chainKeys(true).includes(`${gemma.providerId}::${gemma.modelId}`), "metered models never join the worker chain");
     });
 
     check("messaging falls back to an approved free model before the paid default", () => {

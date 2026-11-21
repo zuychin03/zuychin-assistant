@@ -37,6 +37,9 @@ globalThis.fetch = async (input, init) => {
 const { persistModelObservations, getModelHealth } = await import("../src/lib/ai/model-health");
 const { GET } = await import("../src/app/api/admin/model-health/route");
 const { NextRequest } = await import("next/server");
+const { setCatalogueSnapshotForTests } = await import("../src/lib/ai/catalogue/snapshot");
+const { CODE_SEED_ROWS } = await import("./fixtures/catalogue-seeds.mts");
+setCatalogueSnapshotForTests(CODE_SEED_ROWS);
 const request = (auth = true, query = "") => new NextRequest(`https://fixture.invalid/api/admin/model-health${query}`, {
     headers: auth ? { authorization: "Bearer fixture-chat" } : {},
 });

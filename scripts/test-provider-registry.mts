@@ -24,6 +24,8 @@ import {
     resolveWorkerChain,
     retiredChatModelIds,
 } from "../src/lib/ai/providers";
+import { setCatalogueSnapshotForTests } from "../src/lib/ai/catalogue/snapshot";
+import { CODE_SEED_ROWS } from "./fixtures/catalogue-seeds.mts";
 
 const envKeys = [...PROVIDERS.map((p) => p.apiKeyEnv), "KNOWLEDGE_EMBEDDING_MODEL"];
 const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
@@ -35,6 +37,8 @@ function check(name: string, run: () => void) {
 }
 
 try {
+    // Production sees these models through the catalogue since P5.
+    setCatalogueSnapshotForTests(CODE_SEED_ROWS);
     for (const provider of PROVIDERS) process.env[provider.apiKeyEnv] = "registry-test-key";
     delete process.env.KNOWLEDGE_EMBEDDING_MODEL;
 
@@ -214,14 +218,15 @@ try {
         }
     });
 
-    check("a Fast tag cannot recruit a paid OpenRouter model", () => {
-        const meta = MODEL_META["google/gemma-4-26b-a4b-it"];
-        const strengths = meta.strengths;
-        meta.strengths = [...strengths, "Fast"];
+    check("a quick probe cannot recruit a paid OpenRouter model", () => {
+        const paid = { providerId: "openrouter", modelId: "google/gemma-4-26b-a4b-it" };
+        setCatalogueSnapshotForTests(CODE_SEED_ROWS.map((row) => row.providerId === paid.providerId && row.modelId === paid.modelId
+            ? { ...row, probeStatus: "passed" as const, probedAt: "2026-11-19T00:00:00.000Z", probeChatMs: 500 } : row));
         try {
-            assert.ok(!resolveWorkerChain(true).some((w) => w.model.id === "google/gemma-4-26b-a4b-it"));
+            assert.ok(resolveModelKey(`${paid.providerId}::${paid.modelId}`));
+            assert.ok(!resolveWorkerChain(true).some((w) => w.model.id === paid.modelId));
         } finally {
-            meta.strengths = strengths;
+            setCatalogueSnapshotForTests(CODE_SEED_ROWS);
         }
     });
 
@@ -280,7 +285,7 @@ try {
         assert.ok(!JSON.stringify(providers).includes("registry-test-key"));
     });
 
-    check("all registered models have metadata and unique provider-local IDs", () => {
+    check("all code models have metadata and unique provider-local IDs", () => {
         for (const provider of PROVIDERS) {
             const models = [...provider.chatModels, ...provider.embeddingModels];
             assert.equal(new Set(models.map((m) => m.id)).size, models.length);
@@ -288,6 +293,7 @@ try {
         }
     });
 } finally {
+    setCatalogueSnapshotForTests([]);
     for (const [key, value] of previous) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;

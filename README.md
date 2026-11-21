@@ -82,8 +82,8 @@ edited and deleted in place.
 - Agent mode: complex requests are auto-routed (or forced with the agent switch / `/agent`)
   to a multi-step agent loop with live step streaming, parallel sub-agents, reusable skills
   and downloadable artifacts (documents, code files, zip bundles). Sub-agents default to
-  free fast models (Nemotron 3.5 Lightning on NIM and OpenRouter, GLM-5.3 Flash and available Fast-tagged
-  tool-capable models), with Gemini 3.5 Flash-Lite for simple fallback subtasks and 3.8 Flash
+  free fast models (Nemotron 3.5 Lightning on NIM and OpenRouter, GLM-5.3 Flash, then approved free
+  tool-capable models tagged Fast or whose last test answered within 10 seconds), with Gemini 3.5 Flash-Lite for simple fallback subtasks and 3.8 Flash
   for complex ones. Metered models stay out of the free worker pool
 - Run durability: every agent run is traced to an `agent_runs` row (plan, step timeline,
   token usage); long runs self-compact their context, and if a stream dies mid-run the web
@@ -606,8 +606,9 @@ public webhook, cron and headless-chat routes protect themselves with bearer cre
 The chat model is chosen per message from the header dropdown (saved in `localStorage`).
 Generation settings include the embedding migration selector and hyperparameters. Providers
 need a configured key and must not carry an unavailable reason. The default web chat model
-is Gemini 3.5 Flash-Lite; messaging uses the separate chain below. The registry lives in
-[`src/lib/ai/providers.ts`](src/lib/ai/providers.ts).
+is Gemini 3.5 Flash-Lite; messaging uses the separate chain below. Provider settings, the pinned
+models and audited quirks live in [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts); every other
+chat model comes from the model catalogue below.
 
 A catalogue entry is not proof of a successful chat or tool call, and a timeout or rate limit
 is not evidence that a model has retired.
@@ -663,9 +664,12 @@ How it works:
 
 ### Model catalogue
 
-The models in `providers.ts` are merged with the stored catalogue
-([`src/lib/ai/catalogue/`](src/lib/ai/catalogue)). Code wins field by field; the catalogue adds
-discovered models and a status. The server loads the catalogue at start-up and reloads it in the
+`providers.ts` keeps provider settings, the pinned models (the default and paid chat models, the
+messaging and worker chains, both embedding models, the free-key Gemini and DeepSeek models) and
+audited quirks. Every other chat model comes from the stored catalogue
+([`src/lib/ai/catalogue/`](src/lib/ai/catalogue)), including the models that used to be written in
+code, which are approved seed rows. Code wins field by field; the catalogue adds the other models
+and a status. If the catalogue cannot be read at start-up, the picker shows the pinned models only. The server loads the catalogue at start-up and reloads it in the
 background once it is more than 5 minutes old, so model lookups stay synchronous.
 
 - Listing: the daily check lists Gemini (both keys), OpenRouter and Kilo (free models only),

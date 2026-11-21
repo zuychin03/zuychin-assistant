@@ -31,6 +31,7 @@ const { formatModelStatus } = await import("../src/lib/ai/models/status");
 const { formatModelListing, formatPurposePicks } = await import("../src/lib/ai/models/command");
 const { ragChat } = await import("../src/lib/ai/rag-service");
 const { executeTool } = await import("../src/lib/ai/mcp-service");
+const { CODE_SEED_ROWS } = await import("./fixtures/catalogue-seeds.mts");
 type RosterEntry = import("../src/lib/ai/models/roster").RosterEntry;
 type SpeedStats = import("../src/lib/ai/models/stats").SpeedStats;
 type ProfileRecord = import("../src/lib/ai/models/profiles").ProfileRecord;
@@ -52,9 +53,10 @@ function profile(key: string, tags: ProfileRecord["tags"], draftStatus: ProfileR
     return { providerId, modelId, tags, tagsSource: "owner", profile: null, approvedAt: null, draft: null, draftStatus, draftError: null, draftedAt: null, lookupAttempts: 0, vaultPath: null, vaultSyncedAt: null, vaultError: null, removedAt: null };
 }
 const PROFILES = [profile(LAGUNA, ["coding", "agentic"]), profile(GLM, ["coding", "research"], "ready"), profile(PAID_FLASH, ["coding", "reasoning"])];
+const LAGUNA_ROW = CODE_SEED_ROWS.find((row) => row.providerId === "nvidia-nim" && row.modelId === "poolside/laguna-xs-2.1")!;
 const SPEEDS = [speed(LAGUNA, 1500), speed(GLM, 30_000, 3, 7), speed(FREE_FLASH, 9000)];
 const roster = (freeOnly = false, extra: SpeedStats[] = []) => buildRoster({
-    providers: providers(), rows: [], profiles: PROFILES,
+    providers: providers(), rows: [LAGUNA_ROW], profiles: PROFILES,
     speed: new Map([...SPEEDS, ...extra].map((entry) => [`${entry.providerId}::${entry.modelId}`, entry])),
     feedback: new Map(), available: isProviderAvailable,
 }, { freeOnly, paidOrchestrator: true, unattended: false });
@@ -62,7 +64,7 @@ const roster = (freeOnly = false, extra: SpeedStats[] = []) => buildRoster({
 let checks = 0;
 async function check(name: string, run: () => void | Promise<void>) {
     prefs = {}; runs = []; unexpected.length = 0;
-    setCatalogueSnapshotForTests([], "ok", PROFILES);
+    setCatalogueSnapshotForTests([LAGUNA_ROW], "ok", PROFILES);
     setStatsSnapshotForTests(SPEEDS);
     await run();
     assert.deepEqual(unexpected, [], "no request outside the fixture");

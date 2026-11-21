@@ -66,12 +66,17 @@ check("feedback moves the score by at most two points and only after three ratin
 
 check("tags fall back to the hand-written strengths and are gated by capabilities", () => {
     assert.deepEqual(tagsFromMeta(getModelMeta("nvidia/nemotron-3-ultra-550b-a55b"), { supportsTools: true, supportsVision: false }), ["coding", "reasoning", "long-context", "agentic"]);
-    assert.deepEqual(tagsFromMeta(getModelMeta("google/gemma-4-31b-it"), { supportsTools: true, supportsVision: true }), ["coding", "vision", "multilingual", "agentic"]);
+    assert.deepEqual(tagsFromMeta(getModelMeta("z-ai/glm-5.3-flash"), { supportsTools: true, supportsVision: true }), ["coding", "reasoning", "vision", "agentic"]);
     assert.deepEqual(gateTags(["vision", "research", "general", "coding"], { supportsTools: false, supportsVision: false }), ["coding"]);
 });
 
 check("purpose picks are free, approved and never Gemini; paid models are hints only under a paid orchestrator", () => {
-    const free = roster(FREE), paid = roster(PAID);
+    // Both are catalogue seeds with no code entry since P5.
+    const seeds = [
+        row({ providerId: "openrouter", modelId: "google/gemma-4-26b-a4b-it", origin: "seed", free: false, metered: true, probeStatus: "untested", approvedAt: "2026-11-18T00:00:00.000Z" }),
+        row({ providerId: "tokenrouter", modelId: "moonshotai/kimi-k3-free", origin: "seed", probeStatus: "untested", approvedAt: "2026-11-18T00:00:00.000Z" }),
+    ];
+    const free = roster(FREE, [], new Map(), seeds), paid = roster(PAID, [], new Map(), seeds);
     assert.equal(entry(free, NIM_LIGHTNING).autoEligible, true);
     assert.equal(entry(free, "gemini-free::gemini-3.8-flash").autoEligible, false);
     assert.equal(entry(free, "gemini-free::gemini-3.8-flash").hintEligible, true, "free Gemini may be named");

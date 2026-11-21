@@ -67,6 +67,8 @@ export interface ProviderConfig {
     embeddingModels: EmbeddingModel[];
 }
 
+// Pins and audited quirks only. Every other chat model comes from the catalogue (catalogue/snapshot.ts),
+// so without a loaded snapshot the picker shows these alone.
 export const PROVIDERS: ProviderConfig[] = [
     {
         id: "gemini",
@@ -107,10 +109,6 @@ export const PROVIDERS: ProviderConfig[] = [
         },
         discovery: { source: "openrouter", include: "free", pricing: "listed" },
         chatModels: [
-            { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
-            { free: true, id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { free: true, id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { free: false, id: "google/gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B", name: "gemma-4-26b", metered: true, supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 16384 },
             { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
         ],
         embeddingModels: [],
@@ -123,11 +121,8 @@ export const PROVIDERS: ProviderConfig[] = [
         apiKeyEnv: "KILO_API_KEY",
         discovery: { source: "kilo", include: "free", pricing: "listed" },
         chatModels: [
-            { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
+            // Forced tool calls (explicit Search) timed out on this route on 23/09/2026; this overrides the probe.
             { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: false, maxOutputTokens: 65536 },
-            { free: true, id: "inclusionai/ling-3.0-flash-vl:free", label: "Ling 3.0 Flash VL (free)", name: "ling-3.0-flash-vl", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
-            { free: true, id: "stepfun/step-3.7-flash:free", label: "Step 3.7 Flash (free)", name: "step-3.7-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, maxOutputTokens: 262144 },
-            { free: true, id: "poolside/laguna-s-2.1:free", label: "Laguna S 2.1 (free)", name: "laguna-s-2.1", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 32768 },
         ],
         embeddingModels: [],
     },
@@ -140,10 +135,8 @@ export const PROVIDERS: ProviderConfig[] = [
         discovery: { source: "openai-list", include: "all", pricing: "all-free" },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
-            { free: true, id: "google/gemma-4-31b-it", label: "Gemma 4 31B IT (free)", name: "gemma-4", supportsTools: true, supportsVision: true, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
             { free: true, id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
             { free: true, id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
-            { free: true, id: "poolside/laguna-xs-2.1", label: "Laguna XS 2.1 (free)", name: "laguna-xs-2.1", supportsTools: true, supportsVision: false, supportsThinking: false, supportsSearch: true, supportsStructuredOutput: true }
         ],
         embeddingModels: [
             { free: true, id: "nvidia/nemotron-3-embed-1b", label: "Nemotron 3 Embed 1B (free, 2048d)", name: "nemotron-3-embed-1b", dimension: 2048 },
@@ -209,9 +202,7 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://api.tokenrouter.com/v1",
         apiKeyEnv: "TOKENROUTER_API_KEY",
         unavailableReason: "No usable free endpoint for the configured key (checked 23/09/2026).",
-        chatModels: [
-            { free: true, id: "moonshotai/kimi-k3-free", label: "Kimi K3 (free)", name: "kimi-k3", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
-        ],
+        chatModels: [],
         embeddingModels: [],
     },
 ];
@@ -544,7 +535,7 @@ export function resolveMessagingDefault(): ResolvedChat {
 
 // Google keeps paid-tier prompts out of training; free routes may train on them.
 // Matched by provider id, not kind: "gemini-free" is Gemini on the free tier.
-const PAID_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-lite" };
+export const PAID_CHAT = { providerId: "gemini", modelId: "gemini-3.5-flash-lite" };
 
 /** A stored choice already on the paid key, else the paid default. Throws rather than fall back to a free route. */
 export function resolvePaidChat(storedKey?: string | null): ResolvedChat {

@@ -165,7 +165,9 @@ try {
             requests++;
             return requests <= 2 ? stream([stop]) : stream([text(), stop, { usage: usage() }]);
         };
-        const result = await runWorker({ objective: "Fixture", pick: { candidates: [{ provider, model: base.model }], defaultChain: true, note: null }, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
+        const next = { ...base.model, id: "fixture/next-worker:free", name: "next-worker" };
+        const candidates = [{ provider, model: base.model }, { provider, model: next }];
+        const result = await runWorker({ objective: "Fixture", pick: { candidates, defaultChain: true, note: null }, needsTools: false, contextBlock: "", embRef: base.embRef, toolCtx: {} });
         assert.equal(requests, 3);
         assert.equal(result.tokens, null);
     });

@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { PAID_CHAT } from "@/lib/ai/providers";
 import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
 
 const clients = new Map<string, GoogleGenAI>();
@@ -34,7 +35,7 @@ export function geminiClient(key?: string): GoogleGenAI {
     return key ? clientFor(key) : ai;
 }
 
-export const MODEL = "gemini-3.5-flash-lite";
+export const MODEL = PAID_CHAT.modelId;
 
 // Gemini reports a token-budget stop here and raises nothing, so every caller
 // has to check it before treating the text as a finished answer.

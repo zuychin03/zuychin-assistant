@@ -44,40 +44,6 @@ const NEMOTRON_35_LIGHTNING: ModelMeta = {
     strengths: ["Reasoning", "Agentic", "Coding", "Tool use", "Fast"],
 };
 
-const LAGUNA_S_21: ModelMeta = {
-    developer: "Poolside",
-    description: "Coding model for software engineering, terminal workflows and tool-driven agents.",
-    inputs: ["Text"],
-    context: "262K",
-    params: "118B total · 8B active (MoE)",
-    strengths: ["Coding", "Agentic", "Tool use", "Terminal", "Reasoning"],
-};
-
-const LAGUNA_XS_21: ModelMeta = {
-    developer: "Poolside",
-    description: "Compact Laguna model for coding and tool-driven software workflows.",
-    inputs: ["Text"],
-    strengths: ["Coding", "Agentic", "Tool use"],
-};
-
-const GEMMA_4_31B: ModelMeta = {
-    developer: "Google DeepMind",
-    description: "Dense multimodal Gemma model with image and video understanding, multilingual text and function calling.",
-    inputs: ["Text", "Image", "Video"],
-    context: "256K",
-    params: "30.7B (dense)",
-    strengths: ["Multimodal", "Vision", "Coding", "Multilingual", "Tool use"],
-};
-
-const GEMMA_4_26B_A4B: ModelMeta = {
-    developer: "Google DeepMind",
-    description: "Sparse multimodal Gemma model with native function calling and structured output.",
-    inputs: ["Text", "Image", "Video"],
-    context: "262K",
-    params: "25.2B total · 3.8B active (MoE)",
-    strengths: ["Efficient", "Multimodal", "Vision", "Tool use", "Reasoning", "Multilingual"],
-};
-
 const GLM_53_FLASH: ModelMeta = {
     developer: "Z.ai",
     description: "Multimodal Flash model for reasoning and tool-driven tasks, with image understanding.",
@@ -117,50 +83,17 @@ const NEMOTRON_3_EMBED_1B: ModelMeta = {
     strengths: ["Retrieval", "Multilingual"],
 };
 
-const KIMI_K3: ModelMeta = {
-    developer: "Moonshot AI",
-    description: "Multimodal mixture-of-experts model for reasoning, coding and tool-driven tasks with a long context window.",
-    inputs: ["Text", "Image"],
-    context: "1M",
-    params: "2.8T total · 104B active (MoE)",
-    strengths: ["Reasoning", "Coding", "Agentic", "Vision", "Tool use", "Long context"],
-};
-
 export const MODEL_META: Record<string, ModelMeta> = {
     "gemini-3.8-flash": GEMINI_38_FLASH,
     "gemini-3.5-flash-lite": GEMINI_35_FLASH_LITE,
     "gemini-embedding-2": GEMINI_EMBED_2,
-    "nvidia/nemotron-3-ultra-550b-a55b:free": NEMOTRON_3_ULTRA,
-    "poolside/laguna-s-2.1:free": LAGUNA_S_21,
-    "google/gemma-4-31b-it:free": GEMMA_4_31B,
-    "google/gemma-4-26b-a4b-it": GEMMA_4_26B_A4B,
     "nvidia/nemotron-3.5-lightning:free": NEMOTRON_35_LIGHTNING,
-    "inclusionai/ling-3.0-flash-vl:free": {
-        developer: "InclusionAI",
-        description: "Multimodal Flash model for image understanding, reasoning and tool-driven workflows.",
-        inputs: ["Text", "Image"],
-        context: "256K",
-        maxOutput: "32K",
-        strengths: ["Fast", "Vision", "Multimodal", "Reasoning", "Tool use"],
-    },
-    "stepfun/step-3.7-flash:free": {
-        developer: "StepFun",
-        description: "Efficient multimodal model for coding, reasoning and agent tasks. Available through Kilo's free endpoint.",
-        inputs: ["Text", "Image"],
-        context: "256K",
-        maxOutput: "256K",
-        params: "196B total · 11B active (MoE)",
-        strengths: ["Fast", "Coding", "Vision", "Reasoning", "Tool use"],
-    },
     "deepseek-v4-pro": DEEPSEEK_V4_PRO,
     "deepseek-flash": { ...DEEPSEEK_V41_FLASH, maxOutput: "384K" },
     "nvidia/nemotron-3-ultra-550b-a55b": NEMOTRON_3_ULTRA,
-    "google/gemma-4-31b-it": GEMMA_4_31B,
     "z-ai/glm-5.3-flash": GLM_53_FLASH,
     "nvidia/nemotron-3.5-lightning-30b-a3b": NEMOTRON_35_LIGHTNING,
-    "poolside/laguna-xs-2.1": LAGUNA_XS_21,
     "nvidia/nemotron-3-embed-1b": NEMOTRON_3_EMBED_1B,
-    "moonshotai/kimi-k3-free": KIMI_K3,
 };
 
 export function getModelMeta(id: string): ModelMeta | null {
