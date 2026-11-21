@@ -1,6 +1,6 @@
 /**
  * The address an external agent has to call, which is not the same question as
- * "what origin is the owner looking at". A claim or seat key is routinely minted
+ * "what origin is the owner looking at". A claim is routinely minted
  * from localhost while the agent that will use it runs somewhere else and needs
  * a deployment that is still up later, so the briefs take the address from here
  * rather than from the window or the request.

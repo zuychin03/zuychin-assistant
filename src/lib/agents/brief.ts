@@ -59,8 +59,8 @@ List your MCP tools. You must be able to see at least:
 Then call search_knowledge once with a harmless query. A successful response
 proves the connection. If you get a 401, check the saved credential and reloaded
 connection privately; do not report success until the call works. Do not write
-knowledge or convene a council to test access. Tool visibility does not prove
-your access level; use accessLevel and scopes from the claim response.
+knowledge to test access. Tool visibility does not prove your access level; use
+accessLevel and scopes from the claim response.
 
 ## 4. What you are allowed to do
 
@@ -70,12 +70,6 @@ Each level includes the knowledge permissions of the preceding levels:
   read      read-only          search and read only
   notes     notes read/write   also save_note, update_note, delete_note
   full      full read/write    also vault_ingest, vault_write
-  council   full read/write + convene and observe councils (council:owner)
-
-Read, notes and full cannot convene councils. Council participation still needs
-a separate session-bound seat credential (council:seat) and its own brief. Host
-operations need a dedicated host credential (council:host). This key grants
-neither seat nor host authority.
 
 ## 5. Report back
 

@@ -1,6 +1,13 @@
 import { OWNER_SCOPES } from "@/lib/agents/scopes";
-import { getDefaultProfile } from "@/lib/db";
+import { getDefaultProfile, hybridSearchKnowledge, searchEmbeddings } from "@/lib/db";
+import { embedText, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
+import { collectModelObservations, configureModelDataPolicy } from "@/lib/ai/model-observations";
+import { persistModelObservations } from "@/lib/ai/model-health";
+import { assertFreeModel } from "@/lib/ai/model-policy";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
+import { tavilyConfigured, webSearchResults } from "@/lib/ai/web-search";
+import type { ModelDataClass } from "@/lib/ai/data-policy";
 import { availableChatModels, resolveChat, resolveMessagingDefault, resolveModelKey } from "@/lib/ai/providers";
 import { catalogueSnapshot, refreshCatalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
 import { currentRoster, listForRun } from "@/lib/ai/models/roster";
@@ -9,19 +16,22 @@ import { proposeCouncilVerdict } from "@/lib/council/close";
 import { startAgentExecution, stopAgentExecution, claimHostLease, renewHostLease, releaseHostLease } from "@/lib/council/host-service";
 import { moderateRound } from "@/lib/council/moderator";
 import { conveneCouncil, type ConveneRejection } from "@/lib/council/operations";
-import { MAX_BODY_CHARS, sleep } from "@/lib/council/protocol";
+import { MAX_BODY_CHARS, MODERATOR_NAME, sleep } from "@/lib/council/protocol";
 import { hashSeatToken, issueHostSeatKey } from "@/lib/council/seat-keys";
 import {
     appendMessage, getSessionById, joinCouncil, leaveCouncil, listOpenCouncils, listParticipants,
     markParticipantsAlive, readTranscript,
 } from "@/lib/council/store";
 import { COUNCIL_HOST_GENERATION, configuredCapabilities } from "@/lib/council/v3";
+import { getVaultConfig } from "@/lib/vault/github";
+import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
 import { callSeatModel } from "./call";
 import {
     ADAPTER_VERSION, LEASE_SECONDS, ONLINE_DEFAULT_ROUNDS, ONLINE_MAX_ROUNDS, ONLINE_MIN_ROUNDS,
-    ONLINE_TTL_MINUTES, RESUME_FIRST_SCAN_MS, RESUME_SCAN_MS,
+    ONLINE_TTL_MINUTES, RESEARCH_NOTES, RESEARCH_VAULT_PAGES, RESUME_FIRST_SCAN_MS, RESUME_SCAN_MS,
 } from "./limits";
-import { acquireOnlineRun, driveOnlineCouncil, prepareSeats, processHostId, type OnlineDeps, type OnlineRun, type RunOutcome } from "./runner";
+import { gatherResearch, savedNotesOnly, type ResearchDeps, type ResearchPack, type ResearchRequest, type ResearchSummary } from "./research";
+import { acquireOnlineRun, driveOnlineCouncil, postResearchPack, prepareSeats, processHostId, type OnlineDeps, type OnlineRun, type RunOutcome } from "./runner";
 import { isPaidModel, pickDiverse, resolveSeats, type OnlineSeatInput } from "./seats";
 import { isOnlineCouncil, latestSeatModels, readLease } from "./store";
 
@@ -39,6 +49,7 @@ export function onlineDeps(): OnlineDeps {
         listParticipants: (sessionId) => listParticipants(sessionId, { strict: true }),
         readTranscript: (sessionId) => readTranscript({ sessionId, limit: 200, strict: true }),
         append: (input) => appendMessage(input),
+        postModerator: (sessionId, body, clientKey) => appendMessage({ sessionId, speaker: MODERATOR_NAME, role: "moderator", intent: "moderate", body, clientKey }),
         join: async (sessionId, name) => { await joinCouncil({ sessionId, agentName: name, dispatchMode: true }); },
         leave: leaveCouncil,
         markAlive: markParticipantsAlive,
@@ -115,18 +126,23 @@ export interface StartOnlineInput {
     closerIndex?: number;
     maxRounds?: number;
     allowPaid?: boolean;
+    research?: ResearchRequest;
 }
 
 export type StartOnlineResult =
-    | { ok: true; code: string; seats: { name: string; modelKey: string; label: string; paid: boolean }[]; closerName: string; maxRounds: number }
+    | {
+        ok: true; code: string; seats: { name: string; modelKey: string; label: string; paid: boolean }[]; closerName: string; maxRounds: number;
+        research?: ResearchSummary;
+    }
     | { ok: false; status: 400 | 409 | 500; error: string };
 
 function conveneError(rejection: ConveneRejection): string {
     switch (rejection.reason) {
-        case "participant_count": return `An online council takes 2 to 5 seats; got ${rejection.count}.`;
+        case "participant_count": return `A council takes 2 to 5 seats; got ${rejection.count}.`;
         case "closer_not_participant": return `The closer must be one of ${rejection.names.join(", ")}.`;
         case "duplicate_names": return `Seat names must be unique; got ${rejection.names.join(", ")}.`;
         case "reserved_name": return `"${rejection.name}" is reserved for the moderator.`;
+        case "council_type": return `Councils are debates; "${rejection.councilType}" councils are not supported.`;
         case "open_limit": return `${rejection.open.length} councils are already open (${rejection.open.map((s) => s.code).join(", ")}). Close one first.`;
     }
 }
@@ -140,8 +156,8 @@ export function clampRounds(value: unknown): number {
 export async function startOnlineCouncil(input: StartOnlineInput, deps: OnlineDeps = onlineDeps()): Promise<StartOnlineResult> {
     const topic = typeof input.topic === "string" ? input.topic.trim() : "";
     const brief = typeof input.brief === "string" ? input.brief.trim() : "";
-    if (!topic) return { ok: false, status: 400, error: "An online council needs a topic." };
-    if (!brief) return { ok: false, status: 400, error: "An online council needs a brief." };
+    if (!topic) return { ok: false, status: 400, error: "A council needs a topic." };
+    if (!brief) return { ok: false, status: 400, error: "A council needs a brief." };
     if (topic.length > MAX_TOPIC_CHARS) return { ok: false, status: 400, error: `Keep the topic under ${MAX_TOPIC_CHARS} characters.` };
     if (brief.length > MAX_BODY_CHARS) return { ok: false, status: 400, error: `Keep the brief under ${MAX_BODY_CHARS} characters.` };
     if (!Array.isArray(input.seats)) return { ok: false, status: 400, error: "Send 2 to 5 seats." };
@@ -155,6 +171,8 @@ export async function startOnlineCouncil(input: StartOnlineInput, deps: OnlineDe
     const closer = byIndex ?? (wanted ? seats.find((s) => s.name.toLowerCase() === wanted) : seats[0]);
     if (!closer) return { ok: false, status: 400, error: `The closer must be one of ${seats.map((s) => s.name).join(", ")}.` };
     const maxRounds = clampRounds(input.maxRounds);
+    // Before convening, so a slow search never holds a council that has no seats yet.
+    const pack = input.research ? await runResearch(topic, input.research, freeOnly) : null;
 
     const convened = await conveneCouncil({
         topic, brief, closerName: closer.name, councilType: "debate",
@@ -174,6 +192,7 @@ export async function startOnlineCouncil(input: StartOnlineInput, deps: OnlineDe
         return { ok: false, status: 500, error: `Council ${session.code} was created but its host lease was refused (${lease.reason ?? "unknown"}). The sweep files it.` };
     }
     for (const seat of seats) await deps.join(session.id, seat.name);
+    const researchWarning = pack ? await postResearchPack(session.id, pack, deps) : null;
     const run: OnlineRun = {
         sessionId: session.id, hostId, epoch: lease.leaseEpoch, lost: false, abort: new AbortController(),
         seats: seats.map((s) => ({ name: s.name, expertise: s.expertise, modelKey: s.modelKey, source: s.source, tokenHash: null, executionId: null })),
@@ -187,7 +206,58 @@ export async function startOnlineCouncil(input: StartOnlineInput, deps: OnlineDe
     return {
         ok: true, code: session.code, closerName: closer.name, maxRounds,
         seats: seats.map((s) => ({ name: s.name, modelKey: s.modelKey, label: s.resolved.model.label, paid: s.paid })),
+        ...(pack ? { research: summarise(pack, researchWarning) } : {}),
     };
+}
+
+function summarise(pack: ResearchPack, warning: string | null): ResearchSummary {
+    const posted = warning ? [] : pack.sources;
+    return {
+        web: posted.filter((s) => s.kind === "web").length,
+        notes: posted.filter((s) => s.kind === "note").length,
+        vault: posted.filter((s) => s.kind === "vault").length,
+        problems: warning ? [...pack.problems, warning] : pack.problems,
+    };
+}
+
+function researchDeps(freeOnly: boolean): ResearchDeps {
+    return {
+        // Tavily alone: runWebSearch falls back to paid Gemini grounding, which Free only refuses.
+        searchWeb: async (query) => {
+            if (!tavilyConfigured()) return "unconfigured";
+            return (await webSearchResults(query, "quick"))?.results ?? null;
+        },
+        searchNotes: async (query) => {
+            await refreshEmbeddingOverride(undefined, freeOnly);
+            const embRef = getEmbeddingRef();
+            if (freeOnly) assertFreeModel(embRef);
+            const embedding = await embedText(embRef, query, "query");
+            // Wide, because chat messages and documents share the index and are filtered out.
+            const matchCount = RESEARCH_NOTES * 3;
+            const rows = await hybridSearchKnowledge({ queryEmbedding: embedding, queryText: query, matchCount, embeddingModel: embRef.model.id })
+                ?? await searchEmbeddings({ queryEmbedding: embedding, matchThreshold: 0.6, matchCount, embeddingModel: embRef.model.id });
+            return savedNotesOnly(rows);
+        },
+        searchVault: async (query) => {
+            if (!getVaultConfig()) return null;
+            // Sections, not pages: ask for more so three distinct pages survive the merge.
+            const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, matchCount: RESEARCH_VAULT_PAGES * 4 });
+            return hits.map((hit) => ({ path: hit.path, title: hit.title, summary: hit.summary }));
+        },
+    };
+}
+
+/** The embedding calls behind the notes search are recorded in model health like any seat call. */
+async function runResearch(topic: string, request: ResearchRequest, freeOnly: boolean): Promise<ResearchPack> {
+    const classes: ModelDataClass[] = ["personal", ...(request.notes ? ["knowledge" as const] : []), ...(request.web ? ["public_search" as const] : [])];
+    const collected = await collectModelObservations(async () => {
+        configureModelDataPolicy(freeOnly);
+        return gatherResearch({ topic, request, freeOnly }, researchDeps(freeOnly));
+    }, classes);
+    if (collected.observations.length) await persistModelObservations(collected.observations).catch(() => null);
+    const pack = collected.value;
+    log(`research for "${pack.query.slice(0, 80)}": ${pack.sources.length} source(s)${pack.problems.length ? `; ${pack.problems.join(" ")}` : ""}`);
+    return pack;
 }
 
 function resumeEnabled(): boolean {

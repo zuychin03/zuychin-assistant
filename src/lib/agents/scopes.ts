@@ -19,10 +19,6 @@ export function canWriteVault(scopes?: readonly string[]): boolean {
     return holds(scopes, ["knowledge:write", "vault:write"]);
 }
 
-export function canParticipateInCouncil(scopes?: readonly string[]): boolean {
-    return holds(scopes, ["council:owner", "council:seat"]);
-}
-
 export function canOwnCouncil(scopes?: readonly string[]): boolean {
     return holds(scopes, ["council:owner", "council:host"]);
 }

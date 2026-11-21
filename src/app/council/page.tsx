@@ -2,35 +2,20 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-    CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Cpu, GitBranch,
-    Gavel, Maximize2, MessageSquare, Minimize2, Play, Plug, RefreshCw, Square,
-    Laptop, Users, XCircle,
+    CheckCircle2, ChevronDown, Clock, Gavel, Maximize2, MessageSquare, Minimize2, RefreshCw, Users, XCircle,
 } from "lucide-react";
 import { WorkspaceShell } from "@/components/workspace-shell";
-import {
-    appendActivity, fetchBranches, findHost, forgetHost, pair, HostClient,
-    type HostActivity, type HostConnection, type HostSnapshot,
-} from "./host-client";
-import { ActivityFeed } from "./activity-feed";
-import { remoteAgentSetup } from "./remote-setup";
 import { OwnerChannelPanel } from "./owner-channel-panel";
-import { OwnerNotesPanel, RequeueButton } from "./owner-notes-panel";
 import { DecisionPanel } from "./decision-panel";
-import { SeatKeysPanel } from "./seat-keys-panel";
 import { OnlineCouncilPanel } from "./online-council-panel";
-import { IntegrationPanel } from "./integration-panel";
+import { RESEARCH_MARKER } from "@/lib/council/online/research";
 import { ExecutionEvidence, ExecutionHistory, ExecutionRecord } from "./execution-evidence";
-import { executionIdentityLabel, type CouncilExecutionPage, type CouncilExecutionRecord } from "@/lib/council/execution-evidence";
-import { DesktopHostControls } from "./desktop-host-controls";
-import { isDesktopHostAvailable } from "./desktop-host";
-import { Dropdown } from "@/components/dropdown";
-import { isLoopbackUrl, publicBaseUrl } from "@/lib/public-url";
+import type { CouncilExecutionPage, CouncilExecutionRecord } from "@/lib/council/execution-evidence";
 import ui from "./council.module.css";
 
-// Live view over a council, plus control of the local ACP host when one is
-// reachable. The Zuychin half stays read-only by construction: watching a
-// debate must never advance it, so nothing here writes presence or claims the
-// floor. Everything that drives agents goes through the loopback host instead.
+// Live view over councils. Read-only by construction: watching a debate must
+// never advance it, so nothing here writes presence or claims the floor. Online
+// councils run on the server; older local-host councils stay readable here.
 
 const POLL_MS = 2500;
 // Matches PARTICIPANT_STALE_SECONDS: past this an agent is out of the
@@ -40,9 +25,7 @@ const STALE_SECONDS = 180;
 interface OpenCouncil {
     code: string; topic: string; councilType: string; status: string; round: number; maxRounds: number;
     messages: number; lastMessageAt: string; closerName: string; expiresAt: string;
-    /** Closed, but its work campaign is still running, so a host can adopt it. */
-    campaignRunning?: boolean;
-    /** Seats are catalogue models the server runs; no host can adopt it. */
+    /** Seats are catalogue models the server runs. */
     online?: boolean;
     waitingOn: string[]; participants: string[];
 }
@@ -78,14 +61,6 @@ interface Detail {
         runner: { state: "waiting_owner" | "ended" | "paused" | "running" | "restarting"; leaseExpiresAt: string | null };
     } | null;
     openObligations: { seq: number; from: string; to: string; intent: string }[];
-    campaign: {
-        id: string; status: string; repoPath: string; baseBranch: string; completedAt: string | null;
-        integratorAgent: string | null; integrationBranch: string | null; integrationStatus: string | null;
-        integrationReport: string | null; integrationCheckedAt: string | null;
-        baseSha: string | null; verificationProfile: string; integrationManifest: unknown;
-        manifestFrozenAt: string | null; integrationTipSha: string | null;
-        workItems: { id: string; sequence: number; agentName: string; title: string; status: string; heartbeatAt: string | null; progress: string | null; commitHash: string | null; acceptedCommitSha: string | null; submittedExecutionId: string | null; acceptedExecutionId: string | null; branchName: string | null; verificationProfile: string; verificationRunId: string | null; dependencies: string[]; verification: string | null; blockedReason: string | null; hostVerified: boolean | null; hostVerification: string | null }[];
-    } | null;
 }
 
 function ago(iso: string): string {
@@ -100,15 +75,6 @@ function until(iso: string): string {
     return m <= 0 ? "expired" : `${m}m left`;
 }
 
-// Seconds matter here in a way they do not in ago(): this measures a build the
-// reader is waiting on, and 4m is indistinguishable from stuck.
-function elapsed(iso: string): string {
-    const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-    if (s < 60) return `${s}s`;
-    if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
-    return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
-}
-
 const INTENT_TONE: Record<string, "success" | "warning"> = {
     challenge: "warning",
     concede: "success",
@@ -120,11 +86,11 @@ const SEAT_COLOURS = 4;
 
 type RunnerState = NonNullable<Detail["online"]>["runner"]["state"];
 const RUNNER_LABEL: Record<RunnerState, string> = {
-    running: "Online · running on the server",
-    restarting: "Online · resuming after a restart",
-    paused: "Online · paused",
-    waiting_owner: "Online · waiting for your decision",
-    ended: "Online · ended",
+    running: "Running on the server",
+    restarting: "Resuming after a restart",
+    paused: "Paused",
+    waiting_owner: "Waiting for your decision",
+    ended: "Ended",
 };
 const RUNNER_TONE: Record<RunnerState, "success" | "warning" | undefined> = {
     running: "success", restarting: "warning", paused: "warning", waiting_owner: "warning", ended: undefined,
@@ -146,101 +112,6 @@ export default function CouncilPage() {
     const monitorRef = useRef<HTMLDialogElement>(null);
     const transcriptEnd = useRef<HTMLDivElement | null>(null);
     const lastSeqRef = useRef(0);
-
-    const [hostState, setHostState] = useState<HostConnection>("probing");
-    const [desktop, setDesktop] = useState(false);
-    const [hostPort, setHostPort] = useState<number | null>(null);
-    const [host, setHost] = useState<HostSnapshot | null>(null);
-    const [activity, setActivity] = useState<HostActivity[]>([]);
-    const [hostError, setHostError] = useState("");
-    const [pairCode, setPairCode] = useState("");
-    const [convening, setConvening] = useState(false);
-    const [adopting, setAdopting] = useState<string | null>(null);
-    const [showRemote, setShowRemote] = useState(false);
-    const [copied, setCopied] = useState(false);
-    const [origin, setOrigin] = useState("");
-    const [form, setForm] = useState({ topic: "", brief: "", agents: "", closer: "", councilType: "code", workspace: "", baseBranch: "" });
-    const [hostToken, setHostToken] = useState<string | null>(null);
-    const [branches, setBranches] = useState<string[]>([]);
-    const [agentSelections, setAgentSelections] = useState<Record<string, { modelId?: string; reasoningEffort?: string }>>({});
-    const clientRef = useRef<HostClient | null>(null);
-
-    const connect = useCallback((port: number, token: string) => {
-        clientRef.current?.close();
-        setHostToken(token);
-        const client = new HostClient(port, token, {
-            onState: (snapshot) => {
-                setHost(snapshot);
-                setHostState("connected");
-                if (snapshot.code) { setAdopting(null); setConvening(false); }
-            },
-            onActivity: (item) => setActivity((list) => appendActivity(list, item)),
-            onError: (detail) => { setHostError(detail); setAdopting(null); setConvening(false); },
-            onClose: () => { setHostState("observing"); setHost(null); },
-        });
-        clientRef.current = client;
-        client.open();
-    }, []);
-
-    // Reloaded when the chosen repo changes, since the branch list is per repo.
-    // The host's own answer decides the default, so a stale selection cannot
-    // survive a workspace switch.
-    useEffect(() => {
-        if (!hostPort || !hostToken) { setBranches([]); return; }
-        let cancelled = false;
-        void fetchBranches(hostPort, hostToken, form.workspace || undefined).then((result) => {
-            if (cancelled || !result) return;
-            setBranches(result.branches);
-            setForm((current) => (result.branches.includes(current.baseBranch)
-                ? current
-                : { ...current, baseBranch: result.baseBranch }));
-        });
-        return () => { cancelled = true; };
-    }, [hostPort, hostToken, form.workspace]);
-
-    // Once on mount, never on a timer: a denied Local Network Access permission
-    // cannot be re-requested programmatically, so retrying achieves nothing.
-    const probeHost = useCallback(async () => {
-        setHostState("probing");
-        setHostError("");
-        const found = await findHost();
-        if (!found) { setHostState("absent"); setHostPort(null); return; }
-        setHostPort(found.port);
-        if (!found.token) { setHostState("unpaired"); return; }
-        connect(found.port, found.token);
-    }, [connect]);
-
-    useEffect(() => {
-        void probeHost();
-        return () => clientRef.current?.close();
-    }, [probeHost]);
-
-    const submitPairing = useCallback(async () => {
-        if (!hostPort) return;
-        const token = await pair(hostPort, pairCode);
-        if (!token) { setHostError("That pairing code was not accepted."); return; }
-        setPairCode("");
-        setHostError("");
-        connect(hostPort, token);
-    }, [hostPort, pairCode, connect]);
-
-    const submitConvene = useCallback(() => {
-        const agents = form.agents.split(",").map((a) => a.trim()).filter(Boolean);
-        if (form.topic.trim().length === 0 || form.brief.trim().length === 0 || agents.length < 2) {
-            setHostError("A council needs a topic, a brief and at least two agents.");
-            return;
-        }
-        const closer = form.closer.trim() || agents[0];
-        if (!agents.includes(closer)) { setHostError(`Closer "${closer}" is not one of ${agents.join(", ")}.`); return; }
-        setHostError("");
-        setConvening(true);
-        const selections = Object.fromEntries(agents.map((name) => [name, agentSelections[name] ?? {}]));
-        clientRef.current?.convene({ topic: form.topic.trim(), brief: form.brief.trim(), agents, closer, councilType: form.councilType, workspace: form.workspace || undefined, baseBranch: form.baseBranch || undefined, selections });
-        setTimeout(() => setConvening(false), 8000);
-    }, [form, agentSelections]);
-
-    useEffect(() => setOrigin(window.location.origin), []);
-    useEffect(() => setDesktop(isDesktopHostAvailable()), []);
 
     useEffect(() => {
         if (!monitor) return;
@@ -294,16 +165,6 @@ export default function CouncilPage() {
 
     useEffect(() => { fetchList(); }, [fetchList]);
 
-    // The host only pushes a frame when the step changes, and a step can run for
-    // minutes; without this the elapsed time freezes and reads as a hung build.
-    const [, setBusyTick] = useState(0);
-    const busySince = host?.busyWith?.since ?? null;
-    useEffect(() => {
-        if (!busySince) return;
-        const id = setInterval(() => setBusyTick((n) => n + 1), 1000);
-        return () => clearInterval(id);
-    }, [busySince]);
-
     useEffect(() => {
         if (!selected) return;
         fetchDetail(selected);
@@ -328,18 +189,6 @@ export default function CouncilPage() {
     const s = detail?.session;
     const executionRecords = [...(detail?.executions?.records ?? []), ...(detail?.executions?.referencedRecords ?? [])];
     const isRunning = s?.status === "open" || s?.status === "concluding";
-    // One host owns one council, so Adopt is offered only while it owns none.
-    const canAdopt = hostState === "connected" && !!host && !host.code;
-    // The brief goes to a machine that is not this one, so it carries the
-    // configured public address when there is one, not whatever is in the
-    // address bar.
-    const briefBase = publicBaseUrl(origin);
-    const isLoopback = isLoopbackUrl(briefBase);
-    const remoteBrief = remoteAgentSetup(`${briefBase || "https://your-deployment"}/api/mcp/mcp`);
-    // Rendered copy masks the host so a screenshot of this panel carries no
-    // deployment address; the clipboard still gets the real one.
-    const remoteBriefShown = remoteAgentSetup("https://<your-host>/api/mcp/mcp");
-
     const agentSeats = new Map((detail?.participants ?? []).filter((p) => p.kind === "agent").map((p, index) => [p.name, index % SEAT_COLOURS]));
     const presence = (p: Participant) => p.status === "left" ? undefined
         : (Date.now() - Date.parse(p.lastSeenAt)) / 1000 > STALE_SECONDS ? "warning" : "success";
@@ -352,7 +201,7 @@ export default function CouncilPage() {
         <WorkspaceShell
             current="council"
             title="Council"
-            description="Watch agents and models deliberate. Viewing never advances a turn."
+            description="Watch chat models debate. Viewing never advances a turn."
             actions={<>
                 <button type="button" onClick={() => setLive((v) => !v)} aria-pressed={live} className={ui.liveToggle}>
                     <RefreshCw size={15} className={live ? ui.spin : undefined} />
@@ -362,318 +211,7 @@ export default function CouncilPage() {
             </>}
         >
             <div className={ui.council}>
-                <section className={ui.panel}>
-                    <div className={ui.panelHeadRow}>
-                        <PanelHeader
-                            title="Local host"
-                            description={
-                                hostState === "connected"
-                                    ? `${host?.agents.length ?? 0} ${host?.agents.length === 1 ? "agent" : "agents"} · ${host?.code ?? "idle"} · ${host?.repo ?? ""}`
-                                    : hostState === "unpaired"
-                                        ? `a host is running on port ${hostPort} but this browser is not paired with it`
-                                        : hostState === "probing"
-                                            ? `probing 127.0.0.1:${8787}-8791`
-                                            : "no host reachable on this machine"
-                            }
-                            icon={<Cpu size={16} />}
-                        />
-                        <div className={ui.headActions}>
-                            <span className={ui.hostStatus} data-state={hostState}>
-                                <Plug size={14} />
-                                {hostState === "connected" ? `local host :${hostPort}` : hostState === "probing" ? "looking for a host" : "observing via Zuychin"}
-                            </span>
-                            {hostState !== "connected" && (
-                                <button type="button" onClick={() => void probeHost()} className={ui.btn}>
-                                    <RefreshCw size={15} /> Retry
-                                </button>
-                            )}
-                            {hostState === "connected" && !desktop && (
-                                <button
-                                    type="button"
-                                    onClick={() => { clientRef.current?.stop(); forgetHost(); }}
-                                    className={`${ui.btn} ${ui.danger}`}
-                                    title="Stop the host and every agent it owns"
-                                >
-                                    <Square size={14} /> Stop host
-                                </button>
-                            )}
-                        </div>
-                    </div>
-
-                    {desktop && (
-                        <DesktopHostControls
-                            externalHost={hostState === "connected" || hostState === "unpaired"}
-                            onHostAvailable={probeHost}
-                        />
-                    )}
-
-                    {hostError && <div className={ui.notice} role="alert">{hostError}</div>}
-
-                    {hostState === "absent" && !desktop && (
-                        <div className={ui.emptyText}>
-                            Observing through Zuychin. Agents can still join by hand, but nothing here can
-                            start one, mediate its file access or push it a turn. To take control, run{" "}
-                            <code className={ui.inlineCode}>npx tsx --env-file=.env.local scripts/council-host.mts --repo &lt;path&gt;</code>{" "}
-                            on the machine holding the repo, then Retry.
-                            <br />
-                            On a phone, or from the deployed site with the local-network prompt denied,
-                            this is the only mode available - there is no host to reach.
-                        </div>
-                    )}
-
-                    {hostState === "unpaired" && (
-                        <div className={ui.pairRow}>
-                            <span className={ui.emptyText}>Enter the pairing code the host printed:</span>
-                            <input
-                                aria-label="Host pairing code"
-                                value={pairCode}
-                                onChange={(e) => setPairCode(e.target.value.toUpperCase())}
-                                placeholder="ABCD2345"
-                                maxLength={8}
-                                className={`${ui.input} ${ui.pairInput}`}
-                            />
-                            <button type="button" onClick={() => void submitPairing()} className={`${ui.btn} ${ui.primary}`}>Pair</button>
-                        </div>
-                    )}
-
-                    {hostState === "connected" && host && (
-                        <>
-                            <div className={ui.pillRow}>
-                                {/* An idle host never held a lease, so an unhealthy
-                                    one has lost nothing; only a host that owns a
-                                    council can lose it. */}
-                                <span className={ui.pill} data-tone={host.code && host.leaseHealthy === false ? "warning" : host.leaseEpoch ? "success" : undefined}>
-                                    {host.code && host.leaseHealthy === false
-                                        ? "host lease lost"
-                                        : host.leaseEpoch ? `host lease #${host.leaseEpoch}` : "host idle"}
-                                </span>
-                                {host.capabilities?.protocolVersion === 3 && <span className={ui.pill}>Council V3</span>}
-                            </div>
-                            {host.permissions.length > 0 && (
-                                <div className={ui.subBlock} data-emphasis>
-                                    <div className={ui.subHead} data-signal><Gavel size={15} /> Waiting on you</div>
-                                    {host.permissions.map((p) => (
-                                        <div key={p.id} className={ui.permissionRow}>
-                                            <span className={ui.pill} data-tone="warning">{p.kind}</span>
-                                            <span className={ui.name}>{p.agent}</span>
-                                            <span className={ui.permissionTitle}>{p.title}</span>
-                                            <span className={ui.permissionButtons}>
-                                                <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, true)} className={`${ui.btn} ${ui.small}`}>Allow</button>
-                                                <button type="button" onClick={() => clientRef.current?.replyToPermission(p.id, false)} className={`${ui.btn} ${ui.small} ${ui.danger}`}>Deny</button>
-                                            </span>
-                                            <span className={ui.detail}>{p.path ?? ""}{p.path ? " · " : ""}{p.reason} · denied automatically after 120s</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            {host.agents.length > 0 && (
-                                <div className={ui.list}>
-                                    {host.agents.map((a) => (
-                                        <div key={a.name} className={ui.row}>
-                                            <span className={ui.dot} data-tone={a.state === "failed" || a.state === "exited" ? "danger" : a.state === "busy" ? "warning" : "success"} />
-                                            <span className={ui.name}>{a.name}</span>
-                                            <span className={ui.pill}>{a.mode}</span>
-                                            <span className={ui.pill}>{a.state}</span>
-                                            {host.floorHolder === a.name && <span className={ui.pill} data-tone="success">has floor</span>}
-                                            <span className={ui.rowMeta}>{a.detail}</span>
-                                            <span className={ui.detail}>
-                                                {executionIdentityLabel(a.identityAssurance)}{a.effectiveModel ? ` · ${a.effectiveModel}` : ""}
-                                                {a.effectiveReasoningEffort ? ` · ${a.effectiveReasoningEffort}` : ""}
-                                            </span>
-                                            <div className={ui.detail}>
-                                                <ExecutionEvidence executionId={a.executionId} label="Host model report" snapshot={a.executionId ? {
-                                                    executionId: a.executionId, agentName: a.name, connectorKind: a.mode,
-                                                    identityAssurance: a.identityAssurance, provider: a.provider,
-                                                    adapterVersion: a.adapterVersion ?? null, requestedModel: a.requestedModel,
-                                                    effectiveModel: a.effectiveModel, requestedReasoningEffort: a.requestedReasoningEffort,
-                                                    effectiveReasoningEffort: a.effectiveReasoningEffort, modelSource: a.modelSource ?? null,
-                                                    hostGeneration: a.hostGeneration ?? null, policyVersion: a.policyVersion ?? null,
-                                                } : null} />
-                                            </div>
-                                            <span className={ui.detail}><code>{a.branch} · {a.worktree}</code></span>
-                                            {a.warn && <span className={ui.detail} data-tone="warning">! {a.warn}</span>}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            {host.busyWith && (
-                                <div className={ui.busy}>
-                                    <span className={ui.busyDot} />
-                                    <span className={ui.busyLabel}>{host.busyWith.label}</span>
-                                    <span className={ui.busySince}>{elapsed(host.busyWith.since)}</span>
-                                </div>
-                            )}
-
-                            <ActivityFeed activity={activity} agents={host.agents} />
-
-                            {!host.code && (
-                                <div className={ui.conveneForm}>
-                                    <h3 className={ui.conveneTitle}>Convene</h3>
-                                    <input
-                                        aria-label="Council topic"
-                                        value={form.topic}
-                                        onChange={(e) => setForm({ ...form, topic: e.target.value })}
-                                        placeholder="One decidable question"
-                                        className={ui.input}
-                                    />
-                                    <textarea
-                                        aria-label="Council brief"
-                                        value={form.brief}
-                                        onChange={(e) => setForm({ ...form, brief: e.target.value })}
-                                        placeholder="Context every agent needs: constraints, what has been tried, what a good answer looks like"
-                                        className={`${ui.input} ${ui.textarea}`}
-                                    />
-                                    <div className={ui.conveneRow}>
-                                        <input
-                                            aria-label="Council agent names"
-                                            value={form.agents}
-                                            onChange={(e) => setForm({ ...form, agents: e.target.value })}
-                                            placeholder="claude-a, codex-1, cursor-1"
-                                            className={ui.input}
-                                        />
-                                        <input
-                                            aria-label="Council closer"
-                                            value={form.closer}
-                                            onChange={(e) => setForm({ ...form, closer: e.target.value })}
-                                            placeholder="closer (defaults to the first)"
-                                            className={ui.input}
-                                        />
-                                        <Dropdown
-                                            ariaLabel="Council type"
-                                            value={form.councilType}
-                                            onChange={(councilType) => setForm({ ...form, councilType })}
-                                            options={["debate", "code", "research", "audit", "debug"]}
-                                        />
-                                        {(host.workspaces?.length ?? 0) > 1 && (
-                                            <Dropdown
-                                                ariaLabel="Repository"
-                                                value={form.workspace}
-                                                onChange={(workspace) => setForm({ ...form, workspace })}
-                                                options={[
-                                                    { value: "", label: "host default" },
-                                                    ...(host.workspaces ?? []).map((w) => ({ value: w.name })),
-                                                ]}
-                                            />
-                                        )}
-                                        {branches.length > 1 && (
-                                            <Dropdown
-                                                ariaLabel="Base branch"
-                                                value={form.baseBranch}
-                                                onChange={(baseBranch) => setForm({ ...form, baseBranch })}
-                                                options={branches}
-                                            />
-                                        )}
-                                        <button type="button" onClick={submitConvene} disabled={convening} className={`${ui.btn} ${ui.primary}`}>
-                                            <Play size={15} /> {convening ? "Convening…" : "Convene"}
-                                        </button>
-                                    </div>
-                                    <div className={ui.modelGrid}>
-                                        {form.agents.split(",").map((name) => name.trim()).filter(Boolean).map((name) => {
-                                            const instance = host.instances?.find((item) => item.name === name);
-                                            if (!instance) return null;
-                                            const selection = agentSelections[name] ?? {};
-                                            return (
-                                                <div key={name} className={ui.modelRow}>
-                                                    <span className={ui.modelAgent}>{name}</span>
-                                                    <Dropdown
-                                                        ariaLabel={`Model for ${name}`}
-                                                        value={selection.modelId ?? instance.defaultModel ?? ""}
-                                                        onChange={(modelId) => setAgentSelections((current) => ({
-                                                            ...current, [name]: { ...current[name], modelId: modelId || undefined },
-                                                        }))}
-                                                        options={[
-                                                            ...(instance.defaultModel ? [] : [{ value: "", label: "Provider default" }]),
-                                                            ...instance.allowedModels.map((model) => ({ value: model })),
-                                                        ]}
-                                                    />
-                                                    {instance.allowedReasoningEfforts.length > 0 && (
-                                                        <Dropdown
-                                                            ariaLabel={`Reasoning effort for ${name}`}
-                                                            value={selection.reasoningEffort ?? instance.defaultReasoningEffort ?? ""}
-                                                            onChange={(reasoningEffort) => setAgentSelections((current) => ({
-                                                                ...current, [name]: { ...current[name], reasoningEffort: reasoningEffort || undefined },
-                                                            }))}
-                                                            options={[
-                                                                ...(instance.defaultReasoningEffort ? [] : [{ value: "", label: "Default reasoning" }]),
-                                                                ...instance.allowedReasoningEfforts.map((effort) => ({ value: effort })),
-                                                            ]}
-                                                        />
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                    <p className={ui.formNote}>
-                                        Names must exist in <code>scripts/council-agents.json</code>. Each gets its own worktree off{" "}
-                                        <code>{host.workspaces?.find((w) => w.name === form.workspace)?.path ?? host.repo}</code>
-                                        {form.baseBranch ? <> at <code>{form.baseBranch}</code></> : ""}. The host checks ACP client file and
-                                        terminal requests against that worktree. Adapter-managed operations may bypass those checks.
-                                    </p>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </section>
-
                 <OnlineCouncilPanel onStarted={(code) => { void fetchList(); selectCouncil(code); }} />
-
-                <section className={ui.panel}>
-                    <div className={ui.panelHeadRow}>
-                        <PanelHeader
-                            title="Agents on other machines"
-                            description="A brief they can self-configure from, so they can join a council by code"
-                            icon={<Laptop size={16} />}
-                        />
-                        <button type="button" onClick={() => setShowRemote((v) => !v)} className={ui.btn}>
-                            {showRemote ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                            {showRemote ? "Hide" : "Show brief"}
-                        </button>
-                    </div>
-
-                    {showRemote && (
-                        <>
-                            <div className={ui.emptyText}>
-                                Paste this into a coding agent on another device. It joins over MCP by hand and
-                                never touches the local host, so it needs no ACP adapter - but its council name
-                                must be on the roster when the council is convened, and must NOT be one this
-                                machine has configured, or the host would claim that seat first.
-                                {isLoopback && (
-                                    <>
-                                        <br />
-                                        <strong>The copied brief points at this machine, which a remote agent
-                                        cannot reach.</strong> Set <code className={ui.inlineCode}>NEXT_PUBLIC_BASE_URL</code> to
-                                        your deployed address and every brief carries it whatever page you copy
-                                        from; until then, copy from the deployed site or swap the host in by hand.
-                                    </>
-                                )}
-                                <br />
-                                Replace <code className={ui.inlineCode}>&lt;PASTE_YOUR_SEAT_KEY_HERE&gt;</code> with a
-                                seat key minted for that agent on the council page below — <strong>not</strong> your
-                                MCP key, which would hand over the whole knowledge base. The host is masked below
-                                so this panel is safe to screenshot; <strong>Copy brief</strong> fills in the real one.
-                            </div>
-                            <div className={ui.buttonRow}>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        void navigator.clipboard.writeText(remoteBrief).then(() => {
-                                            setCopied(true);
-                                            setTimeout(() => setCopied(false), 2000);
-                                        });
-                                    }}
-                                    className={ui.btn}
-                                    data-done={copied || undefined}
-                                >
-                                    {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
-                                    {copied ? "Copied" : "Copy brief"}
-                                </button>
-                            </div>
-                            <pre className={ui.remoteBrief}>{remoteBriefShown}</pre>
-                        </>
-                    )}
-                </section>
 
                 {error && <div className={ui.notice} role="alert">{error} <button type="button" className={ui.btn} onClick={() => void fetchList()}>Retry councils</button></div>}
 
@@ -685,9 +223,8 @@ export default function CouncilPage() {
                     <section className={ui.panel}>
                         <PanelHeader title="No councils yet" description="Nothing has been convened" icon={<Users size={16} />} />
                         <div className={ui.emptyText}>
-                            Start an online council above, or ask Zuychin to convene one with coding agents:
-                            <em>&ldquo;convene a council on X with codex and claude-code; claude-code closes
-                            it&rdquo;</em>. Paste each generated block into that agent, then watch here.
+                            Start a council above, or ask Zuychin in chat:
+                            <em>&ldquo;start a council on X&rdquo;</em>. Then watch it here.
                         </div>
                     </section>
                 )}
@@ -702,44 +239,29 @@ export default function CouncilPage() {
                                 </div>
                                 {open.length === 0 && <div className={ui.railEmpty}>None running.</div>}
                                 {open.map((c) => (
-                                    <div key={c.code}>
-                                        <button
-                                            type="button"
-                                            aria-pressed={selected === c.code}
-                                            onClick={() => selectCouncil(c.code)}
-                                            className={ui.railItem}
-                                        >
-                                            <span className={ui.railTop}>
-                                                <span className={ui.railTitle}>{c.topic}</span>
-                                                <time className={ui.railTime} dateTime={c.lastMessageAt}>{ago(c.lastMessageAt)}</time>
-                                            </span>
-                                            <span className={ui.railMeta}>
-                                                <code>{c.code}</code>{c.online ? " · online" : ""} · {c.messages} {c.messages === 1 ? "msg" : "msgs"}
-                                                {c.campaignRunning ? " · campaign running" : ` · r${c.round}/${c.maxRounds}`}
-                                                {/* expires_at stops governing once a verdict is proposed;
-                                                    standby_expires_at does, and it is not in this payload.
-                                                    For a campaign the debate clock is long irrelevant. */}
-                                                {c.status !== "awaiting_owner" && !c.campaignRunning && <> · {until(c.expiresAt)}</>}
-                                            </span>
-                                            {c.status === "awaiting_owner" && <span className={ui.railSignal}>decision needed</span>}
-                                            {c.waitingOn.length > 0 && (
-                                                <span className={ui.railWaiting}>waiting on {c.waitingOn.join(", ")}</span>
-                                            )}
-                                        </button>
-                                        {canAdopt && !c.online && (
-                                            <button
-                                                type="button"
-                                                onClick={() => { setHostError(""); setAdopting(c.code); clientRef.current?.attach(c.code); }}
-                                                disabled={adopting !== null}
-                                                className={`${ui.btn} ${ui.small} ${ui.railAdopt}`}
-                                                title={c.campaignRunning
-                                                    ? "Hand this council's running campaign back to the local host: it restarts the agents in their worktrees and resumes verification, review and integration."
-                                                    : "Hand this council to the local host. It starts every participant it has configured, and leaves alone any that someone is already driving by hand."}
-                                            >
-                                                <Plug size={13} /> {adopting === c.code ? "Adopting…" : c.campaignRunning ? "Resume" : "Adopt"}
-                                            </button>
+                                    <button
+                                        key={c.code}
+                                        type="button"
+                                        aria-pressed={selected === c.code}
+                                        onClick={() => selectCouncil(c.code)}
+                                        className={ui.railItem}
+                                    >
+                                        <span className={ui.railTop}>
+                                            <span className={ui.railTitle}>{c.topic}</span>
+                                            <time className={ui.railTime} dateTime={c.lastMessageAt}>{ago(c.lastMessageAt)}</time>
+                                        </span>
+                                        <span className={ui.railMeta}>
+                                            <code>{c.code}</code>{c.online ? "" : " · local"} · {c.messages} {c.messages === 1 ? "msg" : "msgs"}
+                                            {` · r${c.round}/${c.maxRounds}`}
+                                            {/* expires_at stops governing once a verdict is proposed;
+                                                standby_expires_at does, and it is not in this payload. */}
+                                            {c.status !== "awaiting_owner" && <> · {until(c.expiresAt)}</>}
+                                        </span>
+                                        {c.status === "awaiting_owner" && <span className={ui.railSignal}>decision needed</span>}
+                                        {c.waitingOn.length > 0 && (
+                                            <span className={ui.railWaiting}>waiting on {c.waitingOn.join(", ")}</span>
                                         )}
-                                    </div>
+                                    </button>
                                 ))}
                             </section>
 
@@ -779,7 +301,7 @@ export default function CouncilPage() {
                                         <div className={ui.detailHead}>
                                             <h2 className={ui.detailTitle}>{s.topic}</h2>
                                             <p className={ui.detailMeta}>
-                                                <code>{s.code}</code> · {detail.online ? "online " : ""}{s.councilType} council · {s.paused ? "stalled" : s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"} · closer {s.closerName}
+                                                <code>{s.code}</code> · {detail.online ? "" : "local "}{s.councilType} council · {s.paused ? "stalled" : s.status} · round {s.round} of {s.maxRounds} · {s.messages} {s.messages === 1 ? "message" : "messages"} · closer {s.closerName}
                                             </p>
                                         </div>
                                         {detail.online && (
@@ -803,18 +325,6 @@ export default function CouncilPage() {
                                                 code={s.code}
                                                 paused={s.paused}
                                                 onStateChange={() => { void fetchDetail(s.code); }}
-                                            />
-                                        )}
-                                        {s.status === "closed" && (detail.campaign?.status === "running" || detail.campaign?.status === "blocked") && (
-                                            <OwnerNotesPanel key={`notes-${s.code}`}
-                                                code={s.code}
-                                                seats={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
-                                            />
-                                        )}
-                                        {isRunning && !detail.online && (
-                                            <SeatKeysPanel key={s.code}
-                                                code={s.code}
-                                                agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
                                             />
                                         )}
                                         <div className={ui.list}>
@@ -880,53 +390,6 @@ export default function CouncilPage() {
                                                     {s.vaultPath && <span className={ui.untrusted}> · untrusted draft, promote with vault_ingest</span>}
                                                 </span>
                                             </div>
-                                        </section>
-                                    )}
-
-                                    {detail.campaign && (
-                                        <section className={ui.panel}>
-                                            <PanelHeader
-                                                title="Work campaign"
-                                                description={detail.campaign.status + " - " + detail.campaign.workItems.filter((item) => item.status === "verified").length + "/" + detail.campaign.workItems.length + " verified"}
-                                                icon={<GitBranch size={16} />}
-                                            />
-                                            <p className={ui.path}><code>{detail.campaign.repoPath}</code> · base <code>{detail.campaign.baseBranch}</code></p>
-                                            <div className={ui.list}>
-                                                {detail.campaign.workItems.map((item) => (
-                                                    <div key={item.id} className={`${ui.row} ${ui.workRow}`}>
-                                                        <span className={ui.seq}>{item.sequence}</span>
-                                                        <span className={ui.name}>{item.agentName}</span>
-                                                        <span className={ui.pill} data-tone={item.status === "verified" ? "success" : item.status === "blocked" ? "warning" : undefined}>{item.status}</span>
-                                                        <span className={ui.rowTitle}>{item.title}</span>
-                                                        {item.status === "blocked" && !detail.campaign?.manifestFrozenAt && (
-                                                            <RequeueButton code={s.code} itemId={item.id} onDone={() => { void fetchDetail(s.code); }} />
-                                                        )}
-                                                        {/* Host-observed, not the agent's own account of its work. */}
-                                                        {item.status === "awaiting_review" && (
-                                                            <span className={ui.pill} data-tone={item.hostVerified === true ? "success" : item.hostVerified === false ? "danger" : undefined}>
-                                                                {item.hostVerified === true ? "host ✓" : item.hostVerified === false ? "host ✗" : "host pending"}
-                                                            </span>
-                                                        )}
-                                                        {item.blockedReason && <span className={ui.detail}>{item.blockedReason}</span>}
-                                                        {!item.blockedReason && item.hostVerification && <span className={ui.detail}>{item.hostVerification.split("\n").find((l) => l.startsWith("FAIL")) ?? item.progress}</span>}
-                                                        {!item.blockedReason && !item.hostVerification && item.progress && <span className={ui.detail}>{item.progress}</span>}
-                                                        {item.commitHash && <div className={ui.detail}>
-                                                            <span className={ui.evidenceNote}>Submitted commit <code>{item.commitHash}</code></span>
-                                                            <ExecutionEvidence executionId={item.submittedExecutionId} records={executionRecords} label="Submitted in run" />
-                                                        </div>}
-                                                        {item.acceptedCommitSha && <div className={ui.detail}>
-                                                            <span className={ui.evidenceNote}>Accepted commit <code>{item.acceptedCommitSha}</code></span>
-                                                            <ExecutionEvidence executionId={item.acceptedExecutionId} records={executionRecords} label="Accepted submission run" />
-                                                        </div>}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                            <IntegrationPanel key={s.code}
-                                                code={s.code}
-                                                campaign={detail.campaign}
-                                                agentNames={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
-                                                onChange={() => { void fetchDetail(s.code); }}
-                                            />
                                         </section>
                                     )}
 
@@ -1021,6 +484,7 @@ export default function CouncilPage() {
 // Shared by the inline transcript and the monitor overlay so the two views can
 // never drift apart.
 function MessageRow({ m, executions, seat }: { m: Message; executions: CouncilExecutionRecord[]; seat?: number }) {
+    const isPack = m.role === "moderator" && m.round === 1 && m.body.startsWith(RESEARCH_MARKER);
     return (
         <div className={ui.msg}>
             <div className={ui.msgHead}>
@@ -1028,7 +492,7 @@ function MessageRow({ m, executions, seat }: { m: Message; executions: CouncilEx
                 <span className={ui.speaker}>{m.speaker}</span>
                 {m.role !== "agent" && <span className={ui.msgMuted}>{m.role}</span>}
                 {m.addressedTo !== "all" && <span className={ui.msgMuted}>→ {m.addressedTo}</span>}
-                <span className={ui.pill} data-tone={INTENT_TONE[m.intent]}>{m.intent}</span>
+                <span className={ui.pill} data-tone={INTENT_TONE[m.intent]}>{isPack ? "sources" : m.intent}</span>
                 {m.replyToSeq && <span className={ui.msgMuted}>re {m.replyToSeq}</span>}
                 {!m.answered && ["challenge", "ask"].includes(m.intent) && m.addressedTo !== "all" && (
                     <span className={ui.pill} data-tone="warning">unanswered</span>

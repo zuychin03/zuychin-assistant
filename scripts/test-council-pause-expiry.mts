@@ -3,10 +3,7 @@ import { readFileSync } from "node:fs";
 import { after, beforeEach, mock, test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { z } from "zod";
 import * as protocol from "../src/lib/council/protocol.ts";
-import * as templates from "../src/lib/council/templates.ts";
-import * as hostContracts from "../src/lib/council/host-contracts.ts";
 
 process.env.NEXT_PUBLIC_SUPABASE_URL = "https://council-test.invalid";
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "synthetic-anon";
@@ -85,8 +82,6 @@ after(() => mock.restoreAll());
 beforeEach(() => { rows.length = 0; requests.length = 0; beforeUpdate = undefined; failUpdate = false; actionOutcome = { ok: true }; });
 
 const store = await import("../src/lib/council/store.ts");
-const { pollCouncil, dispatchCouncil } = await import("../src/lib/council/wait.ts");
-const { renderClosed } = await import("../src/lib/council/render.ts");
 
 function fixture(pausedAt: string | null, overrides: Row = {}) {
     const row: Row = {
@@ -121,134 +116,14 @@ test("sweep expires exactly seven paused days, preserving other lifecycle cases"
     assert.deepEqual(await store.listSessionsNeedingVerdict(600_000), [await store.getSessionById("running")]);
 });
 
-test("single-session expiry does not mutate another Council or a resumed pause", async t => {
+test("the sweep rechecks the pause under its update, so a resume that wins the race survives", async t => {
     t.mock.timers.enable({ apis: ["Date"], now: NOW });
     const target = fixture("2026-09-23T00:00:00Z");
     const other = fixture("2026-09-01T00:00:00Z", { id: "other" });
     beforeUpdate = () => { target.paused_at = null; target.expires_at = "2026-10-30T00:00:00Z"; };
-    await store.expireSessionIfDue("session");
+    assert.deepEqual((await store.expireOverdueSessions()).map(s => s.id), ["other"]);
     assert.equal(target.status, "open");
-    assert.equal(other.status, "open");
-    target.paused_at = "2026-09-23T00:00:00Z";
-    await store.expireSessionIfDue("session");
-    assert.equal(target.status, "expired");
-    assert.equal(other.status, "open");
-});
-
-for (const status of ["open", "expired"]) {
-    test(`poll releases a seven-day pause with initial status ${status}`, async t => {
-        t.mock.timers.enable({ apis: ["Date"], now: NOW });
-        const row = fixture("2026-09-23T00:00:00Z", { status });
-        const session = await store.getSessionById("session");
-        assert(session);
-        const result = await pollCouncil({ session, agentName: "seat", waitMs: 0 });
-        assert.equal(result.kind, "closed");
-        assert.equal(row.status, "expired");
-        if (result.kind !== "closed") assert.fail("Expected terminal pause expiry");
-        const text = renderClosed(result.session);
-        assert.match(text, /expired[\s\S]*seven|seven[\s\S]*expired/i);
-        assert.match(text, /transcript[\s\S]*retain/i);
-        assert.doesNotMatch(text, /write the verdict|call council_work_next/i);
-    });
-    test(`dispatch returns no deliveries for a seven-day pause with initial status ${status}`, async t => {
-        t.mock.timers.enable({ apis: ["Date"], now: NOW });
-        fixture("2026-09-23T00:00:00Z", { status });
-        const session = await store.getSessionById("session");
-        assert(session);
-        const result = await dispatchCouncil({ session, agentNames: ["seat"], durable: true });
-        assert.equal(result.kind, "ok");
-        if (result.kind !== "ok") assert.fail("Expected expired status without delivery");
-        assert.equal(result.session.status, "expired");
-        assert.equal(result.floorHolder, null);
-        assert.deepEqual(result.view.agents, {});
-        assert(!requests.some(r => r.includes("/rpc/elect_council_floor")));
-    });
-}
-
-function registeredDispatch() {
-    type Handler = (args: Record<string, unknown>, extra: { authInfo: { scopes: string[] } }) => Promise<{ content: { text: string }[] }>;
-    const handlers = new Map<string, Handler>();
-    const dependencies: Record<string, unknown> = {
-        zod: { z },
-        "mcp-handler": {
-            createMcpHandler: (register: (server: { registerTool: (name: string, metadata: unknown, handler: Handler) => void }) => void) => {
-                register({ registerTool: (name, _metadata, handler) => { handlers.set(name, handler); } });
-                return () => undefined;
-            },
-            withMcpAuth: (handler: unknown) => handler,
-        },
-        "@/lib/council/protocol": protocol,
-        "@/lib/council/templates": templates,
-        "@/lib/council/host-contracts": hostContracts,
-        "@/lib/council/store": store,
-        "@/lib/council/wait": { dispatchCouncil },
-        "@/lib/agents/mcp-auth": { verifyMcpToken: () => { throw new Error("No authentication calls in this fixture"); } },
-        "@/lib/vault/ingest": { VAULT_CATEGORIES: ["study"] },
-    };
-    const load = (path: string) => {
-        const exports = {};
-        const source = readFileSync(new URL(path, import.meta.url), "utf8");
-        runInNewContext(ts.transpileModule(source, {
-            compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-        }).outputText, {
-            exports, process: { env: {} },
-            require: (id: string) => dependencies[id] ?? new Proxy({}, {
-                get: (_target, key) => { throw new Error(`Unexpected boundary ${id}.${String(key)}`); },
-            }),
-        });
-        return exports;
-    };
-    dependencies["@/lib/council/operations"] = load("../src/lib/council/operations.ts");
-    load("../src/app/api/mcp/[transport]/route.ts");
-    const handler = handlers.get("council_dispatch"); assert(handler);
-    return handler;
-}
-
-test("registered MCP dispatch distinguishes paused expiry from normal expiry without prompts", async t => {
-    t.mock.timers.enable({ apis: ["Date"], now: NOW });
-    const handler = registeredDispatch();
-    for (const pausedAt of ["2026-09-23T00:00:00Z", null]) {
-        rows.length = 0;
-        fixture(pausedAt, { status: "expired", floor_holder: null });
-        const result = await handler({ sessionCode: "CN-TEST", agentNames: ["host-probe"], hostId: "host", leaseEpoch: 1 }, {
-            authInfo: { scopes: ["council:host"] },
-        });
-        const payload = JSON.parse(result.content[0].text);
-        assert.equal(payload.error, undefined);
-        assert.equal(payload.status, "expired");
-        assert.equal(payload.pausedAt, pausedAt);
-        assert.deepEqual(payload.agents, {});
-    }
-});
-
-test("status-only dispatch reads a silent open Council without electing, touching or acknowledging", async t => {
-    t.mock.timers.enable({ apis: ["Date"], now: NOW });
-    const row = fixture(null, { floor_holder: null, quorum_at: "2026-09-29T00:00:00Z" });
-    const before = { ...row };
-    const result = await registeredDispatch()({
-        sessionCode: "CN-TEST", agentNames: ["host-probe"], hostId: "host", leaseEpoch: 1, statusOnly: true,
-    }, { authInfo: { scopes: ["council:host"] } });
-    const payload = JSON.parse(result.content[0].text);
-    assert.equal(payload.error, undefined);
-    assert.equal(payload.statusOnly, true);
-    assert.equal(payload.status, "open");
-    assert.equal(payload.pausedAt, null);
-    assert.equal(payload.participants[0].name, "seat");
-    assert.equal(payload.participants[0].dispatchMode, true);
-    assert.deepEqual(payload.agents, {});
-    assert.deepEqual(row, before);
-    assert.deepEqual(requests, ["GET /rest/v1/council_sessions", "GET /rest/v1/council_participants"]);
-});
-
-test("status-only dispatch rejects acknowledgements without mutations", async () => {
-    fixture(null);
-    const result = await registeredDispatch()({
-        sessionCode: "CN-TEST", agentNames: ["host-probe"], hostId: "host", leaseEpoch: 1,
-        statusOnly: true, ackDeliveryIds: ["delivery"],
-    }, { authInfo: { scopes: ["council:host"] } });
-    const payload = JSON.parse(result.content[0].text);
-    assert.equal(payload.error, "status_only_cannot_acknowledge");
-    assert(!requests.some(request => !request.startsWith("GET ")));
+    assert.equal(other.status, "expired");
 });
 
 for (const [action, reason, pausedAt] of [
@@ -284,41 +159,20 @@ for (const [action, reason, pausedAt] of [
     });
 }
 
-test("just before seven days, agents remain paused despite the normal TTL", async t => {
+test("just before seven days, a paused Council stays open despite the normal TTL", async t => {
     t.mock.timers.enable({ apis: ["Date"], now: NOW });
     fixture("2026-09-23T00:00:00.001Z", { floor_holder: null, expires_at: "2026-09-23T01:00:00Z" });
-    const session = await store.getSessionById("session"); assert(session);
-    assert.equal((await pollCouncil({ session, agentName: "seat", waitMs: 0 })).kind, "paused");
-    assert.equal((await dispatchCouncil({ session, agentNames: ["seat"], durable: true })).kind, "paused");
+    assert.deepEqual(await store.expireOverdueSessions(), []);
     assert.equal(rows[0].status, "open");
 });
 
-for (const mode of ["poll", "dispatch"]) {
-    test(`${mode} uses the resumed row when resume wins the expiry race`, async t => {
-        t.mock.timers.enable({ apis: ["Date"], now: NOW });
-        const row = fixture("2026-09-23T00:00:00Z", { floor_holder: null });
-        const session = await store.getSessionById("session"); assert(session);
-        beforeUpdate = () => { row.paused_at = null; row.expires_at = "2026-10-30T00:00:00Z"; };
-        const result = mode === "poll"
-            ? await pollCouncil({ session, agentName: "seat", waitMs: 0 })
-            : await dispatchCouncil({ session, agentNames: ["seat"], durable: true });
-        assert.equal(result.kind, mode === "poll" ? "waiting" : "ok");
-        assert("session" in result);
-        assert.equal(result.session.status, "open");
-        assert.equal(result.session.pausedAt, null);
-    });
-    test(`${mode} does not claim expiry when the write fails`, async t => {
-        t.mock.timers.enable({ apis: ["Date"], now: NOW });
-        const warnings: unknown[][] = [];
-        t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args); });
-        const row = fixture("2026-09-23T00:00:00Z");
-        const session = await store.getSessionById("session"); assert(session);
-        failUpdate = true;
-        const result = mode === "poll"
-            ? await pollCouncil({ session, agentName: "seat", waitMs: 0 })
-            : await dispatchCouncil({ session, agentNames: ["seat"], durable: true });
-        assert.equal(result.kind, "degraded");
-        assert.equal(row.status, "open");
-        assert.equal(warnings.length, 1);
-    });
-}
+test("a failed sweep write leaves the Council open and reports once", async t => {
+    t.mock.timers.enable({ apis: ["Date"], now: NOW });
+    const errors: unknown[][] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => { errors.push(args); });
+    const row = fixture("2026-09-23T00:00:00Z");
+    failUpdate = true;
+    assert.deepEqual(await store.expireOverdueSessions(), []);
+    assert.equal(row.status, "open");
+    assert.equal(errors.length, 1);
+});

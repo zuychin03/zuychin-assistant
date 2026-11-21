@@ -41,24 +41,16 @@ check("migration replaces the same-endpoint credential and preserves unrelated s
     assert(!/leave it alone and add.*beside/i.test(text));
 });
 
-check("all four access levels accurately describe increasing knowledge and convening authority", () => {
+check("the three access levels accurately describe increasing knowledge authority", () => {
     assert.match(text, /read\s+read-only.*search and read/i);
     assert.match(text, /notes\s+notes read\/write.*save_note.*update_note.*delete_note/i);
     assert.match(text, /full\s+full read\/write.*vault_ingest.*vault_write/i);
-    assert.match(text, /council\s+full read\/write.*convene.*council:owner/i);
-    assert.match(text, /read, notes and full cannot convene/i);
-    assert(!/no key issued this way can convene/i.test(text));
+    assert(!/council/i.test(text));
 });
 
-check("Council owner access does not replace seat or dedicated host credentials", () => {
-    assert.match(text, /participation.*separate.*seat credential.*council:seat/i);
-    assert.match(text, /host.*dedicated.*credential.*council:host/i);
-    assert.match(text, /this key grants neither seat nor host authority/i);
-});
-
-check("setup verification remains read-only even for a Council-capable client", () => {
+check("setup verification remains read-only", () => {
     assert.match(text, /call search_knowledge once with a harmless query/i);
-    assert.match(text, /do not.*(?:write|mutate).*convene.*test/i);
+    assert.match(text, /do not write.*to test access/i);
     assert.match(text, /tool visibility.*(?:does not|is not).*access/i);
     assert.match(text, /accessLevel.*(?:claim response|response)/i);
 });

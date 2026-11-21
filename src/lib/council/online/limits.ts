@@ -34,5 +34,17 @@ export const SEAT_REPLY_WORDS = 220;
 export const VERDICT_WORDS = 350;
 export const MAX_OPEN_QUESTIONS = 5;
 
+// Research first (docs/V7_COUNCIL_RESEARCH_PLAN.md): one search per source before
+// round 1. The pack stays under MAX_BODY_CHARS (6,000) as one moderator message.
+export const RESEARCH_PACK_CHARS = 5_000;
+export const RESEARCH_WEB_RESULTS = 5;
+export const RESEARCH_NOTES = 4;
+export const RESEARCH_VAULT_PAGES = 3;
+export const RESEARCH_WEB_EXCERPT_CHARS = 600;
+export const RESEARCH_NOTE_EXCERPT_CHARS = 400;
+export const RESEARCH_TITLE_CHARS = 120;
+export const RESEARCH_QUERY_CHARS = 200;
+export const RESEARCH_SOURCE_TIMEOUT_MS = 15_000;
+
 export const ADAPTER_VERSION = "zuychin-online-1";
 export const FAILED_PASS_PREFIX = "Model call failed:";

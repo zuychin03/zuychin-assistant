@@ -27,14 +27,13 @@ Then run the suites for the area you changed. These need no credentials or netwo
 | Chat, models, voice, Library, Research, Study, Capture and Tasks | `npm run v6:test` |
 | Speech-to-text service | `npm test --prefix stt-service` |
 | Knowledge Cosmos | `npm run cosmos:test` |
-| Council host, protocol and contracts | `npm run council:v3:test`, `npm run council:contracts:test`, `npm run council:services:test` |
+| Councils, seats and execution records | `npm run council:v3:test`, `npm run council:online:test`, `npm run council:policy:test`, `npm run council:services:test` |
 | Agent credentials | `npm run agents:offline:test` |
-| Windows desktop supervisor (needs Rust) | `npm run council:desktop:test` |
 | One suite | `npx tsx scripts/test-<name>.mts` |
 
 The scripts that read `.env.local` (`agents:test`, `journal:test`, `council:protocol:test`, `council:v3:test:db` and `council:schema:check`) connect to a real database, and some insert, change and delete rows. Run them only against a disposable local Supabase, as [the CI setup](scripts/council-ci-setup.md) does, never against a project with real data.
 
-CI runs lint, types and the offline suites on Ubuntu and Windows, the V6 suites, `cargo fmt`, `clippy` and the tests for the desktop supervisor, and the database suites against an isolated Supabase.
+CI runs lint, types and the offline suites on Ubuntu, the V6 suites, and the database suites against an isolated Supabase.
 
 ## Where things live
 

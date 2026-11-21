@@ -46,12 +46,11 @@ const ACCESS_OPTIONS = [
     { value: "read", label: "Read-only" },
     { value: "notes", label: "Notes read/write" },
     { value: "full", label: "Full read/write" },
-    { value: "council", label: "Full + convene councils" },
 ];
 
 const ACCESS_LABELS: Record<AccessLevel, string> = {
     read: "read-only", notes: "notes read/write", full: "full read/write",
-    council: "full read/write + convene",
+    council: "full read/write (old council level)",
 };
 
 function ago(iso: string | null): string {
@@ -251,7 +250,7 @@ export default function AgentsPanel() {
                             <div key={k.id} className="row-head" style={styles.keyRow}>
                                 <span className="pill">
                                     {k.purpose === "council_seat"
-                                        ? `seat: ${k.seatName ?? "?"}`
+                                        ? `old seat: ${k.seatName ?? "?"}`
                                         : ACCESS_LABELS[k.accessLevel ?? "read"]}
                                 </span>
                                 <span className="meta">{ago(k.lastUsedAt)}</span>

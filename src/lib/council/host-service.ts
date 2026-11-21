@@ -1,8 +1,7 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { z } from "zod";
 import {
-    claimLeaseSchema, deliveryFenceSchema, failDeliverySchema, prepareDeliverySchema,
-    renewLeaseSchema, requireCouncilHost, sessionFenceSchema, startExecutionSchema,
+    claimLeaseSchema, renewLeaseSchema, requireCouncilHost, sessionFenceSchema, startExecutionSchema,
     stopExecutionSchema, type CouncilCaller,
 } from "./host-contracts";
 import type {
@@ -28,18 +27,6 @@ const executionBoundarySchema = z.object({
     policyVersion: z.string().min(1).max(100).nullable(),
     hasExecutionHistory: z.boolean(),
 }).strict();
-
-export interface CouncilDelivery {
-    id: string;
-    participantId: string;
-    fromSeq: number;
-    throughSeq: number;
-    promptHash: string;
-    promptBody: string;
-    status: "prepared" | "in_flight" | "acknowledged" | "failed";
-    attempt: number;
-    redelivered: boolean;
-}
 
 export async function claimHostLease(params: {
     sessionId: string; hostId: string; durationSeconds?: number; policyVersion?: string;
@@ -100,97 +87,6 @@ export async function releaseHostLease(params: {
     });
     if (error) throw new Error(error.message);
     return data === true;
-}
-
-export async function prepareDelivery(params: {
-    sessionId: string;
-    agentName: string;
-    hostId: string;
-    leaseEpoch: number;
-    fromSeq: number;
-    throughSeq: number;
-    promptHash: string;
-    promptBody: string;
-}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; delivery?: CouncilDelivery }> {
-    requireCouncilHost(caller);
-    params = prepareDeliverySchema.parse(params);
-    const { data, error } = await supabase.rpc("prepare_council_delivery", {
-        p_session_id: params.sessionId,
-        p_agent_name: params.agentName,
-        p_host_id: params.hostId,
-        p_lease_epoch: params.leaseEpoch,
-        p_from_seq: params.fromSeq,
-        p_through_seq: params.throughSeq,
-        p_prompt_hash: params.promptHash,
-        p_prompt_body: params.promptBody,
-    });
-    if (error) throw new Error(error.message);
-    const row = (data ?? { ok: false, reason: "no_result" }) as {
-        ok: boolean; reason?: string; delivery?: {
-            id: string; participant_id: string; from_seq: number; through_seq: number;
-            prompt_hash: string; status: CouncilDelivery["status"]; attempt: number;
-            prompt_body: string; redelivered?: boolean;
-        };
-    };
-    return row.delivery ? {
-        ok: row.ok,
-        delivery: {
-            id: row.delivery.id,
-            participantId: row.delivery.participant_id,
-            fromSeq: row.delivery.from_seq,
-            throughSeq: row.delivery.through_seq,
-            promptHash: row.delivery.prompt_hash,
-            promptBody: row.delivery.prompt_body,
-            status: row.delivery.status,
-            attempt: row.delivery.attempt,
-            redelivered: row.delivery.redelivered === true,
-        },
-    } : { ok: row.ok, reason: row.reason };
-}
-
-export async function failDelivery(params: {
-    deliveryId: string; hostId: string; leaseEpoch: number; error: string;
-}, caller: CouncilCaller | undefined): Promise<boolean> {
-    requireCouncilHost(caller);
-    params = failDeliverySchema.parse(params);
-    const { data, error } = await supabase.rpc("fail_council_delivery", {
-        p_delivery_id: params.deliveryId,
-        p_host_id: params.hostId,
-        p_lease_epoch: params.leaseEpoch,
-        p_error: params.error,
-    });
-    if (error) throw new Error(error.message);
-    return data === true;
-}
-
-export async function markDeliveryInFlight(params: {
-    deliveryId: string; hostId: string; leaseEpoch: number;
-}, caller: CouncilCaller | undefined): Promise<boolean> {
-    requireCouncilHost(caller);
-    params = deliveryFenceSchema.parse(params);
-    const { data, error } = await supabase.rpc("mark_council_delivery_in_flight", {
-        p_delivery_id: params.deliveryId,
-        p_host_id: params.hostId,
-        p_lease_epoch: params.leaseEpoch,
-    });
-    if (error) throw new Error(error.message);
-    return data === true;
-}
-
-export async function acknowledgeDelivery(params: {
-    deliveryId: string; hostId: string; leaseEpoch: number;
-}, caller: CouncilCaller | undefined): Promise<{ ok: boolean; reason?: string; throughSeq?: number }> {
-    requireCouncilHost(caller);
-    params = deliveryFenceSchema.parse(params);
-    const { data, error } = await supabase.rpc("ack_council_delivery", {
-        p_delivery_id: params.deliveryId,
-        p_host_id: params.hostId,
-        p_lease_epoch: params.leaseEpoch,
-    });
-    if (error) throw new Error(error.message);
-    return (data ?? { ok: false, reason: "no_result" }) as {
-        ok: boolean; reason?: string; throughSeq?: number;
-    };
 }
 
 export async function startAgentExecution(params: {

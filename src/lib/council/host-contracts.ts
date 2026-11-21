@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { isCouncilHost } from "../agents/scopes";
-import { integrationEvidenceSchema } from "./integration-evidence";
 import { NODE_POLICY_VERSION } from "./policy-versions";
 
 export interface CouncilCaller {
@@ -14,7 +13,6 @@ export function requireCouncilHost(caller: CouncilCaller | undefined): void {
 }
 
 export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/i);
-export const reportSchema = z.string().min(1).max(16000);
 export const hostFenceShape = {
     hostId: z.string().uuid(),
     leaseEpoch: z.number().int().positive(),
@@ -32,16 +30,6 @@ export const issueHostSeatSchema = sessionFenceSchema.extend({
     seatName: z.string().min(1),
     bindExecution: z.boolean().optional(),
     ttlHours: z.number().positive().finite().optional(),
-});
-
-export const deliveryFenceSchema = z.object({ deliveryId: z.string().uuid(), ...hostFenceShape });
-export const failDeliverySchema = deliveryFenceSchema.extend({ error: z.string().max(2000) });
-export const prepareDeliverySchema = sessionFenceSchema.extend({
-    agentName: z.string().min(1),
-    fromSeq: z.number().int().nonnegative(),
-    throughSeq: z.number().int().nonnegative(),
-    promptHash: z.string().min(1),
-    promptBody: z.string(),
 });
 
 export const capabilitySchema = z.object({
@@ -74,48 +62,4 @@ export const stopExecutionSchema = z.object({
     executionId: z.string().uuid(),
     ...hostFenceShape,
     stopReason: z.string().min(1).max(500),
-});
-
-export const verificationReceiptSchema = z.object({
-    command: z.array(z.string()),
-    exitCode: z.number().int().nullable(),
-    durationMs: z.number().nonnegative().finite(),
-    outputDigest: z.string(),
-    outputTail: z.string(),
-    timedOut: z.boolean().optional(),
-});
-export const exactVerificationSchema = z.object({
-    itemId: z.string().uuid(),
-    ...hostFenceShape,
-    commitSha: commitShaSchema,
-    baseSha: commitShaSchema,
-    branchName: z.string().min(1).max(300),
-    profileId: z.string().min(1).max(100),
-    passed: z.boolean(),
-    receipts: z.array(verificationReceiptSchema).max(20),
-    redactionVersion: z.literal(1).optional(),
-    outputDigest: z.string().min(1),
-    report: reportSchema.describe("Checks run and their outcomes, bound to the exact commit and frozen base."),
-});
-export const integrationReportSchema = sessionFenceSchema.extend({
-    status: z.enum(["running", "verified", "conflict", "failed"]),
-    branch: z.string().max(200).optional(),
-    tipSha: commitShaSchema.optional(),
-    reporter: z.string().min(1),
-    report: reportSchema,
-});
-
-export const integrationBeginSchema = sessionFenceSchema.extend({
-    attemptId: z.string().uuid(),
-    expectedIntegrator: z.string().min(1).max(100).nullable(),
-});
-
-export const integrationFinishSchema = z.object({
-    attemptId: z.string().uuid(),
-    ...hostFenceShape,
-    status: z.enum(["verified", "conflict", "failed"]),
-    branch: z.string().min(1).max(200).nullable(),
-    tipSha: commitShaSchema.nullable(),
-    executionId: z.string().uuid().nullable(),
-    evidence: integrationEvidenceSchema,
 });

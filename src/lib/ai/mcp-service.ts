@@ -16,7 +16,6 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { isolateBranchRecall } from "@/lib/conversations/branches";
 import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
-import type { ConveneRejection } from "@/lib/council/operations";
 
 export interface McpToolParam {
     type: "string" | "number" | "integer" | "boolean" | "array" | "object";
@@ -66,86 +65,85 @@ export const COUNCIL_TOOLS: McpTool[] = [
     {
         name: "council_propose",
         description:
-            "Draft a council for the user to launch with one click on the machine his agents run on. This is the DEFAULT way to start a council: prefer it over council_convene whenever he is at the app. It creates nothing - no session, no code, no expiry - so a proposal he ignores costs him nothing. The proposal renders as a card under your reply with a Launch button; say in your reply what you proposed and why, and never invent a session code, because there is not one yet. Use council_convene instead only when he needs paste-in kickoff blocks for agents in desktop apps.",
+            "Draft a council for the user to start with one click: a debate between chat models from his selectable list, run on the server. This is the DEFAULT way to start a council in the web chat. It creates nothing - no session, no code - so a proposal he ignores costs him nothing. The proposal renders as a card under your reply with a Start button and he can change the models first; say what you proposed and why, and never invent a session code. Councils of coding agents on his computer now run in Converoom, not here.",
         parameters: {
-            topic: { type: "string", description: "The question or job, as one decidable question.", required: true },
-            brief: {
-                type: "string",
-                description:
-                    "Everything the agents need and cannot see: constraints, what has been tried, what a good answer looks like, and which files or areas are in scope. For a build council, instruct the closer to author workItems and to give each agent file-disjoint work - a build council whose closer omits them ends with every agent idle on NO_WORK_CAMPAIGN.",
-                required: true,
-            },
+            topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
+            brief: { type: "string", description: "Context every seat needs: constraints, what has been tried, what a good answer looks like.", required: true },
             participants: {
                 type: "array",
-                description: "2-5 agents. Use the instance names his host advertises (claude-a, codex-1, ...) when you know them; he can edit them before launching. For an online council these are model seats: name and modelKey are optional.",
-                required: true,
+                description: "2-5 model seats. Name and modelKey are optional; leave them out (or send no participants) to auto-fill free models from different vendors.",
+                required: false,
                 items: {
                     type: "object",
-                    description: "One participant.",
+                    description: "One seat.",
                     properties: {
-                        name: { type: "string", description: "Agent instance name, e.g. 'codex-1'. Online seats default to the model's short name." },
-                        expertise: { type: "string", description: "One line on what it brings and what it should own. For an online seat, the angle it argues from." },
-                        modelKey: { type: "string", description: "Online councils only: provider::model key from model_status." },
+                        name: { type: "string", description: "Seat name. Defaults to the model's short name." },
+                        expertise: { type: "string", description: "One line on the angle this seat argues from." },
+                        modelKey: { type: "string", description: "provider::model key from model_status. Leave it out to auto-fill." },
                     },
                 },
             },
-            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names. Online councils may omit it; the first seat closes.", required: false },
-            councilType: {
-                type: "string",
-                enum: ["debate", "code", "research", "audit", "debug"],
-                description: "'debate' to decide, 'code' to build, 'research' to investigate, 'audit' to review, 'debug' to find a root cause. Each sets the house rules, budgets and closing criteria.",
-                required: true,
-            },
-            maxRounds: { type: "number", description: "Rounds before it must conclude. Omit to take the type's default.", required: false },
-            online: {
-                type: "boolean",
-                description: "true for an online council: a debate between chat models from his selectable list, run on the server with no host or agents to start. It keeps running if he closes the app. Give each participant a modelKey from model_status, or leave modelKey out (or send no participants) to auto-fill free models from different vendors.",
-                required: false,
-            },
+            closerName: { type: "string", description: "Which seat writes the verdict. Must be one of the seat names. Omit it and the first seat closes.", required: false },
+            maxRounds: { type: "number", description: "Rounds before the verdict (2 to 8, default 4).", required: false },
             purpose: {
                 type: "string",
                 enum: ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"],
-                description: "Online councils only: what auto-fill picks models for. Defaults to reasoning.",
+                description: "What auto-fill picks models for. Defaults to reasoning.",
                 required: false,
             },
-            allowPaid: { type: "boolean", description: "Online councils only: allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
+            allowPaid: { type: "boolean", description: "Allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
+            research: {
+                type: "object",
+                description: "Research first: the server searches once before round 1 and every seat gets the results as numbered sources. Seats still have no tools. Leave it out for a plain debate.",
+                required: false,
+                properties: {
+                    web: { type: "boolean", description: "One web search (1 Tavily credit). Turn it on when the question depends on current facts, prices, versions or recent events." },
+                    notes: { type: "boolean", description: "Search his saved notes (and vault pages unless Free only is on). Only when he asks for his notes to be used: they go to every seat's provider." },
+                    query: { type: "string", description: "A sharper search query. Defaults to the topic." },
+                },
+            },
         },
     },
     {
         name: "council_convene",
         description:
-            "Open a council immediately: a live multi-round debate between the user's external coding agents (codex, claude-code, cursor), held inside Zuychin. Returns a session code and a ready-to-paste kickoff block per agent - show him the blocks verbatim so he can paste one into each terminal. Use this only when he wants the blocks, e.g. for agents in desktop apps or on another machine; otherwise use council_propose, which lets him launch from the app and creates nothing until he does. With online: true it instead starts a debate between chat models right away, run on the server, and returns its code: use that when he asks for an online or model council outside the web app (Telegram, Discord). Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
+            "Start a council right away: a debate between chat models from his selectable list, run on the server, and return its code. It keeps going if he closes the app. Use it outside the web chat (Telegram, Discord) or when he asks to start one now; in the web chat prefer council_propose. Councils of coding agents on his computer now run in Converoom, not here. Do NOT use to record a conclusion he already holds; use save_note or vault_ingest for that.",
         parameters: {
             topic: { type: "string", description: "The question under debate, as one decidable question.", required: true },
-            brief: { type: "string", description: "Context every participant needs: constraints, what has been tried, what a good answer looks like.", required: true },
+            brief: { type: "string", description: "Context every seat needs: constraints, what has been tried, what a good answer looks like.", required: true },
             participants: {
                 type: "array",
-                description: "2-5 agents to invite. Short lowercase handles he will type into each agent. For an online council these are model seats: name and modelKey are optional.",
-                required: true,
+                description: "2-5 model seats. Name and modelKey are optional; leave them out (or send no participants) to auto-fill free models from different vendors.",
+                required: false,
                 items: {
                     type: "object",
-                    description: "One participant.",
+                    description: "One seat.",
                     properties: {
-                        name: { type: "string", description: "Agent handle, e.g. 'codex'. Online seats default to the model's short name." },
-                        expertise: { type: "string", description: "One line on what it brings. For an online seat, the angle it argues from." },
-                        modelKey: { type: "string", description: "Online councils only: provider::model key from model_status." },
+                        name: { type: "string", description: "Seat name. Defaults to the model's short name." },
+                        expertise: { type: "string", description: "One line on the angle this seat argues from." },
+                        modelKey: { type: "string", description: "provider::model key from model_status. Leave it out to auto-fill." },
                     },
                 },
             },
-            closerName: { type: "string", description: "Which participant may conclude. Must be one of the participant names. Online councils may omit it; the first seat closes.", required: false },
-            maxRounds: { type: "number", description: "Rounds before it must conclude (default 6; online councils default to 4).", required: false },
-            online: {
-                type: "boolean",
-                description: "true for an online council: a debate between chat models from his selectable list, run on the server with no host or agents to start. It keeps running if he closes the app. Give each participant a modelKey from model_status, or leave modelKey out (or send no participants) to auto-fill free models from different vendors.",
-                required: false,
-            },
+            closerName: { type: "string", description: "Which seat writes the verdict. Must be one of the seat names. Omit it and the first seat closes.", required: false },
+            maxRounds: { type: "number", description: "Rounds before the verdict (2 to 8, default 4).", required: false },
             purpose: {
                 type: "string",
                 enum: ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"],
-                description: "Online councils only: what auto-fill picks models for. Defaults to reasoning.",
+                description: "What auto-fill picks models for. Defaults to reasoning.",
                 required: false,
             },
-            allowPaid: { type: "boolean", description: "Online councils only: allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
+            allowPaid: { type: "boolean", description: "Allow paid models. Set it only when he explicitly asks for paid models; Free only still wins.", required: false },
+            research: {
+                type: "object",
+                description: "Research first: the server searches once before round 1 and every seat gets the results as numbered sources. Seats still have no tools. Leave it out for a plain debate.",
+                required: false,
+                properties: {
+                    web: { type: "boolean", description: "One web search (1 Tavily credit). Turn it on when the question depends on current facts, prices, versions or recent events." },
+                    notes: { type: "boolean", description: "Search his saved notes (and vault pages unless Free only is on). Only when he asks for his notes to be used: they go to every seat's provider." },
+                    query: { type: "string", description: "A sharper search query. Defaults to the topic." },
+                },
+            },
         },
     },
     {
@@ -682,6 +680,7 @@ import { executeCaptureAdd } from "@/lib/capture/chat-tool";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelStatus } from "@/lib/ai/models/status";
 import { isPurposeTag } from "@/lib/ai/models/tags";
+import { readResearchRequest } from "@/lib/council/online/research";
 import { listDiscoveryRuns } from "@/lib/ai/catalogue/store";
 import { catalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
 
@@ -1605,32 +1604,7 @@ ${toolList}
 `.trim();
 }
 
-// --- zuychin-council: the user convenes and closes from chat, so he never needs to
-// learn a session code from an agent's terminal. ---
-
-function readParticipants(args: Record<string, unknown>): { name: string; expertise: string }[] {
-    const raw = (args.participants ?? []) as { name?: string; expertise?: string }[];
-    return raw
-        .filter((p) => p && typeof p.name === "string" && p.name.trim())
-        .map((p) => ({ name: p.name!.trim(), expertise: (p.expertise ?? "").trim() || "unspecified" }));
-}
-
-function conveneRefusal(rejection: ConveneRejection, closerName: string, outcome: "proposed" | "created"): string {
-    switch (rejection.reason) {
-        case "participant_count":
-            return rejection.count < 2
-                ? `A council needs at least 2 participants. Nothing was ${outcome}.`
-                : `A council takes at most 5 participants. Nothing was ${outcome}.`;
-        case "closer_not_participant":
-            return `closerName "${closerName}" is not one of ${rejection.names.join(", ")}. Nothing was ${outcome}.`;
-        case "duplicate_names":
-            return `Participant names must be unique; got ${rejection.names.join(", ")}. Nothing was ${outcome}.`;
-        case "reserved_name":
-            return `"${rejection.name}" is reserved for the moderator. Nothing was ${outcome}.`;
-        case "open_limit":
-            return `${rejection.open.length} councils are already open (${rejection.open.map((s) => s.code).join(", ")}). Close one first.`;
-    }
-}
+// --- zuychin-council: the user starts, checks and closes councils from chat. ---
 
 const ONLINE_PURPOSES = ["research", "coding", "reasoning", "writing", "long-context", "multilingual", "agentic"] as const;
 
@@ -1644,7 +1618,13 @@ async function onlineSeatsFromArgs(args: Record<string, unknown>) {
     if (!checked.ok) return { ok: false as const, error: checked.error };
     const wanted = String(args.closerName ?? "").trim().toLowerCase();
     const closer = (wanted && checked.seats.find((seat) => seat.name.toLowerCase() === wanted)) || checked.seats[0];
-    return { ok: true as const, seats: checked.seats, closer, allowPaid, purpose };
+    return { ok: true as const, seats: checked.seats, closer, allowPaid, purpose, research: readResearchRequest(args.research) };
+}
+
+function researchPhrase(research: ReturnType<typeof readResearchRequest>): string {
+    if (!research) return "";
+    const what = [research.web ? "the web" : "", research.notes ? "his notes" : ""].filter(Boolean).join(" and ");
+    return ` It searches ${what}${research.query ? ` for "${research.query}"` : " for the topic"} before round 1.`;
 }
 
 async function executeOnlinePropose(args: Record<string, unknown>, onCouncilProposal: NonNullable<ToolContext["onCouncilProposal"]>): Promise<string> {
@@ -1659,8 +1639,9 @@ async function executeOnlinePropose(args: Record<string, unknown>, onCouncilProp
         topic, brief, councilType: "debate", closerName: built.closer.name, online: true, allowPaid: built.allowPaid, purpose: built.purpose,
         participants: built.seats.map((seat) => ({ name: seat.name, expertise: seat.expertise, modelKey: seat.modelKey, source: seat.source })),
         ...(maxRounds ? { maxRounds } : {}),
+        ...(built.research ? { research: built.research } : {}),
     });
-    return `Proposed an online council on "${topic}" with ${built.seats.map((seat) => `${seat.name} (${seat.resolved.model.label})`).join(", ")}, closed by ${built.closer.name}. `
+    return `Proposed a council on "${topic}" with ${built.seats.map((seat) => `${seat.name} (${seat.resolved.model.label})`).join(", ")}, closed by ${built.closer.name}.${researchPhrase(built.research)} `
         + "The card is under your reply with a Start button; he can change the models first. Nothing has been created and there is no session code yet; "
         + "summarise what you proposed and stop.";
 }
@@ -1674,67 +1655,25 @@ async function executeOnlineConvene(args: Record<string, unknown>): Promise<stri
         topic: String(args.topic ?? ""), brief: String(args.brief ?? ""), closerName: built.closer.name,
         maxRounds: typeof args.maxRounds === "number" ? args.maxRounds : undefined, allowPaid: built.allowPaid,
         seats: built.seats.map((seat) => ({ modelKey: seat.modelKey, name: seat.name, expertise: seat.expertise, source: seat.source })),
+        research: built.research,
     });
     if (!result.ok) return result.error;
-    return `Online council ${result.code} is running on the server: ${result.seats.map((seat) => `${seat.name} (${seat.label}${seat.paid ? ", paid" : ""})`).join(", ")}; `
+    const { describeResearch } = await import("@/lib/council/online/research");
+    const sources = result.research ? `${describeResearch(result.research)} ` : "";
+    return `Council ${result.code} is running on the server: ${result.seats.map((seat) => `${seat.name} (${seat.label}${seat.paid ? ", paid" : ""})`).join(", ")}. ${sources}`
         + `${result.closerName} writes the verdict after ${result.maxRounds} rounds. It keeps going without him and asks for his decision when the verdict is ready. `
         + `Watch it at ${ownerLink("/council")}, or ask for council_status ${result.code}.`;
 }
 
 async function executeCouncilPropose(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
-    const { conveneRejection } = await import("@/lib/council/operations");
-    const { COUNCIL_TYPES } = await import("@/lib/council/templates");
-
     if (!ctx?.onCouncilProposal) {
-        return args.online === true
-            ? "A proposal card can only be shown in the web chat. Use council_convene with online: true here to start it straight away."
-            : "A proposal card can only be shown in the web chat. Use council_convene here and give him the kickoff blocks instead.";
+        return "A proposal card can only be shown in the web chat. Use council_convene here to start it straight away.";
     }
-    if (args.online === true) return executeOnlinePropose(args, ctx.onCouncilProposal);
-
-    const participants = readParticipants(args);
-    const names = participants.map((p) => p.name);
-    const closerName = String(args.closerName ?? "").trim();
-    const councilType = String(args.councilType ?? "debate").trim();
-    const topic = String(args.topic ?? "").trim();
-    const brief = String(args.brief ?? "").trim();
-
-    // Validated here rather than at launch: the host rejects the same things,
-    // but it does so after he has clicked, with no way back to the model.
-    if (!topic) return "A council needs a topic. Nothing was proposed.";
-    if (!brief) return "A council needs a brief. Nothing was proposed.";
-    const rejection = conveneRejection(participants, closerName);
-    if (rejection) return conveneRefusal(rejection, closerName, "proposed");
-    if (!(COUNCIL_TYPES as readonly string[]).includes(councilType)) {
-        return `councilType must be one of ${COUNCIL_TYPES.join(", ")}. Nothing was proposed.`;
-    }
-
-    const maxRounds = typeof args.maxRounds === "number" && args.maxRounds > 0 ? Math.floor(args.maxRounds) : undefined;
-    ctx.onCouncilProposal({ topic, brief, participants, closerName, councilType, ...(maxRounds ? { maxRounds } : {}) });
-
-    return `Proposed a ${councilType} council on "${topic}" with ${names.join(", ")}, closed by ${closerName}. `
-        + "The card is under your reply with a Launch button. Nothing has been created and there is no session code yet; "
-        + "summarise what you proposed and stop.";
+    return executeOnlinePropose(args, ctx.onCouncilProposal);
 }
 
 async function executeCouncilConvene(args: Record<string, unknown>): Promise<string> {
-    if (args.online === true) return executeOnlineConvene(args);
-    const { conveneCouncil } = await import("@/lib/council/operations");
-    const { renderConveneResult } = await import("@/lib/council/render");
-    const { OWNER_SCOPES } = await import("@/lib/agents/scopes");
-
-    const closerName = String(args.closerName ?? "").trim();
-    // The assistant convenes on its owner's behalf.
-    const result = await conveneCouncil({
-        topic: String(args.topic ?? "").trim(),
-        brief: String(args.brief ?? "").trim(),
-        closerName,
-        participants: readParticipants(args),
-        maxRounds: typeof args.maxRounds === "number" ? args.maxRounds : undefined,
-    }, { scopes: OWNER_SCOPES });
-    if (result.kind === "denied") return result.message;
-    if (result.kind === "rejected") return conveneRefusal(result.rejection, closerName, "created");
-    return renderConveneResult(result.session, result.roster);
+    return executeOnlineConvene(args);
 }
 
 function quietFor(iso: string): string {
@@ -1770,7 +1709,7 @@ async function executeCouncilStatus(sessionCode?: string): Promise<string> {
                 .filter((p) => p.status !== "left" && p.postsThisRound === 0)
                 .map((p) => p.name);
             lines.push(
-                `${s.code}${online ? " · online" : ""} · round ${s.round}/${s.maxRounds} · ${waiting.length ? `waiting on ${waiting.join(", ")}` : "all posted this round"}`
+                `${s.code}${online ? "" : " · local"} · round ${s.round}/${s.maxRounds} · ${waiting.length ? `waiting on ${waiting.join(", ")}` : "all posted this round"}`
                 + ` (quiet ${quietFor(s.lastMessageAt)}) · ${s.lastSeq} msgs · ${s.topic}`,
             );
         }

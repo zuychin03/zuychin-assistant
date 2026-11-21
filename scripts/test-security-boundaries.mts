@@ -207,11 +207,10 @@ await check("vault paths cannot climb out of the vault repository", async () => 
     assert.equal(seen.length, 0);
 });
 
-await check("the Council host key still matches exactly and nothing near it", async () => {
+await check("a configured Council host key no longer authenticates", async () => {
     const req = new Request("https://assistant.test/api/mcp/mcp");
-    assert.deepEqual((await verifyMcpToken(req, "fixture-host-key"))?.scopes, ["council:host"]);
     supabaseReply = () => Response.json(null);
-    for (const near of ["fixture-host-ke", "fixture-host-keyy", "FIXTURE-HOST-KEY"]) assert.equal(await verifyMcpToken(req, near), undefined);
+    assert.equal(await verifyMcpToken(req, "fixture-host-key"), undefined);
 });
 
 await check("only images this app serves load inline in model answers", () => {

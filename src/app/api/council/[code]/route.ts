@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionByCode, listParticipants, readTranscript, type CouncilParticipant, type CouncilSession } from "@/lib/council/store";
-import { getCampaignForSession, listCampaignWorkItems } from "@/lib/council/campaign";
 import { readExecutionEvidence } from "@/lib/council/execution-reader";
-import { parseExecutionEvidence } from "@/lib/council/execution-evidence";
 import { latestSeatModels, readLease } from "@/lib/council/online/store";
 import { resolveModelKey } from "@/lib/ai/providers";
 
@@ -41,16 +39,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
         }
 
         const sinceSeq = Number(req.nextUrl.searchParams.get("sinceSeq") ?? 0);
-        const campaign = await getCampaignForSession(session.id);
-        const [participants, messages, workItems] = await Promise.all([
+        const [participants, messages] = await Promise.all([
             listParticipants(session.id),
             readTranscript({ sessionId: session.id, fromSeq: sinceSeq, limit: 200 }),
-            campaign ? listCampaignWorkItems(campaign.id) : Promise.resolve([]),
         ]);
         const [executions, online] = await Promise.all([
-            readExecutionEvidence(session.id, {
-                referencedIds: [...messages.map(message => message.executionId), ...workItems.flatMap(item => [item.submittedExecutionId, item.acceptedExecutionId])],
-            }),
+            readExecutionEvidence(session.id, { referencedIds: messages.map(message => message.executionId) }),
             readOnlineState(session, participants),
         ]);
 
@@ -98,37 +92,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
             executions,
             online,
             openObligations,
-            campaign: campaign ? {
-                id: campaign.id, status: campaign.status, repoPath: campaign.repoPath, baseBranch: campaign.baseBranch,
-                completedAt: campaign.completedAt,
-                integratorAgent: campaign.integratorAgent,
-                integrationBranch: campaign.integrationBranch,
-                integrationStatus: campaign.integrationStatus,
-                integrationReport: null,
-                integrationCheckedAt: campaign.integrationCheckedAt,
-                baseSha: campaign.baseSha, verificationProfile: campaign.verificationProfile,
-                integrationManifest: campaign.integrationManifest ? {
-                    version: campaign.integrationManifest.version, campaignId: campaign.integrationManifest.campaignId,
-                    baseSha: campaign.integrationManifest.baseSha,
-                    items: campaign.integrationManifest.items.map(item => ({
-                        itemId: item.itemId, sequence: item.sequence, agentName: item.agentName,
-                        branch: item.branch, commitSha: item.commitSha, verificationRunId: item.verificationRunId,
-                        dependencies: item.dependencies, acceptedExecutionId: item.acceptedExecutionId ?? null,
-                        executionEvidence: parseExecutionEvidence(item.executionEvidence),
-                    })),
-                } : null, manifestFrozenAt: campaign.manifestFrozenAt,
-                integrationTipSha: campaign.integrationTipSha,
-                workItems: workItems.map((item) => ({
-                    id: item.id, sequence: item.sequence, agentName: item.agentName, title: item.title,
-                    status: item.status, heartbeatAt: item.heartbeatAt, progress: item.progress,
-                    commitHash: item.commitHash, acceptedCommitSha: item.acceptedCommitSha,
-                    submittedExecutionId: item.submittedExecutionId, acceptedExecutionId: item.acceptedExecutionId,
-                    branchName: item.branchName, verificationProfile: item.verificationProfile,
-                    verificationRunId: item.verificationRunId, dependencies: item.dependencies,
-                    verification: item.verification, blockedReason: item.blockedReason,
-                    hostVerified: item.hostVerified, hostVerification: null,
-                })),
-            } : null,
         }, { headers });
     } catch (error) {
         console.error("[Council API] detail failed:", error);

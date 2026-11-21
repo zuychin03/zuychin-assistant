@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin } from "@/lib/auth/config";
 import { startOnlineCouncil } from "@/lib/council/online/service";
 import type { OnlineSeatInput } from "@/lib/council/online/seats";
+import { readResearchRequest } from "@/lib/council/online/research";
 
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 
@@ -18,10 +19,11 @@ function readSeats(raw: unknown): OnlineSeatInput[] | null {
     });
 }
 
-// Returns once the seats are recorded; the debate runs in this process afterwards,
-// well clear of Cloudflare's 100 s response limit.
+// Returns once the seats are recorded; the debate runs in this process afterwards.
+// Research first adds one search of a few seconds, still well clear of
+// Cloudflare's 100 s response limit.
 export async function POST(req: NextRequest) {
-    if (!sameOrigin(req)) return respond({ error: "Start online councils from this site." }, 403);
+    if (!sameOrigin(req)) return respond({ error: "Start councils from this site." }, 403);
     try {
         const body = await req.json().catch(() => null) as Record<string, unknown> | null;
         if (!body) return respond({ error: "Send the council as JSON." }, 400);
@@ -35,11 +37,12 @@ export async function POST(req: NextRequest) {
             closerIndex: typeof body.closerIndex === "number" ? body.closerIndex : undefined,
             maxRounds: typeof body.maxRounds === "number" ? body.maxRounds : undefined,
             allowPaid: body.allowPaid === true,
+            research: readResearchRequest(body.research),
         });
         if (!result.ok) return respond({ error: result.error }, result.status);
         return respond(result);
     } catch (error) {
         console.error("[Council API] online start failed:", error);
-        return respond({ error: "The online council could not be started." }, 500);
+        return respond({ error: "The council could not be started." }, 500);
     }
 }

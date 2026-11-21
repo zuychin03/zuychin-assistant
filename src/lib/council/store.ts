@@ -1,19 +1,17 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import type { CouncilType } from "./templates";
 import { COUNCIL_PROTOCOL_VERSION } from "./v3";
-import { requireCouncilHost, type CouncilCaller } from "./host-contracts";
 import { councilWriteIdentitySchema, type CouncilWriteIdentity } from "./write-identity";
 import { CouncilSpeakProtocolError, validateSpeakMessage } from "./speak-validation";
 export { CouncilSpeakProtocolError } from "./speak-validation";
 import {
-    AGENT_INTENTS, MAX_BATCH_CHARS, MAX_BATCH_MESSAGES, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
+    AGENT_INTENTS, MAX_MESSAGES, MAX_ROUNDS, MODERATOR_NAME,
     PARTICIPANT_STALE_SECONDS, POSTS_PER_ROUND, SESSION_TTL_MINUTES, PAUSE_TTL_MS,
-    SILENCE_GRANT_SECONDS, FLOOR_TTL_SECONDS, WAITER_FRESH_SECONDS,
-    CODE_ALPHABET, COUNCIL_CODE_PATTERN, CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
-    type CouncilIntent, type CouncilRole, type CouncilStatus, type CouncilStatusKeyword,
+    CONTINUE_EXTRA_ROUNDS, STANDBY_TTL_SECONDS, generateCouncilCode,
+    type CouncilIntent, type CouncilRole, type CouncilStatus,
 } from "./protocol";
 
-export type { CouncilStatus, CouncilStatusKeyword };
+export type { CouncilStatus };
 
 export interface CouncilSession {
     id: string; code: string; topic: string; brief: string; closerName: string; councilType: CouncilType;
@@ -54,17 +52,8 @@ export interface CouncilParticipant {
     postsTotal: number; postsThisRound: number; cursorSeq: number;
     pendingAckSeq: number;
     expiredGrants: number; waitCalls: number; joinedSeq: number; lastSeenAt: string;
-    // True when council-host.mts owns this agent's turns over ACP. Such an agent
-    // must never also long-poll, or the host's ack advances its cursor past
-    // messages it never read.
+    // True when a host drives this seat's turns. Online seats are always host-driven.
     dispatchMode: boolean;
-}
-
-// Everything render.ts needs, assembled once per tool call.
-export interface CouncilView {
-    session: CouncilSession; participants: CouncilParticipant[]; you: CouncilParticipant | null;
-    fresh: CouncilMessage[]; openToYou: CouncilMessage[];
-    cursor: number; omittedBefore: number | null; keyword: CouncilStatusKeyword;
 }
 
 interface SessionRow {
@@ -213,27 +202,18 @@ export async function createCouncilSession(params: {
     maxMessages?: number;
     ttlMinutes?: number;
     userProfileId?: string;
-    workspace?: { repoPath: string; baseBranch: string; baseSha?: string };
     councilType?: CouncilType;
-    requestedCode?: string;
-}, caller?: CouncilCaller): Promise<CouncilSession> {
-    if (params.requestedCode !== undefined) {
-        requireCouncilHost(caller);
-        if (typeof params.requestedCode !== "string" || !COUNCIL_CODE_PATTERN.test(params.requestedCode)) {
-            throw new Error("Invalid requested council code.");
-        }
-    }
+}): Promise<CouncilSession> {
     const ttl = params.ttlMinutes ?? SESSION_TTL_MINUTES;
     const expiresAt = new Date(Date.now() + ttl * 60_000).toISOString();
 
     // Retry only the code collision; anything else is a real failure.
     let row: SessionRow | null = null;
-    const attempts = params.requestedCode === undefined ? 5 : 1;
-    for (let attempt = 0; attempt < attempts && !row; attempt++) {
+    for (let attempt = 0; attempt < 5 && !row; attempt++) {
         const { data, error } = await supabase
             .from("council_sessions")
             .insert({
-                code: params.requestedCode ?? generateCouncilCode(),
+                code: generateCouncilCode(),
                 user_profile_id: params.userProfileId ?? null,
                 topic: params.topic,
                 brief: params.brief,
@@ -242,9 +222,6 @@ export async function createCouncilSession(params: {
                 max_rounds: params.maxRounds ?? MAX_ROUNDS,
                 max_messages: params.maxMessages ?? MAX_MESSAGES,
                 expires_at: expiresAt,
-                repo_path: params.workspace?.repoPath ?? null,
-                base_branch: params.workspace?.baseBranch ?? null,
-                base_sha: params.workspace?.baseSha ?? null,
                 protocol_version: COUNCIL_PROTOCOL_VERSION,
             })
             .select(SESSION_COLUMNS)
@@ -254,7 +231,6 @@ export async function createCouncilSession(params: {
             break;
         }
         if (error.code !== "23505") throwWrite("createCouncilSession", new Error(error.message));
-        if (params.requestedCode !== undefined) throw new Error("Requested council code is already in use. Nothing was created.");
     }
     if (!row) throwWrite("createCouncilSession", new Error("could not allocate a unique council code"));
     const session = row;
@@ -423,57 +399,8 @@ export async function appendMessage(params: {
     }
 }
 
-// Checked BEFORE the conclude CAS. create_council_campaign raises on a bad work
-// plan, and the campaign is created after the verdict commits, so without this
-// an invalid plan leaves a durable verdict with no transcript and no notice.
-export async function validateWorkItems(params: {
-    sessionId: string;
-    createdBy: string;
-    workItems: { agentName: string; title: string; instructions: string; acceptanceCriteria: string[]; declaredPaths?: string[]; verificationProfile?: string; dependencies?: string[] }[];
-}): Promise<string | null> {
-    const { data, error } = await supabase.rpc("validate_council_work_items", {
-        p_session_id: params.sessionId,
-        p_created_by: params.createdBy,
-        p_work_items: params.workItems.map((item) => ({
-            agent_name: item.agentName,
-            title: item.title,
-            instructions: item.instructions,
-            acceptance_criteria: item.acceptanceCriteria,
-            declared_paths: item.declaredPaths ?? [],
-            verification_profile: item.verificationProfile ?? "standard",
-            dependencies: item.dependencies ?? [],
-        })),
-    });
-    if (error) throw new Error(error.message);
-    return (data as string | null) ?? null;
-}
-
-// Best-effort: presence is judged by age on read, so a missed touch costs
-// nothing until it compounds.
-export async function touchParticipant(params: {
-    sessionId: string;
-    agentName: string;
-    pendingAck?: number;
-    countWait?: boolean;
-}): Promise<boolean> {
-    try {
-        const { data, error } = await supabase.rpc("touch_council_participant", {
-            p_session_id: params.sessionId,
-            p_agent_name: params.agentName,
-            p_pending_ack: params.pendingAck ?? null,
-            p_count_wait: params.countWait ?? false,
-        });
-        if (error) throw new Error(error.message);
-        return data === true;
-    } catch (err) {
-        console.warn("[Council] touchParticipant failed:", err);
-        return true;
-    }
-}
-
-// Keeps host-owned agents inside WAITER_FRESH_SECONDS between turns. Not
-// touch_council_participant: that promotes pending_ack_seq into cursor_seq, and
-// a dispatched agent's delivery is proven by the host's ack, not by a tick.
+// Keeps host-driven seats inside PARTICIPANT_STALE_SECONDS between turns so the
+// round quorum still counts them.
 export async function markParticipantsAlive(sessionId: string, names: string[]): Promise<void> {
     if (names.length === 0) return;
     const { error } = await supabase
@@ -485,72 +412,10 @@ export async function markParticipantsAlive(sessionId: string, names: string[]):
     if (error) console.warn("[Council] markParticipantsAlive failed:", error.message);
 }
 
-// Stages what the host is about to deliver. Monotonic in JS because PostgREST
-// cannot express greatest(col, val); the owning host is the only writer.
-export async function stagePendingAck(params: {
-    sessionId: string;
-    agentName: string;
-    delivered: number;
-    current: number;
-}): Promise<void> {
-    const next = Math.max(params.current, params.delivered);
-    if (next === params.current) return;
-    const { error } = await supabase
-        .from("council_participants")
-        .update({ pending_ack_seq: next, last_seen_at: new Date().toISOString() })
-        .eq("session_id", params.sessionId)
-        .eq("name", params.agentName);
-    if (error) console.warn("[Council] stagePendingAck failed:", error.message);
-}
-
-export async function electFloor(params: {
-    sessionId: string;
-    epoch: number;
-    lastSeq: number;
-}): Promise<{ granted: boolean; holder?: string; reason?: string }> {
-    try {
-        const { data, error } = await supabase.rpc("elect_council_floor", {
-            p_session_id: params.sessionId,
-            p_expected_epoch: params.epoch,
-            p_expected_last_seq: params.lastSeq,
-            p_silence_seconds: SILENCE_GRANT_SECONDS,
-            p_floor_ttl_seconds: FLOOR_TTL_SECONDS,
-            p_waiter_fresh_seconds: WAITER_FRESH_SECONDS,
-        });
-        if (error) throw new Error(error.message);
-        return (data ?? { granted: false, reason: "no_result" }) as { granted: boolean; holder?: string; reason?: string };
-    } catch (err) {
-        console.warn("[Council] electFloor failed:", err);
-        return { granted: false, reason: "error" };
-    }
-}
-
-export async function getParticipant(sessionId: string, name: string): Promise<CouncilParticipant | null> {
-    const { data, error } = await supabase
-        .from("council_participants")
-        .select(PARTICIPANT_COLUMNS)
-        .eq("session_id", sessionId)
-        .eq("name", name)
-        .maybeSingle();
-    if (error || !data) return null;
-    return mapParticipant(data as unknown as ParticipantRow);
-}
-
 function expiryFilter(): string {
     const now = Date.now();
     const pauseCutoff = new Date(now - PAUSE_TTL_MS).toISOString();
     return `and(paused_at.is.null,expires_at.lt.${new Date(now).toISOString()}),paused_at.lte.${pauseCutoff}`;
-}
-
-// Keep the predicate on the UPDATE so a concurrent resume is rechecked under its row lock.
-export async function expireSessionIfDue(sessionId: string): Promise<void> {
-    const { error } = await supabase
-        .from("council_sessions")
-        .update({ status: "expired" })
-        .eq("id", sessionId)
-        .in("status", ["open", "concluding"])
-        .or(expiryFilter());
-    if (error) console.warn("[Council] expireSessionIfDue failed:", error.message);
 }
 
 export async function pauseCouncil(sessionId: string): Promise<{ ok: boolean; already?: boolean; reason?: string }> {
@@ -646,171 +511,12 @@ export async function readTranscript(params: {
     return (data as unknown as MessageRow[]).map(mapMessage);
 }
 
-// Obligations are machine-computed, never inferred by the agent: a challenge or
-// ask aimed at you stays open until you reply to that seq with answer/concede.
-async function readOpenToYou(sessionId: string, agentName: string): Promise<CouncilMessage[]> {
-    const { data, error } = await supabase
-        .from("council_messages")
-        .select(MESSAGE_COLUMNS)
-        .eq("session_id", sessionId)
-        .eq("addressed_to", agentName)
-        .eq("answered", false)
-        .in("intent", ["challenge", "ask"])
-        .order("seq", { ascending: true })
-        .limit(10);
-    if (error) {
-        console.error("[Council] readOpenToYou failed:", error.message);
-        return [];
-    }
-    return (data as unknown as MessageRow[]).map(mapMessage);
-}
-
-function baseKeyword(session: CouncilSession, you: CouncilParticipant | null): CouncilStatusKeyword {
-    if (session.status === "closed" || (session.status === "expired" && session.pausedAt)) return "COUNCIL_CLOSED";
-    if (session.status === "concluding" || session.status === "expired") return "COUNCIL_CONCLUDING";
-    if (you && session.floorHolder === you.name) return "YOUR_TURN";
-    return "WAITING";
-}
-
-// On overflow the OLDEST are dropped and replaced with a pointer: bodies are
-// rendered in full because truncating a peer's argument degrades the debate.
-function trimBatch(batch: CouncilMessage[]): { fresh: CouncilMessage[]; omittedBefore: number | null } {
-    let fresh = batch;
-    let omittedBefore: number | null = null;
-    let chars = fresh.reduce((n, m) => n + m.body.length, 0);
-    while (fresh.length > 1 && chars > MAX_BATCH_CHARS) {
-        const dropped = fresh[0];
-        chars -= dropped.body.length;
-        fresh = fresh.slice(1);
-        omittedBefore = dropped.seq;
-    }
-    return { fresh, omittedBefore };
-}
-
-export async function buildView(params: {
-    sessionId: string;
-    agentName: string;
-    sinceSeq?: number;
-}): Promise<CouncilView | null> {
-    const session = await getSessionById(params.sessionId);
-    if (!session) return null;
-
-    const participants = await listParticipants(params.sessionId);
-    const you = participants.find((p) => p.name === params.agentName) ?? null;
-
-    // effective = sinceSeq ?? cursor_seq. The agent's claim wins when present;
-    // otherwise resume from what the server recorded as acknowledged.
-    const cursor = params.sinceSeq ?? you?.cursorSeq ?? 0;
-
-    const { fresh, omittedBefore } = trimBatch(await readTranscript({
-        sessionId: params.sessionId,
-        fromSeq: cursor,
-        limit: MAX_BATCH_MESSAGES,
-    }));
-
-    return {
-        session,
-        participants,
-        you,
-        fresh,
-        openToYou: you ? await readOpenToYou(params.sessionId, params.agentName) : [],
-        cursor,
-        omittedBefore,
-        keyword: baseKeyword(session, you),
-    };
-}
-
-/** One host-owned agent's slice of a council_dispatch payload. */
-export interface CouncilDispatchSlice {
-    fresh: CouncilMessage[];
-    openToYou: CouncilMessage[];
-    cursor: number;
-    /** Highest seq in this slice: what the host acknowledges once delivered. */
-    delivered: number;
-    omittedBefore: number | null;
-    hasFloor: boolean;
-    moreRemain: boolean;
-    status: CouncilParticipant["status"];
-    dispatchMode: boolean;
-}
-
-export interface CouncilDispatchView {
-    session: CouncilSession;
-    participants: CouncilParticipant[];
-    agents: Record<string, CouncilDispatchSlice>;
-}
-
-// buildView per agent would re-read the session and the roster once per agent.
-// The host asks about every agent it owns on the same 1.5s tick, so those two
-// reads happen once and only the per-agent transcript slice is repeated.
-export async function buildDispatchViews(params: {
-    session: CouncilSession;
-    agentNames: string[];
-    floorHolder: string | null;
-}): Promise<CouncilDispatchView> {
-    const participants = await listParticipants(params.session.id);
-    const agents: Record<string, CouncilDispatchSlice> = {};
-
-    for (const name of params.agentNames) {
-        const me = participants.find((p) => p.name === name && p.kind === "agent");
-        if (!me) continue;
-        const cursor = me.cursorSeq;
-        const { fresh, omittedBefore } = trimBatch(await readTranscript({
-            sessionId: params.session.id, fromSeq: cursor, limit: MAX_BATCH_MESSAGES,
-        }));
-        agents[name] = {
-            fresh,
-            openToYou: await readOpenToYou(params.session.id, name),
-            cursor,
-            delivered: fresh.length ? fresh[fresh.length - 1].seq : cursor,
-            omittedBefore,
-            hasFloor: params.floorHolder === name,
-            moreRemain: fresh.length >= MAX_BATCH_MESSAGES,
-            status: me.status,
-            dispatchMode: me.dispatchMode,
-        };
-    }
-    return { session: params.session, participants, agents };
-}
-
-export async function concludeCouncil(params: {
-    sessionId: string;
-    closer: string;
-    verdict: string;
-    openQuestions: string[];
-}): Promise<{ changed: boolean; verdict?: string; closer?: string; vaultPath?: string | null; round?: number; messages?: number }> {
-    try {
-        const { data, error } = await supabase.rpc("conclude_council", {
-            p_session_id: params.sessionId,
-            p_closer: params.closer,
-            p_verdict: params.verdict,
-            p_open_questions: params.openQuestions,
-        });
-        if (error) throw new Error(error.message);
-        return (data ?? { changed: false }) as { changed: boolean; verdict?: string; closer?: string; vaultPath?: string | null };
-    } catch (err) {
-        return throwWrite("concludeCouncil", err);
-    }
-}
-
-export interface CouncilWorkItemPlan {
-    agentName: string; title: string; instructions: string; acceptanceCriteria: string[];
-    declaredPaths?: string[]; verificationProfile?: string; dependencies?: string[];
-}
-
-interface WorkItemPlanRow {
-    agent_name?: unknown; title?: unknown; instructions?: unknown; acceptance_criteria?: unknown;
-    declared_paths?: unknown; verification_profile?: unknown; dependencies?: unknown;
-}
-
-// The closer records a verdict; it is not final until the owner accepts. The
-// work plan rides along because the campaign is created on accept, not here.
+// The closer records a verdict; it is not final until the owner accepts.
 export async function proposeVerdict(params: {
     sessionId: string;
     closer: string;
     verdict: string;
     openQuestions: string[];
-    workItems?: CouncilWorkItemPlan[];
     standbySeconds?: number;
 }): Promise<{ changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string; vaultPath?: string | null; round?: number; messages?: number }> {
     try {
@@ -819,14 +525,8 @@ export async function proposeVerdict(params: {
             p_closer: params.closer,
             p_verdict: params.verdict,
             p_open_questions: params.openQuestions,
-            p_work_items: params.workItems?.length
-                ? params.workItems.map((i) => ({
-                    agent_name: i.agentName, title: i.title,
-                    instructions: i.instructions, acceptance_criteria: i.acceptanceCriteria,
-                    declared_paths: i.declaredPaths ?? [], verification_profile: i.verificationProfile ?? "standard",
-                    dependencies: i.dependencies ?? [],
-                }))
-                : null,
+            // Kept in the RPC for old rows; councils no longer plan work items.
+            p_work_items: null,
             p_standby_seconds: params.standbySeconds ?? STANDBY_TTL_SECONDS,
         });
         if (error) throw new Error(error.message);
@@ -838,14 +538,14 @@ export async function proposeVerdict(params: {
 
 export async function acceptVerdict(sessionId: string): Promise<{
     changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string;
-    vaultPath?: string | null; workItems: CouncilWorkItemPlan[];
+    vaultPath?: string | null;
 }> {
     try {
         const { data, error } = await supabase.rpc("accept_council_verdict", { p_session_id: sessionId });
         if (error) throw new Error(error.message);
         const row = (data ?? { changed: false }) as {
             changed: boolean; status?: CouncilStatus; verdict?: string; closer?: string;
-            vault_path?: string | null; work_items?: WorkItemPlanRow[] | null;
+            vault_path?: string | null;
         };
         return {
             changed: row.changed,
@@ -853,15 +553,6 @@ export async function acceptVerdict(sessionId: string): Promise<{
             verdict: row.verdict,
             closer: row.closer,
             vaultPath: row.vault_path ?? null,
-            workItems: (row.work_items ?? []).map((i) => ({
-                agentName: String(i.agent_name ?? ""),
-                title: String(i.title ?? ""),
-                instructions: String(i.instructions ?? ""),
-                acceptanceCriteria: Array.isArray(i.acceptance_criteria) ? i.acceptance_criteria.map(String) : [],
-                declaredPaths: Array.isArray(i.declared_paths) ? i.declared_paths.map(String) : [],
-                verificationProfile: String(i.verification_profile ?? "standard"),
-                dependencies: Array.isArray(i.dependencies) ? i.dependencies.map(String) : [],
-            })),
         };
     } catch (err) {
         return throwWrite("acceptVerdict", err);
@@ -925,37 +616,6 @@ export async function listAwaitingOwnerCouncils(): Promise<CouncilSession[]> {
         .order("verdict_proposed_at", { ascending: false });
     if (error) {
         console.error("[Council] listAwaitingOwnerCouncils failed:", error.message);
-        return [];
-    }
-    return (data as unknown as SessionRow[]).map(mapSession);
-}
-
-/**
- * Councils that are closed but still have work running, which is the phase a
- * host restart lands in. Kept out of listOpenCouncils for the same reason as
- * awaiting_owner: the debate is over, so it must not hold a convene slot. The
- * page needs them because the campaign is the only part of a Council a host can
- * be handed back after it dies, and Adopt renders from the open list.
- */
-export async function listCampaignCouncils(): Promise<CouncilSession[]> {
-    const { data: campaigns, error: campaignError } = await supabase
-        .from("council_campaigns")
-        .select("session_id")
-        .eq("status", "running");
-    if (campaignError) {
-        console.error("[Council] listCampaignCouncils campaigns failed:", campaignError.message);
-        return [];
-    }
-    const ids = (campaigns ?? []).map((row) => (row as { session_id: string }).session_id);
-    if (ids.length === 0) return [];
-    const { data, error } = await supabase
-        .from("council_sessions")
-        .select(SESSION_COLUMNS)
-        .in("id", ids)
-        .eq("status", "closed")
-        .order("closed_at", { ascending: false });
-    if (error) {
-        console.error("[Council] listCampaignCouncils failed:", error.message);
         return [];
     }
     return (data as unknown as SessionRow[]).map(mapSession);
@@ -1057,9 +717,4 @@ export async function expireOverdueSessions(): Promise<CouncilSession[]> {
         return [];
     }
     return (data as unknown as SessionRow[]).map(mapSession);
-}
-
-export function isValidCouncilCode(code: string): boolean {
-    const body = code.trim().toUpperCase().replace(/^CN-/, "");
-    return body.length > 0 && [...body].every((c) => CODE_ALPHABET.includes(c));
 }

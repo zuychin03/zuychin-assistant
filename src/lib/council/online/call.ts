@@ -3,6 +3,7 @@ import { geminiClient } from "@/lib/gemini";
 import { cappedMaxTokens, getProviderApiKey, resolveMessagingEmbedding, type ResolvedChat } from "@/lib/ai/providers";
 import { classifyModelError, collectModelObservations, configureModelDataPolicy, observeGeminiClient } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
+import type { ModelDataClass } from "@/lib/ai/data-policy";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { REASONING_HEADROOM_TOKENS, SEAT_CALL_TIMEOUT_MS } from "./limits";
 
@@ -12,6 +13,8 @@ export type SeatCallResult =
 
 export type SeatCaller = (params: {
     resolved: ResolvedChat; system: string; user: string; maxTokens: number; freeOnly: boolean; signal?: AbortSignal;
+    /** Set when the prompt carries research sources; plain calls are personal only. */
+    classes?: ModelDataClass[];
 }) => Promise<SeatCallResult>;
 
 let storageWarned = false;
@@ -41,7 +44,7 @@ async function generate(resolved: ResolvedChat, system: string, user: string, ma
 }
 
 /** One text-only council call, recorded in model health under purpose "council". */
-export const callSeatModel: SeatCaller = async ({ resolved, system, user, maxTokens, freeOnly, signal }) => {
+export const callSeatModel: SeatCaller = async ({ resolved, system, user, maxTokens, freeOnly, signal, classes }) => {
     const started = Date.now();
     const timeout = AbortSignal.timeout(SEAT_CALL_TIMEOUT_MS);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -50,7 +53,7 @@ export const callSeatModel: SeatCaller = async ({ resolved, system, user, maxTok
         const collected = await collectModelObservations(async () => {
             configureModelDataPolicy(freeOnly);
             return generate(resolved, system, user, maxTokens, combined);
-        }, ["personal"]);
+        }, classes ?? ["personal"]);
         observations = collected.observations;
         const text = collected.value.trim();
         if (!text) return { ok: false, error: "empty reply", ms: Date.now() - started, retryable: true };

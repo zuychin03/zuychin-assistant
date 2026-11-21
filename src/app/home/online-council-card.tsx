@@ -6,6 +6,7 @@ import { Bot, ChevronDown, ChevronRight, ExternalLink, Play } from "lucide-react
 import { styles } from "./styles";
 import { Dropdown } from "@/components/dropdown";
 import type { CouncilProposal } from "@/lib/types";
+import { describeResearch, type ResearchSummary } from "@/lib/council/online/research";
 
 // An online proposal needs no host: the server runs the seats, so Start works
 // from any device and the debate carries on after this page closes.
@@ -24,6 +25,9 @@ export function OnlineProposalCard({ proposal }: { proposal: CouncilProposal }) 
     const [loadError, setLoadError] = useState("");
     const [models, setModels] = useState<Record<string, string>>(() => Object.fromEntries(proposal.participants.map((p) => [p.name, p.modelKey ?? ""])));
     const [allowPaid, setAllowPaid] = useState(proposal.allowPaid === true);
+    const [searchWeb, setSearchWeb] = useState(proposal.research?.web === true);
+    const [searchNotes, setSearchNotes] = useState(proposal.research?.notes === true);
+    const [research, setResearch] = useState<ResearchSummary | undefined>();
     const [openBrief, setOpenBrief] = useState(false);
     const [phase, setPhase] = useState<"ready" | "starting" | "started">("ready");
     const [code, setCode] = useState("");
@@ -55,6 +59,7 @@ export function OnlineProposalCard({ proposal }: { proposal: CouncilProposal }) 
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     topic: proposal.topic, brief: proposal.brief, closerName: proposal.closerName, maxRounds: proposal.maxRounds, allowPaid: paidAllowed,
+                    research: searchWeb || searchNotes ? { web: searchWeb, notes: searchNotes, query: proposal.research?.query } : undefined,
                     seats: proposal.participants.map((p) => ({
                         name: p.name, expertise: p.expertise, modelKey: models[p.name],
                         source: models[p.name] === p.modelKey ? p.source : "picker",
@@ -62,11 +67,12 @@ export function OnlineProposalCard({ proposal }: { proposal: CouncilProposal }) 
                 }),
             });
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "The online council could not be started.");
+            if (!res.ok) throw new Error(data.error || "The council could not be started.");
             setCode(data.code);
+            setResearch(data.research);
             setPhase("started");
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "The online council could not be started.");
+            setError(reason instanceof Error ? reason.message : "The council could not be started.");
             setPhase("ready");
         }
     };
@@ -78,7 +84,7 @@ export function OnlineProposalCard({ proposal }: { proposal: CouncilProposal }) 
         <div style={styles.proposalCard}>
             <div style={styles.proposalHead}>
                 <Bot size={15} color="var(--color-primary)" />
-                <span style={styles.proposalKicker}>Proposed online council</span>
+                <span style={styles.proposalKicker}>Proposed council</span>
                 <span style={styles.proposalType}>debate</span>
             </div>
 
@@ -112,19 +118,36 @@ export function OnlineProposalCard({ proposal }: { proposal: CouncilProposal }) 
                 Allow paid{options?.freeOnly ? " (Free only is on)" : ""}
             </label>
 
+            <div style={seatStyles.checks} role="group" aria-label="Research first">
+                <label style={seatStyles.check} title="One web search before round 1 (1 Tavily credit)">
+                    <input type="checkbox" checked={searchWeb} disabled={phase !== "ready"} onChange={(e) => setSearchWeb(e.target.checked)} />
+                    Search the web first
+                </label>
+                <label style={seatStyles.check} title="Sends matching notes to every seat's provider">
+                    <input type="checkbox" checked={searchNotes} disabled={phase !== "ready"} onChange={(e) => setSearchNotes(e.target.checked)} />
+                    Include my notes
+                </label>
+            </div>
+            {(searchWeb || searchNotes) && (
+                <p style={styles.proposalNote}>
+                    Searches for &ldquo;{proposal.research?.query || proposal.topic}&rdquo; before round 1.{searchNotes ? " Sends matching notes to every seat's provider." : ""}
+                </p>
+            )}
+
             {loadError && <p role="alert" style={styles.proposalError}>{loadError}</p>}
 
             {phase !== "started" && (
                 <button type="button" onClick={() => void start()} disabled={phase === "starting" || !options}
                     style={{ ...styles.proposalLaunch, minHeight: 44, ...(phase === "starting" || !options ? styles.proposalLaunchOff : {}) }}>
                     <Play size={13} />
-                    {phase === "starting" ? "Starting…" : "Start online council"}
+                    {phase === "starting" ? "Starting…" : "Start council"}
                 </button>
             )}
 
             {phase === "started" && code && (
                 <p style={styles.proposalNote}>
                     <strong style={styles.proposalCodeStrong}>{code}</strong> is running on the server and carries on if you close this page.{" "}
+                    {research ? `${describeResearch(research)} ` : ""}
                     <Link href="/council" style={styles.proposalLink}>Watch it <ExternalLink size={11} /></Link>
                 </p>
             )}
@@ -140,4 +163,5 @@ const seatStyles: Record<string, React.CSSProperties> = {
     head: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--color-text-primary)" },
     input: { flex: "0 0 auto", width: "100%", minHeight: 44, fontSize: 12 },
     check: { display: "inline-flex", alignItems: "center", gap: 6, minHeight: 44, fontSize: 12, color: "var(--color-text-muted)" },
+    checks: { display: "flex", flexWrap: "wrap", columnGap: 16 },
 };

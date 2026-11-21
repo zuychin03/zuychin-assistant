@@ -8,6 +8,7 @@ import {
 } from "./limits";
 import { parseSeatReply, parseVerdict, type SeatReply } from "./parse";
 import { seatPrompt, verdictPrompt, type SeatView } from "./prompt";
+import { RESEARCH_CLIENT_KEY, citedSourcesFooter, findResearchPack, parsePackSources, researchClasses, type ResearchPack } from "./research";
 import { seatRefusal } from "./seats";
 import type { SeatCaller } from "./call";
 import type { SeatModel } from "./store";
@@ -31,6 +32,8 @@ export interface OnlineDeps {
     listParticipants(sessionId: string): Promise<CouncilParticipant[]>;
     readTranscript(sessionId: string): Promise<CouncilMessage[]>;
     append(input: AppendInput): Promise<AppendOutcome>;
+    /** A message from the moderator seat, such as the research pack; no seat identity. */
+    postModerator(sessionId: string, body: string, clientKey: string): Promise<{ ok: boolean; reason?: string }>;
     join(sessionId: string, name: string): Promise<void>;
     leave(sessionId: string, name: string): Promise<void>;
     markAlive(sessionId: string, names: string[]): Promise<void>;
@@ -190,7 +193,7 @@ async function takeTurn(
     if (!failure && resolved) {
         const prompt = seatPrompt({ session, seat: { name: seat.name, expertise: seat.expertise }, seats: seatViews(run), messages, openToYou, blind });
         const result = await callWithRetry(deps, run, {
-            resolved, system: prompt.system, user: prompt.user, maxTokens: SEAT_MAX_TOKENS, freeOnly,
+            resolved, system: prompt.system, user: prompt.user, maxTokens: SEAT_MAX_TOKENS, freeOnly, classes: researchClasses(messages),
         }, (text) => parseSeatReply(text, ctx) !== null);
         if (result.ok) reply = parseSeatReply(result.text, ctx);
         else failure = result.error;
@@ -229,6 +232,8 @@ async function conclude(run: OnlineRun, deps: OnlineDeps, session: CouncilSessio
     const closer = run.seats.find((s) => s.name === session.closerName);
     const others = run.seats.filter((s) => s.name !== session.closerName && !left.has(s.name));
     const writers = [...(closer && !left.has(closer.name) ? [closer] : []), ...others].slice(0, 2);
+    const sources = parsePackSources(findResearchPack(messages)?.body);
+    const classes = researchClasses(messages);
     const reasons: string[] = [];
     for (const writer of writers) {
         const resolved = deps.resolve(writer.modelKey);
@@ -240,7 +245,7 @@ async function conclude(run: OnlineRun, deps: OnlineDeps, session: CouncilSessio
         const standInFor = writer.name === session.closerName ? undefined : session.closerName;
         const prompt = verdictPrompt({ session, writer: { name: writer.name, expertise: writer.expertise }, seats: seatViews(run), messages, standInFor });
         const result = await callWithRetry(deps, run, {
-            resolved, system: prompt.system, user: prompt.user, maxTokens: VERDICT_MAX_TOKENS, freeOnly,
+            resolved, system: prompt.system, user: prompt.user, maxTokens: VERDICT_MAX_TOKENS, freeOnly, classes,
         }, (text) => parseVerdict(text) !== null);
         if (run.lost) return;
         const parsed = result.ok ? parseVerdict(result.text) : null;
@@ -248,7 +253,8 @@ async function conclude(run: OnlineRun, deps: OnlineDeps, session: CouncilSessio
             reasons.push(`${writer.name}: ${result.ok ? "no verdict in the reply" : result.error}`);
             continue;
         }
-        const verdict = standInFor ? `*${standInFor} could not write the verdict, so ${writer.name} wrote it.*\n\n${parsed.verdict}` : parsed.verdict;
+        const cited = parsed.verdict + citedSourcesFooter(parsed.verdict, sources);
+        const verdict = standInFor ? `*${standInFor} could not write the verdict, so ${writer.name} wrote it.*\n\n${cited}` : cited;
         await deps.propose(session, verdict, parsed.openQuestions);
         return;
     }
@@ -370,4 +376,21 @@ export async function acquireOnlineRun(sessionId: string, deps: OnlineDeps, host
             return { name: p.name, expertise: p.expertise, modelKey: model.modelKey, source: model.source, tokenHash: null, executionId: null };
         }),
     };
+}
+
+/**
+ * Posts the research pack before round 1. A council still runs when this fails,
+ * so the failure comes back as a warning rather than an error.
+ */
+export async function postResearchPack(sessionId: string, pack: ResearchPack, deps: Pick<OnlineDeps, "postModerator" | "log">): Promise<string | null> {
+    if (!pack.body) return null;
+    try {
+        const posted = await deps.postModerator(sessionId, pack.body, RESEARCH_CLIENT_KEY);
+        if (posted.ok) return null;
+        deps.log(`${sessionId}: research pack refused (${posted.reason ?? "unknown"})`);
+        return `The sources could not be posted (${posted.reason ?? "unknown"}), so the council runs without them.`;
+    } catch (error) {
+        deps.log(`${sessionId}: research pack failed (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`);
+        return "The sources could not be posted, so the council runs without them.";
+    }
 }

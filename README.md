@@ -8,8 +8,8 @@ grounding. It can schedule its own recurring tasks, watch the inbox for bills an
 and remember durable facts about you across conversations. It installs as a PWA with push
 notifications, holds hands-free voice conversations (replies are spoken back), and can decide
 on its own when something is worth reaching out about. The web app supports passkey sign-in
-with device biometrics, password plus TOTP recovery, and a shared council for collaborating
-with external coding agents. Its second-brain wiki vault comes
+with device biometrics, password plus TOTP recovery, and councils where chat models
+debate a question. Its second-brain wiki vault comes
 with an interactive Obsidian-style 3D graph view where pages and links can be inspected,
 edited and deleted in place.
 
@@ -41,14 +41,11 @@ edited and deleted in place.
 - Passkey-first PWA sign-in: WebAuthn device biometrics, PIN or a hardware security key with
   short-lived signed sessions; password confirmation protects enrolment and TOTP provides a
   recovery path
-- Council workspace: ask Zuychin for a council and launch it from a card in the chat, watch it live
-  at `/council`, and let a local ACP host start the agents, push each turn and mediate their file access
-- Council supervision: the host restarts a seat whose turn goes quiet for 15 minutes or runs past
-  90, up to twice, then blocks its task and sends a notice. During a campaign, a "Note to agents"
-  panel on `/council` reaches all seats or one, delivered once at the seat's next heartbeat or
-  prompt, and a blocked task can be requeued, which restarts its stalled seat
-- Online councils: a debate between chat models from the selectable list, run on the server with no
-  host, so it can be started from a phone or Telegram and keeps going after the page closes
+- Councils: a debate between chat models from the selectable list, run on the server, so it
+  can be started from a card in the chat, a phone or Telegram and keeps going after the page closes.
+  Watch it live at `/council`, pause it, and accept its verdict or send it back for more rounds.
+  **Research first** runs one web search (and, if ticked, a search of your notes) before round 1,
+  so seats argue from cited sources. Councils of coding agents on your own machine have moved to Converoom
 - Per-agent credentials: the dashboard's **Agents** panel mints a setup brief for each coding agent,
   at a read-only, notes, full, or full-plus-convene access level you choose. The brief carries a short-lived claim rather
   than a key, so nothing durable travels through the clipboard. Every key is tracked, shows its last
@@ -246,7 +243,7 @@ edited and deleted in place.
 | 3D graph | 3d-force-graph (three.js + d3-force-3d), three (sprite stars, planet bodies, bloom), HTML label overlay |
 | Integrations | Google Calendar API, Gmail API |
 | Messaging | Discord.js, Telegram Bot API |
-| Agent council | Agent Client Protocol (`@agentclientprotocol/sdk`) over stdio, `ws` loopback control channel, git worktree isolation |
+| Councils | Server-run debate loop over the provider chat APIs, fenced by a database host lease |
 | Export | docx, pdfkit |
 | Hosting | Self-hosted standalone Next server (web/API) and always-on Node processes (Discord bot, optional speech-to-text service) |
 
@@ -341,10 +338,8 @@ Optional auth, integrations, channels and cron:
 | `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
 | `STT_SERVICE_URL` / `STT_SERVICE_TOKEN` | On-box speech-to-text service, for example `http://127.0.0.1:3010`, and its bearer token (the service's `STT_TOKEN`). Either unset = voice turns send the audio to Gemini, and voice stays off in Free only. See [Speech-to-text service](#speech-to-text-service-optional) |
 | `TTS_SERVICE_URL` / `TTS_SERVICE_TOKEN` | On-box text-to-speech service, for example `http://127.0.0.1:3011`, and its bearer token (the service's `TTS_TOKEN`). Either unset = replies are spoken by Gemini. See [Text-to-speech service](#text-to-speech-service-optional) |
-| `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims and seat briefs use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
-| `MCP_COUNCIL_HOST_KEY` | Dedicated Council V3 host bearer; lease/delivery/verification only, never give it to an agent |
-| `COUNCIL_ONLINE_RESUME` | `on` or `off`. Whether this process picks up online councils whose runner stopped, such as after a restart. Unset means on in production and off in development, so a dev server sharing the database never takes a council from the box |
-| `COUNCIL_V2_ASSERTED_IDENTITY` | Leave `false`. `true` lets an owner-scoped key act for a named agent in councils with no protocol version; V3 always needs the seat's own credential |
+| `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
+| `COUNCIL_ONLINE_RESUME` | `on` or `off`. Whether this process picks up councils whose runner stopped, such as after a restart. Unset means on in production and off in development, so a dev server sharing the database never takes a council from the box |
 | `GITHUB_VAULT_REPO` | Second-brain vault repo as `owner/repo` (private GitHub repo) |
 | `GITHUB_VAULT_TOKEN` | Fine-grained PAT scoped to that one repo, Contents read/write |
 | `GITHUB_VAULT_BRANCH` | Vault branch (default `main`) |
@@ -411,11 +406,11 @@ tags, and deletes the four retired OpenCode free-model rows. On an existing proj
 [`scripts/migrations/v7-provider-keys.sql`](scripts/migrations/v7-provider-keys.sql); it is safe
 to run again. Without it, env keys work as before and `/admin` says which file to apply.
 
-Online councils record their model calls in model health under a `council` purpose. The
+Councils record their model calls in model health under a `council` purpose. The
 model awareness file and `supabase-setup.sql` already list it; if you applied model awareness
 before it was added, run
 [`scripts/migrations/v7-online-council.sql`](scripts/migrations/v7-online-council.sql), which
-only widens that purpose check and is safe to run again. Without it online councils still run,
+only widens that purpose check and is safe to run again. Without it councils still run,
 and their calls are just not stored in model health.
 
 The `-- ===== V7 channel threads =====` block adds `assistant_channel_updates` (Telegram update
@@ -430,12 +425,8 @@ safe to run again, and it must run again after any re-run of `v6-scheduled-actio
 it, Telegram keeps one shared history, approvals send no buttons, and email and calendar
 changes asked for in a Telegram chat are refused.
 
-The `-- ===== Council owner notes =====` block adds `council_owner_notes` (notes the owner sends
-to campaign seats, server-only) and the functions behind sending, delivering each note once and
-requeueing a blocked task. On an existing project, run
-[`scripts/migrations/council-owner-notes.sql`](scripts/migrations/council-owner-notes.sql); it is
-safe to run again. Without it, the notes panel and Requeue say which file to apply, and the
-watchdog still runs.
+The `-- ===== Council owner notes =====` block holds `council_owner_notes`, left from the retired
+coding-agent campaigns. Nothing reads it now, and it stays until the old Council tables are dropped.
 
 
 ### Web authentication
@@ -546,23 +537,17 @@ npm run dev
 | POST / DELETE | `/api/auth` | Login / logout |
 | GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
 | GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
-| GET | `/api/council` | Open councils and participant rosters for the council dashboard |
+| GET | `/api/council` | Open councils, those waiting on you, and recent closed ones for the council dashboard |
 | GET | `/api/council/[code]` | One council's status and transcript for the council dashboard; `online` names each seat's model and the runner state |
-| POST | `/api/council/online` | Start an online council: `{ topic, brief, seats: [{ modelKey, name?, expertise? }], closerName? or closerIndex?, maxRounds?, allowPaid? }`. Returns once the seats are recorded; the debate runs in the server process |
+| POST | `/api/council/online` | Start a council: `{ topic, brief, seats: [{ modelKey, name?, expertise? }], closerName? or closerIndex?, maxRounds?, allowPaid?, research?: { web?, notes?, query? } }`. Returns once the seats are recorded, with `research: { web, notes, vault, problems }` when research ran; the debate runs in the server process |
 | GET | `/api/council/online/options` | Chat models a seat may use, Free only, round limits and an auto-fill suggestion (`?purpose=`) |
 | GET/POST | `/api/council/[code]/owner` | The owner's private thread into a running council / send a turn (never exposed over MCP) |
 | POST | `/api/council/[code]/decide` | Accept the result or send the council back to work while it awaits the owner |
 | POST | `/api/council/[code]/pause` | Pause or resume a council (`{ resume: true }`) |
-| GET/POST/DELETE | `/api/council/[code]/seat-key` | List / reissue / revoke a seat's credential |
-| POST | `/api/council/[code]/integrator` | Nominate the agent that assembles accepted work |
 | GET | `/api/council/[code]/executions` | Paged execution history (`?cursor=`) |
-| GET | `/api/council/[code]/integration-attempts` | Integration attempts, with `/[attemptId]` and `/[attemptId]/verification/[runId]` for one attempt and one verification run |
-| GET/POST | `/api/council/[code]/notes` | Owner notes sent during a campaign, with each seat's delivery state / send one (`{ text, agent? }`) |
-| POST | `/api/council/[code]/work/[itemId]/requeue` | Put a blocked task back in the queue and reopen a blocked campaign |
-| GET | `/api/council/runtime-inventory` | Paged list of councils with their host generation, policy version and whether they have execution history (`?cursor=`) |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange (signed in only) |
 | POST | `/api/telegram/webhook` | Telegram bot webhook (secret header, chat allowlist, owner sender), messages and approval taps |
-| GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client, Council seat or dedicated host bearer) |
+| GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client key) |
 | POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
 | GET/POST/DELETE | `/api/agents` | Owner-only: list / add / remove agent clients |
 | POST | `/api/agents/claim` | Owner-only: mint a setup claim and brief at a chosen access level |
@@ -826,8 +811,8 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `vault_delete` | Permanently delete a wiki page + every reference to it, in one commit |
 | `vault_lint` | Vault health check / auto-fix curator |
 | `model_status` | Read-only model health: the last model check, failing, missing, unreliable and slow models, drafts waiting for review, and the best free picks for a purpose |
-| `council_propose` | Draft a council and render a Launch card in chat; creates nothing until you click. `online: true` drafts model seats instead, with a Start card |
-| `council_convene` | Open a council now and return a paste-in kickoff block per agent. `online: true` starts an online council straight away (Telegram, Discord) |
+| `council_propose` | Draft a council in the web chat and render a Start card; creates nothing until you click. Optional `research` (`web`, `notes`, `query`) |
+| `council_convene` | Start a council straight away and return its code (Telegram, Discord). Optional `research` as above |
 | `council_status` | How the open councils are going, or one council's state and recent transcript; names each online seat's model |
 | `council_close` | Force a council closed and file the outcome, writing a verdict if none was given |
 
@@ -848,8 +833,7 @@ server at **`/api/mcp/mcp`** (stateless Streamable HTTP, legacy SSE at `/api/mcp
 your **other AI agents and chatbots** can share the knowledge base:
 
 Access levels: **read** = any key. **notes** = a notes-level or full key. **vault** = a full key.
-**owner** = the owner's key or the host credential. **council** = the owner's key or a seat key for
-that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only.
+Councils are not on this server: they start from the app, the chat or Telegram.
 
 | MCP tool | Access | What it does |
 |----------|--------|--------------|
@@ -863,63 +847,23 @@ that council and that name. **host** = the dedicated `MCP_COUNCIL_HOST_KEY` only
 | `delete_note` | notes | Remove a saved note (never touches conversation history) |
 | `vault_ingest` | vault | File durable knowledge (study notes, project docs, plans) through the full vault pipeline |
 | `vault_write` | vault | Direct vault page create/overwrite with complete Markdown |
-| `council_transcript` | read | Read a council transcript without participating (the observer's tool) |
-| `council_work_status` | read | Campaign progress and per-agent task state, without claiming work |
-| `council_convene` | owner | Open a council and get one ready-to-paste kickoff block per participant |
-| `council_join` | council | Join a council you were invited to and receive the rulebook |
-| `council_speak` | council | Say one thing, then block until someone replies (the fused primary tool) |
-| `council_wait` | council | Block up to 30 s for a peer to speak; an empty result is normal, not an error |
-| `council_pass` | council | Nothing to add this round, or leave the council for good |
-| `council_conclude` | council | Closer-only: write the verdict, optionally create assigned implementation tasks, mirror to Discord and file a quarantined vault page |
-| `council_work_next` | council | Claim or resume the caller's assigned implementation task, with its recorded progress and any owner notes |
-| `council_work_heartbeat` | council | Record meaningful progress on an active task; the reply carries any owner notes |
-| `council_work_complete` | council | Submit a committed, verified task for closer review |
-| `council_work_block` | council | Record a human or external dependency blocker |
-| `council_work_review` | council | Closer-only: accept a task, subject to the exact-commit gate, or return it with feedback |
-| `council_open` | host | Open councils and their rosters as JSON, so an idle host can tell an unclaimed seat from a hand-driven one |
-| `council_dispatch` | host | Non-blocking multi-agent read returning JSON plus each owned agent's rendered turn |
-| `council_host_claim` | host | Take the session's host lease and receive its epoch |
-| `council_host_renew` | host | Extend a lease the caller still holds at its current epoch |
-| `council_host_release` | host | Give the lease up so a successor can claim it cleanly |
-| `council_host_issue_seat` | host | Issue a seat credential for a roster seat, fenced by the lease epoch |
-| `council_delivery_state` | host | Prepare, send, fail or acknowledge a durable turn delivery |
-| `council_execution_start` | host | Open an execution record pinning the effective model, capabilities and base SHA |
-| `council_execution_stop` | host | Close an execution record with its outcome |
-| `council_work_unverified` | host | List submitted work items still waiting on host evidence |
-| `council_work_verify` | host | Record exact-commit verification evidence for one item |
-| `council_work_stall` | host | Block a stuck seat's task after the watchdog gives up, and send a notice |
-| `council_owner_notes_take` | host | Take one seat's undelivered owner notes for its next campaign prompt |
-| `council_integration_manifest` | host | Freeze the accepted-SHA manifest once every item is verified |
-| `council_integration_begin` | host | Capture an immutable integration attempt and its nominated integrator |
-| `council_integration_finish` | host | Finalise an attempt with exact-tip checks and redacted command receipts |
-| `council_integration_report` | host | Legacy summary reporting, disabled after a campaign starts recorded attempts |
 
 ### zuychin-council
 
-The debate tools plus six `council_work_*` tools make a **bounded decision room** and a
-**durable implementation campaign** for your external coding agents. Ask the assistant for a
-council and it drafts one: a card appears under its reply with a **Launch** button that starts
-the whole thing on the local host. Nothing exists until you click - no session, no expiry, no
-slot. For agents in desktop apps or on another machine, ask it to convene instead and paste the
-generated block into each terminal. Either way the verdict lands in Discord `#coworking`.
+A council is a bounded debate between chat models, run by the server. Councils of coding agents
+on your own machine have moved to Converoom; old ones here stay readable as transcript and
+verdict.
 
-An MCP server cannot wake an idle agent, but an agent inside its own loop is already calling
-tools - so `council_speak` posts **and then blocks** for up to 30 s. One tool call is one turn,
-handoff is sub-second, and it runs on stateless serverless with no daemon. Ordering is total
-per session (compare-and-swap on one row); deadlock is covered by a quorum gate, an 8 s
-silence election, a 50 s floor TTL, an SQL-derived escalation ladder, hard caps and a
-5-minute sweep cron. Agents driven by the local ACP host skip the long poll entirely - the host
-has no per-tool-call timeout, so it pushes their turns instead - but they go through the same
-server-side ordering, which is what lets pushed and hand-attached agents share one council.
+#### Running a council
 
-#### Online councils
-
-An online council is a debate whose seats are chat models from the selectable list. The server
+A council is a debate whose seats are chat models from the selectable list. The server
 runs it, so nothing has to run on your machine and it carries on when you close the page. Start
-one from the **Online council** panel on `/council`, or ask the assistant for an online council:
+one from the **Start a council** panel on `/council`, or ask the assistant for a council:
 in the web chat it drafts a card with a **Start** button, and in Telegram or Discord it starts
 straight away. **Auto-fill** picks free models from different vendors for a purpose (reasoning
-by default), and each seat's model can be changed before starting.
+by default), and each seat's model can be changed before starting. Each seat's **Preset** picker
+fills its angle from a short list (Champion, Stress tester, Sceptic, Security reviewer, Cost
+reviewer and others); the angle stays editable.
 
 - Round 1 openings are written blind and at the same time. Later rounds take turns, one post per
   seat, with the opener rotating. After each round a moderator note names what is owed and what
@@ -930,8 +874,17 @@ by default), and each seat's model can be changed before starting.
   seat whose model is removed from the list leaves at its next turn.
 - Paid models need **Allow paid** ticked for that council, and Free only always wins, checked again
   every turn. Auto-fill only picks free models.
-- Seats see only the brief and the transcript: no tools, files or knowledge base. Calls are
-  recorded in model health under the `council` purpose.
+- Seats see only the brief, the transcript and any research sources: no tools or files. Calls
+  are recorded in model health under the `council` purpose.
+- **Research first** (off by default): **Search the web** runs one Tavily basic search (1 credit)
+  and **Include my notes** searches saved notes, plus up to 3 vault pages unless Free only is on.
+  Chat messages are never included. The query defaults to the topic; **Search for** sharpens it.
+  The server searches once before round 1 and posts the results as one moderator message,
+  labelled `sources` in the transcript. Every seat and the closer get it pinned in their prompt
+  as numbered sources (`[W1]`, `[N1]`, `[V1]`) and cite them by marker; code appends the links
+  for the cited markers under the verdict, so a model never writes a URL. There is no Gemini
+  fallback: if Tavily fails or is out of credits, the council runs anyway and says so. Notes go
+  to every seat's provider, so that tick is yours to choose.
 - The server holds the council's host lease. After a restart or deploy, a scan in the server
   process (and the council sweep as a backstop) picks the council up again once the old lease
   lapses, within about two minutes. Set `COUNCIL_ONLINE_RESUME` to change that.
@@ -941,11 +894,12 @@ Council output is filed to the vault as `trust: untrusted`, `status: suggested` 
 human-reviewed material in the assistant's own recall. Promote it yourself with `vault_ingest`
 if it earns it. Council messages are never embedded or indexed anywhere else.
 
-The council and campaign tables live in the `-- ===== Council wave =====`,
+The council tables live in the `-- ===== Council wave =====`,
 `-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`,
 `-- ===== Council V3 wave =====` and `-- ===== Council V3.5 wave =====` blocks at the bottom of
-`supabase-setup.sql`; run the full idempotent script in the Supabase SQL Editor before first use.
-For existing installations, follow the upgrade note below.
+`supabase-setup.sql`. The campaign and host blocks stay because old councils and the shared
+functions still use their tables. Run the full idempotent script in the Supabase SQL Editor before
+first use. For existing installations, follow the upgrade notes below.
 
 **Paused Council expiry.** A Council expires after seven consecutive paused days, retaining its
 transcript and pause history. Resuming before that deadline restores the running clocks; a later
@@ -957,44 +911,16 @@ Before deploying this policy to an existing installation, apply the complete
 through the Supabase SQL Editor. It updates the pause/resume functions without changing the schema
 or existing records. Fresh installations receive the same functions from `supabase-setup.sql`.
 Run `npm run council:pause:test` for the offline expiry, resume and transcript-retention checks.
-The updated host requires a server advertising `council_dispatch.statusOnly`; deploy the server
-before restarting the host.
 
-For execution attribution, apply the complete
-[`scripts/migrations/council-execution-attribution.sql`](scripts/migrations/council-execution-attribution.sql)
-after earlier Council migrations and before deploying the matching server. Restart the host only
-after the server advertises `bindExecution` on seat issuance and `seatTokenHash` on execution
-registration. The host binds a fresh seat credential to each run before prompting its adapter.
-Messages and submitted commits retain that run's identity through replacement runs, exact-SHA
-verification and the frozen integration manifest. Historical messages and legacy credentials remain
-explicitly unattributed. Run `npm run council:attribution:test` for offline database, credential,
-evidence-reader and component regressions. These tests do not replace native or hosted acceptance.
-
-For the owner review package, apply the complete
-[`scripts/migrations/council-owner-merge-package.sql`](scripts/migrations/council-owner-merge-package.sql)
-after execution attribution and before deploying the matching server. New hosts require the
-`council_integration_begin` and `council_integration_finish` tools before starting integration.
-Each attempt retains its frozen manifest digest, accepted commits, exact verification references,
-integration receipts, changed paths and protected-branch observations. Earlier attempts remain
-reviewable; the owner can copy an exact-SHA comparison command and decide how to merge locally.
-Legacy command arguments and output are withheld when no redaction version was recorded.
-Run `npm run council:integration:test` for the offline attempt, host, Git, privacy and owner UI checks.
-
-**Execution policy boundary.** After the owner review migration, apply the complete
-[`council-execution-policy.sql`](scripts/migrations/council-execution-policy.sql), followed by
-[`council-runtime-inventory.sql`](scripts/migrations/council-runtime-inventory.sql), before deploying
-the matching server. A version-aware host requires the exact supported `policyVersion` in both
-the lease-claim and execution-start schemas. The first acknowledged execution pins the Council's
-host generation and policy. Later starts and reconnects must match that boundary. Existing runs
-with unrecorded policy stay unknown and cannot be adopted by a version-aware host in place.
-The owner-only `/api/council/runtime-inventory` endpoint lists active boundaries in bounded pages;
-it preserves unknown values and includes unfinished work after debate closure.
-
-`npm run council:contracts:test` checks strict V1 envelopes, a language-neutral fixture corpus,
-the reference authorisation matrix, lifecycle replays, immutable policy evidence and actual MCP
-handler parity. Council wire protocol remains 3; the native supervisor has its own V1 contract.
-The pure reference evaluator is a conformance target for future hosts, not a deployed permission
-broker. Offline fixtures do not establish Rust parity, native acceptance or database concurrency.
+An existing installation also needs these complete migrations, in this order:
+[`council-execution-attribution.sql`](scripts/migrations/council-execution-attribution.sql),
+[`council-owner-merge-package.sql`](scripts/migrations/council-owner-merge-package.sql),
+[`council-execution-policy.sql`](scripts/migrations/council-execution-policy.sql) and
+[`council-runtime-inventory.sql`](scripts/migrations/council-runtime-inventory.sql). Online seats
+depend on the first: each seat gets a credential bound to its run, and its messages keep that run's
+identity. Historical messages stay explicitly unattributed. Fresh installations get all four from
+`supabase-setup.sql`. `npm run council:attribution:test` covers seat identity, execution evidence
+and the evidence components offline.
 
 **Run the whole script or a complete standalone migration, never an extracted fragment.**
 Several functions are defined more than once across the
@@ -1012,8 +938,7 @@ Confirm the migration succeeded and the RPC is available through the Supabase RE
 before deployment. Fresh installations receive the same migration in `supabase-setup.sql`.
 Before upgrading, issue and verify a named client key for every knowledge caller, including
 other machines and ad hoc scripts. This version rejects the retired shared bearers even if
-`MCP_API_KEY` or `MCP_API_KEY_READONLY` remains configured on the server. The dedicated
-`MCP_COUNCIL_HOST_KEY` remains separate.
+`MCP_API_KEY` or `MCP_API_KEY_READONLY` remains configured on the server.
 
 Knowledge tools pin the default embedding partition and no user filter, so external agents
 read and write the **same global store** the assistant uses. Vault writes pin the vault's
@@ -1026,18 +951,16 @@ key: the agent exchanges the claim at `POST /api/agent/claim` and writes its MCP
 the real key already in place. Every key is tracked, shows its last use, and is revocable on its own
 without touching any other agent.
 
-Four access levels, chosen when the claim is minted and not raisable by the agent:
+Three access levels, chosen when the claim is minted and not raisable by the agent:
 
 | Level | Grants |
 |---|---|
 | Read-only | search and read tools only |
 | Notes read/write | adds `save_note`, `update_note`, `delete_note` |
 | Full read/write | adds `vault_ingest`, `vault_write` |
-| Full + convene councils | adds `council:owner`: convene, list and conclude |
 
-Only the last convenes, and it is opt-in per client: a read, notes or full key still cannot. Even
-that level cannot *participate* in a Council - asserting a seat needs a seat credential, which the
-host issues per council.
+No key can convene or join a council. Keys issued at the old council level still work as full
+read/write; their council scope no longer opens anything.
 
 Setup:
 
@@ -1054,188 +977,6 @@ Setup:
 For local inspection, use the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
 "Streamable HTTP") with a separate named client. Anything saved through `save_note` later
 surfaces in the assistant's own context, so choose write access deliberately.
-
-### Run a council on the local ACP host
-
-`scripts/council-host.mts` is a long-lived local process that owns the agents. Zuychin is
-serverless and cannot start anything on your machine, and a browser page has no `child_process`,
-so the host is the only place the Agent Client Protocol client can live. It holds **one ACP
-session per agent for the whole council** (so agents keep their context between turns), checks
-ACP client file and terminal requests against that agent's worktree, pushes each turn with
-`session/prompt`, and serves a loopback control channel to `/council`.
-An adapter's own file or shell tools can bypass those client callbacks. See the
-[tested adapter compatibility](scripts/COUNCIL_ADAPTER_COMPATIBILITY.md) before enabling an adapter.
-
-Setup:
-
-1. Copy `scripts/council-agents.example.json` to `scripts/council-agents.json`. It is gitignored
-   because it describes local commands. **The host takes the command only from this file, never
-   from the council record**, so convening a council can never choose what runs on your machine.
-2. `agents` holds one adapter per provider, each with a `mode`. `acp` means the host drives it;
-   `shell` is the old one-process-per-turn behaviour. Verify the ACP entry point against your
-   installed version - `claude` itself has no `--acp` flag, so `claude-code` uses the ACP adapter
-   (`npx -y @agentclientprotocol/claude-agent-acp@0.86.0`). `scripts/council-acp-probe.mts` checks a candidate
-   adapter's handshake, streaming and client callbacks. For MCP visibility, create a separate
-   **Read-only** named client for the ACP probe in `/agents`, then store its redeemed key as
-   `COUNCIL_PROBE_MCP_KEY`. The probe accepts only a complete `zck_` key and has no shared-key or
-   host-key fallback. Choose the intended destination explicitly:
-   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --prompt --mcp-url http://localhost:3000/api/mcp/mcp --agent codex`.
-   `--mcp-url` accepts HTTPS or loopback HTTP without credentials, a query or a fragment. The
-   probe does not take a credential destination from `COUNCIL_MCP_URL` or the adapter config.
-   It makes a bounded authenticated `tools/list` check, then sends the key to the adapter only
-   in the ACP `session/new` headers. The model must report a verified knowledge read tool in the
-   requested format; missing or ambiguous replies and protocol failures return a nonzero exit.
-   This checks tool visibility as reported by the model, without invoking knowledge or Council
-   mutation tools. `--prompt` and `--edit` can spend vendor tokens.
-   Discovery and standalone `--models` omit MCP entirely. `--edit` also omits MCP unless `--mcp-url` is
-   explicitly supplied. Adapter environments retain OS/runtime and vendor CLI configuration,
-   while application credentials and Node preload options are stripped after config overrides.
-   Only explicit adapter overrides can supply supported vendor credentials (`OPENAI_API_KEY`,
-   `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). Vendor login/config files remain accessible;
-   environment filtering is not an operating-system sandbox.
-3. `instances` gives unique participant names pointing at those adapters, for example `codex-1`
-   and `codex-2` both on `codex`, or three Claude instances on `claude-code`. Each may carry an
-   `allowedModels` / `allowedReasoningEfforts` allowlist, which is what `/council` offers per seat.
-   Populate it only with IDs the adapter actually advertises - the host refuses an unadvertised
-   model rather than falling back - and get them from
-   `npx tsx --env-file=.env.local scripts/council-acp-probe.mts --models --agent codex`, which
-   prints a paste-ready block. Test an advertised choice without sending a prompt using
-   `npx tsx scripts/council-acp-probe.mts --set-model <id> --set-reasoning <effort> --agent codex`.
-   Both selection flags are optional and require adapter confirmation before any explicit prompt.
-   Claude adapter `0.16.2` reports legacy model identifiers and acknowledges `session/set_model`.
-   That acknowledgement is recorded separately from stable configuration readback. An empty
-   instance allowlist leaves the model at its adapter default.
-4. Set a separate random `MCP_COUNCIL_HOST_KEY` in the app and local host environment. The host
-   key has no knowledge/vault authority and is never passed to an adapter. Each adapter instead
-   receives a short-lived credential for its one Council seat.
-5. Run the full `supabase-setup.sql`, including the final `-- ===== Council V3 wave =====` and
-   `-- ===== Council V3.5 wave =====` blocks, then `npm run council:schema:check`.
-6. For model selection, put only adapter-advertised IDs in an instance's `allowedModels` and
-   `allowedReasoningEfforts`; optional defaults must be members of those lists.
-
-**Where the host points.** `mcpUrl` in `council-agents.json` decides which app instance serves the
-council. Pointed at the deployed URL, a council needs no local dev server at all and `/council` on
-the deployed site shows it; pointed at `http://localhost:3000/api/mcp/mcp`, you get local changes but
-must keep `npm run dev` running. Both hit the same Supabase, so the councils are the same councils.
-
-**Desktop shell (Windows preview).** The Tauri shell can start, stop and restart its own local
-host while loading the deployed web app. See [desktop setup and recovery](src-tauri/README.md).
-It uses the existing supervision contract and leaves separately launched hosts alone. It runs as a
-single instance: a second launch brings the open window to the front.
-
-**Council CI.** Offline process tests and their harness guards run on Linux and Windows. Database
-checks create a disposable Supabase stack inside the GitHub runner, apply the full setup SQL and
-require mid-turn crash recovery against a temporary local Next server. No hosted test project or
-`TEST_*` secrets are needed. The job removes its stack and temporary credentials after execution.
-See the [database CI guide](scripts/council-ci-setup.md) for isolation and exact-commit acceptance.
-
-**Running the host.** `scripts/council-host-start.cmd` starts one for this checkout, deriving every
-path from its own location. An idle host is a single ~88 MB node process with two timers that return
-immediately, so leaving it running costs approximately nothing. To have it always available, drop a
-one-line shim in your Startup folder that runs that script hidden:
-
-```bash
-node --no-warnings --import tsx --env-file=.env.local scripts/council-host.mts --repo .
-```
-
-Every argument is forwarded to the host, so a Startup shim can pin where it starts and what its
-seats default to without editing `council-agents.json`:
-
-```bash
-scripts/council-host-start.cmd --repo /path/to/other-repo --base develop
-```
-
-`--repo` only sets where the host *starts*. Which repos a council may be convened against is
-`host.repos` in `council-agents.json`, because that list is what `/council` may choose from: the
-page sends a repo **name**, never a path, and adopting a council recorded against an unlisted repo
-is refused for the same reason. `--model` and `--reasoning` set a default for seats whose
-`allowedModels` already contain the value and are ignored elsewhere, since one flag cannot name a
-valid model for every provider at once.
-
-Convene from `/council`, which picks the repo, the base branch, the council type and a model per
-seat. The type is the discussion template: `debate` for decisions and dissent, `code` for
-implementation and test planning, `research` for evidence and confidence, `audit` for ranked risk
-findings, or `debug` for reproduction and root-cause work. The host keeps running after a council
-closes; stop it from `/council`.
-
-**Isolation is enforced, not conventional.** Each agent gets its own git worktree and branch, and
-every `fs/read_text_file`, `fs/write_text_file` and permission request is checked against it with
-`path.relative` over `realpath`, so neither a sibling directory sharing the same prefix nor a
-symlink planted inside the tree gets out. Terminals are created with `cwd` forced to the worktree.
-Anything outside it prompts you in `/council` and is **denied** if nobody answers within 120 s.
-
-**Turn dispatch.** The host holds a 45-second database lease, renews it every 15 seconds, polls
-`council_dispatch` every 1.5 s and pushes a rendered turn to any
-agent with something to read or the floor. Ordering, quorum and floor election all stay in
-Postgres: the host reads a tick and calls the same server-side election every long-polling agent
-does, and computes no floor of its own. Each prompt has a durable delivery ID and hash; the cursor
-advances only when the current lease epoch acknowledges that exact delivery. Killing the host
-mid-turn redelivers the same ID, while a stale host is fenced from further writes. Agents it owns
-are marked `dispatch_mode`, which makes `council_wait` return
-immediately for them and `council_speak` stop blocking, so an agent can never be driven twice.
-
-`/council` shows the connection state, each agent's worktree, branch and live ACP activity, the
-permission queue, and a convene form. It reaches the host at `127.0.0.1:8787-8791` with a token
-you pair once using the code the host prints; requests without it get 401, and only allow-listed
-origins are answered. The token and code are reused from `../.council-host/host-<port>.json` across
-restarts, so a host that starts hidden at login does not silently invalidate your pairing - delete
-that file to rotate them. From `localhost:3000` there is no browser permission prompt; from a
-deployed origin Chrome raises its Local Network Access prompt, and denying it leaves the page in
-observe-only mode. A phone is observe-only by definition - there is no host on it.
-
-An open council the host did not create gets an **Adopt** button in the same rail, which hands it
-over on the spot. Set `"autoAdopt": true` under `host` in `council-agents.json` to have an idle
-host do that unprompted, which is what makes a council convened from a phone actually start. It is
-off by default and deliberately stricter than the button: it claims a council only when it can run
-*every* live participant, since a half-adopted council leaves seats nobody is driving and nobody
-watching. Authenticated `/health` also lists the instances this machine can run, which is how the
-chat proposal card knows a name will not fail at spawn.
-
-Agents whose vendor has no ACP support yet (antigravity today) stay on `shell` mode: they get a
-worktree and their turns still work, but through the old long-poll with no permission mediation
-and no streamed activity. The adapter's `warn` string is surfaced in `/council` so a degraded
-participant is visible rather than silently different.
-
-When the closer includes `workItems` in `council_conclude`, each agent claims only its assigned
-work from `council_work_next`. It heartbeats progress, commits and verifies its change, then stops
-at `awaiting_review`; the closer accepts it with `council_work_review` or sends it back with
-feedback. The closer can accept an item only after the host checks its exact submitted SHA against
-the Council's frozen base in a clean detached checkout using
-`.zuychin/council-verification.json`. Passing receipts, output digests, branch identity and the
-accepted SHA are immutable evidence. When all items pass, the database freezes an ordered
-accepted-commit manifest. The host either assembles those exact SHAs deterministically or gives a
-nominated integrator a dedicated integration worktree, then independently verifies the resulting
-tip. No automated path updates `main`.
-
-The host watches every ACP turn. A turn with no update for `turnIdleMs` (15 minutes) or running
-past `turnMaxMs` (90 minutes), both set per adapter, is cancelled and the seat restarted with a
-fresh session, up to `watchdogRestarts` (2) times. A running host terminal pauses the idle clock.
-After the last restart the host calls `council_work_stall`, which blocks the seat's task and
-sends a notice; **Requeue** on `/council` puts the task back and the host restarts the seat. Owner
-notes from the "Note to agents" panel (apply
-[`scripts/migrations/council-owner-notes.sql`](scripts/migrations/council-owner-notes.sql) first)
-reach a seat once, in its next heartbeat, `council_work_next` reply or campaign prompt.
-
-If the host or the machine restarts, reattach to a running council - the agents get fresh sessions,
-keep their worktrees, and are redelivered whatever they never acknowledged:
-
-```bash
-npx tsx --env-file=.env.local scripts/council-host.mts --repo /path/to/repo --attach CN-XXXX
-```
-
-An agent on **another machine** needs none of this: no host, no ACP adapter, no checkout of this
-repo. It adds the MCP server itself and joins by hand with a revocable key bound to its one Council
-seat. `/council` can issue that seat key and has a **Show brief** panel holding the setup steps.
-Give that seat a name this machine has *not* configured (`codex-remote`, `workstation-1`), or the
-local host's claim rule takes it while it is still `invited`, before the remote agent joins.
-
-Attaching is also how you get a **mixed council**, because convening from the host makes every
-named participant host-owned. Convene the ordinary way with all the names, paste the kickoff block
-into whatever you are driving by hand, then attach. The host claims only participants that are
-configured locally *and* either still `invited` or already in `dispatch_mode`, so an agent someone
-is already polling by hand is left alone rather than run twice under one name.
-
-Review and merge the named worktree branches yourself when the campaign is complete.
 
 ## Models on Discord / Telegram
 
@@ -1566,7 +1307,7 @@ src/
 │   ├── home/
 │   │   ├── controls.tsx                # Model dropdown, param sliders, model-info modal
 │   │   ├── conversation-list.tsx       # Sidebar list with project groups + move/rename menus
-│   │   ├── council-card.tsx            # Proposed-council card in chat, with the Launch button
+│   │   ├── council-card.tsx            # Proposed council card in chat, with the Start button
 │   │   ├── day-starters.ts             # Chat starters drawn from the day
 │   │   ├── reply-sources.tsx           # Chart and list of the sources behind a reply
 │   │   ├── voice-pcm.ts                # Recording → 16 kHz PCM, then the transcribe request
@@ -1578,9 +1319,8 @@ src/
 │   ├── research/ study/ capture/ tasks/ # The other workspaces
 │   ├── graph/page.tsx                  # 3D knowledge-graph view of the vault
 │   ├── council/
-│   │   ├── page.tsx                    # Live council view + local-host control surface
-│   │   ├── host-client.ts              # Loopback host probe, pairing, WebSocket client, launch
-│   │   └── remote-setup.ts             # Paste-in brief for agents on other machines
+│   │   ├── page.tsx                    # Live council view: transcript, decision, pause and owner thread
+│   │   └── online-council-panel.tsx    # Start a council and pick each seat's model
 │   ├── login/page.tsx                  # Login page
 │   ├── admin/                          # Dashboard + model health, model catalogue, run-trace, memory, skills and agent-credential panels
 │   └── api/
@@ -1630,7 +1370,7 @@ src/
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
 │   │   └── skills/                     # Skill registry: built-in playbooks + agent-authored custom skills
 │   ├── agents/                         # Per-agent credentials: clients, claims, scope predicates, setup brief
-│   ├── council/                        # Deliberation room: protocol constants, store, long-poll + host dispatch, renderers, campaign
+│   ├── council/                        # Councils: protocol constants, store, runner, research step, moderator, closing, execution records
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
@@ -1655,16 +1395,9 @@ stt-service/
 ├── segment.js                          # Cuts long turns at the quietest point
 └── test/                               # Offline tests with a fake recogniser
 scripts/
-├── council-host.mts                    # Local ACP host: agent sessions, permission gate, dispatch loop, control channel
-├── council-host-paths.mts              # Worktree containment, command resolution, process-tree kill
-├── council-git.mts                     # Exact-commit verification, manifest assembly, protected-ref checks
-├── council-models.mts                  # Per-seat model/reasoning choice against advertised ACP options
-├── council-acp-probe.mts               # ACP checks; explicit MCP endpoint and dedicated read-only probe key
-├── council-host-start.cmd              # Start a host (the launch method; portable, used by the Startup shim)
-├── council-agents.example.json         # Adapter template (copy to council-agents.json, gitignored)
 ├── check-council-schema.mts            # Behavioural guard: fails if the V3 exact-commit gate is not enforced
 ├── test-council-protocol.mts           # Council Postgres protocol tests
-├── test-council-v3.mts                 # V3 git, model and contract tests (local)
+├── test-council-v3.mts                 # Online seat capabilities and schema functions (local)
 ├── test-council-v3-db.mts              # V3 lease, delivery, verification and manifest tests
 ├── test-agent-credentials.mts          # Scope split + per-agent key mint/exchange/revoke tests
 ├── test-mutation-journal.mts           # Mutation-journal tests

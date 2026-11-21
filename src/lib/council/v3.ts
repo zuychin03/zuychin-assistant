@@ -1,31 +1,5 @@
-import { createHash } from "node:crypto";
-
 export const COUNCIL_PROTOCOL_VERSION = 3 as const;
 export const COUNCIL_HOST_GENERATION = "typescript-node" as const;
-
-export interface HostCapabilities {
-    protocolVersion: typeof COUNCIL_PROTOCOL_VERSION;
-    seatCredentials: true;
-    fencedDispatch: true;
-    durableDeliveries: true;
-    exactCommitVerification: true;
-    delegatedIntegration: true;
-    modelSelection: true;
-    connectorCapabilitySnapshots: true;
-    transportNeutralHostContracts: true;
-}
-
-export const V3_HOST_CAPABILITIES: HostCapabilities = {
-    protocolVersion: COUNCIL_PROTOCOL_VERSION,
-    seatCredentials: true,
-    fencedDispatch: true,
-    durableDeliveries: true,
-    exactCommitVerification: true,
-    delegatedIntegration: true,
-    modelSelection: true,
-    connectorCapabilitySnapshots: true,
-    transportNeutralHostContracts: true,
-};
 
 export type ConnectorKind =
     | "acp"
@@ -57,29 +31,6 @@ export interface ConnectorCapabilitySnapshot {
     observedAt: string;
 }
 
-export interface CouncilAgentSelection {
-    modelId?: string;
-    reasoningEffort?: string;
-}
-
-export interface CouncilHostPrincipal {
-    kind: "host";
-    hostId: string;
-    leaseEpoch: number;
-}
-
-export interface CouncilSeatPrincipal {
-    kind: "seat";
-    sessionId: string;
-    seatName: string;
-}
-
-export type CouncilPrincipal = CouncilHostPrincipal | CouncilSeatPrincipal;
-
-export function promptDigest(prompt: string): string {
-    return createHash("sha256").update(prompt).digest("hex");
-}
-
 export function configuredCapabilities(params: {
     kind: ConnectorKind;
     modelSelection?: boolean;
@@ -103,18 +54,4 @@ export function configuredCapabilities(params: {
         terminalMediated: params.terminalMediated === true,
         observedAt: params.observedAt ?? new Date().toISOString(),
     };
-}
-
-export function isV3HostCapabilities(value: unknown): value is HostCapabilities {
-    if (!value || typeof value !== "object") return false;
-    const row = value as Partial<HostCapabilities>;
-    return row.protocolVersion === COUNCIL_PROTOCOL_VERSION
-        && row.seatCredentials === true
-        && row.fencedDispatch === true
-        && row.durableDeliveries === true
-        && row.exactCommitVerification === true
-        && row.delegatedIntegration === true
-        && row.modelSelection === true
-        && row.connectorCapabilitySnapshots === true
-        && row.transportNeutralHostContracts === true;
 }

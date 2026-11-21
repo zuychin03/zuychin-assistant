@@ -27,7 +27,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
                 decision: "accept",
                 changed: outcome.changed,
                 vaultPath: outcome.vaultPath,
-                campaignId: outcome.campaignId,
                 archiveError: outcome.archiveError,
             });
         }

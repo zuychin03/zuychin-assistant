@@ -52,7 +52,6 @@ export function createCiEnvironment(status: unknown): string {
         NEXT_PUBLIC_SUPABASE_ANON_KEY: values.ANON_KEY,
         SUPABASE_SERVICE_ROLE_KEY: values.SERVICE_ROLE_KEY,
         AUTH_SESSION_SECRET: randomBytes(32).toString("hex"),
-        MCP_COUNCIL_HOST_KEY: randomBytes(32).toString("hex"),
         NEXT_PUBLIC_BASE_URL: "http://127.0.0.1:3105",
         GEMINI_API_KEY: "ci-import-placeholder",
     }).map(([key, value]) => `${key}=${value}\n`).join("");

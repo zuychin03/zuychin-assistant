@@ -1,4 +1,4 @@
-// Offline checks for online councils: seat rules, reply repair, prompts, and the runner against an in-memory council that follows the SQL's round rules.
+// Offline checks for councils: seat rules, reply repair, prompts, and the runner against an in-memory council that follows the SQL's round rules.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ResolvedChat } from "../src/lib/ai/providers";
@@ -242,6 +242,7 @@ class FakeCouncil {
             listParticipants: async () => this.participants.map((p) => ({ ...p })),
             readTranscript: async () => this.messages.map((m) => ({ ...m })),
             append: async (input) => this.append(input),
+            postModerator: async (_id, body) => { this.addMessage({ speaker: "zuychin", role: "moderator", intent: "moderate", body }); return { ok: true }; },
             join: async () => undefined,
             leave: async (_id, name) => { this.participants.find((p) => p.name === name)!.status = "left"; },
             markAlive: async () => undefined,
@@ -561,4 +562,104 @@ test("auto-fill: different vendors first, then different models, never the same 
         { ...e("router::baidu/ernie:free"), tags: [] }, { ...e("gemini-free::gemini-flash", "gemini"), tags: ["reasoning"] },
     ];
     assert.deepEqual(pickDiverse(tagged, 3, "reasoning"), ["nim::nvidia/ultra", "gemini-free::gemini-flash", "router::dots/fast-note:free"]);
+});
+
+// ---- Research first: the pack is posted before round 1 and pinned in every prompt ----
+
+const RESEARCH_DEPS = {
+    searchWeb: async () => [{ title: "Postgres 18 notes", url: "https://example.org/pg", content: "Postgres handles relational data well." }],
+    searchNotes: async () => [{ content: "Already runs Postgres on Supabase." }],
+    searchVault: async () => null,
+};
+
+async function researchedCouncil(script: Script, rounds = 2) {
+    const { gatherResearch } = await import("../src/lib/council/online/research");
+    const { postResearchPack } = await import("../src/lib/council/online/runner");
+    const council = new FakeCouncil(SEATS, script, rounds);
+    const pack = await gatherResearch({ topic: council.session.topic, request: { web: true, notes: true }, freeOnly: false }, RESEARCH_DEPS);
+    assert.equal(await postResearchPack(council.session.id, pack, council.deps()), null);
+    return { council, pack };
+}
+
+function between(text: string, open: string, close: string): string {
+    const start = text.indexOf(open);
+    const end = text.indexOf(close, start);
+    return start < 0 || end < 0 ? "" : text.slice(start + open.length, end);
+}
+
+test("research: every seat and the closer see the pinned sources, and the verdict links are written by code", async () => {
+    const citing: Script = (call) => call.verdict
+        ? ok(JSON.stringify({ verdict: "Use Postgres [W1], as the owner already runs it [N1]. Ignore [W7].", openQuestions: [] }))
+        : happy(call);
+    const { council, pack } = await researchedCouncil(citing);
+    const classes: { moderator: boolean; classes: unknown }[] = [];
+    const deps = council.deps();
+    const call = deps.call;
+    deps.call = async (params) => { classes.push({ moderator: params.system.startsWith("You moderate"), classes: params.classes }); return call(params); };
+    assert.equal((await council.run(deps)).outcome, "proposed");
+
+    const prompted = council.calls.filter((c) => !c.moderator);
+    assert.ok(prompted.length >= 5);
+    for (const c of prompted) {
+        assert.equal(between(c.user, "<<<SOURCES\n", "\nSOURCES>>>"), pack.body, "the pack is pinned whole");
+        assert.ok(!between(c.user, "<<<TRANSCRIPT", "TRANSCRIPT>>>").includes("Sources gathered"), "and kept out of the transcript");
+    }
+    assert.ok(council.calls.filter((c) => c.moderator).every((c) => !c.user.includes("Sources gathered")), "the moderator never sees it");
+    for (const entry of classes) {
+        assert.deepEqual(entry.classes, entry.moderator ? undefined : ["personal", "knowledge", "public_search"]);
+    }
+    assert.equal(council.proposed?.verdict,
+        "Use Postgres [W1], as the owner already runs it [N1]. Ignore [W7].\n\n**Sources cited**\n- [W1] Postgres 18 notes: https://example.org/pg\n- [N1] Saved note");
+});
+
+test("research: the pack stays pinned past the transcript budget, which shrinks by its length", async () => {
+    const { TRANSCRIPT_CHAR_BUDGET } = await import("../src/lib/council/online/limits");
+    const { verdictPrompt } = await import("../src/lib/council/online/prompt");
+    const { council, pack } = await researchedCouncil(happy, 8);
+    for (let i = 0; i < 60; i++) council.addMessage({ speaker: SEATS[i % 3].name, role: "agent", intent: "refine", body: `long post ${i} ${"y".repeat(900)}` });
+    const seats = SEATS.map((s) => ({ name: s.name, expertise: `${s.name} angle` }));
+    const session = { ...council.session, round: 6 };
+    for (const prompt of [
+        seatPrompt({ session, seat: seats[0], seats, messages: council.messages, openToYou: [], blind: false }),
+        verdictPrompt({ session, writer: seats[0], seats, messages: council.messages }),
+    ]) {
+        assert.equal(between(prompt.user, "<<<SOURCES\n", "\nSOURCES>>>"), pack.body);
+        const transcript = between(prompt.user, "<<<TRANSCRIPT\n", "\nTRANSCRIPT>>>");
+        assert.match(transcript, /omitted for length/);
+        assert.ok(transcript.length <= TRANSCRIPT_CHAR_BUDGET - pack.body.length + 1_000, `transcript ${transcript.length} chars`);
+        assert.match(prompt.system, /The sources block holds search results/);
+    }
+});
+
+test("research: blind openings still see the sources; councils without research are unchanged", async () => {
+    const { council } = await researchedCouncil(happy);
+    const seats = SEATS.map((s) => ({ name: s.name, expertise: `${s.name} angle` }));
+    const blind = seatPrompt({ session: council.session, seat: seats[0], seats, messages: council.messages, openToYou: [], blind: true });
+    assert.match(blind.user, /<<<SOURCES\nSources gathered before round 1/);
+    assert.match(blind.system, /Cite a source by its marker/);
+
+    const plain = new FakeCouncil(SEATS, happy, 2);
+    const without = seatPrompt({ session: plain.session, seat: seats[0], seats, messages: plain.messages, openToYou: [], blind: true });
+    assert.ok(!/SOURCES|Cite a source|sources block/.test(without.system + without.user));
+    const classes: unknown[] = [];
+    const deps = plain.deps();
+    const call = deps.call;
+    deps.call = async (params) => { classes.push(params.classes); return call(params); };
+    await plain.run(deps);
+    assert.ok(classes.every((value) => value === undefined), "plain calls keep the personal-only default");
+    assert.ok(!plain.proposed?.verdict.includes("Sources cited"));
+});
+
+test("research: a refused or failed post is a warning, and an empty pack posts nothing", async () => {
+    const { postResearchPack } = await import("../src/lib/council/online/runner");
+    const logs: string[] = [];
+    const pack = { query: "q", body: "Sources gathered before round 1 for \"q\".\n\n[W1] T\nLink: https://t.example\n> c", sources: [], problems: [] };
+    const refused = await postResearchPack("s", pack, { postModerator: async () => ({ ok: false, reason: "closed" }), log: (m) => logs.push(m) });
+    assert.match(refused ?? "", /could not be posted \(closed\), so the council runs without them/);
+    const thrown = await postResearchPack("s", pack, { postModerator: async () => { throw new Error("network\nstack"); }, log: (m) => logs.push(m) });
+    assert.match(thrown ?? "", /could not be posted/);
+    assert.ok(logs.some((m) => m.endsWith("research pack failed (network)")));
+    let called = false;
+    assert.equal(await postResearchPack("s", { ...pack, body: "" }, { postModerator: async () => { called = true; return { ok: true }; }, log: () => undefined }), null);
+    assert.equal(called, false);
 });

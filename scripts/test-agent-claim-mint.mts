@@ -173,6 +173,10 @@ try {
         }
     });
 
+    await check("the app no longer mints the retired council level", async () => {
+        await assert.rejects(mintKnowledgeClaim({ clientId: await client(), accessLevel: "council" }), /Unable to mint/);
+    });
+
     await check("invalid scope, access, hash and expired input cannot revoke an existing claim", async () => {
         const id = await client();
         const original = await mintKnowledgeClaim({ clientId: id, accessLevel: "read" });

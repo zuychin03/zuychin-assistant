@@ -1,5 +1,8 @@
 import { resolveModelKey, type ResolvedChat } from "@/lib/ai/providers";
 import { MODERATOR_NAME } from "@/lib/council/protocol";
+import { DEFAULT_STANCES } from "./angles";
+
+export { DEFAULT_STANCES } from "./angles";
 
 export interface OnlineSeatInput {
     modelKey: string;
@@ -26,16 +29,7 @@ export interface SeatPolicy {
 export const MIN_SEATS = 2;
 export const MAX_SEATS = 5;
 const MAX_NAME_CHARS = 40;
-const MAX_EXPERTISE_CHARS = 300;
-
-// Different default angles so a room of similar models still disagrees.
-export const DEFAULT_STANCES = [
-    "Builds the strongest case for the most promising option.",
-    "Stress-tests every proposal and looks for how it fails.",
-    "Weighs cost, risk and what is simplest to ship.",
-    "Looks for options nobody has raised yet.",
-    "Checks claims against evidence and names what is unknown.",
-] as const;
+export const MAX_EXPERTISE_CHARS = 300;
 
 /** Same rule as the roster: free routes only when the model and provider are both unmetered and marked free. */
 export function isPaidModel(resolved: ResolvedChat): boolean {
@@ -68,7 +62,7 @@ export function resolveSeats(
     resolve: (key: string) => ResolvedChat | null = resolveModelKey,
 ): { ok: true; seats: OnlineSeat[] } | { ok: false; error: string } {
     if (inputs.length < MIN_SEATS || inputs.length > MAX_SEATS) {
-        return { ok: false, error: `An online council takes ${MIN_SEATS} to ${MAX_SEATS} seats; got ${inputs.length}.` };
+        return { ok: false, error: `A council takes ${MIN_SEATS} to ${MAX_SEATS} seats; got ${inputs.length}.` };
     }
     const named = new Set<string>();
     for (const input of inputs) {

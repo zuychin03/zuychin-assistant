@@ -52,8 +52,13 @@ interface TavilyResponse {
     results?: { title: string; url: string; content: string; raw_content?: string }[];
 }
 
+export interface WebSearchResults {
+    answer?: string;
+    results: { title: string; url: string; content: string; rawContent?: string }[];
+}
+
 // null means this pool is unusable and the caller should try the next one.
-async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDepth): Promise<string | null> {
+async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDepth): Promise<WebSearchResults | null> {
     const cfg = DEPTH_CONFIG[depth];
     const observation = beginExternalServiceObservation({ providerId: "tavily", operation: "web_search" });
 
@@ -83,24 +88,10 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
 
         const data = (await res.json()) as TavilyResponse;
         observation.finish();
-        const results = data.results ?? [];
-
-        if (!data.answer && results.length === 0) {
-            return `No web results found for "${query}".`;
-        }
-
-        const lines: string[] = [];
-        if (data.answer) {
-            lines.push(`Summary: ${data.answer}`, "");
-        }
-        results.forEach((r, i) => {
-            const raw = cfg.rawContent && r.raw_content
-                ? `\n${r.raw_content.slice(0, RAW_CONTENT_LIMIT)}`
-                : "";
-            lines.push(`[${i + 1}] ${r.title}\n${r.url}\n${r.content}${raw}`);
-        });
-
-        return lines.join("\n");
+        return {
+            answer: data.answer,
+            results: (data.results ?? []).map((r) => ({ title: r.title, url: r.url, content: r.content, rawContent: r.raw_content })),
+        };
     } catch (err) {
         observation.finish({ error: err });
         console.error(`[WebSearch] Tavily ${pool.role} pool failed:`, err);
@@ -108,13 +99,41 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
     }
 }
 
+export function formatWebResults(found: WebSearchResults, query: string, depth: SearchDepth): string {
+    if (!found.answer && found.results.length === 0) {
+        return `No web results found for "${query}".`;
+    }
+
+    const lines: string[] = [];
+    if (found.answer) {
+        lines.push(`Summary: ${found.answer}`, "");
+    }
+    found.results.forEach((r, i) => {
+        const raw = DEPTH_CONFIG[depth].rawContent && r.rawContent
+            ? `\n${r.rawContent.slice(0, RAW_CONTENT_LIMIT)}`
+            : "";
+        lines.push(`[${i + 1}] ${r.title}\n${r.url}\n${r.content}${raw}`);
+    });
+
+    return lines.join("\n");
+}
+
+export function tavilyConfigured(): boolean {
+    return POOLS.length > 0;
+}
+
 // null means no Tavily pool could serve this; the caller should fall back.
-export async function webSearch(query: string, depth: SearchDepth = "quick"): Promise<string | null> {
+export async function webSearchResults(query: string, depth: SearchDepth = "quick"): Promise<WebSearchResults | null> {
     for (const pool of poolsFor(depth)) {
         const result = await searchWithPool(pool, query, depth);
         if (result !== null) return result;
     }
     return null;
+}
+
+export async function webSearch(query: string, depth: SearchDepth = "quick"): Promise<string | null> {
+    const found = await webSearchResults(query, depth);
+    return found ? formatWebResults(found, query, depth) : null;
 }
 
 interface TavilyExtractResponse {

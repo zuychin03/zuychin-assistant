@@ -8,9 +8,9 @@ The workflow pins Supabase CLI **2.118.0** and copies [the CI configuration](../
 
 CI applies the **entire** authoritative [`supabase-setup.sql`](../supabase-setup.sql) through `psql` with `ON_ERROR_STOP`, reloads the REST schema cache and waits for the required Council tables to become accessible. A schema or readiness error fails the job. The script contains its own transactions; CI does not wrap it in one transaction or reuse a partially initialised database.
 
-[`prepare-council-ci.mts`](prepare-council-ci.mts) reads the local stack's status file and creates `.env.local` for the database scripts. It accepts only an HTTP loopback API origin, rejects malformed keys and refuses to overwrite an existing file. It uses the stack's generated local keys and fresh random session and Council-host secrets. Credential values are not printed.
+[`prepare-council-ci.mts`](prepare-council-ci.mts) reads the local stack's status file and creates `.env.local` for the database scripts. It accepts only an HTTP loopback API origin, rejects malformed keys and refuses to overwrite an existing file. It uses the stack's generated local keys and a fresh random session secret. Credential values are not printed.
 
-No provider API keys, production host credentials or owner desktop host are needed. A Gemini placeholder allows the MCP module to initialise; these suites use a fake Council agent and do not call Gemini.
+No provider API keys or production credentials are needed. A Gemini placeholder allows the MCP module to initialise; these suites do not call Gemini.
 
 ## Required checks
 
@@ -21,15 +21,14 @@ The database job runs every suite below, without a secret-dependent skip:
 3. `npm run council:v3:test:db`
 4. `npm run council:protocol:test`
 5. `npm run journal:test`
-6. `npm run council:fault:test -- --require-phase-b --mcp-url http://127.0.0.1:3105/api/mcp/mcp`
 
-For the last check, CI starts an owned temporary Next server on `127.0.0.1:3105`, verifies authenticated MCP readiness and requires mid-turn crash recovery to execute. Missing prerequisites or a skipped Phase B fail the job.
+The schema, V3 and protocol suites still exercise the campaign, delivery and host SQL left from the retired local host. That SQL is unchanged and stays in `supabase-setup.sql` until the old Council tables are dropped.
 
 Two additional transaction suites run in separate PostgreSQL 16 containers with networking disabled and no published ports: `test-agent-claim-postgres.mts` and `test-council-seat-renewal-postgres.mts`. They verify real lock contention, credential revocation/replacement and expiry after waits. Each suite removes its own database; the workflow always removes its owned container.
 
-Cleanup runs even after failure: it stops the owned Next process group, stops this Supabase stack with `--no-backup`, and removes the temporary environment, status and log files. The normal Linux/Windows offline suites and Windows desktop supervisor job remain separate checks.
+Cleanup runs even after failure: it stops this Supabase stack with `--no-backup` and removes the temporary environment, status and log files. The offline suites remain a separate check.
 
-After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm both offline jobs, the Windows desktop supervisor job, both transaction suites, all five database suites and required Phase B pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
+After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm the offline job, both transaction suites and all five database suites pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
 
 ## Local checks and remaining gates
 
@@ -41,17 +40,12 @@ These checks need no database or owner credentials:
 
 ```powershell
 npm run council:ci:env:test
-npm run council:fault:options:test
 ```
 
 To reproduce the database job locally, use Docker and an isolated checkout with no `.env.local`, following the workflow's isolated configuration and cleanup. Do not replace the normal app's environment or point these suites at its database. If setup fails partway, recreate the disposable stack before retrying the full SQL script.
 
-Passing isolated database CI does not validate hosted configuration or finish the live credential migration. Each knowledge caller, including the ACP probe, must move to a named client key before the shared knowledge bearers are removed. The dedicated Council host key stays separate.
+Passing isolated database CI does not validate hosted configuration. Each knowledge caller must use a named client key; the shared knowledge bearers are retired.
 
-The desktop shell still needs deployed HTTPS sign-in, pairing and full Council-flow acceptance. V4.0 starts only after V3.5's readiness requirements pass, and V4.2 waits for V4.0's V1 contract freeze. Local implementation and isolated tests do not waive these gates or authorise hosted changes.
+## Seat credential renewal
 
-## Campaign credential migration
-
-For an existing database, the incremental artefact is [`migrations/council-seat-renewal.sql`](migrations/council-seat-renewal.sql). It is also included at the end of the full setup script. Apply it only as an authorised hosted change, before deploying the guest reissue route. Reapplying it is supported.
-
-Eligible host-issued seats renew to 24 hours when one hour remains, through a live host heartbeat during unfinished work or integration. Renewal preserves the token and requires the same host and lease epoch. It never revives expired or revoked keys. Guests retain 24-hour owner-issued keys and can be explicitly reissued after debate closure while the campaign is unfinished. The resolver rechecks identity, revocation and expiry after database lock waits.
+[`migrations/council-seat-renewal.sql`](migrations/council-seat-renewal.sql) is also included at the end of the full setup script. Host-issued seats renew to 24 hours when one hour remains, through a live host heartbeat. Renewal preserves the token and requires the same host and lease epoch. It never revives expired or revoked keys. The resolver rechecks identity, revocation and expiry after database lock waits.

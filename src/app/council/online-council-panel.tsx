@@ -4,10 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Bot, ChevronDown, ChevronRight, Play, Plus, Sparkles, Trash2 } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import { PURPOSE_TAGS } from "@/lib/ai/models/tags";
+import { describeResearch } from "@/lib/council/online/research";
+import { PRESET_ANGLES } from "@/lib/council/online/angles";
 import ui from "./council.module.css";
 
-// Starts a debate whose seats are chat models run by the server, so it needs
-// no local host and works from a phone.
+// Starts a debate whose seats are chat models run by the server, so it works
+// from a phone.
 
 interface SeatOption {
     key: string; label: string; provider: string; providerId: string; free: boolean;
@@ -39,6 +41,9 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
     const [brief, setBrief] = useState("");
     const [rounds, setRounds] = useState(4);
     const [allowPaid, setAllowPaid] = useState(false);
+    const [searchWeb, setSearchWeb] = useState(false);
+    const [searchNotes, setSearchNotes] = useState(false);
+    const [query, setQuery] = useState("");
     const [seats, setSeats] = useState<SeatDraft[]>(() => [emptySeat(), emptySeat(), emptySeat()]);
     const [closerId, setCloserId] = useState<number | null>(null);
     const [starting, setStarting] = useState(false);
@@ -81,7 +86,7 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
 
     const start = async () => {
         const filled = seats.filter((s) => s.modelKey);
-        if (!topic.trim() || !brief.trim()) { setError("An online council needs a topic and a brief."); return; }
+        if (!topic.trim() || !brief.trim()) { setError("A council needs a topic and a brief."); return; }
         if (filled.length < MIN_SEATS) { setError(`Choose a model for at least ${MIN_SEATS} seats.`); return; }
         if (filled.some((s) => !usable.has(s.modelKey))) { setError("A chosen model is no longer offered. Pick another, or tick Allow paid for a paid one."); return; }
         const closerIndex = Math.max(0, filled.findIndex((s) => s.id === closer?.id));
@@ -93,18 +98,20 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     topic: topic.trim(), brief: brief.trim(), maxRounds: rounds, allowPaid: paidAllowed, closerIndex,
+                    research: searchWeb || searchNotes ? { web: searchWeb, notes: searchNotes, query: query.trim() || undefined } : undefined,
                     seats: filled.map((s) => ({
                         modelKey: s.modelKey, name: s.name.trim() || undefined, expertise: s.expertise.trim() || undefined, source: s.source,
                     })),
                 }),
             });
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "The online council could not be started.");
-            setStarted(`${data.code} is running with ${data.seats.map((s: { name: string }) => s.name).join(", ")}; ${data.closerName} closes.`);
-            setTopic(""); setBrief(""); setSeats([emptySeat(), emptySeat(), emptySeat()]); setCloserId(null);
+            if (!res.ok) throw new Error(data.error || "The council could not be started.");
+            const sources = data.research ? ` ${describeResearch(data.research)}` : "";
+            setStarted(`${data.code} is running with ${data.seats.map((s: { name: string }) => s.name).join(", ")}; ${data.closerName} closes.${sources}`);
+            setTopic(""); setBrief(""); setQuery(""); setSeats([emptySeat(), emptySeat(), emptySeat()]); setCloserId(null);
             onStarted(data.code);
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "The online council could not be started.");
+            setError(reason instanceof Error ? reason.message : "The council could not be started.");
         } finally {
             setStarting(false);
         }
@@ -118,13 +125,13 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
                 <div className={ui.panelHeader}>
                     <span className={ui.panelIcon}><Bot size={16} /></span>
                     <div className={ui.panelHeading}>
-                        <h2 className={ui.panelTitle}>Online council</h2>
-                        <p className={ui.panelDescription}>A debate between chat models, run by the server. No local host needed.</p>
+                        <h2 className={ui.panelTitle}>Start a council</h2>
+                        <p className={ui.panelDescription}>A debate between chat models, run by the server.</p>
                     </div>
                 </div>
                 <button type="button" onClick={() => setOpen((v) => !v)} className={ui.btn} aria-expanded={open}>
                     {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                    {open ? "Hide" : "New online council"}
+                    {open ? "Hide" : "New council"}
                 </button>
             </div>
 
@@ -133,10 +140,30 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
             {open && (
                 <div className={ui.conveneForm}>
                     {loadError && <div className={ui.notice} role="alert">{loadError} <button type="button" className={ui.btn} onClick={() => void load(purpose)}>Retry</button></div>}
-                    <input aria-label="Online council topic" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="One decidable question" className={ui.input} maxLength={300} />
-                    <textarea aria-label="Online council brief" value={brief} onChange={(e) => setBrief(e.target.value)}
+                    <input aria-label="Council topic" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="One decidable question" className={ui.input} maxLength={300} />
+                    <textarea aria-label="Council brief" value={brief} onChange={(e) => setBrief(e.target.value)}
                         placeholder="Everything the models need: constraints, what has been tried, what a good answer looks like"
                         className={`${ui.input} ${ui.textarea}`} maxLength={6000} />
+                    <div className={ui.conveneRow} role="group" aria-label="Research first">
+                        <span className={ui.fieldLabel}>Research first</span>
+                        <label className={ui.checkLabel} title="One web search before round 1 (1 Tavily credit)">
+                            <input type="checkbox" checked={searchWeb} onChange={(e) => setSearchWeb(e.target.checked)} />
+                            Search the web
+                        </label>
+                        <label className={ui.checkLabel} title="Sends matching notes to every seat's provider">
+                            <input type="checkbox" checked={searchNotes} onChange={(e) => setSearchNotes(e.target.checked)} />
+                            Include my notes
+                        </label>
+                        {(searchWeb || searchNotes) && (
+                            <input aria-label="Search for" value={query} onChange={(e) => setQuery(e.target.value)}
+                                placeholder={topic.trim() ? `Search for: ${topic.trim()}` : "Search for (defaults to the topic)"} className={ui.input} maxLength={200} />
+                        )}
+                    </div>
+                    {searchNotes && (
+                        <p className={ui.formNote}>
+                            Sends matching notes to every seat&rsquo;s provider{options?.freeOnly ? ". Vault pages are skipped while Free only is on." : ", with up to 3 vault pages."}
+                        </p>
+                    )}
                     <div className={ui.conveneRow}>
                         <label className={ui.fieldLabel}>Rounds
                             <Dropdown ariaLabel="Rounds" value={String(rounds)} onChange={(v) => setRounds(Number(v))} options={roundOptions} />
@@ -161,8 +188,14 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
                                     options={[{ value: "", label: options ? "Choose a model" : "Loading models…" }, ...choices.map((m) => ({ value: m.key, label: optionLabel(m) }))]} />
                                 <input aria-label={`Name for seat ${index + 1}`} value={seat.name} onChange={(e) => patch(seat.id, { name: e.target.value })}
                                     placeholder="Name" title="Defaults to the model's short name" className={ui.input} maxLength={40} />
-                                <input aria-label={`Angle for seat ${index + 1}`} value={seat.expertise} onChange={(e) => patch(seat.id, { expertise: e.target.value })}
-                                    placeholder="Angle" title="The view this seat argues from; each seat gets a different default" className={ui.input} maxLength={300} />
+                                <div className={ui.angleField}>
+                                    <input aria-label={`Angle for seat ${index + 1}`} value={seat.expertise} onChange={(e) => patch(seat.id, { expertise: e.target.value })}
+                                        placeholder="Angle" title="The view this seat argues from; each seat gets a different default" className={ui.input} maxLength={300} />
+                                    <Dropdown ariaLabel={`Preset angle for seat ${index + 1}`} value="" placeholder="Preset" align="end"
+                                        onChange={(text) => patch(seat.id, { expertise: text })}
+                                        options={PRESET_ANGLES.map((angle) => ({ value: angle.text, label: angle.label }))}
+                                        style={{ flex: "0 0 auto", width: 96 }} />
+                                </div>
                                 <label className={ui.checkLabel}>
                                     <input type="radio" name="online-closer" checked={closer?.id === seat.id} onChange={() => setCloserId(seat.id)} />
                                     Closer
@@ -180,13 +213,14 @@ export function OnlineCouncilPanel({ onStarted }: { onStarted: (code: string) =>
                             <Plus size={15} /> Add seat
                         </button>
                         <button type="button" onClick={() => void start()} disabled={starting || !options} className={`${ui.btn} ${ui.primary}`}>
-                            <Play size={15} /> {starting ? "Starting…" : "Start online council"}
+                            <Play size={15} /> {starting ? "Starting…" : "Start council"}
                         </button>
                     </div>
                     {error && <div className={ui.notice} role="alert">{error}</div>}
                     <p className={ui.formNote}>
                         Round 1 openings are written blind and at the same time; later rounds take turns, one post per seat. The closer then writes the
-                        verdict, and nothing is filed until you accept it. Seats only see the brief and the transcript: no tools, files or knowledge base.
+                        verdict, and nothing is filed until you accept it. Seats see the brief, the transcript and any sources gathered before round 1;
+                        they have no tools.
                     </p>
                 </div>
             )}

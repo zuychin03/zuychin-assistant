@@ -1,6 +1,6 @@
 # All database fixtures live in a disposable Supabase stack on the runner.
-# Node is pinned to an exact version: older Windows runner images resolve 24 to 24.22.2, which
-# crashed V8 ("jit_page_->allocations_.erase") at the end of the council suites on 18/11/2026.
+# Node is pinned to an exact version: older runner images resolve 24 to 24.22.2, which crashed V8
+# ("jit_page_->allocations_.erase") at the end of the council suites on 18/11/2026.
 
 name: checks
 
@@ -15,15 +15,8 @@ permissions:
 jobs:
   offline:
     name: lint, types and offline suites
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        # Windows is not redundant here: the host resolves .cmd shims, quotes for
-        # cmd.exe, kills process trees and normalises MSYS drive paths, and the
-        # singleton lock reads liveness from a pid. All of that is per-platform.
-        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
 
@@ -35,41 +28,22 @@ jobs:
       - run: npm ci
 
       - name: lint
-        if: runner.os == 'Linux'
         run: npm run lint
 
       - name: types
-        if: runner.os == 'Linux'
         run: npx tsc --noEmit
 
-      - name: council protocol, model and git contracts
+      - name: council protocol, seats and execution records
         run: npm run council:v3:test
 
-      - name: language-neutral contracts and policy boundary
-        run: npm run council:contracts:test
-
-      - name: supervision contract and host singleton
-        run: npm run council:supervisor:test
-
-      - name: worktree containment
-        run: npm run council:paths:test
+      - name: policy versions and boundary
+        run: npm run council:policy:test
 
       - name: service authorisation and input contracts
         run: npm run council:services:test
 
-      - name: launch preflight
-        run: npm run council:preflight:test
-
-      - name: online council runner, seats and reply repair
+      - name: council runner, seats and reply repair
         run: npm run council:online:test
-
-      # Linux only: its POSIX signal-forwarding case is skipped on Windows.
-      - name: verification build wrapper
-        if: runner.os == 'Linux'
-        run: npm run council:build:test
-
-      - name: host process faults and harness guards
-        run: npm run council:fault:options:test
 
       - name: isolated database environment guards
         run: npm run council:ci:env:test
@@ -106,29 +80,6 @@ jobs:
 
       - name: text-to-speech service
         run: python -m unittest discover -s tts-service/tests -t tts-service
-
-  desktop:
-    name: Windows desktop supervisor
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24.22.3
-      - name: Rust toolchain
-        run: |
-          rustup update stable --no-self-update
-          rustup component add rustfmt clippy
-      - name: formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - name: native lint
-        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - name: contract and isolated process tests
-        shell: pwsh
-        run: |
-          $env:COUNCIL_TEST_NODE = (Get-Command node).Source
-          cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored
 
   database:
     name: suites against isolated Supabase
@@ -192,7 +143,7 @@ jobs:
           if (!schemaReady) throw new Error('The isolated REST schema did not become ready.');
           NODE
 
-      - name: exact-commit gate
+      - name: council schema behaviour
         run: npm run council:schema:check
 
       - name: agent credentials
@@ -220,7 +171,7 @@ jobs:
           fi
           npx tsx scripts/test-agent-claim-postgres.mts --container "$claims_container"
 
-      - name: campaign credential transaction races
+      - name: seat credential transaction races
         shell: bash
         run: |
           set -euo pipefail
@@ -251,42 +202,6 @@ jobs:
       - name: mutation journal
         run: npm run journal:test
 
-      - name: required mid-turn crash recovery
-        shell: bash
-        run: |
-          set -euo pipefail
-          server_log="$RUNNER_TEMP/council-fault-next.log"
-          setsid node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3105 > "$server_log" 2>&1 &
-          server_pid=$!
-          cleanup() {
-            kill -TERM -- "-$server_pid" 2>/dev/null || true
-            for attempt in {1..20}; do
-              kill -0 -- "-$server_pid" 2>/dev/null || break
-              sleep 0.25
-            done
-            kill -KILL -- "-$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-            rm -f "$server_log"
-          }
-          trap cleanup EXIT
-          ready=false
-          for attempt in {1..90}; do
-            if ! kill -0 "$server_pid" 2>/dev/null; then
-              echo "::error::The isolated Next server exited before readiness."
-              exit 1
-            fi
-            if curl --fail --silent --max-time 3 --output /dev/null http://127.0.0.1:3105/login; then
-              ready=true
-              break
-            fi
-            sleep 2
-          done
-          if [ "$ready" != true ]; then
-            echo "::error::The isolated Next server did not become ready."
-            exit 1
-          fi
-          npm run council:fault:test -- --require-phase-b --mcp-url http://127.0.0.1:3105/api/mcp/mcp
-
       - name: stop isolated Supabase
         if: always()
         run: |
@@ -296,4 +211,4 @@ jobs:
 
       - name: remove temporary credentials and logs
         if: always()
-        run: rm -f .env.local "$RUNNER_TEMP/council-supabase-status.json" "$RUNNER_TEMP/council-supabase-start.log" "$RUNNER_TEMP/council-fault-next.log"
+        run: rm -f .env.local "$RUNNER_TEMP/council-supabase-status.json" "$RUNNER_TEMP/council-supabase-start.log"

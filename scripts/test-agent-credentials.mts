@@ -12,7 +12,7 @@ import {
     revokeAgentClient, revokeAgentKey, listAgentClients,
 } from "../src/lib/agents/clients.ts";
 import {
-    OWNER_SCOPES, READONLY_SCOPES, canOwnCouncil, canParticipateInCouncil, canWriteNotes,
+    OWNER_SCOPES, READONLY_SCOPES, canOwnCouncil, canWriteNotes,
     canWriteVault, isCouncilHost, isCouncilOwner,
 } from "../src/lib/agents/scopes.ts";
 
@@ -46,7 +46,6 @@ function scopeChecks(): void {
     check("the owner key writes notes", canWriteNotes(OWNER_SCOPES));
     check("the owner key writes the vault", canWriteVault(OWNER_SCOPES));
     check("the owner key convenes", canOwnCouncil(OWNER_SCOPES));
-    check("the owner key participates", canParticipateInCouncil(OWNER_SCOPES));
 
     check("a read-only key cannot write notes", !canWriteNotes(READONLY_SCOPES));
     check("a read-only key cannot write the vault", !canWriteVault(READONLY_SCOPES));
@@ -56,25 +55,14 @@ function scopeChecks(): void {
     check("a notes key cannot write the vault", !canWriteVault(ACCESS_SCOPES.notes));
     check("a full key writes the vault", canWriteVault(ACCESS_SCOPES.full));
 
-    // Convening is opt-in and belongs to exactly one level. The clause this
-    // replaces was "no minted agent key convenes"; the point it was protecting -
-    // that an ordinary read/notes/full key cannot - still holds.
+    // No issued level can convene or own a council: councils start from the app,
+    // and the internal online runner holds the only owner and host scopes.
     for (const [level, scopes] of Object.entries(ACCESS_SCOPES)) {
-        if (level === "council") {
-            check("a council key convenes", canOwnCouncil(scopes), scopes);
-            continue;
-        }
         check(`a ${level} key cannot convene`, !canOwnCouncil(scopes), scopes);
-        check(`a ${level} key cannot assert a seat`, !isCouncilOwner(scopes), scopes);
+        check(`a ${level} key cannot assert ownership`, !isCouncilOwner(scopes), scopes);
     }
-    check("council is the only level that convenes",
-        Object.entries(ACCESS_SCOPES).filter(([, s]) => canOwnCouncil(s)).map(([l]) => l).join() === "council");
-    // Owner scope still cannot take a seat: convening and participating are
-    // different authorities, and route.ts refuses the assertion either way.
-    check("a council key still cannot participate as a seat",
-        !ACCESS_SCOPES.council.includes("council:seat"), ACCESS_SCOPES.council);
+    check("the council level is no longer issued", !Object.hasOwn(ACCESS_SCOPES, "council"));
 
-    check("a seat key participates", canParticipateInCouncil(SEAT_SCOPES));
     check("a seat key cannot convene", !canOwnCouncil(SEAT_SCOPES));
     check("a seat key cannot write notes", !canWriteNotes(SEAT_SCOPES));
 

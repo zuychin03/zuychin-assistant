@@ -52,7 +52,7 @@ export function DecisionPanel({ code, verdict, openQuestions, standbyExpiresAt, 
                 {continueCount > 0 && <span className={ui.pill}>sent back {continueCount}×</span>}
             </div>
             <div className={ui.subNote}>
-                Nothing has been filed. Accepting writes the vault page, starts any campaign and announces it.
+                Nothing has been filed. Accepting writes the vault page and announces it.
                 {filesItself && <> {filesItself}</>}
             </div>
 

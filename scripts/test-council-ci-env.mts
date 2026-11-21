@@ -25,18 +25,15 @@ for (const url of ["http://127.0.0.1:54321", "http://localhost:54321/", "http://
         assert.equal(env.NEXT_PUBLIC_BASE_URL, "http://127.0.0.1:3105");
         assert.equal(env.GEMINI_API_KEY, "ci-import-placeholder");
         assert(env.AUTH_SESSION_SECRET);
-        assert(env.MCP_COUNCIL_HOST_KEY);
         assert.match(env.AUTH_SESSION_SECRET, /^[a-f0-9]{64}$/);
-        assert.match(env.MCP_COUNCIL_HOST_KEY, /^[a-f0-9]{64}$/);
-        assert.notEqual(env.AUTH_SESSION_SECRET, env.MCP_COUNCIL_HOST_KEY);
-        assert.equal(Object.keys(env).length, 7);
+        assert.equal(env.MCP_COUNCIL_HOST_KEY, undefined);
+        assert.equal(Object.keys(env).length, 6);
     });
 }
-check("session and host secrets change between runs", () => {
+check("the session secret changes between runs", () => {
     const first = parseEnv(createCiEnvironment(fixture));
     const second = parseEnv(createCiEnvironment(fixture));
     assert.notEqual(first.AUTH_SESSION_SECRET, second.AUTH_SESSION_SECRET);
-    assert.notEqual(first.MCP_COUNCIL_HOST_KEY, second.MCP_COUNCIL_HOST_KEY);
 });
 for (const url of [
     "https://127.0.0.1:54321", "http://project.supabase.co", "http://localhost.example.com", "http://192.168.1.1",
@@ -103,7 +100,7 @@ try {
         const env = parseEnv(readFileSync(envFile, "utf8"));
         assert.equal(env.NEXT_PUBLIC_SUPABASE_URL, fixture.API_URL);
         assert(!Object.values(env).some((value) => value?.includes("inherited-") || value?.includes("local-secret-marker")));
-        for (const secret of [fixture.ANON_KEY, fixture.SERVICE_ROLE_KEY, env.AUTH_SESSION_SECRET, env.MCP_COUNCIL_HOST_KEY]) {
+        for (const secret of [fixture.ANON_KEY, fixture.SERVICE_ROLE_KEY, env.AUTH_SESSION_SECRET]) {
             assert(secret);
             assert(!(result.stdout + result.stderr).includes(secret));
         }

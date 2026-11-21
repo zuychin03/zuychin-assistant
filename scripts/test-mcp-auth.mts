@@ -144,13 +144,10 @@ try {
         }))).status, 401);
     });
 
-    await check("the dedicated host keeps only the host scope without a database lookup", async () => {
+    await check("a configured Council host key is rejected without a database lookup", async () => {
         const before = requests;
-        networkFailure = true;
-        assert.deepEqual(await identity("dedicated-host-fixture"), { clientId: "council-host", scopes: ["council:host"] });
-        assert.equal(requests, before);
-        delete process.env.MCP_COUNCIL_HOST_KEY;
         await deny("dedicated-host-fixture");
+        assert.equal(requests, before);
     });
 
     for (const [level, scopes] of Object.entries({
@@ -187,9 +184,11 @@ try {
         assert.deepEqual(await identity(client.key), { clientId: `agent:${client.clientId}:${client.displayName}`, scopes: ["knowledge:read"] });
     });
 
-    await check("a host-issued seat retains only its session and seat identity", async () => {
+    await check("a host-issued seat key is rejected without a seat lookup", async () => {
         const grant = await seat();
-        assert.deepEqual(await identity(grant.key), { clientId: `council-seat:${grant.sessionId}:agent:one`, scopes: ["council:seat"] });
+        const before = requests;
+        await deny(grant.key);
+        assert.equal(requests, before);
     });
 
     for (const rejection of ["revoked-key", "revoked-client", "expired-key"] as const) {
@@ -204,21 +203,7 @@ try {
         });
     }
 
-    for (const rejection of ["revoked-seat", "expired-seat", "expired-session", "released-lease", "expired-lease", "stale-lease"] as const) {
-        await check(`${rejection} is rejected without a shared-key fallback`, async () => {
-            const grant = await seat();
-            if (rejection === "revoked-seat") await db.query("update council_seat_keys set revoked_at=now() where session_id=$1", [grant.sessionId]);
-            if (rejection === "expired-seat") await db.query("update council_seat_keys set expires_at=$1 where session_id=$2", [past(), grant.sessionId]);
-            if (rejection === "expired-session") await db.query("update council_sessions set status='expired' where id=$1", [grant.sessionId]);
-            if (rejection === "released-lease") await db.query("update council_host_leases set released_at=now() where session_id=$1", [grant.sessionId]);
-            if (rejection === "expired-lease") await db.query("update council_host_leases set lease_expires_at=$1 where session_id=$2", [past(), grant.sessionId]);
-            if (rejection === "stale-lease") await db.query("update council_host_leases set lease_epoch=4 where session_id=$1", [grant.sessionId]);
-            process.env.MCP_API_KEY = grant.key;
-            await deny(grant.key);
-        });
-    }
-
-    for (const prefix of ["zck_", "zcs_"]) {
+    for (const prefix of ["zck_"]) {
         await check(`${prefix} resolution fails closed on missing or malformed identity data`, async () => {
             for (const data of [null, {}, [], "invalid", { client_id: "incomplete" }, { key_id: "incomplete" }, { session_id: "incomplete" }, { seat_name: "incomplete" }]) {
                 rpcResponse = { data, status: 200 };

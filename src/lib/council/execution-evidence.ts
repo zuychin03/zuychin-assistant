@@ -75,25 +75,3 @@ export function executionSourceLabel(source: string | null): string {
 export function executionIdentityLabel(identity: string): string {
     return ({ verified_seat: "Verified seat", host_bound: "Host bound", owner_relay: "Owner relayed", unverified_declaration: "Unverified declaration" } as Record<string, string>)[identity] ?? "Not reported";
 }
-
-export interface FrozenExecutionItem {
-    itemId: string;
-    sequence: number;
-    agentName: string;
-    commitSha: string;
-    acceptedExecutionId: string | null;
-    executionEvidence: CouncilExecutionEvidence | null;
-}
-
-export function parseFrozenExecutionItems(value: unknown): FrozenExecutionItem[] {
-    const manifest = object(value);
-    if (!manifest || !Array.isArray(manifest.items)) return [];
-    return manifest.items.flatMap((value): FrozenExecutionItem[] => {
-        const row = object(value);
-        if (!row || typeof row.itemId !== "string" || typeof row.sequence !== "number" || typeof row.agentName !== "string" || typeof row.commitSha !== "string") return [];
-        const acceptedExecutionId = typeof row.acceptedExecutionId === "string" ? row.acceptedExecutionId : null;
-        const evidence = parseExecutionEvidence(row.executionEvidence);
-        return [{ itemId: row.itemId, sequence: row.sequence, agentName: row.agentName, commitSha: row.commitSha, acceptedExecutionId,
-            executionEvidence: evidence?.executionId === acceptedExecutionId && evidence.agentName === row.agentName ? evidence : null }];
-    });
-}

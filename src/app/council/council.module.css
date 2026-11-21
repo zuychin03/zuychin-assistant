@@ -56,8 +56,8 @@
 .subNote strong { color: var(--warning); font-weight: 600; }
 .subNote svg { vertical-align: -2px; color: var(--success); }
 
-/* Buttons. The [data-btn] form is for seat-keys-panel, whose load-gate test runs it without a CSS loader. */
-.btn, .evidenceButton, .council [data-btn] {
+/* Buttons. */
+.btn, .evidenceButton {
     display: inline-flex;
     flex: none;
     align-items: center;
@@ -75,16 +75,16 @@
     cursor: pointer;
     transition: border-color 120ms ease, background-color 120ms ease;
 }
-.btn svg, .evidenceButton svg, .council [data-btn] svg { color: var(--muted); }
-.btn:hover:not(:disabled), .evidenceButton:hover:not(:disabled), .council [data-btn]:hover:not(:disabled) { border-color: var(--faint); }
-.btn:disabled, .evidenceButton:disabled, .council [data-btn]:disabled { opacity: .5; cursor: not-allowed; }
-.btn[data-done] svg, .council [data-btn][data-done] svg { color: var(--success); }
+.btn svg, .evidenceButton svg { color: var(--muted); }
+.btn:hover:not(:disabled), .evidenceButton:hover:not(:disabled) { border-color: var(--faint); }
+.btn:disabled, .evidenceButton:disabled { opacity: .5; cursor: not-allowed; }
+.btn[data-done] svg { color: var(--success); }
 .primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .primary svg { color: var(--on-accent); }
 .primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
-.danger, .danger svg, .council [data-btn="danger"], .council [data-btn="danger"] svg { color: var(--danger); }
+.danger, .danger svg { color: var(--danger); }
 .small { height: 28px; padding: 0 10px 0 8px; font-size: 13px; }
-.iconOnly, .council [data-btn][data-icon] { width: 32px; padding: 0; }
+.iconOnly { width: 32px; padding: 0; }
 .buttonRow { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .liveToggle[aria-pressed="true"] svg { color: var(--success); }
@@ -212,10 +212,11 @@
 .seatGrid { display: flex; flex-direction: column; gap: 6px; }
 .seatRow {
     display: grid;
-    grid-template-columns: minmax(180px, 1.6fr) minmax(110px, .8fr) minmax(130px, 1fr) auto auto;
+    grid-template-columns: minmax(160px, 1.3fr) minmax(100px, .7fr) minmax(210px, 1.5fr) auto auto;
     align-items: center;
     gap: 8px;
 }
+.angleField { display: flex; min-width: 0; gap: 6px; }
 .formNote { color: var(--muted); font-size: 12.5px; line-height: 1.55; }
 .remoteBrief {
     max-height: 380px;
@@ -382,15 +383,15 @@
 @container council (max-width: 600px) {
     .modelRow { grid-template-columns: minmax(0, 1fr); padding-block: 6px; }
     .seatRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding-block: 8px; border-top: 1px solid var(--line); }
-    .seatRow > :first-child { grid-column: 1 / -1; }
+    .seatRow > :first-child, .seatRow > :nth-child(2), .seatRow > .angleField { grid-column: 1 / -1; }
     .seatRow > :last-child { justify-self: end; }
     .evidenceGrid { grid-template-columns: minmax(0, 1fr); }
     .permissionButtons { margin-left: 0; }
     .rowMeta { flex-basis: 100%; margin-left: 0; }
 }
 @media (pointer: coarse) {
-    .btn, .evidenceButton, .council [data-btn], .input { min-height: 44px; }
-    .iconOnly, .council [data-btn][data-icon] { width: 44px; }
+    .btn, .evidenceButton, .input { min-height: 44px; }
+    .iconOnly { width: 44px; }
     .council :is(input, textarea) { font-size: 16px; }
     .evidence summary, .executionHistory > summary { padding-block: 12px; }
     .railItem { padding-block: 10px; }

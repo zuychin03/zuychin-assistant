@@ -84,29 +84,6 @@ test('notification badge is white geometry on transparency', async () => {
   assert(transparent > 2000 && opaque > 500);
 });
 
-test('Windows ICO has four valid independently decodable PNG frames', async () => {
-  const ico = read('src-tauri/icons/icon.ico');
-  assert.equal(ico.readUInt16LE(0), 0);
-  assert.equal(ico.readUInt16LE(2), 1);
-  assert.equal(ico.readUInt16LE(4), 4);
-  let expectedOffset = 70;
-  for (const [index, size] of [16, 32, 48, 256].entries()) {
-    const entry = 6 + index * 16;
-    assert.equal(ico[entry] || 256, size);
-    assert.equal(ico[entry + 1] || 256, size);
-    assert.equal(ico.readUInt16LE(entry + 6), 32);
-    const length = ico.readUInt32LE(entry + 8);
-    const offset = ico.readUInt32LE(entry + 12);
-    assert.equal(offset, expectedOffset);
-    const metadata = await sharp(ico.subarray(offset, offset + length)).metadata();
-    assert.equal(metadata.format, 'png');
-    assert.equal(metadata.width, size);
-    assert.equal(metadata.height, size);
-    expectedOffset += length;
-  }
-  assert.equal(expectedOffset, ico.length);
-});
-
 test('existing consumers reference generated assets and Apple metadata', () => {
   const layout = read('src/app/layout.tsx').toString();
   const worker = read('public/sw.js').toString();
@@ -120,8 +97,8 @@ test('existing consumers reference generated assets and Apple metadata', () => {
   assert.match(manifest, /purpose: "maskable"/);
 });
 
-test('all nine generated assets reproduce exactly', async () => {
+test('all seven generated assets reproduce exactly', async () => {
   const artifacts = await brand.generate(sharp);
-  assert.equal(Object.keys(artifacts).length, 9);
+  assert.equal(Object.keys(artifacts).length, 7);
   for (const [file, content] of Object.entries(artifacts)) assert(read(file).equals(Buffer.from(content)), file);
 });

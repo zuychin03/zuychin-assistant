@@ -4,9 +4,8 @@ import { writeVaultPage } from "@/lib/vault/ingest";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
 import {
     acceptVerdict, getSessionById, listParticipants, markArchive, proposeVerdict, readTranscript,
-    validateWorkItems, type CouncilMessage, type CouncilSession, type CouncilWorkItemPlan,
+    type CouncilMessage, type CouncilSession,
 } from "./store";
-import { createCampaign, type CouncilWorkItemInput } from "./campaign";
 
 // Persistence invariant: propose first, then finalize after owner acceptance.
 
@@ -19,7 +18,6 @@ export interface CloseOutcome {
     closer: string;
     vaultPath: string | null;
     archiveError: string | null;
-    campaignId: string | null;
 }
 
 export interface ProposeOutcome {
@@ -58,24 +56,10 @@ export async function proposeCouncilVerdict(params: {
     closer: string;
     verdict: string;
     openQuestions: string[];
-    workItems?: CouncilWorkItemInput[];
 }): Promise<ProposeOutcome> {
-    const { session, closer, verdict, openQuestions, workItems } = params;
+    const { session, closer, verdict, openQuestions } = params;
 
-    // Validate before the verdict CAS to avoid an unfinalizable state.
-    if (workItems?.length) {
-        const reason = await validateWorkItems({ sessionId: session.id, createdBy: closer, workItems });
-        if (reason) {
-            throw new Error(
-                `Work plan rejected: ${reason}. The council is still running and the verdict was not recorded - fix the plan and conclude again.`,
-            );
-        }
-    }
-
-    const cas = await proposeVerdict({
-        sessionId: session.id, closer, verdict, openQuestions,
-        workItems: workItems as CouncilWorkItemPlan[] | undefined,
-    });
+    const cas = await proposeVerdict({ sessionId: session.id, closer, verdict, openQuestions });
     if (!cas.changed) {
         return {
             changed: false,
@@ -108,26 +92,12 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
             closer: cas.closer ?? session.closerName,
             vaultPath: cas.vaultPath ?? null,
             archiveError: null,
-            campaignId: null,
         };
     }
 
     const verdict = cas.verdict ?? "";
     const closer = cas.closer ?? session.closerName;
     const openQuestions = session.openQuestions;
-
-    let campaignId: string | null = null;
-    if (cas.workItems.length) {
-        // Debug: roster drift can invalidate a previously checked plan.
-        try {
-            const campaign = await createCampaign({
-                sessionId: session.id, createdBy: closer, workItems: cas.workItems,
-            });
-            campaignId = campaign.campaign.id;
-        } catch (err) {
-            console.error("[Council] campaign creation failed after accept:", err);
-        }
-    }
 
     const [messages, participants] = await Promise.all([
         readTranscript({ sessionId: session.id, limit: 200 }),
@@ -175,7 +145,7 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
         }).catch((e) => console.warn("[Council] Follow-up todo failed:", e));
     }
 
-    return { changed: true, verdict, closer, vaultPath, archiveError, campaignId };
+    return { changed: true, verdict, closer, vaultPath, archiveError };
 }
 
 export async function closeCouncil(params: {
@@ -183,7 +153,6 @@ export async function closeCouncil(params: {
     closer: string;
     verdict: string;
     openQuestions: string[];
-    workItems?: CouncilWorkItemInput[];
 }): Promise<CloseOutcome> {
     const proposed = await proposeCouncilVerdict(params);
     const session = (await getSessionById(params.session.id)) ?? params.session;
@@ -194,7 +163,6 @@ export async function closeCouncil(params: {
             closer: proposed.closer,
             vaultPath: session.vaultPath,
             archiveError: null,
-            campaignId: null,
         };
     }
     return finalizeCouncil(session);

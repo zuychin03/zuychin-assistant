@@ -42,6 +42,8 @@ export interface CouncilProposal {
     online?: boolean;
     allowPaid?: boolean;
     purpose?: string;
+    /** Research first: searches the server runs once before round 1. */
+    research?: { web: boolean; notes: boolean; query?: string };
 }
 
 export interface MessageMetadata {

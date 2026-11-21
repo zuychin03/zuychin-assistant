@@ -13,7 +13,6 @@ const rasterSpecs = [
   { file: 'public/icons/icon-512.png', size: 512, fraction: 0.84 },
   { file: 'public/icons/icon-maskable-512.png', size: 512, fraction: 0.66 },
   { file: 'public/icons/badge-72.png', size: 72, fraction: 0.9, transparent: true },
-  { file: 'src-tauri/icons/icon.png', size: 512, fraction: 0.84 },
 ];
 
 function readMaster() {
@@ -41,24 +40,6 @@ function squareSvg({ size, fraction, transparent = false }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${background}<svg x="${(size - width) / 2}" y="${(size - height) / 2}" width="${width}" height="${height}" viewBox="${mark.viewBox}" fill="${transparent ? '#ffffff' : palette.reversed}" fill-rule="evenodd">${mark.paths}</svg></svg>\n`;
 }
 
-function packIco(images) {
-  const header = Buffer.alloc(6 + 16 * images.length);
-  header.writeUInt16LE(1, 2);
-  header.writeUInt16LE(images.length, 4);
-  let offset = header.length;
-  images.forEach(({ size, png }, index) => {
-    assert([16, 32, 48, 256].includes(size));
-    const entry = 6 + 16 * index;
-    header[entry] = header[entry + 1] = size === 256 ? 0 : size;
-    header.writeUInt16LE(1, entry + 4);
-    header.writeUInt16LE(32, entry + 6);
-    header.writeUInt32LE(png.length, entry + 8);
-    header.writeUInt32LE(offset, entry + 12);
-    offset += png.length;
-  });
-  return Buffer.concat([header, ...images.map(image => image.png)]);
-}
-
 function parseArgs(args) {
   let sharpModule;
   let check = false;
@@ -74,11 +55,6 @@ function parseArgs(args) {
 async function generate(sharp) {
   const artifacts = { 'public/zuychin-logo.svg': readMaster().svg, 'public/favicon.svg': themedSvg() };
   for (const spec of rasterSpecs) artifacts[spec.file] = await sharp(Buffer.from(squareSvg(spec))).png().toBuffer();
-  const icoImages = [];
-  for (const size of [16, 32, 48, 256]) {
-    icoImages.push({ size, png: await sharp(Buffer.from(squareSvg({ size, fraction: 0.9 }))).png().toBuffer() });
-  }
-  artifacts['src-tauri/icons/icon.ico'] = packIco(icoImages);
   return artifacts;
 }
 
@@ -94,5 +70,5 @@ async function main(args) {
   console.log(JSON.stringify({ mode: check ? 'checked' : 'generated', master: masterFile, files: Object.keys(artifacts), sharp: sharp.versions.sharp }));
 }
 
-module.exports = { root, masterFile, palette, rasterSpecs, readMaster, themedSvg, squareSvg, packIco, parseArgs, generate };
+module.exports = { root, masterFile, palette, rasterSpecs, readMaster, themedSvg, squareSvg, parseArgs, generate };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });

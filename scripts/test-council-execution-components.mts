@@ -23,7 +23,6 @@ function load(relative: string, extras: Record<string, unknown> = {}) {
     return loaded.exports;
 }
 const components = load("../src/app/council/execution-evidence.tsx");
-const { IntegrationPanel } = load("../src/app/council/integration-panel.tsx", { "./execution-evidence": components, "./owner-merge-package": { OwnerMergePackage: () => null } });
 const evidence = {
     executionId: "00000000-0000-4000-8000-000000000001", agentName: "reviewer", connectorKind: "acp", identityAssurance: "host_verified",
     provider: "fixture", adapterVersion: "1.2.3", requestedModel: "requested-model", effectiveModel: "observed-model",
@@ -61,19 +60,4 @@ test("historical execution policy fields render as unknown without applying toda
     assert(html.includes("Host generation</dt><dd>Not recorded"));
     assert(html.includes("Policy version</dt><dd>Not recorded"));
     assert(!html.includes("typescript-node-v3-2026-09-30"));
-});
-
-test("integration JSX uses only the exact frozen accepted snapshot", () => {
-    const campaign = { status: "cancelled", baseBranch: "main", integrationStatus: "verified", integrationManifest: { items: [{
-        itemId: "task", sequence: 1, agentName: "reviewer", commitSha: "exact-accepted-sha", acceptedExecutionId: evidence.executionId, executionEvidence: evidence,
-    }, { itemId: "old-task", sequence: 2, agentName: "reviewer", commitSha: "old-sha" }] } };
-    const html = renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign, agentNames: [], onChange: () => {} }));
-    for (const text of ["Accepted submission evidence", ">2 tasks<", "exact-accepted-sha", "observed-model", "old-sha", "not recorded"]) assert(html.includes(text), text);
-    const single = { ...campaign, integrationManifest: { items: campaign.integrationManifest.items.slice(0, 1) } };
-    assert(renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign: single, agentNames: [], onChange: () => {} })).includes(">1 task<"));
-    const wrong = structuredClone(campaign);
-    wrong.integrationManifest.items[0].executionEvidence = { ...evidence, executionId: "00000000-0000-4000-8000-000000000099", effectiveModel: "wrong-run" };
-    const unavailable = renderToStaticMarkup(createElement(IntegrationPanel, { code: "CN-TEST", campaign: wrong, agentNames: [], onChange: () => {} }));
-    assert(unavailable.includes("evidence unavailable"));
-    assert(!unavailable.includes("wrong-run"));
 });

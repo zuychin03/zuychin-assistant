@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseExecutionEvidence, parseFrozenExecutionItems, resolveExecutionEvidence, executionSourceLabel } from "../src/lib/council/execution-evidence.ts";
+import { parseExecutionEvidence, resolveExecutionEvidence, executionSourceLabel } from "../src/lib/council/execution-evidence.ts";
 
 const evidence = {
     executionId: "00000000-0000-4000-8000-000000000001", agentName: "reviewer",
@@ -43,15 +43,6 @@ test("malformed snapshots cannot introduce a fabricated model or binding", () =>
     assert.equal(parseExecutionEvidence({ ...evidence, executionId: "" }), null);
     assert.equal(parseExecutionEvidence({ ...evidence, agentName: null }), null);
     assert.equal(parseExecutionEvidence({ ...evidence, effectiveModel: { name: "fabricated" } }), null);
-});
-
-test("frozen accepted evidence never uses another run or a newly submitted execution", () => {
-    const item = { itemId: "task", sequence: 1, agentName: "reviewer", commitSha: "accepted-sha", acceptedExecutionId: evidence.executionId };
-    const parsed = parseFrozenExecutionItems({ items: [{ ...item, executionEvidence: evidence, submittedExecutionId: "new-run", env: "private" }] });
-    assert.deepEqual(parsed, [{ ...item, executionEvidence: evidence }]);
-    assert.equal(parseFrozenExecutionItems({ items: [{ ...item, executionEvidence: { ...evidence, executionId: "00000000-0000-4000-8000-000000000002" } }] })[0].executionEvidence, null);
-    assert.equal(parseFrozenExecutionItems({ items: [{ ...item, executionEvidence: { ...evidence, agentName: "other-seat" } }] })[0].executionEvidence, null);
-    assert.equal(parseFrozenExecutionItems({ items: [{ ...item, acceptedExecutionId: null, executionEvidence: evidence }] })[0].executionEvidence, null);
 });
 
 test("legacy acknowledgement and declared configuration are not labelled independent readback", () => {

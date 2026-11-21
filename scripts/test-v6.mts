@@ -23,7 +23,6 @@ const tests = [
     "request-budget",
     "model-observations",
     "model-health",
-    "seat-key-load-gate",
     "admin-panel-state",
     "conversation-context",
     "gemini-chat-stream",

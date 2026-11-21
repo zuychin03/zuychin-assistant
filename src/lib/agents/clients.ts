@@ -5,26 +5,26 @@ export const KEY_PREFIX = "zck_";
 export const CLAIM_PREFIX = "zkc_";
 export const CLAIM_TTL_MINUTES = 15;
 
+// "council" survives only on keys issued before local councils were retired; it is never issued now.
 export type AccessLevel = "read" | "notes" | "full" | "council";
+export type IssuableAccessLevel = Exclude<AccessLevel, "council">;
 export type ClientKind = "local_host" | "remote_agent" | "owner_tool";
 
-// Council authority is opt-in per named client; full grants knowledge writes only.
-export const ACCESS_SCOPES: Record<AccessLevel, string[]> = {
+export const ACCESS_SCOPES: Record<IssuableAccessLevel, string[]> = {
     read: ["knowledge:read"],
     notes: ["knowledge:read", "notes:write"],
     full: ["knowledge:read", "notes:write", "vault:write"],
-    council: ["knowledge:read", "notes:write", "vault:write", "council:owner"],
 };
 
 export const ACCESS_LABELS: Record<AccessLevel, string> = {
     read: "Read-only",
     notes: "Notes read/write",
     full: "Full read/write",
-    council: "Full read/write + convene councils",
+    council: "Full read/write (old council level)",
 };
 
-export function isAccessLevel(value: unknown): value is AccessLevel {
-    return value === "read" || value === "notes" || value === "full" || value === "council";
+export function isAccessLevel(value: unknown): value is IssuableAccessLevel {
+    return value === "read" || value === "notes" || value === "full";
 }
 
 export interface AgentClientKey {
