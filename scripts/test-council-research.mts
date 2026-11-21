@@ -199,3 +199,11 @@ test("angles: presets are unique, fit the Angle field, and start with the defaul
         { freeOnly: true, allowPaid: false }, () => model as never);
     assert.ok(picked.ok && picked.seats[0].expertise === PRESET_ANGLES[6].text && picked.seats[1].expertise === DEFAULT_STANCES[1]);
 });
+
+test("vault: tools that list pages keep each page's best section once, up to the limit", async () => {
+    const { firstHitPerPage } = await import("../src/lib/vault/page-hits");
+    const ranked = ["a#1", "a#2", "b#1", "a#3", "c#1", "b#2", "d#1"].map((id) => ({ path: `wiki/${id.split("#")[0]}.md`, id }));
+    assert.deepEqual(firstHitPerPage(ranked).map((h) => h.id), ["a#1", "b#1", "c#1", "d#1"]);
+    assert.deepEqual(firstHitPerPage(ranked, 2).map((h) => h.id), ["a#1", "b#1"]);
+    assert.deepEqual(firstHitPerPage([]), []);
+});

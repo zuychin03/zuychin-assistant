@@ -240,8 +240,7 @@ function researchDeps(freeOnly: boolean): ResearchDeps {
         },
         searchVault: async (query) => {
             if (!getVaultConfig()) return null;
-            // Sections, not pages: ask for more so three distinct pages survive the merge.
-            const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, matchCount: RESEARCH_VAULT_PAGES * 4 });
+            const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, onePerPage: true, matchCount: RESEARCH_VAULT_PAGES });
             return hits.map((hit) => ({ path: hit.path, title: hit.title, summary: hit.summary }));
         },
     };

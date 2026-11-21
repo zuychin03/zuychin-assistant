@@ -1103,7 +1103,7 @@ async function executeVaultSearch(query: string, embRef: ResolvedEmbedding): Pro
     if (!getVaultConfig()) return "The second-brain vault is not configured.";
 
     try {
-        const hits = await searchVaultPages({ query, embRef, hybrid: true });
+        const hits = await searchVaultPages({ query, embRef, hybrid: true, onePerPage: true });
         if (hits.length === 0) {
             return "No vault pages matched. The topic may not have been ingested yet - check index.md via vault_read('index.md') if unsure.";
         }

@@ -804,7 +804,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `manage_scheduled_task` | Create / list / update / delete one-off or recurring scheduled tasks |
 | `manage_memory_facts` | List / forget / correct the extracted long-term Known Facts |
 | `manage_notes` | List / update / delete saved knowledge-base notes (by category) |
-| `vault_search` | Hybrid keyword + vector search over second-brain wiki pages |
+| `vault_search` | Hybrid keyword + vector search over second-brain wiki pages, one hit per page (its best section) |
 | `vault_read` | Read a wiki page from the vault |
 | `vault_ingest` | Full ingest pipeline: raw capture → authored page → links → verified commit |
 | `vault_write` | Direct wiki page write (index/log/embedding kept consistent) |
@@ -839,7 +839,7 @@ Councils are not on this server: they start from the app, the chat or Telegram.
 |----------|--------|--------------|
 | `search_knowledge` | read | Hybrid keyword + vector search over the shared knowledge base (optional note-category filter) |
 | `list_notes` | read | Browse saved notes newest-first, optionally by category tag |
-| `vault_search` | read | Search the second-brain vault pages (uses the vault's dominant embedding partition) |
+| `vault_search` | read | Search the second-brain vault pages, one hit per page (uses the vault's dominant embedding partition) |
 | `vault_read` | read | Fetch a vault page's full Markdown by path |
 | `get_recent_conversations` | read | Recent messages across channels, for shared context on what you've been working on |
 | `save_note` | notes | Store a note that becomes searchable by every connected agent and the assistant |

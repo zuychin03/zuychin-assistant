@@ -2,6 +2,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { embedText, getEmbeddingRef, type EmbedInputType, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { indexKnowledgeDocument, recallKnowledge } from "@/lib/knowledge/store";
 import type { KnowledgeScoreBreakdown } from "@/lib/knowledge/types";
+import { firstHitPerPage } from "./page-hits";
 
 export interface VaultPageHit {
     path: string;
@@ -132,17 +133,21 @@ export async function searchVaultPages(params: {
     // similarity 0, so matchThreshold does not apply; leave this off for
     // threshold-driven callers (ingest link candidates).
     hybrid?: boolean;
+    // Hybrid only: one hit per page, its best section, for tools that list pages.
+    onePerPage?: boolean;
 }): Promise<VaultPageHit[]> {
     const embedding = await embedText(params.embRef, params.query, params.inputType ?? "query");
 
     if (params.hybrid) {
+        const wanted = params.matchCount ?? 8;
         const hits = await recallKnowledge({
             query: params.query,
             queryEmbedding: embedding,
             embRef: params.embRef,
-            matchCount: params.matchCount ?? 8,
+            // Extra sections so enough distinct pages survive the merge.
+            matchCount: params.onePerPage ? wanted * 3 : wanted,
         });
-        if (hits) return hits.map((hit) => ({
+        if (hits) return (params.onePerPage ? firstHitPerPage(hits, wanted) : hits).map((hit) => ({
             path: hit.path,
             title: hit.title,
             summary: hit.excerpt.slice(0, 240),

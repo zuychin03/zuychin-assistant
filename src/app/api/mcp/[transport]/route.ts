@@ -249,7 +249,7 @@ const handler = createMcpHandler(
                     if (!getVaultConfig()) {
                         return { content: [{ type: "text", text: "The vault is not configured." }] };
                     }
-                    const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true });
+                    const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, onePerPage: true });
                     const text = hits.length
                         ? hits
                               .map(
