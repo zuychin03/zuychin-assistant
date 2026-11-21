@@ -78,7 +78,12 @@ const tests = [
     "provider-key-admin",
     "server-only-tables",
     "v6-migrations",
-    "security-boundaries"
+    "security-boundaries",
+    "telegram-webhook",
+    "telegram-voice",
+    "channel-threads",
+    "approval-buttons",
+    "chat-approval"
 ];
 const failed: string[] = [];
 for (const test of tests) {

@@ -1,16 +1,27 @@
+import { randomUUID } from "node:crypto";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
 import { replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
 import { getDefaultProfile } from "@/lib/db";
-import { allowedTelegramChats, telegramSecretMatches, updateChatId } from "@/lib/messaging/telegram-access";
+import { allowedTelegramChats, allowedTelegramSenders, telegramSecretMatches, telegramSenderAllowed, updateChatId } from "@/lib/messaging/telegram-access";
+import { claimChannelUpdate } from "@/lib/messaging/channel-updates";
+import { parseTelegramCommand, telegramFailureText, type TelegramCommand } from "@/lib/messaging/telegram-turn";
+import { transcribeVoiceNote, VOICE_NOTE_FALLBACK_TEXT } from "@/lib/voice/voice-note";
+import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
+import { APPROVAL_CALLBACK } from "@/lib/tasks/approval-notices";
+import { claimApproval, completeApproval, type ApprovalDecision } from "@/lib/tasks/decide";
+import { withChatApprovals } from "@/lib/tasks/chat-approval";
+import type { ApprovalStatus } from "@/lib/tasks/types";
 import type { FileAttachment } from "@/lib/types";
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
+// Telegram shows "typing" for about 5 seconds per chat action.
+const TYPING_EVERY_MS = 4500;
 
 export const maxDuration = 60;
 
@@ -63,9 +74,49 @@ async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boo
 
 // Feedback taps on initiative messages: callback_data is `ini:<uuid>:1|-1`.
 // Record the vote, toast an ack, and strip the buttons so it reads as done.
+const TAKEN: Partial<Record<ApprovalStatus, string>> = {
+    expired: "This approval has expired. Nothing was run.",
+    executing: "Already approved. It is running.",
+    succeeded: "Already approved and done.",
+    rejected: "Already rejected.",
+    outcome_unknown: "Already approved, but the outcome is unknown. Check Tasks.",
+};
+
+// The webhook has already checked the secret, the chat and that the tap came from an owner id.
+async function handleApprovalTap(cbId: string, id: string, decision: ApprovalDecision, chatId?: number, messageId?: number) {
+    let claim: Awaited<ReturnType<typeof claimApproval>>;
+    try {
+        claim = await claimApproval(id, decision);
+    } catch (error) {
+        console.error("[Telegram] Approval decision failed:", error);
+        await answerTelegramCallbackQuery(cbId, "Couldn't record that. Try again, or open Tasks.");
+        return;
+    }
+    if (claim.kind === "missing") {
+        await answerTelegramCallbackQuery(cbId, "This approval is no longer available.");
+        if (chatId !== undefined && messageId !== undefined) await editTelegramMessageReplyMarkup(chatId, messageId);
+        return;
+    }
+    if (claim.kind === "taken") {
+        await answerTelegramCallbackQuery(cbId, TAKEN[claim.approval.status] ?? "Already decided.");
+        return;
+    }
+    await answerTelegramCallbackQuery(cbId, decision === "approve" ? "Approving…" : "Rejected.");
+    await completeApproval(claim, "telegram");
+}
+
 async function handleCallbackQuery(cb: Record<string, unknown>) {
     const cbId = cb.id as string;
     const data = (cb.data as string | undefined) ?? "";
+    const msg = cb.message as Record<string, unknown> | undefined;
+    const chatId = (msg?.chat as Record<string, unknown> | undefined)?.id as number | undefined;
+    const messageId = msg?.message_id as number | undefined;
+
+    const approval = APPROVAL_CALLBACK.exec(data);
+    if (approval) {
+        await handleApprovalTap(cbId, approval[1], approval[2] === "a" ? "approve" : "reject", chatId, messageId);
+        return;
+    }
 
     const match = /^ini:([0-9a-f-]{36}):(1|-1)$/.exec(data);
     if (!match) {
@@ -76,10 +127,6 @@ async function handleCallbackQuery(cb: Record<string, unknown>) {
 
     const ok = await setInitiativeFeedback(match[1], Number(match[2]) as 1 | -1);
     await answerTelegramCallbackQuery(cbId, ok ? "Noted, thanks!" : "Couldn't record that.");
-
-    const msg = cb.message as Record<string, unknown> | undefined;
-    const chatId = (msg?.chat as Record<string, unknown> | undefined)?.id as number | undefined;
-    const messageId = msg?.message_id as number | undefined;
     if (ok && chatId !== undefined && messageId !== undefined) {
         await editTelegramMessageReplyMarkup(chatId, messageId);
     }
@@ -99,21 +146,9 @@ async function processUpdate(update: Record<string, unknown>) {
     }
 
     const chatId = (message.chat as Record<string, unknown>).id as number;
-    let text = ((message.text as string | undefined)?.trim() ?? (message.caption as string | undefined)?.trim() ?? "");
+    const raw = ((message.text as string | undefined)?.trim() ?? (message.caption as string | undefined)?.trim() ?? "");
 
     console.log(`[Telegram] Processing from chat ${chatId}, type=${update.message ? "message" : "channel_post"}`);
-
-    let useSearch = false;
-    let useThinking = false;
-    let useAgent = false;
-    const commandMatch = text.match(/^[/!](?:search|think|agent)(?:@\S+)?\s*([\s\S]*)/i);
-    if (commandMatch) {
-        const cmd = text.split(/[\s@]/)[0].slice(1).toLowerCase();
-        if (cmd === "search") useSearch = true;
-        if (cmd === "think") useThinking = true;
-        if (cmd === "agent") useAgent = true;
-        text = commandMatch[1].trim();
-    }
 
     const photo = message.photo as unknown[] | undefined;
     const document = message.document as Record<string, unknown> | undefined;
@@ -122,22 +157,50 @@ async function processUpdate(update: Record<string, unknown>) {
     const audio = message.audio as Record<string, unknown> | undefined;
     const hasAttachment = photo || document || video || voice || audio;
 
-    if (!text && !hasAttachment) {
+    if (!raw && !hasAttachment) {
         console.log(`[Telegram] Skipping chat ${chatId} - empty message`);
         return;
     }
 
-    console.log(`[Telegram] Chat ${chatId}: "${text.substring(0, 80)}"${hasAttachment ? " [+attachment]" : ""}`);
+    const turn = await channelTurn("telegram", String(chatId), raw);
+    if (turn.kind === "help") {
+        await sendTelegramMessage(chatId, channelHelpText());
+        return;
+    }
+    if (turn.kind === "started" && !hasAttachment) {
+        await sendTelegramMessage(chatId, CHANNEL_STARTED_TEXT);
+        return;
+    }
+    const command = parseTelegramCommand(turn.kind === "message" ? turn.message : "");
+
+    console.log(`[Telegram] Chat ${chatId}: "${command.text.substring(0, 80)}"${hasAttachment ? " [+attachment]" : ""}`);
 
     await sendTelegramChatAction(chatId);
+    const typing = setInterval(() => void sendTelegramChatAction(chatId), TYPING_EVERY_MS);
+    try {
+        await answerMessage(chatId, command, turn.conversationId ?? undefined, { photo, document, video, voice, audio, hasAttachment: !!hasAttachment });
+    } finally {
+        clearInterval(typing);
+    }
+}
 
+type Attachments = {
+    photo?: unknown[]; document?: Record<string, unknown>; video?: Record<string, unknown>;
+    voice?: Record<string, unknown>; audio?: Record<string, unknown>; hasAttachment: boolean;
+};
+
+async function answerMessage(chatId: number, command: TelegramCommand, conversationId: string | undefined, attachments: Attachments) {
+    const { photo, document, video, voice, audio, hasAttachment } = attachments;
+    const text = command.text;
     let file: FileAttachment | undefined;
+    let voiceBytes: Buffer | undefined;
     if (hasAttachment) {
         try {
             let fileId: string | undefined;
             let fileName = "attachment";
             let fileSize = 0;
             let mimeOverride: string | undefined;
+            let isVoiceNote = false;
 
             if (photo) {
                 const largest = photo[photo.length - 1] as Record<string, unknown>;
@@ -158,6 +221,7 @@ async function processUpdate(update: Record<string, unknown>) {
                 fileName = "voice.ogg";
                 fileSize = (voice.file_size as number) || 0;
                 mimeOverride = "audio/ogg";
+                isVoiceNote = true;
             } else if (audio) {
                 fileId = audio.file_id as string;
                 fileName = (audio.file_name as string) || "audio";
@@ -175,6 +239,7 @@ async function processUpdate(update: Record<string, unknown>) {
                         base64: downloaded.buffer.toString("base64"),
                         size: downloaded.buffer.length,
                     };
+                    if (isVoiceNote) voiceBytes = downloaded.buffer;
                     console.log(`[Telegram] Attachment: ${fileName} (${(file.size / 1024).toFixed(0)} KB, ${mimeType})`);
                 }
             } else if (fileSize > MAX_FILE_SIZE) {
@@ -185,15 +250,27 @@ async function processUpdate(update: Record<string, unknown>) {
         }
     }
 
+    // A transcript lets any model answer; Gemini hears the audio only when the box cannot transcribe it.
+    const note = voiceBytes ? await transcribeVoiceNote(voiceBytes, typeof voice?.duration === "number" ? voice.duration : undefined) : null;
+    if (note && !note.ok) console.log(`[Telegram] Voice note not transcribed (${note.reason}); sending the audio instead.`);
+    const spoken = note?.ok ? note.text : null;
+    const fallback = file ? (voiceBytes ? VOICE_NOTE_FALLBACK_TEXT : `[Sent ${file.name}]`) : "";
+
     console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
-    const { reply, artifacts, freeOnly } = await ragChat({
-        message: text || (file ? `[Sent ${file.name}]` : ""),
+    const message = spoken !== null ? [text, spoken].filter(Boolean).join("\n\n") : text || fallback;
+    const owner = await getDefaultProfile();
+    // Email and calendar changes asked for in this turn wait for Approve / Reject buttons.
+    const turn = { channel: "telegram" as const, conversationId: conversationId ?? null, turnId: randomUUID(), instruction: message, userProfileId: owner?.id ?? null };
+    const { reply, artifacts, freeOnly } = await withChatApprovals(turn, () => ragChat({
+        message,
         channel: "telegram",
-        file,
-        thinking: useThinking,
-        search: useSearch,
-        agent: useAgent,
-    });
+        conversationId,
+        file: spoken !== null ? undefined : file,
+        inputMode: spoken !== null ? "voice" : undefined,
+        thinking: command.thinking,
+        search: command.search,
+        agent: command.agent,
+    }));
 
     console.log(`[Telegram] ragChat done. Reply length: ${reply?.length ?? 0}, artifacts: ${artifacts.length}`);
     await sendTelegramMessage(chatId, reply || "No response.");
@@ -245,13 +322,43 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
     }
 
+    if (allowed.size > 0) {
+        const senders = allowedTelegramSenders();
+        if (!telegramSenderAllowed(update, senders)) {
+            console.warn(senders.size === 0
+                ? "[Telegram] No owner user id is known; set TELEGRAM_OWNER_USER_IDS. Ignoring update."
+                : `[Telegram] Ignoring update from a non-owner sender in chat ${chatId}.`);
+            return NextResponse.json({ ok: true });
+        }
+    }
+
+    if (typeof update.update_id === "number" && await claimChannelUpdate("telegram", String(update.update_id)) === "seen") {
+        console.log(`[Telegram] Update ${update.update_id} was already handled; ignoring the re-delivery.`);
+        return NextResponse.json({ ok: true });
+    }
+
     console.log("[Telegram Webhook] Received update:", JSON.stringify(update).substring(0, 300));
 
+    // Answer before the turn runs: Telegram re-sends an update it gets no 200 for,
+    // and Cloudflare cuts any response at 100 seconds.
+    await afterResponse(() => runUpdate(update, chatId));
+    return NextResponse.json({ ok: true });
+}
+
+async function runUpdate(update: Record<string, unknown>, chatId: string | null) {
     try {
         await processUpdate(update);
     } catch (err) {
         console.error("[Telegram Webhook] processUpdate failed:", err);
+        if (chatId !== null && !update.callback_query) await sendTelegramMessage(chatId, telegramFailureText(err));
     }
+}
 
-    return NextResponse.json({ ok: true });
+// after() needs a request scope; outside one (the offline suites) the work runs before the reply.
+async function afterResponse(work: () => Promise<void>) {
+    try {
+        after(work);
+    } catch {
+        await work();
+    }
 }

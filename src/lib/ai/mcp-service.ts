@@ -1,5 +1,6 @@
-import { gateUnattendedTool, recordUnattendedSource } from "@/lib/tasks/unattended-policy";
-import { proposeAction } from "@/lib/tasks/run-store";
+import { gateUnattendedTool, isUnattendedRun, recordUnattendedSource } from "@/lib/tasks/unattended-policy";
+import { gateChatSend } from "@/lib/tasks/chat-approval";
+import { proposeWithNotice } from "@/lib/tasks/approval-notices";
 import { assertFreeModel, freeToolRefusal } from "@/lib/ai/model-policy";
 import { Type } from "@google/genai";
 import {
@@ -687,8 +688,11 @@ import { catalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
 export async function executeTool(
     toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
 ): Promise<string> {
-    const pending = await gateUnattendedTool(toolName, args, proposeAction);
+    const pending = await gateUnattendedTool(toolName, args, proposeWithNotice);
     if (pending) return pending;
+    // An approved action runs under the unattended permit, which already authorised it.
+    const held = isUnattendedRun() ? null : await gateChatSend(toolName, args);
+    if (held) return held;
     recordReplySources([{ kind: toolName === "search_web" ? "web" : "tool", label: toolName, ref: toolName, weight: 0.5 }]);
     const knowledgeTool = ["search_knowledge", "vault_read", "vault_search", "vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
     const knowledgePayload = ["vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);

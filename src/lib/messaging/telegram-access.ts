@@ -8,6 +8,26 @@ export function allowedTelegramChats(env: Record<string, string | undefined> = p
         .filter((id) => /^-?\d+$/.test(id)));
 }
 
+// A private chat's id is its user's id, so positive allowlisted chats name their owner.
+// Groups need TELEGRAM_OWNER_USER_IDS, or every member could act as the owner.
+export function allowedTelegramSenders(env: Record<string, string | undefined> = process.env): Set<string> {
+    const owners = [...allowedTelegramChats(env)].filter((id) => !id.startsWith("-"));
+    const extra = (env.TELEGRAM_OWNER_USER_IDS ?? "").split(",").map((id) => id.trim()).filter((id) => /^\d+$/.test(id));
+    return new Set([...owners, ...extra]);
+}
+
+// channel_post carries no sender; only a channel's admins can post, so the chat check covers it.
+export function telegramSenderAllowed(update: Record<string, unknown>, senders: Set<string>): boolean {
+    if (update.callback_query) return senders.has(senderId(update.callback_query));
+    if (update.message) return senders.has(senderId(update.message));
+    return update.channel_post !== undefined;
+}
+
+function senderId(source: unknown): string {
+    const id = (source as { from?: { id?: unknown } } | undefined)?.from?.id;
+    return typeof id === "number" || typeof id === "string" ? String(id) : "";
+}
+
 export function updateChatId(update: Record<string, unknown>): string | null {
     const callback = update.callback_query as { message?: { chat?: { id?: unknown } } } | undefined;
     const message = (update.message ?? update.channel_post) as { chat?: { id?: unknown } } | undefined;

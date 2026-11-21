@@ -116,6 +116,11 @@
   font-weight: 500;
 }
 
+.rowChannel {
+  flex: none;
+  color: var(--muted);
+}
+
 .rowTitle {
   flex: 1;
   min-width: 0;

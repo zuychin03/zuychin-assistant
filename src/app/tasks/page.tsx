@@ -11,6 +11,8 @@ import { approvalActionable, recurringScheduleLabel, runRequestKey, taskDraft, t
 import { submitRunRequest } from "./run-request";
 import styles from "./tasks.module.css";
 
+const CHAT_SOURCES: Record<string, string> = { telegram: "Telegram", discord: "Discord", web: "web chat" };
+
 function date(value: string | null, timezone?: string) {
     if (!value) return "Not recorded";
     try {
@@ -192,9 +194,9 @@ export default function TasksPage() {
                 return <article className={styles.card} key={approval.id} id={`approval-${approval.id}`}>
                     <div className={styles.row}><h3>{approval.taskTitle}</h3><span className={styles.badge}>{approval.status === "pending" && !actionable ? "Expired" : approval.status.replaceAll("_", " ")}</span></div>
                     <p><strong>Action:</strong> {approval.tool}</p>
-                    <p className={styles.muted}>Expires {date(approval.expiresAt)} · Your local time</p>
+                    <p className={styles.muted}>{approval.source === "chat" ? `Asked in ${CHAT_SOURCES[approval.channel ?? ""] ?? "a chat"}` : "From a scheduled task"} · Expires {date(approval.expiresAt)} · Your local time</p>
                     <h4>Exact arguments</h4><pre className={styles.arguments} tabIndex={0} aria-label="Exact action arguments">{JSON.stringify(approval.args, null, 2)}</pre>
-                    <details><summary>Source instruction and context</summary><h4>Instruction</h4><p className={styles.instruction}>{approval.instruction}</p><h4>Context</h4><p className={styles.instruction}>{approval.sourceContext}</p><p className={styles.muted}>Run: {approval.runId}</p></details>
+                    <details><summary>Source instruction and context</summary><h4>Instruction</h4><p className={styles.instruction}>{approval.instruction}</p><h4>Context</h4><p className={styles.instruction}>{approval.sourceContext}</p>{approval.runId && <p className={styles.muted}>Run: {approval.runId}</p>}</details>
                     {approval.status === "outcome_unknown" && <p className={styles.warning}>The action may have reached its recipient, but no reliable result was recorded. Check the destination before taking further action. It will not be retried here.</p>}
                     {approval.status === "executing" && <p className={styles.muted}>Execution is in progress. Refresh to check its result.</p>}
                     {approval.receipt && <p className={styles.instruction}><strong>Receipt:</strong> {approval.receipt}</p>}

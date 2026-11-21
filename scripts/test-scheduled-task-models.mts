@@ -56,6 +56,7 @@ function supabaseResponse(url: URL, method: string, headers: Headers, body: stri
     if (method === "HEAD") return new Response(null, { status: 200, headers: { "Content-Range": "*/0" } });
     if (["assistant_start_task_run", "assistant_claim_task_delivery", "assistant_finish_task_run"].some(name => url.pathname.endsWith(`/rpc/${name}`))) return Response.json(true);
     if (url.pathname.endsWith("/rpc/assistant_context_snapshot")) return Response.json({ messages: [], revision: "fixture-empty", summary: null, project_id: null });
+    if (url.pathname.endsWith("/rpc/assistant_channel_thread")) return Response.json("telegram-conv-1");
     if (url.pathname.endsWith("/rpc/assistant_claim_task_run")) {
         const value = taskFixtures.get(JSON.parse(body).p_task_id)!;
         return Response.json({ status: "accepted", run: { id: `claimed-${value.id}`, task_id: value.id, user_profile_id: PROFILE.id, task_title: value.title, trigger: "manual", status: "running", started_at: new Date().toISOString(), finished_at: null, detail: null,
@@ -236,6 +237,14 @@ try {
         const recorded = calls.find((call) => call.url.pathname.endsWith("/rpc/assistant_finish_task_run"));
         assert.equal(JSON.parse(recorded?.body ?? "{}").p_status, "ok");
         assert.equal(calls.some(call => call.method === "PATCH" && call.url.pathname === "/rest/v1/scheduled_tasks"), false);
+        // The instruction was never typed into the chat; only the delivered result joins the chat's conversation.
+        const saved = calls.filter((call) => call.method === "POST" && call.url.pathname === "/rest/v1/messages").map((call) => JSON.parse(call.body));
+        assert.equal(saved.length, 1);
+        assert.equal(saved[0].role, "assistant");
+        assert.equal(saved[0].conversation_id, "telegram-conv-1");
+        assert.ok(saved[0].content.startsWith("🕑 **Stretch reminder**\n\nPaid Gemini reply"));
+        assert.equal(saved[0].metadata?.source, "scheduled_task");
+        assert.ok(!calls.some((call) => call.url.pathname.endsWith("/rpc/assistant_context_snapshot")), "a Telegram task reads no chat history");
     });
 
     await check("an agent-mode task keeps the lead and its workers on the paid key", async () => {

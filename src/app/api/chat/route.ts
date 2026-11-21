@@ -4,14 +4,12 @@ import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { getArtifact } from "@/lib/artifacts/store";
-import { isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "@/lib/types";
+import { isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
 import type { FileAttachment } from "@/lib/types";
-import type { MessageChannel } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
 import { inputModeError } from "@/lib/voice/input-mode";
 import { discordSpeechAttachment } from "@/lib/voice/discord-speech";
-
-const VALID_CHANNELS: MessageChannel[] = ["web", "discord", "telegram"];
+import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
 
 export const maxDuration = 300;
 
@@ -43,9 +41,9 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        if (!VALID_CHANNELS.includes(channel)) {
+        if (!isMessageChannel(channel)) {
             return NextResponse.json(
-                { error: `Invalid channel. Must be one of: ${VALID_CHANNELS.join(", ")}` },
+                { error: `Invalid channel. Must be one of: ${MESSAGE_CHANNELS.join(", ")}` },
                 { status: 400 }
             );
         }
@@ -67,12 +65,26 @@ export async function POST(req: NextRequest) {
             validatedFile = file;
         }
 
+        // The bot posts #ask-zuychin without a conversation id; the server keeps that chat's conversation.
+        let text: string = message.trim();
+        let turnConversationId = conversationId;
+        if (channel === "discord" && !conversationId) {
+            const chatKey = typeof body.chatKey === "string" && /^[\w-]{1,128}$/.test(body.chatKey) ? body.chatKey : "ask-zuychin";
+            const turn = await channelTurn("discord", chatKey, text);
+            if (turn.kind !== "message") {
+                const reply = turn.kind === "help" ? channelHelpText() : CHANNEL_STARTED_TEXT;
+                return NextResponse.json({ reply, messageId: "", userMessageId: "", artifacts: [] });
+            }
+            text = turn.message;
+            turnConversationId = turn.conversationId ?? undefined;
+        }
+
         const { reply, messageId, userMessageId, artifacts, replyTrace } = await ragChat({
-            message: message.trim(),
+            message: text,
             channel,
             imageBase64,
             file: validatedFile,
-            conversationId,
+            conversationId: turnConversationId,
             thinking,
             search,
             agent,

@@ -816,6 +816,26 @@
   color: var(--muted);
 }
 
+.channelNote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 14px;
+  text-align: center;
+}
+
+.channelNote > svg {
+  flex: none;
+  color: var(--muted);
+}
+
 .composer {
   padding: 12px 10px 8px 18px;
   border: 1px solid var(--line-strong);

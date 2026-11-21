@@ -1,7 +1,7 @@
 import { supabaseAdmin as supabase } from "./supabase";
 import { getEmbeddingRef } from "./ai/embeddings";
 import { resolveOwnerProfile } from "./owner-profile";
-import type { Message, MessageChannel, MessageMetadata, KnowledgeItem } from "./types";
+import { isMessageChannel, type Message, type MessageChannel, type MessageMetadata, type KnowledgeItem } from "./types";
 
 export async function saveMessage(params: {
     role: "user" | "assistant" | "system";
@@ -306,14 +306,21 @@ export async function createConversation(params: {
     return { id: data.id, title: data.title };
 }
 
+// The channel column arrives with v7-channel-threads.sql; before that every conversation is a web one.
+const missingColumn = (error: { code?: string } | null) => error?.code === "42703" || error?.code === "PGRST204";
+const rowChannel = (value: unknown): MessageChannel => isMessageChannel(value) ? value : "web";
+
 export async function listConversations(
     limit: number = 20
-): Promise<{ id: string; title: string; updatedAt: string; createdAt: string; projectId: string | null }[]> {
-    const { data, error } = await supabase
+): Promise<{ id: string; title: string; updatedAt: string; createdAt: string; projectId: string | null; channel: MessageChannel }[]> {
+    const query = (columns: string) => supabase
         .from("conversations")
-        .select("id, title, updated_at, created_at, project_id")
+        .select(columns)
         .order("updated_at", { ascending: false })
-        .limit(limit);
+        .limit(limit)
+        .returns<{ id: string; title: string; updated_at: string; created_at: string; project_id: string | null; channel?: string }[]>();
+    let { data, error } = await query("id, title, updated_at, created_at, project_id, channel");
+    if (missingColumn(error)) ({ data, error } = await query("id, title, updated_at, created_at, project_id"));
 
     if (error) {
         console.error("[DB] Failed to list conversations:", error.message);
@@ -326,24 +333,27 @@ export async function listConversations(
         updatedAt: row.updated_at,
         createdAt: row.created_at,
         projectId: row.project_id ?? null,
+        channel: rowChannel(row.channel),
     }));
 }
 
 export async function getConversation(
     id: string
-): Promise<{ id: string; title: string; projectId: string | null } | null> {
-    const { data, error } = await supabase
+): Promise<{ id: string; title: string; projectId: string | null; channel: MessageChannel } | null> {
+    const query = (columns: string) => supabase
         .from("conversations")
-        .select("id, title, project_id")
+        .select(columns)
         .eq("id", id)
-        .single();
+        .single<{ id: string; title: string; project_id: string | null; channel?: string }>();
+    let { data, error } = await query("id, title, project_id, channel");
+    if (missingColumn(error)) ({ data, error } = await query("id, title, project_id"));
 
-    if (error) {
-        console.error("[DB] Failed to fetch conversation:", error.message);
+    if (error || !data) {
+        console.error("[DB] Failed to fetch conversation:", error?.message);
         return null;
     }
 
-    return { id: data.id, title: data.title, projectId: data.project_id ?? null };
+    return { id: data.id, title: data.title, projectId: data.project_id ?? null, channel: rowChannel(data.channel) };
 }
 
 export async function deleteConversation(id: string): Promise<void> {

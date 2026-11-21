@@ -3,12 +3,13 @@ import { ragChat } from "@/lib/ai/rag-service";
 import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
-import { isSupportedAttachment, MAX_FILE_SIZE_BYTES } from "@/lib/types";
-import type { FileAttachment, MessageChannel, ReplyRef } from "@/lib/types";
+import { CHANNEL_NAMES, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MESSAGE_CHANNELS } from "@/lib/types";
+import type { FileAttachment, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 import { broadcastPush } from "@/lib/messaging/push-service";
 import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
 import { inputModeError } from "@/lib/voice/input-mode";
+import { getConversation } from "@/lib/db";
 
 export const maxDuration = 300;
 
@@ -45,7 +46,10 @@ export async function POST(req: NextRequest) {
         return oneShot({ type: "error", message: "Message is too long (max 10,000 characters)." }, 400);
     }
 
-    const channel = (body.channel as MessageChannel) ?? "web";
+    const channel = body.channel ?? "web";
+    if (!isMessageChannel(channel)) {
+        return oneShot({ type: "error", message: `Invalid channel. Must be one of: ${MESSAGE_CHANNELS.join(", ")}` }, 400);
+    }
     const replyTo = parseReplyTo(body.replyTo);
     const file = body.file as FileAttachment | undefined;
     if (file) {
@@ -54,6 +58,13 @@ export async function POST(req: NextRequest) {
         }
         if (file.size > MAX_FILE_SIZE_BYTES) {
             return oneShot({ type: "error", message: "File too large." }, 400);
+        }
+    }
+    // Channel context is filtered by channel, so a web turn here would be invisible to the next Telegram or Discord turn.
+    if (typeof body.conversationId === "string" && body.conversationId) {
+        const conversation = await getConversation(body.conversationId);
+        if (conversation && conversation.channel !== "web") {
+            return oneShot({ type: "error", message: `This conversation lives in ${CHANNEL_NAMES[conversation.channel]}. Reply there to continue.` }, 409);
         }
     }
 

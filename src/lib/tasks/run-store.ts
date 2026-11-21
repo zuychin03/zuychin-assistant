@@ -13,7 +13,9 @@ export function mapRun(row: Row): ScheduledRun {
         detail: row.detail as string | null, modelRoute: "paid" };
 }
 export function mapApproval(row: Row): ActionApproval {
-    return { id: String(row.id), taskId: String(row.task_id), runId: String(row.run_id), taskTitle: String(row.task_title),
+    return { id: String(row.id), taskId: row.task_id ? String(row.task_id) : null, runId: row.run_id ? String(row.run_id) : null,
+        source: row.source === "chat" ? "chat" : "scheduled", channel: row.channel ? String(row.channel) : null,
+        conversationId: row.conversation_id ? String(row.conversation_id) : null, taskTitle: String(row.task_title),
         tool: String(row.tool), args: row.args as Record<string, unknown>, instruction: String(row.instruction),
         sourceContext: String(row.source_context ?? ""), status: row.status as ActionApproval["status"],
         createdAt: String(row.created_at), expiresAt: String(row.expires_at), decidedAt: row.decided_at as string | null,
@@ -43,12 +45,12 @@ export async function finishTaskRun(runId: string, status: "ok" | "error", detai
     if (error) throw new TaskStorageError("Run result could not be recorded.");
     return data === true;
 }
-export async function proposeAction(action: ProposedAction): Promise<{ id: string; status: string }> {
+export async function proposeAction(action: ProposedAction): Promise<{ id: string; status: string; approval: ActionApproval }> {
     const { data, error } = await db.rpc("assistant_propose_action", {
         p_run_id: action.runId, p_tool: action.tool, p_args: action.args, p_hash: action.argsHash, p_sources: action.sourceContext,
     }).abortSignal(deadline());
     if (error || !data?.id) throw new TaskStorageError("Approval storage unavailable.");
-    return { id: data.id, status: data.status };
+    return { id: data.id, status: data.status, approval: mapApproval(data) };
 }
 export async function taskReport(userId: string): Promise<TasksReport> {
     const tasks = await db.from("scheduled_tasks").select("*").eq("user_profile_id", userId).order("created_at", { ascending: false }).limit(200).abortSignal(deadline());

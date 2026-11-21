@@ -4,9 +4,10 @@
 // so a single logical event never fans out to Discord + Telegram + push at once.
 
 import { sendDiscordMessage } from "./discord-service";
-import { sendTelegramMessage } from "./telegram-service";
+import { sendTelegramMessageWithId } from "./telegram-service";
 import { broadcastPush } from "./push-service";
 import { discordChannel, type DiscordPurpose } from "./channels";
+import { recordChannelMessage } from "./channel-threads";
 
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -25,13 +26,18 @@ export type NotificationType =
     | "provider_key"
     | "council_convened"
     | "council_conclusion"
-    | "council_stalled";
+    | "council_stalled"
+    | "action_approval";
 
 interface Route {
     discord?: DiscordPurpose;
     // Opt-in channels set this false so they stay silent until configured.
     discordFallback?: boolean;
+    // Discord only when Telegram is not configured, so one event never reaches both.
+    discordWithoutTelegram?: DiscordPurpose;
     telegram?: boolean;
+    // Saved into the Telegram chat's conversation, so a reply to it has context.
+    conversation?: boolean;
     push?: boolean;
 }
 
@@ -45,8 +51,8 @@ const ROUTES: Record<NotificationType, Route> = {
     calendar_event: { discord: "calendar" },
     scheduled_task: { discord: "tasks" },
     agent_run_complete: { discord: "coworking" },
-    initiative_nudge: { telegram: true, push: true },
-    proactive_checkin: { telegram: true },
+    initiative_nudge: { telegram: true, conversation: true, push: true },
+    proactive_checkin: { telegram: true, conversation: true },
     run_review: { discord: "system", discordFallback: false },
     model_catalogue: { discord: "system", discordFallback: false },
     // A key change is a security event, so it falls back to the default channel when no system channel is set.
@@ -56,6 +62,7 @@ const ROUTES: Record<NotificationType, Route> = {
     council_convened: { discord: "coworking" },
     council_conclusion: { discord: "coworking" },
     council_stalled: { discord: "coworking" },
+    action_approval: { telegram: true, discordWithoutTelegram: "tasks" },
 };
 
 export interface NotifyOptions {
@@ -63,6 +70,8 @@ export interface NotifyOptions {
     // Overrides the resolved Discord channel (e.g. a scheduled task's own target).
     discordChannelId?: string;
     telegramReplyMarkup?: unknown;
+    // Sends the text as is, for content that must not be read as Markdown.
+    telegramPlain?: boolean;
     pushTitle?: string;
     pushBody?: string;
     pushUrl?: string;
@@ -73,6 +82,7 @@ export interface NotifyOptions {
 export interface NotifyResult {
     discord: boolean;
     telegram: boolean;
+    telegramMessageId: number | null;
     push: number;
 }
 
@@ -82,20 +92,21 @@ export async function notify(
     options: NotifyOptions = {},
 ): Promise<NotifyResult> {
     const route = ROUTES[type];
-    const result: NotifyResult = { discord: false, telegram: false, push: 0 };
+    const result: NotifyResult = { discord: false, telegram: false, telegramMessageId: null, push: 0 };
     const sends: Promise<void>[] = [];
 
-    if (route.discord) {
+    const discordPurpose = route.discord ?? (TELEGRAM_CHAT_ID ? undefined : route.discordWithoutTelegram);
+    if (discordPurpose) {
         const channelId = options.discordChannelId
-            ?? discordChannel(route.discord, route.discordFallback !== false);
+            ?? discordChannel(discordPurpose, route.discordFallback !== false);
         if (channelId) {
             sends.push(sendDiscordMessage(channelId, text, options.signal).then((ok) => { result.discord = ok; }));
         }
     }
 
     if (route.telegram && TELEGRAM_CHAT_ID) {
-        const opts = { replyMarkup: options.telegramReplyMarkup, signal: options.signal };
-        sends.push(sendTelegramMessage(TELEGRAM_CHAT_ID, text, opts).then((ok) => { result.telegram = ok; }));
+        const opts = { replyMarkup: options.telegramReplyMarkup, signal: options.signal, plain: options.telegramPlain };
+        sends.push(sendTelegramMessageWithId(TELEGRAM_CHAT_ID, text, opts).then((id) => { result.telegram = id !== null; result.telegramMessageId = id; }));
     }
 
     if (route.push && !options.noPush) {
@@ -110,5 +121,8 @@ export async function notify(
     }
 
     await Promise.all(sends);
+    if (result.telegram && route.conversation && TELEGRAM_CHAT_ID) {
+        await recordChannelMessage({ channel: "telegram", chatKey: TELEGRAM_CHAT_ID, content: text, metadata: { source: type } });
+    }
     return result;
 }

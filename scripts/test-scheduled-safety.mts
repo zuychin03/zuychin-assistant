@@ -184,7 +184,7 @@ await check("approval route invalid hash never reaches the tool", async () => {
     const data = await (await approvalPost(approveRequest())).json();
     assert.equal(data.approval.status, "outcome_unknown");
     assert.match(data.approval.receipt, /could not be confirmed/);
-    assert.ok(callLog.slice(before).every(call => call.path.endsWith("user_profiles") || call.path.endsWith("assistant_decide_action") || call.path.endsWith("assistant_finish_action")));
+    assert.ok(callLog.slice(before).every(call => call.path.endsWith("user_profiles") || call.path.endsWith("assistant_decide_action") || call.path.endsWith("assistant_finish_action") || call.path.endsWith("assistant_approval_notices")));
     invalidHash = false;
 });
 await check("missing claim migrations refuse approvals and manual runs before dispatch", async () => {

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from "react";
 import { AppSidebar, SidebarToggle, ZuychinMark, useMediaQuery, useSidebarState, useStoredFlag } from "@/components/app-sidebar";
 import { TODAY_DOCKED_QUERY, TodayPanel, TodayToggle, useDueCount } from "@/components/today-panel";
-import { ArrowUp, Bot, Check, Circle, X, Paperclip, FileText, FileCode, FileArchive, Folder, Image as ImageIcon, LoaderCircle, Music, Video, File, Brain, Download, SlidersHorizontal, Database, Info, ArrowDown, ChevronRight, RotateCcw, Reply, Square, SquarePen, Mic, BookOpen, CircleDollarSign } from "lucide-react";
+import { ArrowUp, Bot, Check, Circle, X, Paperclip, FileText, FileCode, FileArchive, Folder, Image as ImageIcon, LoaderCircle, Music, Video, File, Brain, Download, SlidersHorizontal, Database, Info, ArrowDown, ChevronRight, RotateCcw, Reply, Square, SquarePen, Mic, BookOpen, CircleDollarSign, Send, Hash } from "lucide-react";
 import { SelectMenu, ParamRow, ModelInfoModal, ConfirmModal, modelSearchTerms, type ProviderInfo } from "./home/controls";
 import { ConversationList, NewProjectButton, type ProjectItem } from "./home/conversation-list";
 import { styles } from "./home/styles";
@@ -11,10 +11,10 @@ import chatModeStyles from "./home/chat-modes.module.css";
 import ui from "./home/chat.module.css";
 import { GenerationSettings, ModeToggle } from "./home/generation-settings";
 import { chatMarkdownComponents } from "./home/markdown";
-import { isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
+import { CHANNEL_NAMES, isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import { CouncilProposalCard } from "./home/council-card";
-import type { ArtifactDescriptor, CouncilProposal } from "@/lib/types";
+import type { ArtifactDescriptor, CouncilProposal, MessageChannel } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -154,6 +154,7 @@ interface Conversation {
   title: string;
   updatedAt: string;
   projectId?: string | null;
+  channel?: MessageChannel;
 }
 
 interface GenParamsState {
@@ -1602,6 +1603,8 @@ export default function Home() {
     return withReturnTo(`/graph?node=${node}&root=${node}&local=1`, chatHref);
   };
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
+  // Channel context is filtered by channel, so these continue only in their own app.
+  const channelHome = activeConversation?.channel && activeConversation.channel !== "web" ? activeConversation.channel : null;
   const activeProject = projects.find((project) => project.id === (activeConversation ? activeConversation.projectId : session.projectId));
   const chatTitle = activeConversation?.title ?? (activeConversationId ? "Conversation" : "New chat");
   const todayOpen = todayDocked ? !todayHidden : todaySheetOpen;
@@ -1873,7 +1876,7 @@ export default function Home() {
         <div className={ui.threadWrap}>
           <main onScroll={handleMessagesScroll} className={ui.thread} data-voice={voiceLoop || undefined}>
             <div className={ui.column}>
-              <BranchNavigation conversationId={session.key === NEW_CHAT ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
+              <BranchNavigation conversationId={session.key === NEW_CHAT || channelHome ? null : session.key} onSelect={(id) => { void loadConversation(id); }} />
               {session.historyLoading && <p role="status" className={ui.status}>Loading conversation…</p>}
               {!session.loaded && !session.historyLoading && <p role="status" className={ui.status}>Load this conversation before sending a message. Your draft is safe.</p>}
               {messages.length === 0 && session.loaded && (
@@ -1888,10 +1891,10 @@ export default function Home() {
 
               {messages.map((msg, index) => msg.role === "user" ? (
                 <div key={msg.id} className={ui.userRow} data-past={index < voiceFocusFrom || undefined}>
-                  {msg.persisted && session.key !== NEW_CHAT && <span className={ui.hoverAction}>{branchAction(msg)}</span>}
-                  <button type="button" onClick={() => startReply(msg)} className={`${ui.iconButton} ${ui.hoverAction}`} aria-label="Reply to this message" title="Reply to this message">
+                  {msg.persisted && session.key !== NEW_CHAT && !channelHome && <span className={ui.hoverAction}>{branchAction(msg)}</span>}
+                  {!channelHome && <button type="button" onClick={() => startReply(msg)} className={`${ui.iconButton} ${ui.hoverAction}`} aria-label="Reply to this message" title="Reply to this message">
                     <Reply size={15} aria-hidden="true" />
-                  </button>
+                  </button>}
                   <div className={ui.bubble}>
                     {renderBubbleExtras(msg.replyTo, { name: msg.fileName, mimeType: msg.fileMimeType })}
                     <p className={ui.bubbleText}>{msg.content}</p>
@@ -1932,7 +1935,7 @@ export default function Home() {
                           <RotateCcw size={14} aria-hidden="true" /> Retry
                         </button>
                       )}
-                      {!msg.resume && !msg.retry && (
+                      {!msg.resume && !msg.retry && !channelHome && (
                         <button type="button" onClick={() => startReply(msg)} className={ui.iconButton} aria-label="Reply to this message" title="Reply to this message">
                           <Reply size={15} aria-hidden="true" />
                         </button>
@@ -1956,7 +1959,7 @@ export default function Home() {
                           ))}
                         </span>}
                       </>}
-                      {msg.persisted && session.key !== NEW_CHAT && !msg.retry && !msg.resume && branchAction(msg)}
+                      {msg.persisted && session.key !== NEW_CHAT && !msg.retry && !msg.resume && !channelHome && branchAction(msg)}
                       {(msg.modelLabel || msgClock(msg.at)) && <span className={ui.msgMeta}>{[msg.modelLabel, msgClock(msg.at)].filter(Boolean).join(" · ")}</span>}
                     </div>
                   </div>
@@ -2031,7 +2034,14 @@ export default function Home() {
 
         <footer className={ui.composerWrap} data-voice={voiceLoop || undefined}>
           <div className={ui.composerStack}>
-            {replyTo && !voiceLoop && (
+            {channelHome && (
+              <p role="note" className={ui.channelNote}>
+                {channelHome === "telegram" ? <Send size={15} aria-hidden="true" /> : <Hash size={15} aria-hidden="true" />}
+                This conversation lives in {CHANNEL_NAMES[channelHome]}. Reply there to continue.
+              </p>
+            )}
+
+            {replyTo && !voiceLoop && !channelHome && (
               <div className={ui.chip}>
                 <Reply size={14} aria-hidden="true" />
                 <strong>Replying to {replyTo.role === "user" ? "you" : "Zuychin"}</strong>
@@ -2042,7 +2052,7 @@ export default function Home() {
               </div>
             )}
 
-            {pendingFile && !voiceLoop && (
+            {pendingFile && !voiceLoop && !channelHome && (
               <div className={ui.chip}>
                 {getFileIcon(pendingFile.mimeType)}
                 <strong>{pendingFile.name}</strong>
@@ -2053,7 +2063,7 @@ export default function Home() {
               </div>
             )}
 
-            {slashMatches.length > 0 && !voiceLoop && (
+            {slashMatches.length > 0 && !voiceLoop && !channelHome && (
               <div id="chat-command-list" role="listbox" aria-label="Commands" className={`${ui.cmdMenu} animate-fade-in-scale`}>
                 {slashMatches.map((c, i) => (
                   <button
@@ -2098,7 +2108,7 @@ export default function Home() {
             )}
 
             {/* Hidden, not unmounted, so its refs and the textarea's size survive a voice chat. */}
-            <form onSubmit={handleSubmit} className={ui.composer} hidden={voiceLoop}>
+            <form onSubmit={handleSubmit} className={ui.composer} hidden={voiceLoop || !!channelHome}>
               <input ref={fileInputRef} type="file" onChange={handleFileSelect} hidden accept={UPLOAD_ACCEPT} />
               <textarea
                 ref={inputRef}

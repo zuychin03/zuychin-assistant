@@ -68,7 +68,8 @@ edited and deleted in place.
   ready (or after 15 seconds), so the first turn is not slowed. The on-box voice starts loading
   next, while you speak: the box's small CPU loads the two faster one after the other.
   If the service is unset, busy or fails, the turn falls back to sending the audio to Gemini as
-  before. Telegram voice notes are still sent as audio
+  before. Telegram voice notes of up to 5 minutes are transcribed the same way, in 30-second
+  pieces, so any chat model can answer them; they fall back to audio on the same terms
 - On-box speech out: with the optional `tts-service` running, replies are spoken by a small local
   model (tiny-voca, English) instead of Gemini TTS. First audio takes about half a second on a
   1 GB box, and the reply text never leaves the host. If the service is unset, busy, loading or
@@ -161,7 +162,11 @@ edited and deleted in place.
 - Tasks and approvals: `/tasks` lists scheduled tasks with their schedule, next run and run
   history. When an unattended task wants to change something (send or draft mail, edit the
   calendar, write to the vault, change to-dos or memories), the action waits for your
-  approval; read-only tools run without it
+  approval; read-only tools run without it. Each one also arrives in Telegram with Approve and
+  Reject buttons, and the message updates with the outcome once it is decided anywhere
+- Ask before sending: in a live Telegram chat, sending an email or changing the calendar waits
+  for your tap on the same buttons (listing and reading events do not). The request expires
+  after an hour, and the outcome is saved into the conversation
 - Branches: start a branch from any saved message to try another prompt or model, and compare the
   branches at `/conversations/compare`
 - Knowledge only and Free only: one switch answers only from saved knowledge, with sources;
@@ -200,6 +205,10 @@ edited and deleted in place.
   app the mark moves: it blinks now and then, its lens follows the pointer on the welcome
   screen, and the newest reply's mark turns red and moves while Zuychin thinks, writes or speaks
 - Multi-channel: web UI, Discord bot and Telegram bot all share the same RAG pipeline
+- Channel conversations: each Telegram chat and Discord's `#ask-zuychin` keep a real
+  conversation. `/new` starts a fresh one, and so do 6 hours without messages. Telegram task
+  results and nudges are saved into it, so a reply to one has it in context. They show in the web sidebar
+  with a Telegram or Discord icon and open read-only there
 - Cron jobs: daily briefing (LLM-triaged inbox - only the emails that matter, icon-coded
   by urgency), event reminders + due-todo nagging, scheduled-task dispatch, email triggers,
   initiative decisions, the nightly run review, the daily model check and proactive check-ins
@@ -319,6 +328,8 @@ Optional auth, integrations, channels and cron:
 | `DISCORD_ALLOWED_USER_IDS` | Bot only: comma-separated Discord user ids it answers; unset answers anyone who can post where it reads |
 | `DISCORD_CH_BRIEFING` / `_REMINDERS` / `_TASKS` / `_CALENDAR` / `_BILLS` / `_COWORKING` / `_SYSTEM` | Per-purpose notification channels; each falls back to `DISCORD_CHANNEL_ID` (`_SYSTEM` stays silent unless set) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram channel. The webhook answers only `TELEGRAM_CHAT_ID` and any chat in `TELEGRAM_ALLOWED_CHAT_IDS`; production ignores every update while neither is set |
+| `TELEGRAM_OWNER_USER_IDS` | Comma-separated Telegram user ids allowed to act as the owner. A private chat's id already names its owner, so this is needed only for a group chat |
+| `CHANNEL_QUIET_GAP_MINUTES` | For live testing only: minutes without messages before a Telegram or Discord chat starts a new conversation (default 6 hours) |
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); either unset = push disabled |
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
@@ -402,6 +413,18 @@ before it was added, run
 only widens that purpose check and is safe to run again. Without it online councils still run,
 and their calls are just not stored in model health.
 
+The `-- ===== V7 channel threads =====` block adds `assistant_channel_updates` (Telegram update
+ids, so a retried update runs once), `assistant_channel_threads` (each chat's current
+conversation, behind the `assistant_channel_thread` function), a `channel` column on
+`conversations`, and `assistant_approval_notices` (the Telegram message each approval was sent
+as). It also lets an approval come from a chat turn as well as a scheduled task, with the
+`assistant_propose_chat_action` function, and replaces `assistant_decide_action` and the
+approval immutability trigger to match. On an existing project, run
+[`scripts/migrations/v7-channel-threads.sql`](scripts/migrations/v7-channel-threads.sql); it is
+safe to run again, and it must run again after any re-run of `v6-scheduled-actions.sql`. Without
+it, Telegram keeps one shared history, approvals send no buttons, and email and calendar
+changes asked for in a Telegram chat are refused.
+
 
 ### Web authentication
 
@@ -480,8 +503,8 @@ npm run dev
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/chat` | RAG chat with file, thinking, search and hyperparameters |
-| POST | `/api/chat/stream` | Same as `/api/chat` but streams agent steps + tokens over SSE (web UI) |
+| POST | `/api/chat` | RAG chat with file, thinking, search and hyperparameters; a Discord turn with no conversation id joins its chat's conversation (optional `chatKey`) |
+| POST | `/api/chat/stream` | Same as `/api/chat` but streams agent steps + tokens over SSE (web UI); 409 for a Telegram or Discord conversation |
 | GET/PATCH | `/api/chat/preferences` | Read / set the Free only preference |
 | GET | `/api/providers` | Available providers/models (filtered by configured keys) |
 | GET/POST/PUT/DELETE | `/api/conversations` | Conversation list / create (optionally in a project) / move between projects / delete |
@@ -507,7 +530,7 @@ npm run dev
 | GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
 | GET/POST/PATCH/DELETE | `/api/tasks` | Scheduled tasks with runs and approvals / create / edit, pause or resume / delete |
 | POST | `/api/tasks/run` | Run a task now (202 when accepted, 409 while it is already running) |
-| POST | `/api/tasks/approvals` | Approve or reject an action an unattended task proposed |
+| POST | `/api/tasks/approvals` | Approve or reject an action an unattended task or a Telegram chat proposed |
 | POST / DELETE | `/api/auth` | Login / logout |
 | GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
 | GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
@@ -524,7 +547,7 @@ npm run dev
 | GET | `/api/council/[code]/integration-attempts` | Integration attempts, with `/[attemptId]` and `/[attemptId]/verification/[runId]` for one attempt and one verification run |
 | GET | `/api/council/runtime-inventory` | Paged list of councils with their host generation, policy version and whether they have execution history (`?cursor=`) |
 | GET | `/api/auth/google/callback` | Google OAuth setup / token exchange (signed in only) |
-| POST | `/api/telegram/webhook` | Telegram bot webhook (secret header and chat allowlist) |
+| POST | `/api/telegram/webhook` | Telegram bot webhook (secret header, chat allowlist, owner sender), messages and approval taps |
 | GET/POST/DELETE | `/api/mcp/[transport]` | Shared MCP server, Streamable HTTP at `/api/mcp/mcp` (named client, Council seat or dedicated host bearer) |
 | POST | `/api/agent/claim` | Exchange a setup claim for a per-agent key (unauthenticated, rate limited) |
 | GET/POST/DELETE | `/api/agents` | Owner-only: list / add / remove agent clients |
@@ -1236,6 +1259,8 @@ node bot.js
 - Honors `/search`, `/think`, `/agent`, `/model` and `/embed-model` prefixes (use the `!` variant
   so Discord doesn't capture `/`), downloads attachments (up to 20 MB), uploads any generated
   files (reports/code) as attachments, and chunks replies to Discord's 2000-char limit.
+- `!new` starts a new conversation and `!help` lists the commands. The web app keeps the
+  channel's conversation, so the bot sends no conversation id.
 - Exposes a health endpoint on `PORT` (default `3001`) and ships a `Procfile` (`web: node bot.js`)
   for hosts that read one.
 
@@ -1307,13 +1332,19 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<y
 
 Signed in, `GET /api/telegram/test` checks the configuration.
 
+The webhook acknowledges each update at once and answers it in the background, and it runs each
+update id once. It acts only for an allowed chat and an owner sender, and it accepts the
+approval buttons on the same terms. On start the server sets the bot's command menu: `/new`,
+`/search`, `/think`, `/agent`, `/model` and `/help`. Each chat keeps its own conversation; see
+the V7 channel threads migration under [Database](#3-database).
+
 ## Cron Jobs (optional)
 
 Point an external scheduler (for example cron-job.org) at these endpoints with the header
 `Authorization: Bearer <CRON_SECRET>`. Delivery is centralized in the notification router
 (`src/lib/messaging/router.ts`): each notification type routes to its dedicated Discord
 channel, with push mirrored only for time-sensitive types and Telegram reserved for
-conversational chat plus initiative nudges.
+conversational chat, initiative nudges and approval requests.
 
 | Endpoint | Schedule | Body |
 |----------|----------|------|
@@ -1576,8 +1607,9 @@ src/
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
-│   ├── voice/                          # Speech-to-text client + the "Spoken" input mode
-│   └── messaging/                      # Discord + Telegram + web-push services
+│   ├── voice/                          # Speech-to-text client, the "Spoken" input mode, Telegram voice-note decoding
+│   ├── tasks/                          # Scheduled tasks, runner, approvals, Telegram approval notices, ask-before-send for chats
+│   └── messaging/                      # Discord + Telegram + web-push services, channel conversations, notification router
 ├── components/
 │   ├── app-sidebar.tsx                 # Shared sidebar: workspaces, chat history, theme
 │   ├── zuychin-mark.tsx                # Animated Zuychin mark: blink, pointer follow, live states

@@ -13,10 +13,15 @@ export interface ScheduledRun {
     detail: string | null;
     modelRoute: "paid";
 }
+export type ApprovalSource = "scheduled" | "chat";
 export interface ActionApproval {
     id: string;
-    taskId: string;
-    runId: string;
+    /** Null for a chat approval, which has no task or run. */
+    taskId: string | null;
+    runId: string | null;
+    source: ApprovalSource;
+    channel: string | null;
+    conversationId: string | null;
     taskTitle: string;
     tool: string;
     args: Record<string, unknown>;

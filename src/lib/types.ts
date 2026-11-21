@@ -52,6 +52,9 @@ export interface MessageMetadata {
 }
 
 export type MessageChannel = "web" | "discord" | "telegram";
+export const MESSAGE_CHANNELS: readonly MessageChannel[] = ["web", "discord", "telegram"];
+export const isMessageChannel = (value: unknown): value is MessageChannel => MESSAGE_CHANNELS.includes(value as MessageChannel);
+export const CHANNEL_NAMES: Record<MessageChannel, string> = { web: "the web app", telegram: "Telegram", discord: "Discord" };
 
 export interface ChatRequest {
     message: string;

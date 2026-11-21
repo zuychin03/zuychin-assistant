@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useLayoutEffect, useId } from "react";
 import { createPortal } from "react-dom";
 import { observeAnchoredMenu } from "@/components/anchored-menu";
 import { useUnsavedChanges } from "@/components/use-unsaved-changes";
-import { Trash2, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X, LoaderCircle } from "lucide-react";
+import { Trash2, FolderPlus, FolderInput, ChevronDown, ChevronRight, Plus, MoreHorizontal, Check, X, LoaderCircle, Send, Hash } from "lucide-react";
+import type { MessageChannel } from "@/lib/types";
 import ui from "./conversation-list.module.css";
 
 export interface ConversationItem {
@@ -12,6 +13,7 @@ export interface ConversationItem {
   title: string;
   updatedAt: string;
   projectId?: string | null;
+  channel?: MessageChannel;
 }
 
 export interface ProjectItem {
@@ -246,6 +248,8 @@ export function ConversationList({
             onSelect(conv.id);
           }}
         >
+          {conv.channel === "telegram" && <Send size={13} className={ui.rowChannel} role="img" aria-label="Telegram conversation" />}
+          {conv.channel === "discord" && <Hash size={13} className={ui.rowChannel} role="img" aria-label="Discord conversation" />}
           <span className={ui.rowTitle}>{conv.title}</span>
           {running
             ? <span className={ui.rowTime}><LoaderCircle size={13} className={ui.spin} aria-label="Replying" /></span>

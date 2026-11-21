@@ -31,7 +31,8 @@ insert into revoke_only_tables (name) values
   ('model_call_observations'), ('research_questions'), ('research_sources'), ('research_entries'),
   ('assistant_task_runs'), ('assistant_action_approvals'), ('study_settings'), ('study_cards'),
   ('study_reviews'), ('study_feedback'), ('council_integration_attempts'), ('model_catalogue'),
-  ('model_discovery_runs'), ('model_profiles'), ('model_feedback'), ('provider_keys')
+  ('model_discovery_runs'), ('model_profiles'), ('model_feedback'), ('provider_keys'),
+  ('assistant_channel_updates'), ('assistant_channel_threads'), ('assistant_approval_notices')
 on conflict do nothing;
 
 do $$

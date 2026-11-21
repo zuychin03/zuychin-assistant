@@ -45,7 +45,7 @@ async function check(name: string, run: () => Promise<void> | void) {
 const telegram = (update: unknown, secret = "fixture-webhook-secret") => new NextRequest("https://assistant.test/api/telegram/webhook", {
     method: "POST", headers: { "Content-Type": "application/json", "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(update),
 });
-const unknownTap = (chatId: number) => ({ callback_query: { id: "cb-1", data: "nothing", message: { message_id: 7, chat: { id: chatId } } } });
+const unknownTap = (chatId: number) => ({ callback_query: { id: "cb-1", data: "nothing", from: { id: chatId }, message: { message_id: 7, chat: { id: chatId } } } });
 
 await check("the Telegram webhook still refuses a wrong secret before reading the update", async () => {
     assert.equal((await webhook.POST(telegram(unknownTap(1001), "fixture-webhook-secreT"))).status, 401);

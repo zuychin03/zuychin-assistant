@@ -5,6 +5,7 @@ import { ragChat } from "@/lib/ai/rag-service";
 import { getArtifact } from "@/lib/artifacts/store";
 import { sendTelegramMessage, sendTelegramDocument } from "@/lib/messaging/telegram-service";
 import { notify } from "@/lib/messaging/router";
+import { recordChannelMessage } from "@/lib/messaging/channel-threads";
 import type { ScheduledTask } from "@/lib/tasks/store";
 
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -42,12 +43,14 @@ export async function runScheduledTask(task: ScheduledTask, claimedRunId?: strin
 async function executeScheduledTask(task: ScheduledTask, runId: string, signal: AbortSignal): Promise<TaskRunResult> {
     let deliveryStarted = false;
     try {
+        // A Telegram task's instruction is not something the owner typed into the chat; only its delivered result joins the conversation.
         const { reply, artifacts } = await ragChat({
             message: task.instruction,
             channel: task.channel,
             conversationId: task.channel === "web" ? (task.conversationId ?? undefined) : undefined,
             agent: task.agentMode,
             paidOnly: true,
+            unrecorded: task.channel === "telegram",
             signal,
         });
 
@@ -87,6 +90,12 @@ async function executeScheduledTask(task: ScheduledTask, runId: string, signal: 
             const detail = `Ran, but delivery to ${task.channel} was not fully confirmed. Check the destination before starting another run; delivery was not retried.`;
             await finishTaskRun(runId, "error", detail);
             return { id: task.id, title: task.title, status: "error", detail };
+        }
+        if (task.channel === "telegram" && TELEGRAM_CHAT_ID) {
+            await recordChannelMessage({
+                channel: "telegram", chatKey: TELEGRAM_CHAT_ID, content: `🕑 **${task.title}**\n\n${reply}`,
+                metadata: { source: "scheduled_task", taskId: task.id, runId },
+            });
         }
 
         signal.throwIfAborted();

@@ -12,6 +12,10 @@ export async function registerNode() {
     // Online councils run in this process, so a restart picks them back up here.
     const { startOnlineResumeScheduler } = await import("@/lib/council/online/service");
     startOnlineResumeScheduler();
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+        const [{ setTelegramCommands }, { CHANNEL_COMMANDS }] = await Promise.all([import("@/lib/messaging/telegram-service"), import("@/lib/messaging/channel-threads")]);
+        void setTelegramCommands(CHANNEL_COMMANDS.map(({ command, description }) => ({ command, description })));
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waited = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), START_WAIT_MS); });
     const [catalogue, keys] = await Promise.all([Promise.race([refreshCatalogueSnapshot(), waited]), Promise.race([refreshProviderKeys(), waited])]);

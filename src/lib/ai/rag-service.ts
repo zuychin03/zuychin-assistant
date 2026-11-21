@@ -41,7 +41,7 @@ import { formatTextAttachment } from "@/lib/attachments";
 import { inputModeError, userMessageMetadata, VOICE_TRANSCRIPT_NOTE, type InputMode } from "@/lib/voice/input-mode";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
 import { createActivityRecorder } from "@/lib/ai/agent/activity";
-import type { MessageChannel, FileAttachment, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
+import type { Message, MessageChannel, FileAttachment, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
 
 const RAG_CONFIG = {
     matchThreshold: 0.72,
@@ -319,7 +319,7 @@ async function dailyNotesReminder(excludeMessageId?: string): Promise<string> {
         const shown = undated.slice(0, 5).map((t) => `"${t.title}"`).join(", ");
         const more = undated.length > 5 ? ` and ${undated.length - 5} more` : "";
         const plural = undated.length === 1 ? "task" : "tasks";
-        return `\n\n---\nðŸ“Œ First chat of the day - you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
+        return `\n\n---\n📌 First chat of the day - you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
     } catch (err) {
         console.warn("[RAG] Daily notes reminder failed:", err);
         return "";
@@ -369,6 +369,8 @@ export async function buildRagContext(params: {
     userMessageId?: string;
     paidOnly?: boolean;
     freeOnly?: boolean;
+    /** False leaves chat history out of the context entirely. */
+    history?: boolean;
     signal?: AbortSignal;
 }): Promise<RagContext> {
     const { message, channel, conversationId, provider, model, thinking, search, profile } = params;
@@ -423,13 +425,15 @@ export async function buildRagContext(params: {
                 return [];
             })
             : Promise.resolve([]),
-        buildConversationContext({
-            scope: { conversationId, channel, userId: profile?.id, projectId: project?.id ?? null },
-            store: createConversationContextStore(supabaseAdmin),
-            summarise: (input) => summarizeHistory(input, freeOnly),
-            currentMessageId: params.userMessageId,
-            signal: params.signal,
-        }),
+        params.history === false
+            ? Promise.resolve({ historySection: "", recentMessages: [] as Message[] })
+            : buildConversationContext({
+                scope: { conversationId, channel, userId: profile?.id, projectId: project?.id ?? null },
+                store: createConversationContextStore(supabaseAdmin),
+                summarise: (input) => summarizeHistory(input, freeOnly),
+                currentMessageId: params.userMessageId,
+                signal: params.signal,
+            }),
         queryEmbedding
             ? searchMemories({
                 queryEmbedding,
@@ -553,6 +557,8 @@ type RagChatParams = {
     paidOnly?: boolean;
     freeOnly?: boolean;
     inputMode?: InputMode;
+    /** Runs without chat history and saves neither message; the caller records what it delivers. */
+    unrecorded?: boolean;
 };
 type RagChatResult = { reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; freeOnly?: boolean; replyTrace?: ReplyTrace };
 
@@ -665,18 +671,20 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     }
 
     let userMsgId = "";
-    try {
-        userMsgId = await saveMessage({
-            role: "user",
-            content: message,
-            channel,
-            userProfileId: profile?.id,
-            conversationId,
-            metadata: userMessageMetadata(replyTo, params.inputMode),
-        });
-        onSavedMessage?.(userMsgId);
-    } catch (err) {
-        console.error("[RAG] Failed to save user message:", err);
+    if (!params.unrecorded) {
+        try {
+            userMsgId = await saveMessage({
+                role: "user",
+                content: message,
+                channel,
+                userProfileId: profile?.id,
+                conversationId,
+                metadata: userMessageMetadata(replyTo, params.inputMode),
+            });
+            onSavedMessage?.(userMsgId);
+        } catch (err) {
+            console.error("[RAG] Failed to save user message:", err);
+        }
     }
 
     let rag: RagContext;
@@ -687,6 +695,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
             hasAudioAttachment: !!file && file.mimeType.startsWith("audio/"),
             userMessageId: userMsgId || undefined,
             paidOnly: params.paidOnly,
+            history: !params.unrecorded,
             freeOnly, signal,
         });
     } catch (error) {
@@ -791,7 +800,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     reply += await dailyNotesReminder(userMsgId || undefined);
 
     let assistantMsgId = "";
-    try {
+    if (!params.unrecorded) try {
         assistantMsgId = await saveMessage({
             role: "assistant",
             content: reply,
