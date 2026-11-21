@@ -88,6 +88,9 @@ async function run(scenario: Scenario) {
     const liveness = createLivenessServer((socket) => {
         connections++;
         adapters.add(socket);
+        // The adapter writes its pid. On Linux a killed adapter closes with a FIN, and a paused
+        // socket holding unread data never emits "close" (Windows resets instead).
+        socket.resume();
         socket.on("error", () => {});
         socket.on("close", () => adapters.delete(socket));
     });
