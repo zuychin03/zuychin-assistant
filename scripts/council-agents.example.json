@@ -3,6 +3,8 @@
 
   "mcpUrl": "http://localhost:3000/api/mcp/mcp",
 
+  "_doc_watchdog": "Each ACP turn is watched. An adapter may set turnIdleMs (no ACP update and no running host terminal; default 15 minutes) and turnMaxMs (whole turn; default 90 minutes). On expiry the host cancels the turn, closes the adapter and restarts the seat, at most watchdogRestarts times per Council (default 2). After that the seat's task is marked blocked and the owner is notified; Requeue on /council restarts the seat with a fresh allowance. deliveryMaxAttempts (default 3) caps how often one refused turn is retried before the seat is treated the same way.",
+
   "host": {
     "_doc": "Loopback control channel for /council. port is the first tried; the host walks up to 8791 if it is taken. origins are ADDED to http://localhost:3000 and http://127.0.0.1:3000 - put your deployed PWA origin here to drive the council from it.",
     "_doc_autoAdopt": "true lets an idle host claim an open council it can run IN FULL - every live participant configured here and none already driven by hand - without anyone clicking. That is what makes a council convened from a phone actually start. Leave it off unless you want vendor processes starting unattended: a permission request outside a worktree is denied automatically after 120s if nobody is watching.",

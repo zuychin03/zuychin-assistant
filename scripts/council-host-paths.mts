@@ -61,6 +61,11 @@ export function spawnResolved(
 /**
  * Kill a spawned process and everything under it. A .cmd shim runs through
  * cmd.exe, so child.kill() reaps the wrapper and orphans the real agent.
+ *
+ * On POSIX the host spawns adapters and terminals with `detached: true`, which
+ * makes each lead its own process group, so grandchildren such as codex
+ * app-server die with it. Windows needs no group (taskkill /T walks the tree)
+ * and would open a console window if detached.
  */
 export function killTree(child: ChildProcess): void {
     if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
@@ -68,6 +73,11 @@ export function killTree(child: ChildProcess): void {
         spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
         return;
     }
+    // ESRCH: the child was not spawned detached, so it leads no group.
+    try {
+        process.kill(-child.pid, "SIGKILL");
+        return;
+    } catch { /* fall through */ }
     child.kill();
 }
 

@@ -79,6 +79,8 @@ interface World {
     dispatched: unknown;
     acks: { ok: boolean; reason?: string }[];
     prepared: (args: Record<string, unknown>) => unknown;
+    lease: { hostId: string; leaseEpoch: number; leaseExpiresAt: string; live: boolean } | null;
+    notes: { id: string; agentName: string | null; body: string; createdAt: string; delivered: Record<string, string> }[];
 }
 
 function freshWorld(): World {
@@ -87,6 +89,8 @@ function freshWorld(): World {
         appended: { ok: true, seq: 10, round: 2 }, open: [], campaign: baseCampaign, items: [], claimed: null,
         review: { ok: true }, dispatched: { kind: "degraded" }, acks: [],
         prepared: () => ({ ok: false, reason: "unexpected" }),
+        lease: { hostId: HOST_ID, leaseEpoch: 3, leaseExpiresAt: NOW, live: true },
+        notes: [],
     };
 }
 
@@ -139,6 +143,21 @@ const dependencies: Record<string, unknown> = {
             acknowledgeDelivery: boundary("acknowledgeDelivery", () => world.acks.shift() ?? { ok: true }),
             prepareDelivery: boundary("prepareDelivery", (args) => world.prepared(args as Record<string, unknown>)),
         },
+    },
+    "@/lib/council/online/store": {
+        readLease: boundary("readLease", () => world.lease),
+    },
+    "@/lib/messaging/router": {
+        notify: boundary("notify", () => ({ discord: true, telegram: false, push: 0 })),
+    },
+    // Mirrors the SQL: a note leaves the pending set once taken.
+    "@/lib/council/owner-notes": {
+        takeOwnerNotes: boundary("takeOwnerNotes", (_sessionId, agentName) => {
+            const taken = world.notes.filter((note) => (note.agentName === null || note.agentName === agentName) && !note.delivered[String(agentName)]);
+            for (const note of taken) note.delivered[String(agentName)] = NOW;
+            return taken.map((note) => ({ ...note }));
+        }),
+        renderOwnerNotes: (notes: { body: string }[]) => notes.map((note) => `NOTE ${note.body}`).join("\n"),
     },
 };
 
@@ -362,10 +381,65 @@ test("work is claimable only once the Council is closed and its campaign exists"
     assert.deepEqual(await ops.claimWorkAsSeat(claim, seat()), { kind: "no_campaign" });
     assert.deepEqual(called(), ["getSessionByCode", "getCampaignForSession"]);
     world.campaign = baseCampaign;
-    assert.deepEqual(await ops.claimWorkAsSeat(claim, seat()), { kind: "idle", campaign: baseCampaign });
+    assert.deepEqual(await ops.claimWorkAsSeat(claim, seat()), { kind: "idle", campaign: baseCampaign, notes: [] });
     world.claimed = workItem("item-1", "agent-a", "in_progress");
-    assert.deepEqual(await ops.claimWorkAsSeat(claim, seat()), { kind: "assigned", item: world.claimed });
-    assert.deepEqual(calls.at(-1), { name: "claimNextWorkItem", args: [SESSION_ID, "agent-a"] });
+    assert.deepEqual(await ops.claimWorkAsSeat(claim, seat()), { kind: "assigned", item: world.claimed, notes: [] });
+    assert.deepEqual(calls.at(-2), { name: "claimNextWorkItem", args: [SESSION_ID, "agent-a"] });
+    assert.deepEqual(calls.at(-1), { name: "takeOwnerNotes", args: [SESSION_ID, "agent-a"] });
+});
+
+test("a claim and a heartbeat each carry the seat's owner notes exactly once", async () => {
+    world.session = { ...baseSession, status: "closed" };
+    world.claimed = workItem("item-1", "agent-a", "in_progress");
+    world.notes = [
+        { id: "n-all", agentName: null, body: "Leave the journal format alone.", createdAt: NOW, delivered: {} },
+        { id: "n-b", agentName: "agent-b", body: "Only for agent-b.", createdAt: NOW, delivered: {} },
+    ];
+    const claimed = await ops.claimWorkAsSeat({ sessionCode: "CN-TEST", agentName: "agent-a" }, seat());
+    assert.deepEqual(claimed.kind === "assigned" && claimed.notes.map((note) => note.id), ["n-all"]);
+    assert.deepEqual(await ops.heartbeatWorkAsSeat({ itemId: ITEM_ID, agentName: "agent-a" }, seat()), { kind: "done", ok: true, notes: [] });
+
+    world.notes.push({ id: "n-a", agentName: "agent-a", body: "Run the full suite.", createdAt: NOW, delivered: {} });
+    const beat = await ops.heartbeatWorkAsSeat({ itemId: ITEM_ID, agentName: "agent-a", progress: "tests" }, seat());
+    assert.deepEqual(beat.kind === "done" && beat.notes.map((note) => note.id), ["n-a"]);
+    assert.deepEqual(calls.filter((call) => call.name === "takeOwnerNotes").at(-1)?.args, [SESSION_ID, "agent-a"]);
+    assert.deepEqual(await ops.heartbeatWorkAsSeat({ itemId: ITEM_ID, agentName: "agent-a" }, seat()), { kind: "done", ok: true, notes: [] });
+    assert.equal(world.notes.find((note) => note.id === "n-b")?.delivered["agent-b"], undefined);
+});
+
+test("a refused heartbeat, or one without a seat key, takes no notes", async () => {
+    world.notes = [{ id: "n-all", agentName: null, body: "Hold.", createdAt: NOW, delivered: {} }];
+    const campaign = dependencies["@/lib/council/campaign"] as Record<string, unknown>;
+    const original = campaign.heartbeatWorkItem;
+    campaign.heartbeatWorkItem = boundary("heartbeatWorkItem", () => false);
+    try {
+        assert.deepEqual(await ops.heartbeatWorkAsSeat({ itemId: ITEM_ID, agentName: "agent-a" }, seat()), { kind: "done", ok: false, notes: [] });
+    } finally {
+        campaign.heartbeatWorkItem = original;
+    }
+    env.COUNCIL_V2_ASSERTED_IDENTITY = "true";
+    assert.deepEqual(await ops.heartbeatWorkAsSeat({ itemId: ITEM_ID, agentName: "agent-a" }, owner), { kind: "done", ok: true, notes: [] });
+    assert.equal(called().includes("takeOwnerNotes"), false);
+    assert.deepEqual(world.notes[0].delivered, {});
+});
+
+test("the host takes a seat's notes only under the live lease", async () => {
+    const take = { sessionCode: "CN-TEST", agentName: "agent-a", hostId: HOST_ID, leaseEpoch: 3 };
+    for (const caller of [undefined, seat(), owner]) {
+        await assert.rejects(ops.takeOwnerNotesForHost(take, caller), { message: HOST_REQUIRED });
+    }
+    world.session = null;
+    assert.deepEqual(await ops.takeOwnerNotesForHost(take, host), { ok: false, reason: "unknown_session" });
+    world.session = { ...baseSession, status: "closed" };
+    world.notes = [{ id: "n-all", agentName: null, body: "Pause after task 2.", createdAt: NOW, delivered: {} }];
+    for (const lease of [null, { ...freshWorld().lease!, live: false }, { ...freshWorld().lease!, leaseEpoch: 4 }]) {
+        world.lease = lease;
+        assert.deepEqual(await ops.takeOwnerNotesForHost(take, host), { ok: false, reason: "stale_host" });
+    }
+    assert.equal(called().includes("takeOwnerNotes"), false);
+    world.lease = freshWorld().lease;
+    assert.deepEqual(await ops.takeOwnerNotesForHost(take, host), { ok: true, count: 1, text: "NOTE Pause after task 2." });
+    assert.deepEqual(await ops.takeOwnerNotesForHost(take, host), { ok: true, count: 0, text: "" });
 });
 
 test("work updates forward only their own fields and the seat's identity", async () => {
@@ -377,6 +451,7 @@ test("work updates forward only their own fields and the seat's identity", async
     assert.deepEqual(reviewed, { kind: "reviewed", result: { ok: false, reason: "not_the_closer" } });
     assert.deepEqual(calls, [
         { name: "heartbeatWorkItem", args: [{ itemId: ITEM_ID, agentName: "agent-a", progress: "half" }] },
+        { name: "takeOwnerNotes", args: [SESSION_ID, "agent-a"] },
         { name: "completeWorkItem", args: [{ itemId: ITEM_ID, agentName: "agent-a", commitHash: "c".repeat(40), verification: "ok", identity: seatWriteIdentity }] },
         { name: "blockWorkItem", args: [{ itemId: ITEM_ID, agentName: "agent-a", reason: "blocked" }] },
         { name: "reviewWorkItem", args: [{ itemId: ITEM_ID, reviewer: "agent-a", accepted: true, note: "fine" }] },
@@ -542,4 +617,64 @@ test("supervision reads are observer-gated before and after the session lookup",
     world.items = [workItem("a", "agent-a", "in_progress")];
     const status = await ops.superviseCampaign({ sessionCode: "CN-TEST", agentName: "agent-a" }, host);
     assert.equal(status.kind === "campaign" && status.state, "active");
+});
+
+test("a stall is host-only, fenced by the live lease, and blocks the seat's task in progress first", async () => {
+    const stall = { sessionCode: "CN-TEST", agentName: "agent-a", hostId: HOST_ID, leaseEpoch: 3, reason: "watchdog: no activity for 15 min" };
+    for (const caller of [undefined, seat(), owner]) {
+        await assert.rejects(ops.stallWorkItem(stall, caller), { message: HOST_REQUIRED });
+    }
+    assert.deepEqual(called(), []);
+
+    world.session = null;
+    assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: false, reason: "unknown_session" });
+    world.session = { ...baseSession, status: "closed" };
+    for (const lease of [null, { ...world.lease!, live: false }, { ...world.lease!, hostId: EXECUTION_ID }, { ...world.lease!, leaseEpoch: 4 }]) {
+        world.lease = lease;
+        calls.length = 0;
+        assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: false, reason: "stale_host" });
+        assert.deepEqual(called(), ["getSessionByCode", "readLease"]);
+    }
+
+    world.lease = freshWorld().lease;
+    world.items = [
+        workItem("b-1", "agent-b", "in_progress"),
+        workItem("a-1", "agent-a", "queued"),
+        workItem("a-2", "agent-a", "in_progress", { sequence: 2, title: "Fix the journal" }),
+    ];
+    calls.length = 0;
+    assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: true, itemId: "a-2" });
+    assert.deepEqual(calls.find((call) => call.name === "blockWorkItem")?.args, [
+        { itemId: "a-2", agentName: "agent-a", reason: "seat stuck: watchdog: no activity for 15 min" },
+    ]);
+    const notices = calls.filter((call) => call.name === "notify");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].args[0], "council_stalled");
+    assert.match(String(notices[0].args[1]), /CN-TEST: agent-a is stuck[\s\S]*Task 2 \(Fix the journal\) is now blocked\. Requeue it on \/council/);
+});
+
+test("a seat stuck before claiming has its next queued task blocked, so a requeue can restart it", async () => {
+    const stall = { sessionCode: "CN-TEST", agentName: "agent-a", hostId: HOST_ID, leaseEpoch: 3, reason: "watchdog: no activity for 15 min" };
+    world.items = [
+        workItem("a-0", "agent-a", "verified"),
+        workItem("b-1", "agent-b", "queued"),
+        workItem("a-1", "agent-a", "queued", { sequence: 2 }),
+        workItem("a-2", "agent-a", "queued", { sequence: 3 }),
+    ];
+    assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: true, itemId: "a-1" });
+    assert.deepEqual(calls.find((call) => call.name === "blockWorkItem")?.args, [
+        { itemId: "a-1", agentName: "agent-a", reason: "seat stuck: watchdog: no activity for 15 min" },
+    ]);
+});
+
+test("a stall with no task in progress still tells the owner", async () => {
+    const stall = { sessionCode: "CN-TEST", agentName: "agent-a", hostId: HOST_ID, leaseEpoch: 3, reason: "delivery failed 3 times" };
+    world.items = [workItem("a-1", "agent-a", "awaiting_review")];
+    assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: true, itemId: null });
+    world.campaign = null;
+    assert.deepEqual(await ops.stallWorkItem(stall, host), { ok: true, itemId: null });
+    assert.equal(called().includes("blockWorkItem"), false);
+    const notices = calls.filter((call) => call.name === "notify");
+    assert.equal(notices.length, 2);
+    assert.doesNotMatch(String(notices[1].args[1]), /blocked/);
 });

@@ -124,8 +124,29 @@ fn close_owned_host(app: &tauri::AppHandle) {
     });
 }
 
+/// A second launch lands here in the first instance, which owns the host.
+fn focus_existing(app: &tauri::AppHandle) {
+    let Some(window) = app
+        .get_webview_window("main")
+        .or_else(|| app.get_webview_window("setup"))
+    else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
 pub fn run() {
-    let application = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // The native smoke runs its own copy of this exe and identifier while the
+    // owner's app may be open; it selects its config through this variable.
+    if std::env::var_os("ZUYCHIN_DESKTOP_CONFIG").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            focus_existing(app)
+        }));
+    }
+    let application = builder
         .invoke_handler(tauri::generate_handler![
             council_desktop_status, council_desktop_start, council_desktop_stop, council_desktop_restart,
         ])

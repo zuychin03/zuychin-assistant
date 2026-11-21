@@ -234,6 +234,59 @@ function journalWriteChecks(): void {
             new RegExp(`^[ \\t]*writeFileAtomic\\s*\\(\\s*join\\s*\\(\\s*state\\.runDir\\s*,\\s*["']${target}["']\\s*\\)\\s*,`, "m").test(body));
         check(`${journal} writer avoids in-place writes`, !/\bwriteFileSync\s*\(/.test(body));
     }
+
+    // A shell seat's --mcp-config file holds its bearer token.
+    const bodyOf = (name: string) => {
+        const start = lines.findIndex((line) => line.startsWith(`function ${name}(`) || line.startsWith(`async function ${name}(`));
+        const end = start === -1 ? -1 : lines.indexOf("}", start + 1);
+        return end === -1 ? "" : lines.slice(start, end + 1).join("\n");
+    };
+    check("the seat token file is written whole at 0o600 with no in-place fallback",
+        /writeFileAtomic\(agent\.mcpFile,[\s\S]*?\),\s*0o600,\s*\{\s*inPlaceFallback:\s*false\s*\}\)/.test(bodyOf("startShellAgent")));
+    check("the seat token file has no other writer",
+        source.split("writeFileAtomic(agent.mcpFile").length === 2 && !/\bwriteFileSync\s*\([^;]*mcpFile/.test(source));
+    check("closing a seat deletes its token file", /\bremoveTokenFile\(agent\.mcpFile\)/.test(bodyOf("closeAgent")));
+    const release = bodyOf("releaseOwnedCouncil");
+    check("Council release deletes the seat and integration token files",
+        release.includes("removeTokenFile(join(runDir, `${agent.name}.mcp.json`))")
+        && release.includes("removeTokenFile(join(runDir, `${agent.name}-integration.mcp.json`))"));
+}
+
+// Windows only: a reader that opened the file without delete sharing blocks the
+// rename, which is the one case where the in-place fallback would run.
+async function heldFileChecks(): Promise<void> {
+    console.log("\ncredential file held open");
+    if (process.platform !== "win32") {
+        console.log("  skip  POSIX renames over an open file");
+        return;
+    }
+    const dir = mkdtempSync(join(tmpdir(), "zch-held-"));
+    const path = join(dir, "seat.mcp.json");
+    writeFileSync(path, JSON.stringify({ n: 0 }));
+    const hold = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        `$f = [System.IO.File]::Open('${path.replaceAll("'", "''")}', 'Open', 'Read', 'None'); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); Start-Sleep -Seconds 15; $f.Close()`,
+    ], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("the holder never opened the file")), 15_000);
+            hold.stdout.on("data", (chunk: Buffer) => { if (chunk.toString().includes("held")) { clearTimeout(timer); resolve(); } });
+            hold.on("exit", () => { clearTimeout(timer); reject(new Error("the holder exited early")); });
+        });
+        let code = "";
+        try { writeFileAtomic(path, JSON.stringify({ n: 1 }), 0o600, { inPlaceFallback: false }); } catch (error) { code = (error as NodeJS.ErrnoException).code ?? "thrown"; }
+        check("a credential write refuses to fall back while the file is held", code === "EBUSY", code);
+        check("no temporary file is left after a refused credential write", !readdirSync(dir).some((name) => name.endsWith(".tmp")), readdirSync(dir));
+    } finally {
+        hold.kill();
+        await new Promise((settle) => { if (hold.exitCode !== null || hold.signalCode !== null) settle(undefined); else hold.once("exit", settle); });
+    }
+    try {
+        check("the refused write left the old credential intact", JSON.parse(readFileSync(path, "utf8")).n === 0);
+        writeFileAtomic(path, JSON.stringify({ n: 2 }), 0o600, { inPlaceFallback: false });
+        check("once released, the credential write lands", JSON.parse(readFileSync(path, "utf8")).n === 2);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 }
 
 fixtureChecks();
@@ -241,5 +294,6 @@ contractChecks();
 lockChecks();
 fileChecks();
 journalWriteChecks();
+await heldFileChecks();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

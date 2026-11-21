@@ -7,6 +7,8 @@ import {
 } from "@/lib/council/campaign";
 import { proposeCouncilVerdict } from "@/lib/council/close";
 import { requireCouncilHost, type CouncilCaller } from "@/lib/council/host-contracts";
+import { readLease } from "@/lib/council/online/store";
+import { renderOwnerNotes, takeOwnerNotes } from "@/lib/council/owner-notes";
 import { MAX_BODY_CHARS, MAX_OPEN_COUNCILS, MODERATOR_NAME } from "@/lib/council/protocol";
 import { renderTurn } from "@/lib/council/render";
 import { councilHostService } from "@/lib/council/service";
@@ -18,6 +20,7 @@ import { getCouncilTemplate, type CouncilType } from "@/lib/council/templates";
 import { promptDigest } from "@/lib/council/v3";
 import { dispatchCouncil, pollCouncil } from "@/lib/council/wait";
 import { getCouncilWriteIdentity } from "@/lib/council/write-identity";
+import { notify } from "@/lib/messaging/router";
 
 // Council operations shared by every transport. Each one authorises its caller
 // and enforces its rules here; a transport only parses input and renders the
@@ -212,14 +215,19 @@ export async function claimWorkAsSeat(params: { sessionCode: string; agentName: 
     const campaign = await getCampaignForSession(session.id);
     if (!campaign) return { kind: "no_campaign" as const };
     const item = await claimNextWorkItem(session.id, params.agentName);
-    return item ? { kind: "assigned" as const, item } : { kind: "idle" as const, campaign };
+    const notes = await takeOwnerNotes(session.id, params.agentName);
+    return item ? { kind: "assigned" as const, item, notes } : { kind: "idle" as const, campaign, notes };
 }
 
 export async function heartbeatWorkAsSeat(params: { itemId: string; agentName: string; progress?: string }, caller: Caller) {
     const denied = workerDenial(caller, params.agentName);
     if (denied) return denied;
     const ok = await heartbeatWorkItem({ itemId: params.itemId, agentName: params.agentName, progress: params.progress });
-    return { kind: "done" as const, ok };
+    // The only path that reaches a seat mid-turn. The seat key names the Council,
+    // so a legacy owner-scope caller gets none.
+    const seat = ok ? seatIdentity(caller) : null;
+    const notes = seat ? await takeOwnerNotes(seat.sessionId, params.agentName) : [];
+    return { kind: "done" as const, ok, notes };
 }
 
 export async function completeWorkAsSeat(
@@ -433,12 +441,65 @@ export async function listUnverifiedWork(params: { sessionCode: string }, caller
     return { campaignId: campaign.id, baseSha: campaign.baseSha, verificationProfile: campaign.verificationProfile, items };
 }
 
+/**
+ * The host gives up on a seat its watchdog restarted as often as allowed. The
+ * seat's task in progress (else its next queued one) is blocked so nothing waits
+ * on it, and the owner is told even when the seat had no task (a debate turn can
+ * hang too).
+ */
+export async function stallWorkItem(
+    params: { sessionCode: string; agentName: string; hostId: string; leaseEpoch: number; reason: string },
+    caller: CouncilCaller | undefined,
+) {
+    requireCouncilHost(caller);
+    const session = await getSessionByCode(params.sessionCode);
+    if (!session) return { ok: false as const, reason: "unknown_session" };
+    const lease = await readLease(session.id);
+    if (!lease?.live || lease.hostId !== params.hostId || lease.leaseEpoch !== params.leaseEpoch) {
+        return { ok: false as const, reason: "stale_host" };
+    }
+    const campaign = await getCampaignForSession(session.id);
+    const owned = campaign ? (await listCampaignWorkItems(campaign.id)).filter((i) => i.agentName === params.agentName) : [];
+    // A seat that hung before claiming still holds queued work. Blocking its next
+    // task gives the owner something to requeue, and a requeue restarts the seat.
+    const item = owned.find((i) => i.status === "in_progress") ?? owned.find((i) => i.status === "queued");
+    const blocked = item
+        ? await blockWorkItem({ itemId: item.id, agentName: params.agentName, reason: `seat stuck: ${params.reason}` })
+        : false;
+    await notify(
+        "council_stalled",
+        `**Council ${session.code}: ${params.agentName} is stuck** - ${session.topic}\n`
+        + `The host restarted it and gave up: ${params.reason}.`
+        + (blocked && item ? ` Task ${item.sequence} (${item.title}) is now blocked. Requeue it on /council to restart the seat.` : ""),
+    ).catch((error) => console.warn("[Council] stall notice failed:", error));
+    return { ok: true as const, itemId: blocked && item ? item.id : null };
+}
+
+/**
+ * Host only, fenced by the live lease: hands one seat its undelivered owner
+ * notes, already rendered, for the campaign prompt the host is about to send.
+ */
+export async function takeOwnerNotesForHost(
+    params: { sessionCode: string; agentName: string; hostId: string; leaseEpoch: number },
+    caller: CouncilCaller | undefined,
+) {
+    requireCouncilHost(caller);
+    const session = await getSessionByCode(params.sessionCode);
+    if (!session) return { ok: false as const, reason: "unknown_session" };
+    const lease = await readLease(session.id);
+    if (!lease?.live || lease.hostId !== params.hostId || lease.leaseEpoch !== params.leaseEpoch) {
+        return { ok: false as const, reason: "stale_host" };
+    }
+    const notes = await takeOwnerNotes(session.id, params.agentName);
+    return { ok: true as const, count: notes.length, text: renderOwnerNotes(notes) };
+}
+
 export type SupervisionState = "review" | "active" | "idle" | "complete" | "blocked";
 
 // What a supervising host branches on, in place of the SUPERVISE: prose that
 // council_work_status writes for agents.
 export type SupervisionReport =
-    | { state: SupervisionState | "no_campaign" }
+    | { state: SupervisionState | "no_campaign"; runnable?: string[] }
     | { error: "unknown_session"; sessionCode: string };
 
 export function supervisionState(params: {

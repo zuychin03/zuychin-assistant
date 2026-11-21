@@ -299,6 +299,7 @@
 .bubbleBody { white-space: pre-wrap; word-break: break-word; }
 .relayed { display: flex; align-items: center; gap: 5px; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .composer { display: flex; align-items: flex-end; gap: 8px; }
+.composerWrap { flex-wrap: wrap; }
 
 /* Transcript */
 .transcript { display: flex; flex-direction: column; max-height: 62vh; overflow-y: auto; overscroll-behavior: contain; }

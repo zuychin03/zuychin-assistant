@@ -11,7 +11,9 @@ import { promisify } from "node:util";
 import { Script } from "node:vm";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const EXE = join(REPO, "src-tauri/target/debug/zuychin-council-desktop.exe");
+// Cargo resolves a relative CARGO_TARGET_DIR against the working directory, as resolve() does.
+const TARGET = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(REPO, "src-tauri/target");
+const EXE = join(TARGET, "debug/zuychin-council-desktop.exe");
 const execute = promisify(execFile);
 const delay = (milliseconds: number) => new Promise<void>((done) => setTimeout(done, milliseconds));
 

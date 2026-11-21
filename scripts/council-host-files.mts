@@ -31,12 +31,17 @@ function renameReplacing(from: string, to: string): boolean {
  * Replaces `path` so a reader sees the old content or the new, never a mix. If
  * something keeps the file open past the retries it is written in place as
  * before, because a host that cannot start is worse than the rare torn file.
+ * `inPlaceFallback: false` throws instead, for a file holding a credential.
  */
-export function writeFileAtomic(path: string, data: string, mode = 0o600): void {
+export function writeFileAtomic(path: string, data: string, mode = 0o600, options: { inPlaceFallback?: boolean } = {}): void {
     const temporary = temporaryBeside(path);
     writeFileSync(temporary, data, { mode, flag: "wx" });
     try {
-        if (!renameReplacing(temporary, path)) writeFileSync(path, data, { mode });
+        if (renameReplacing(temporary, path)) return;
+        if (options.inPlaceFallback === false) {
+            throw Object.assign(new Error(`could not replace ${path}: another process keeps it open`), { code: "EBUSY" });
+        }
+        writeFileSync(path, data, { mode });
     } finally {
         rmSync(temporary, { force: true });
     }

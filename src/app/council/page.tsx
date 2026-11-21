@@ -14,6 +14,7 @@ import {
 import { ActivityFeed } from "./activity-feed";
 import { remoteAgentSetup } from "./remote-setup";
 import { OwnerChannelPanel } from "./owner-channel-panel";
+import { OwnerNotesPanel, RequeueButton } from "./owner-notes-panel";
 import { DecisionPanel } from "./decision-panel";
 import { SeatKeysPanel } from "./seat-keys-panel";
 import { OnlineCouncilPanel } from "./online-council-panel";
@@ -804,6 +805,12 @@ export default function CouncilPage() {
                                                 onStateChange={() => { void fetchDetail(s.code); }}
                                             />
                                         )}
+                                        {s.status === "closed" && (detail.campaign?.status === "running" || detail.campaign?.status === "blocked") && (
+                                            <OwnerNotesPanel key={`notes-${s.code}`}
+                                                code={s.code}
+                                                seats={detail.participants.filter((p) => p.kind === "agent").map((p) => p.name)}
+                                            />
+                                        )}
                                         {isRunning && !detail.online && (
                                             <SeatKeysPanel key={s.code}
                                                 code={s.code}
@@ -891,6 +898,9 @@ export default function CouncilPage() {
                                                         <span className={ui.name}>{item.agentName}</span>
                                                         <span className={ui.pill} data-tone={item.status === "verified" ? "success" : item.status === "blocked" ? "warning" : undefined}>{item.status}</span>
                                                         <span className={ui.rowTitle}>{item.title}</span>
+                                                        {item.status === "blocked" && !detail.campaign?.manifestFrozenAt && (
+                                                            <RequeueButton code={s.code} itemId={item.id} onDone={() => { void fetchDetail(s.code); }} />
+                                                        )}
                                                         {/* Host-observed, not the agent's own account of its work. */}
                                                         {item.status === "awaiting_review" && (
                                                             <span className={ui.pill} data-tone={item.hostVerified === true ? "success" : item.hostVerified === false ? "danger" : undefined}>

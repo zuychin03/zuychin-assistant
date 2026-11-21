@@ -16,7 +16,7 @@
  */
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
@@ -53,6 +53,14 @@ const MAX_PAIR_FAILURES = 10;
 const HEALTH_BEAT_MS = 5_000;
 const ACP_STARTUP_TIMEOUT_MS = 30_000;
 const CLEANUP_TIMEOUT_MS = 5_000;
+// Generous on purpose: a Claude seat can run Bash silently for minutes, and
+// Antigravity's own print timeout is 95 minutes.
+const TURN_IDLE_MS = 15 * 60_000;
+const TURN_MAX_MS = 90 * 60_000;
+const TURN_CANCEL_GRACE_MS = 10_000;
+const WATCHDOG_TICK_MS = 15_000;
+const WATCHDOG_RESTARTS = 2;
+const DELIVERY_MAX_ATTEMPTS = 3;
 
 // ---------------------------------------------------------------- supervision
 
@@ -118,6 +126,13 @@ interface Adapter {
     warn?: string;
     version?: string;
     capabilities?: Partial<Pick<ConnectorCapabilitySnapshot, "filesystemMediated" | "terminalMediated" | "permissionCallbacks">>;
+    /**
+     * Turn watchdog. Idle is time with no ACP update and no running host
+     * terminal for this agent; max caps the whole turn. Unset uses 15 and 90
+     * minutes.
+     */
+    turnIdleMs?: number;
+    turnMaxMs?: number;
 }
 interface AgentInstance {
     provider: string;
@@ -151,6 +166,12 @@ interface HostConfig {
      * merge is checked but nothing is run.
      */
     verifyCommand?: string[];
+    /** Restarts per seat per Council after a watchdog expiry, before the seat's task is marked stuck. */
+    watchdogRestarts?: number;
+    /** Failed deliveries of one turn a seat may retry before it is treated as stuck. */
+    deliveryMaxAttempts?: number;
+    /** Wait between session/cancel and closing the adapter. Tests shorten it. */
+    turnCancelGraceMs?: number;
     agents: Record<string, Adapter>;
     instances?: Record<string, AgentInstance>;
 }
@@ -192,6 +213,15 @@ if (!existsSync(configPath)) {
     die(`missing ${configPath}\nCopy council-agents.example.json to council-agents.json and set the commands you actually run.`);
 }
 const config: HostConfig = JSON.parse(readFileSync(configPath, "utf8"));
+
+// A malformed value falls back to the default rather than switching a guard off.
+function setting(value: unknown, fallback: number, minimum: number, integer = false): number {
+    return typeof value === "number" && Number.isFinite(value) && value >= minimum && (!integer || Number.isInteger(value))
+        ? value : fallback;
+}
+const watchdogRestarts = setting(config.watchdogRestarts, WATCHDOG_RESTARTS, 0, true);
+const deliveryMaxAttempts = setting(config.deliveryMaxAttempts, DELIVERY_MAX_ATTEMPTS, 1, true);
+const turnCancelGraceMs = setting(config.turnCancelGraceMs, TURN_CANCEL_GRACE_MS, 0);
 
 // The endpoint answers a bare tools/call with no initialize handshake, and
 // frames the reply as one SSE "data:" line.
@@ -387,6 +417,19 @@ interface AgentRuntime {
     effectiveReasoningEffort: string | null;
     capabilities: ConnectorCapabilitySnapshot;
     lastActivity: string;
+    /** Start of the turn in flight, for the watchdog; null between turns. */
+    turnStartedAt: number | null;
+    /** Watchdog restarts this seat has had in this Council, journaled across host restarts. */
+    restarts: number;
+    recovering: boolean;
+    /** A delegated integrator gets the watchdog but is never restarted. */
+    integrator: boolean;
+    /** The server's attempt number when this runtime first saw each delivery. */
+    firstAttempts: Map<string, number>;
+    /** The task blocked when the watchdog gave up; a requeue of it restarts the seat. */
+    stalledItemId: string | null;
+    /** Owner notes taken from the server but not yet sent in a prompt. */
+    heldNotes: string;
     child?: ChildProcess;
     connection?: acp.ClientConnection;
     session?: acp.ActiveSession;
@@ -963,6 +1006,9 @@ function denied(what: string): never {
 interface HostTerminal {
     id: string;
     agent: string;
+    // The runtime, not the name: a restarted seat keeps its name but must not
+    // inherit the old runtime's terminals.
+    runtime: AgentRuntime;
     child: ChildProcess;
     output: string;
     truncated: boolean;
@@ -980,9 +1026,10 @@ function createTerminal(agent: AgentRuntime, params: acp.CreateTerminalRequest):
         cwd: agent.treeDir,
         env: buildCouncilAdapterEnv(process.env, Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value]))),
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
     });
     const limit = params.outputByteLimit ?? TERMINAL_OUTPUT_LIMIT;
-    const terminal: HostTerminal = { id, agent: agent.name, child, output: "", truncated: false, exit: null, waiters: [] };
+    const terminal: HostTerminal = { id, agent: agent.name, runtime: agent, child, output: "", truncated: false, exit: null, waiters: [] };
 
     const append = (chunk: Buffer) => {
         terminal.output += chunk.toString();
@@ -993,13 +1040,17 @@ function createTerminal(agent: AgentRuntime, params: acp.CreateTerminalRequest):
     };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
+    // The watchdog's idle clock stands still while this runs, and restarts from
+    // its exit rather than from the agent's last update before it.
     child.on("exit", (code, signal) => {
         terminal.exit = { exitCode: code, signal: signal ?? null };
+        agent.lastActivity = new Date().toISOString();
         for (const waiter of terminal.waiters.splice(0)) waiter(terminal.exit);
     });
     child.on("error", (error) => {
         terminal.output += `\n[host] ${error.message}`;
         terminal.exit = { exitCode: -1, signal: null };
+        agent.lastActivity = new Date().toISOString();
         for (const waiter of terminal.waiters.splice(0)) waiter(terminal.exit);
     });
 
@@ -1054,6 +1105,7 @@ async function startAcpAgent(agent: AgentRuntime, signal: AbortSignal): Promise<
         cwd: agent.treeDir,
         stdio: ["pipe", "pipe", "pipe"],
         env: adapterEnv(agent),
+        detached: process.platform !== "win32",
     });
     agent.child = child;
     agent.log = createWriteStream(agent.logPath, { flags: "a" });
@@ -1206,15 +1258,16 @@ function startShellAgent(agent: AgentRuntime, prompt: string): void {
     agent.state = "starting";
     if (agent.adapter.mcpConfig === "claude") {
         // Outside the worktree on purpose: it carries a bearer token and must
-        // never be commitable from inside the repo.
-        writeFileSync(agent.mcpFile, JSON.stringify({
+        // never be commitable from inside the repo. No in-place fallback: a torn
+        // or wrongly permissioned credential is worse than a seat that fails to start.
+        writeFileAtomic(agent.mcpFile, JSON.stringify({
             mcpServers: {
                 "zuychin-knowledge": {
                     type: "http", url: config.mcpUrl,
                     headers: { Authorization: `Bearer ${agent.seatToken}` },
                 },
             },
-        }, null, 2));
+        }, null, 2), 0o600, { inPlaceFallback: false });
     }
     const args = agent.adapter.args.map((a) => a
         .replace("{prompt}", prompt)
@@ -1224,6 +1277,7 @@ function startShellAgent(agent: AgentRuntime, prompt: string): void {
     const stream = createWriteStream(agent.logPath, { flags: "a" });
     const child = spawnResolved(agent.adapter.command, args, {
         cwd: agent.treeDir, stdio: ["ignore", "pipe", "pipe"], env: adapterEnv(agent),
+        detached: process.platform !== "win32",
     });
     child.stdout?.pipe(stream);
     child.stderr?.pipe(stream);
@@ -1253,6 +1307,83 @@ function persistDeliveryJournal(): void {
     }, null, 2));
 }
 
+// ---------------------------------------------------------------- turn watchdog
+
+class TurnExpired extends Error {}
+
+function turnLimits(agent: AgentRuntime): { idleMs: number; maxMs: number } {
+    return {
+        idleMs: setting(agent.adapter.turnIdleMs, TURN_IDLE_MS, 1),
+        maxMs: setting(agent.adapter.turnMaxMs, TURN_MAX_MS, 1),
+    };
+}
+
+function runningTerminal(agent: AgentRuntime): boolean {
+    for (const terminal of terminals.values()) {
+        if (terminal.runtime === agent && terminal.exit === null) return true;
+    }
+    return false;
+}
+
+// From the later of the turn's start and the agent's last sign of life, so a
+// seat idle between turns does not start its next turn already expired.
+function turnIdleFor(agent: AgentRuntime, now = Date.now()): number {
+    if (agent.turnStartedAt === null || runningTerminal(agent)) return 0;
+    return now - Math.max(agent.turnStartedAt, Date.parse(agent.lastActivity) || 0);
+}
+
+function span(ms: number): string {
+    return ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 100) / 10}s`;
+}
+
+function turnExpiry(agent: AgentRuntime, now = Date.now()): string | null {
+    if (agent.turnStartedAt === null) return null;
+    const { idleMs, maxMs } = turnLimits(agent);
+    if (now - agent.turnStartedAt >= maxMs) return `turn ran past ${span(maxMs)}`;
+    if (turnIdleFor(agent, now) >= idleMs) return `no activity for ${span(idleMs)}`;
+    return null;
+}
+
+// A failed seat, or one whose turn has gone quiet past its idle limit, is not
+// reported to dispatch, so the server's stale rule routes the floor around it.
+function seatAlive(agent: AgentRuntime): boolean {
+    return agent.state !== "failed" && !(agent.inFlight && turnIdleFor(agent) >= turnLimits(agent).idleMs);
+}
+
+/**
+ * Resolves with the turn, or on expiry sends session/cancel, gives the adapter
+ * the grace to stop, closes it (which rejects the pending prompt and kills the
+ * process tree) and throws TurnExpired. A turn that ends during the grace is
+ * still closed: a session that hung once is not trusted with the next turn.
+ */
+async function watchTurn(agent: AgentRuntime, turn: Promise<acp.PromptResponse>): Promise<acp.PromptResponse> {
+    const { idleMs, maxMs } = turnLimits(agent);
+    const tickMs = Math.min(WATCHDOG_TICK_MS, Math.max(100, Math.floor(Math.min(idleMs, maxMs) / 4)));
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const expired = new Promise<string>((settle) => {
+        timer = setInterval(() => {
+            const reason = turnExpiry(agent);
+            if (reason) settle(reason);
+        }, tickMs);
+    });
+    try {
+        const outcome = await Promise.race([turn.then((response) => ({ response })), expired.then((reason) => ({ reason }))]);
+        if ("response" in outcome) return outcome.response;
+        clearInterval(timer);
+        agent.detail = `watchdog: ${outcome.reason}; cancelling the turn`;
+        log(`${agent.name}: ${agent.detail}`);
+        broadcast({ type: "state", ...snapshot() });
+        const sessionId = agent.session?.sessionId;
+        if (sessionId) void agent.connection?.agent.notify(acp.methods.agent.session.cancel, { sessionId }).catch(() => {});
+        await Promise.race([turn.then(() => {}, () => {}), new Promise((settle) => setTimeout(settle, turnCancelGraceMs))]);
+        agent.state = "failed";
+        closeAgent(agent);
+        throw new TurnExpired(outcome.reason);
+    } finally {
+        clearInterval(timer);
+    }
+}
+
 // Delivery is at-least-once. The ack is deferred to the tick AFTER the turn
 // completes, so a host that dies mid-turn redelivers the same batch rather than
 // leaving a hole in what the agent read.
@@ -1277,18 +1408,22 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
         return;
     }
     agent.state = "busy";
+    agent.turnStartedAt = Date.now();
     broadcast({ type: "turn", agent: agent.name, chars: prompt.length });
     agent.log?.write(`\n--- TURN PUSHED ---\n${prompt}\n\n`);
+    let expired: string | null = null;
     try {
-        const response = await agent.session.prompt(prompt);
+        const response = await watchTurn(agent, agent.session.prompt(prompt));
         agent.detail = `turn ended: ${response.stopReason}`;
         agent.lastDelivered = prompt;
         if (deliveryId) {
+            agent.firstAttempts.delete(deliveryId);
             delivered.set(agent.name, deliveryId);
             persistDeliveryJournal();
         }
     } catch (error) {
-        agent.detail = `turn failed: ${error instanceof Error ? error.message : String(error)}`;
+        if (error instanceof TurnExpired) expired = error.message;
+        agent.detail = `turn failed: ${expired ? `watchdog: ${expired}` : error instanceof Error ? error.message : String(error)}`;
         if (deliveryId) {
             await callTool("council_delivery_state", {
                 deliveryId, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
@@ -1298,9 +1433,93 @@ async function promptAgent(agent: AgentRuntime, prompt: string, deliveryId?: str
         broadcast({ type: "error", agent: agent.name, detail: agent.detail });
     } finally {
         agent.inFlight = false;
+        agent.turnStartedAt = null;
         if (agent.state === "busy") agent.state = "idle";
         agent.lastActivity = new Date().toISOString();
     }
+    if (expired && !agent.integrator) void recoverSeat(agent, `watchdog: ${expired}`).catch(recoveryFailed(agent));
+}
+
+function recoveryFailed(agent: AgentRuntime) {
+    return (error: unknown) => log(`${agent.name}: seat recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+// Counts only this runtime's tries: a restarted seat gets a full allowance even
+// though the server's attempt number kept climbing.
+function deliveryRetriesSpent(agent: AgentRuntime, deliveryId: string, attempt: number | undefined): number {
+    if (typeof attempt !== "number") return 0;
+    const first = agent.firstAttempts.get(deliveryId) ?? attempt;
+    agent.firstAttempts.set(deliveryId, first);
+    return attempt - first;
+}
+
+/**
+ * Stops a seat that hung or kept failing, then restarts it the way attach does,
+ * up to watchdogRestarts per Council. After that the seat stays failed and the
+ * server marks its task stuck and tells the owner.
+ */
+async function recoverSeat(agent: AgentRuntime, reason: string): Promise<void> {
+    const code = state.code;
+    const leaseEpoch = state.leaseEpoch;
+    const current = () => state.code === code && state.leaseEpoch === leaseEpoch && state.agents.get(agent.name) === agent
+        && !state.stopping && !releasingCouncil;
+    if (agent.recovering || !code || leaseEpoch === null || !current()) return;
+    agent.recovering = true;
+    agent.state = "failed";
+    closeAgent(agent);
+    agent.detail = `stopped: ${reason}`;
+    log(`${agent.name}: seat stopped (${reason})`);
+    broadcast({ type: "error", agent: agent.name, detail: agent.detail });
+    await stopRecordedExecution(agent, reason);
+    if (!current()) return;
+    if (agent.restarts >= watchdogRestarts) {
+        await stallSeat(agent, reason, code, leaseEpoch);
+        return;
+    }
+    await restartSeat(agent, agent.restarts + 1, code, `restarting the seat (${agent.restarts + 1} of ${watchdogRestarts})`);
+}
+
+async function restartSeat(agent: AgentRuntime, restarts: number, code: string, why: string): Promise<void> {
+    const fresh = makeRuntime(agent.name, code, {
+        modelId: agent.requestedModel ?? undefined,
+        reasoningEffort: agent.requestedReasoningEffort ?? undefined,
+    }, state.repo, true);
+    fresh.restarts = restarts;
+    fresh.heldNotes = agent.heldNotes;
+    state.agents.set(fresh.name, fresh);
+    persistRunJournal();
+    log(`${fresh.name}: ${why}`);
+    broadcast({ type: "state", ...snapshot() });
+    let started = false;
+    try {
+        await issueAgentSeat(fresh);
+        started = await startSeat(fresh, RESUME_PREAMBLE(code));
+    } catch (error) {
+        fresh.state = "failed";
+        fresh.detail = error instanceof Error ? error.message : String(error);
+        log(`${fresh.name}: restart failed: ${fresh.detail}`);
+    }
+    broadcast({ type: "state", ...snapshot() });
+    if (!started) await recoverSeat(fresh, `restart failed: ${fresh.detail}`);
+}
+
+async function stallSeat(agent: AgentRuntime, reason: string, code: string, leaseEpoch: number): Promise<void> {
+    agent.detail = `stuck after ${agent.restarts} restart${agent.restarts === 1 ? "" : "s"}: ${reason}`;
+    log(`${agent.name}: ${agent.detail}`);
+    broadcast({ type: "error", agent: agent.name, detail: agent.detail });
+    try {
+        const result = JSON.parse(await callToolRetrying("council_work_stall", {
+            sessionCode: code, agentName: agent.name, hostId: state.hostId, leaseEpoch, reason: reason.slice(0, 500),
+        })) as { ok?: boolean; reason?: string; itemId?: string | null };
+        if (result.ok !== true) throw new Error(result.reason ?? "server did not confirm the stall");
+        agent.stalledItemId = result.itemId ?? null;
+        log(result.itemId
+            ? `${agent.name}: its task is marked blocked until the owner requeues it`
+            : `${agent.name}: no task was in progress; the owner was told`);
+    } catch (error) {
+        log(`${agent.name}: stall report failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    broadcast({ type: "state", ...snapshot() });
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -1346,6 +1565,13 @@ function makeRuntime(name: string, code: string, selection: CouncilAgentSelectio
             permissionCallbacks: adapter.capabilities?.permissionCallbacks ?? (adapter.mode ?? "acp") === "acp",
         }),
         lastActivity: new Date().toISOString(),
+        turnStartedAt: null,
+        restarts: 0,
+        recovering: false,
+        integrator: false,
+        firstAttempts: new Map(),
+        stalledItemId: null,
+        heldNotes: "",
     };
 }
 
@@ -1491,21 +1717,25 @@ async function startRecordedAgent(agent: AgentRuntime, joinSeat: boolean, shellP
 
 async function startAgents(kickoff: Map<string, string>): Promise<void> {
     for (const agent of state.agents.values()) {
-        const prompt = kickoff.get(agent.name) ?? RESUME_PREAMBLE(state.code!);
-        try {
-            await startRecordedAgent(agent, true, prompt);
-            if (agent.mode === "shell") continue;
-            void promptAgent(agent, `${prompt}\n${renderDispatchKickoff(state.code!, agent.name)}`);
-        } catch (error) {
-            closeAgent(agent);
-            agent.state = "failed";
-            agent.detail = error instanceof Error ? error.message : String(error);
-            await stopRecordedExecution(agent, `startup failed: ${agent.detail}`);
-            broadcast({ type: "error", agent: agent.name, detail: agent.detail });
-            log(`${agent.name} failed to start: ${agent.detail}`);
-        }
+        await startSeat(agent, kickoff.get(agent.name) ?? RESUME_PREAMBLE(state.code!));
     }
     broadcast({ type: "state", ...snapshot() });
+}
+
+async function startSeat(agent: AgentRuntime, prompt: string): Promise<boolean> {
+    try {
+        await startRecordedAgent(agent, true, prompt);
+        if (agent.mode !== "shell") void promptAgent(agent, `${prompt}\n${renderDispatchKickoff(state.code!, agent.name)}`);
+        return true;
+    } catch (error) {
+        closeAgent(agent);
+        agent.state = "failed";
+        agent.detail = error instanceof Error ? error.message : String(error);
+        await stopRecordedExecution(agent, `startup failed: ${agent.detail}`);
+        broadcast({ type: "error", agent: agent.name, detail: agent.detail });
+        log(`${agent.name} failed to start: ${agent.detail}`);
+        return false;
+    }
 }
 
 function closeAgent(agent: AgentRuntime): void {
@@ -1516,9 +1746,26 @@ function closeAgent(agent: AgentRuntime): void {
     agent.connection?.close();
     agent.connection = undefined;
     if (agent.child) killTree(agent.child);
+    // A build or server the agent left running would outlive the seat and keep
+    // its worktree busy.
+    for (const [id, terminal] of terminals) {
+        if (terminal.runtime !== agent) continue;
+        killTree(terminal.child);
+        terminals.delete(id);
+    }
     const stream = agent.log;
     agent.log = undefined;
     stream?.end();
+    removeTokenFile(agent.mcpFile);
+}
+
+// Council release sweeps again, by then the killed adapter has let go of it.
+function removeTokenFile(path: string): void {
+    try {
+        rmSync(path, { force: true });
+    } catch (error) {
+        log(`could not delete ${basename(path)} yet: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 
 function restoreAgents(code: string, names: string[], resumedNames: string[]): AgentRuntime[] {
@@ -1559,6 +1806,12 @@ function restoreAgents(code: string, names: string[], resumedNames: string[]): A
             || saved.branch !== agent.branch || saved.mode !== agent.mode) {
             throw new Error(`${name}: saved campaign seat does not match its configured worktree`);
         }
+        // Absent in journals written before the watchdog.
+        const restarts = saved.restarts ?? 0;
+        if (typeof restarts !== "number" || !Number.isInteger(restarts) || restarts < 0) {
+            throw new Error(`${name}: saved campaign restart count is invalid`);
+        }
+        agent.restarts = restarts;
         return agent;
     });
 }
@@ -1581,6 +1834,7 @@ function persistRunJournal(): void {
         agents: [...state.agents.values()].map((a) => ({
             name: a.name, dir: a.treeDir, branch: a.branch, mcpFile: a.mcpFile, mode: a.mode,
             requestedModel: a.requestedModel, requestedReasoningEffort: a.requestedReasoningEffort,
+            restarts: a.restarts,
         })),
     }, null, 2));
 }
@@ -1843,7 +2097,7 @@ async function attachClaimedCouncil(upper: string, claim: HostClaimPayload): Pro
 let dispatching = false;
 
 async function dispatchTick(): Promise<void> {
-    const owned = [...state.agents.values()].filter((a) => a.mode === "acp" && a.ready && a.session);
+    const owned = [...state.agents.values()].filter((a) => a.mode === "acp" && a.ready && a.session && seatAlive(a));
     if (!state.code || dispatching || state.leaseEpoch === null) return;
     const code = state.code;
     const leaseEpoch = state.leaseEpoch;
@@ -1890,6 +2144,12 @@ async function dispatchTick(): Promise<void> {
             const slice = payload.agents?.[agent.name];
             if (!slice || agent.inFlight || !slice.prompt) continue;
             if (slice.status === "left" || !slice.deliveryId) continue;
+            // A turn the adapter keeps refusing would otherwise be re-sent every tick.
+            const spent = deliveryRetriesSpent(agent, slice.deliveryId, slice.attempt);
+            if (spent >= deliveryMaxAttempts) {
+                void recoverSeat(agent, `delivery failed ${spent} times`).catch(recoveryFailed(agent));
+                continue;
+            }
             void promptAgent(agent, slice.prompt, slice.deliveryId);
         }
         broadcast({ type: "state", ...snapshot() });
@@ -2226,6 +2486,8 @@ async function delegatedIntegration(run: IntegrationRun, manifest: IntegrationMa
         reasoningEffort: original.requestedReasoningEffort ?? undefined,
     }, repo, true);
     agent.branch = branch; agent.relDir = relDir; agent.treeDir = treeDir;
+    agent.integrator = true;
+    agent.restarts = original.restarts;
     agent.logPath = join(state.runDir!, `${integratorName}-integration.log`);
     agent.mcpFile = join(state.runDir!, `${integratorName}-integration.mcp.json`);
     state.agents.set(integratorName, agent);
@@ -2378,6 +2640,11 @@ async function releaseOwnedCouncil(reason: string, code: string, leaseEpoch: num
     const agents = [...state.agents.values()];
     for (const agent of agents) closeAgent(agent);
     for (const agent of agents) await stopRecordedExecution(agent, reason);
+    for (const agent of agents) {
+        const runDir = dirname(agent.mcpFile);
+        removeTokenFile(join(runDir, `${agent.name}.mcp.json`));
+        removeTokenFile(join(runDir, `${agent.name}-integration.mcp.json`));
+    }
     if (leaseEpoch !== null) {
         try {
             const released = JSON.parse(await callTool("council_host_release", {
@@ -2445,6 +2712,8 @@ async function superviseTick(): Promise<void> {
     try {
         await hostVerifyTick();
         if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
+        await restartRequeuedSeats(code, leaseEpoch);
+        if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.status !== "closed" || releasingCouncil) return;
         for (const agent of state.agents.values()) {
             if (agent.mode !== "acp" || !agent.ready || !agent.session || agent.inFlight) continue;
             let supervision: SupervisionState | "no_campaign" | undefined;
@@ -2474,11 +2743,53 @@ async function superviseTick(): Promise<void> {
             }
             noCampaignSightings = 0;
             if (supervision === "active" || supervision === "review") {
-                void promptAgent(agent, CAMPAIGN_PROMPT(state.code, agent.name));
+                agent.heldNotes = [agent.heldNotes, await takeOwnerNotes(agent, code, leaseEpoch)].filter(Boolean).join("\n\n");
+                if (state.code !== code || state.leaseEpoch !== leaseEpoch || releasingCouncil) return;
+                // Held, not dropped, when a turn started meanwhile: they were already marked delivered.
+                if (!agent.ready || !agent.session || agent.inFlight || !agent.executionId || state.stopping || !state.leaseHealthy) continue;
+                const notes = agent.heldNotes;
+                agent.heldNotes = "";
+                void promptAgent(agent, CAMPAIGN_PROMPT(code, agent.name) + (notes ? `\n\n${notes}` : ""));
             }
         }
     } finally {
         supervising = false;
+    }
+}
+
+async function takeOwnerNotes(agent: AgentRuntime, code: string, leaseEpoch: number | null): Promise<string> {
+    if (leaseEpoch === null) return "";
+    try {
+        const result = JSON.parse(await callTool("council_owner_notes_take", {
+            sessionCode: code, agentName: agent.name, hostId: state.hostId, leaseEpoch,
+        })) as { ok?: boolean; count?: number; text?: string };
+        if (result.ok !== true || !result.count || typeof result.text !== "string") return "";
+        log(`${agent.name}: ${result.count} owner note${result.count === 1 ? "" : "s"} added to its campaign prompt`);
+        return result.text;
+    } catch {
+        // An older server has no such tool; the seat still gets notes at its heartbeat.
+        return "";
+    }
+}
+
+/** A seat the watchdog gave up on starts again, with a fresh allowance, once the owner requeues its task. */
+async function restartRequeuedSeats(code: string, leaseEpoch: number | null): Promise<void> {
+    for (const agent of [...state.agents.values()]) {
+        const itemId = agent.stalledItemId;
+        if (!itemId || agent.state !== "failed") continue;
+        let runnable: string[] = [];
+        try {
+            const report = JSON.parse(await callTool("council_work_status", {
+                sessionCode: code, agentName: agent.name, json: true,
+            })) as SupervisionReport | null;
+            runnable = report && "state" in report ? report.runnable ?? [] : [];
+        } catch {
+            continue;
+        }
+        if (state.code !== code || state.leaseEpoch !== leaseEpoch || state.agents.get(agent.name) !== agent
+            || state.stopping || releasingCouncil || agent.stalledItemId !== itemId || !runnable.includes(itemId)) continue;
+        agent.stalledItemId = null;
+        void restartSeat(agent, 0, code, "restarting the seat: the owner requeued its task").catch(recoveryFailed(agent));
     }
 }
 
@@ -2531,15 +2842,16 @@ async function shutdown(code: number, reason: HostExitReason = "requested", deta
     state.stopping = true;
     log("stopping");
     emitHealth();
+    // Agents die first, so a supervisor that stops waiting finds no adapter to
+    // force-kill. Every network step after that is bounded by its own timeout.
     for (const terminal of terminals.values()) killTree(terminal.child);
-    for (const agent of state.agents.values()) {
-        await stopRecordedExecution(agent, "host shutdown");
-        closeAgent(agent);
-    }
+    const agents = [...state.agents.values()];
+    for (const agent of agents) closeAgent(agent);
+    await Promise.all(agents.map((agent) => stopRecordedExecution(agent, "host shutdown")));
     if (state.code && state.leaseEpoch !== null) {
         await callTool("council_host_release", {
             sessionCode: state.code, hostId: state.hostId, leaseEpoch: state.leaseEpoch,
-        }).catch(() => {});
+        }, mcpHostKey, AbortSignal.timeout(CLEANUP_TIMEOUT_MS)).catch(() => {});
     }
     broadcast({ type: "stopped" });
     releaseHostLock(state.hostId);

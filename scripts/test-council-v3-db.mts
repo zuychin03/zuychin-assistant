@@ -313,6 +313,55 @@ async function run(): Promise<void> {
         p_status: "nonsense", p_branch: null, p_tip_sha: null, p_report: "x",
     }) as { ok?: boolean; __error?: string };
     check("an unknown integration status is refused", badStatus?.ok === false || !!badStatus?.__error, badStatus);
+
+    await runOwnerNotes();
+}
+
+// council-owner-notes.sql: skipped, not failed, until that migration is applied.
+async function runOwnerNotes(): Promise<void> {
+    console.log("\nowner notes and requeue");
+    const { data: session, error } = await db.from("council_sessions").insert({
+        code: `CN-T${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+        topic: "owner notes test", brief: "owner notes test", closer_name: "alpha", status: "closed",
+        max_messages: 60, expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        repo_path: "/tmp/repo", base_branch: "main", protocol_version: 3, base_sha: BASE_SHA,
+    }).select("id").single();
+    if (error) throw new Error(`owner notes session insert failed: ${error.message}`);
+    const id = session.id as string;
+    created.push(id);
+    await db.from("council_participants").insert([
+        { session_id: id, name: "alpha", kind: "agent", expertise: "test", joined_seq: 1 },
+        { session_id: id, name: "beta", kind: "agent", expertise: "test", joined_seq: 2 },
+    ]);
+    const campaign = await rpc("create_council_campaign", {
+        p_session_id: id, p_created_by: "alpha",
+        p_work_items: [{ agent_name: "beta", title: "t", instructions: "i", acceptance_criteria: [], declared_paths: ["src"] }],
+    }) as { campaign_id?: string };
+
+    const all = await rpc("add_council_owner_note", { p_session_id: id, p_agent_name: null, p_body: "To every seat" }) as { ok?: boolean; note?: { id: string }; __error?: string };
+    if (all?.__error && /could not find the function|does not exist/i.test(all.__error)) {
+        console.log("  skip  council-owner-notes.sql is not applied");
+        return;
+    }
+    check("the owner can note every seat", all?.ok === true, all);
+    const unknown = await rpc("add_council_owner_note", { p_session_id: id, p_agent_name: "nobody", p_body: "x" }) as { reason?: string };
+    check("a note to a non-seat is refused", unknown?.reason === "unknown_seat", unknown);
+
+    const pending = await db.rpc("pending_council_owner_notes", { p_session_id: id, p_agent_name: "beta" });
+    check("the seat sees the pending note", pending.data?.length === 1, pending.error?.message ?? pending.data);
+    const first = await db.rpc("mark_council_owner_notes_delivered", { p_ids: [all?.note?.id], p_agent_name: "beta" });
+    const second = await db.rpc("mark_council_owner_notes_delivered", { p_ids: [all?.note?.id], p_agent_name: "beta" });
+    check("a note is delivered to a seat exactly once", first.data?.length === 1 && second.data?.length === 0,
+        { first: first.data ?? first.error?.message, second: second.data ?? second.error?.message });
+
+    const { data: itemRow } = await db.from("council_work_items").select("id").eq("campaign_id", campaign?.campaign_id).single();
+    await rpc("block_council_work_item", { p_item_id: itemRow?.id, p_agent_name: "beta", p_reason: "seat stuck: test" });
+    const requeued = await rpc("requeue_council_work_item", { p_item_id: itemRow?.id }) as { ok?: boolean };
+    const { data: after } = await db.from("council_work_items").select("status, attempts, progress").eq("id", itemRow?.id).single();
+    const { data: campaignRow } = await db.from("council_campaigns").select("status").eq("id", campaign?.campaign_id).single();
+    check("requeue sends a blocked task back to its seat", requeued?.ok === true && after?.status === "queued" && after?.attempts === 0
+        && /Requeued by the owner\. It was blocked: seat stuck: test\./.test(String(after?.progress)) && campaignRow?.status === "running",
+    { requeued, after, campaign: campaignRow });
 }
 
 async function cleanup(): Promise<void> {

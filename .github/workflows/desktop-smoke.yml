@@ -1,0 +1,34 @@
+# Opens the real debug app against a disposable owner config and a local fixture server.
+# Manual only, and in its own file so a manual run does not repeat every job in checks.yml.
+
+name: desktop smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Windows desktop smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.22.3
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update
+
+      - name: build the debug app
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: native smoke
+        run: npm run council:desktop:smoke
