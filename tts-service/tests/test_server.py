@@ -62,6 +62,16 @@ class ServerCase(unittest.TestCase):
         conn.close()
         return res, data
 
+    # The server logs a reply after its last byte is sent, so the client can finish reading first.
+    def wait_for_log(self, event, timeout=3):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            entries = [e for e in self.logs if e.get("event") == event]
+            if entries:
+                return entries
+            time.sleep(0.02)
+        self.fail(f"no {event!r} log entry within {timeout} s")
+
 
 class HealthAndAuthTests(ServerCase):
     def test_health_needs_no_token_and_shows_no_secrets(self):
@@ -169,23 +179,20 @@ class StreamingTests(ServerCase):
         conn.close()
         time.sleep(0.2)
         gate.set()
-        deadline = time.time() + 3
-        while time.time() < deadline and not any(e.get("event") == "speak" for e in self.logs):
-            time.sleep(0.05)
-        entry = [e for e in self.logs if e.get("event") == "speak"][-1]
+        entry = self.wait_for_log("speak")[-1]
         self.assertEqual(entry["error"], "client_closed")
         self.assertLess(len(self.fake.calls), 12)
 
     def test_logs_carry_sizes_and_timings_never_text(self):
         self.speak({"text": "A private sentence about the dentist."})
-        self.assertIn("speak", [e.get("event") for e in self.logs])
+        entry = self.wait_for_log("speak")[0]
         self.assertNotIn("dentist", json.dumps(self.logs))
-        entry = [e for e in self.logs if e.get("event") == "speak"][0]
         self.assertEqual((entry["status"], entry["chars"], entry["sentences"], entry["voice"]), (200, 37, 1, "M2"))
         self.assertGreater(entry["audioSec"], 0)
 
     def test_rejections_log_no_text_either(self):
         self.speak({"text": "Secret words", "voice": "Kore"})
+        self.wait_for_log("rejected")
         self.assertNotIn("Secret", json.dumps(self.logs))
 
 
