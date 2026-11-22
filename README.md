@@ -1007,6 +1007,27 @@ Setup:
    revoked or expired credentials receive HTTP 401. Named keys work without either retired
    shared environment variable; no shared-key fallback remains.
 
+**Or connect a client from a terminal, without pasting anything into a chat.** For Claude Code,
+Codex, Cursor and Antigravity on this machine, mint the claim as in step 1, then run this from a
+normal terminal (not from inside an agent session) and paste the claim at the hidden prompt:
+
+```powershell
+npm run agent:connect -- claude
+```
+
+Use `codex`, `cursor` or `antigravity` in place of `claude`. The script
+([`scripts/agent-connect.mts`](scripts/agent-connect.mts)) exchanges the claim, keeps the key in
+memory, and writes it straight into the client's config: `~/.claude.json`, `~/.cursor/mcp.json` or
+`~/.gemini/config/mcp_config.json`. An existing entry for the same endpoint keeps its name and only
+its Authorization header changes; otherwise it adds `zuychin-knowledge`. Codex reads its key from
+the user environment variable that its `~/.codex/config.toml` entry names (`ZUYCHIN_MCP_KEY` by
+default, Windows only), so the TOML file never holds the key. The script then runs `initialize` and
+`tools/list` with the new key and reports the tool count. It never prints the claim or the key, and
+it checks the config before it spends the claim. The base URL comes from `NEXT_PUBLIC_BASE_URL`,
+then `AUTH_ORIGIN`, in `.env.local`, or from `--url`; `--config` points at a config file in another
+place. If the claim was minted for a different agent, it asks before saving. Restart the client
+afterwards (for Codex, reopen the terminal as well, so it reads the new variable).
+
 For local inspection, use the MCP Inspector (`npx @modelcontextprotocol/inspector`, transport
 "Streamable HTTP") with a separate named client. Anything saved through `save_note` later
 surfaces in the assistant's own context, so choose write access deliberately.
