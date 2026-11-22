@@ -51,6 +51,12 @@ jobs:
       - name: named client migration and credential isolation
         run: npm run agents:offline:test
 
+      - name: model catalogue, discovery and probes
+        run: npm run catalogue:test
+
+      - name: model awareness, lookups and status
+        run: npm run models:test
+
   assistant:
     name: assistant V6 suites
     # In-memory PGlite and stubbed providers only, so one platform and no secrets.

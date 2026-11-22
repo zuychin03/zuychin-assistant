@@ -723,7 +723,8 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
   stuck check's lock is cleared.
 - `npx tsx scripts/model-discovery-dry-run.mts` prints what a check would add, mark missing and
   test, and writes nothing. `npx tsx scripts/model-probe.mts <provider> <model>` tests one model
-  and refuses paid routes without `--allow-paid`. `npm run catalogue:test` runs the offline checks.
+  and refuses paid routes without `--allow-paid`. `npm run catalogue:test` runs the offline checks
+  (CI runs them too).
 - Profiles: each chat model carries purpose tags (research, coding, reasoning, writing, vision,
   long-context, multilingual, agentic) and a profile. A lookup drafts the profile from free
   sources on free models; nothing is used until you approve it on `/admin#models`, where Approve
@@ -731,7 +732,7 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
   from the last 14 days of recorded calls, or the latest test when there are fewer than 3.
   `npx tsx scripts/model-lookup.mts <provider> <model>` drafts one profile without saving, and
   `npx tsx scripts/model-roster.mts [purpose]` prints the roster. `npm run models:test` runs the
-  offline checks. The tables come from `scripts/migrations/v7-model-awareness.sql`.
+  offline checks (CI runs them too). The tables come from `scripts/migrations/v7-model-awareness.sql`.
 
 ### Provider keys
 
