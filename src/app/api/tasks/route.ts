@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { createScheduledTask, updateScheduledTask, deleteScheduledTask } from "@/lib/tasks/store";
 import { ownedTask, taskReport } from "@/lib/tasks/run-store";
 import { taskId, taskInput, taskOwner, taskFailure, TaskInputError } from "@/lib/tasks/http";
+import { readJsonCapped } from "@/lib/http/body";
 
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     try {
         const userId = await taskOwner();
-        const input = taskInput(await req.json());
+        const input = taskInput(await readJsonCapped(req));
         if (input.conversationId) {
             const { data, error } = await supabaseAdmin.from("conversations").select("id").eq("id", input.conversationId).eq("user_profile_id", userId).maybeSingle();
             if (error || !data) throw new TaskInputError("Choose a conversation belonging to your profile.");
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const id = taskId(body.id);
         const task = await ownedTask(id, await taskOwner());
         if (!task) return NextResponse.json({ error: "Task not found." }, { status: 404 });

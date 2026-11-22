@@ -5,6 +5,7 @@ import { knowledgeRevisions } from "@/lib/knowledge/revision-store";
 import { KnowledgeRevisionError } from "@/lib/knowledge/revisions";
 import { VaultConflictError } from "@/lib/vault/github";
 import { sameOrigin } from "@/lib/auth/config";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
@@ -14,6 +15,7 @@ const sourcePath = z.string().max(1024).optional();
 const readSchema = z.object({ documentId, sourceSha: sha.optional(), sourcePath, headSha: sha.optional(), page: z.coerce.number().int().min(1).max(1000).optional() });
 const writeSchema = z.object({ documentId, sourceSha: sha, sourcePath: z.string().min(1).max(1024), headSha: sha, currentHash: hash.nullable(), previewHash: hash });
 function failure(error: unknown) {
+    const failed = bodyFailure(error); if (failed) return failed;
     if (error instanceof z.ZodError || error instanceof SyntaxError) return NextResponse.json({ error: "Invalid revision request." }, { status: 400 });
     if (error instanceof KnowledgeRevisionError) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error instanceof VaultConflictError) return NextResponse.json({ error: "The vault changed. Preview the restore again." }, { status: 409 });
@@ -32,6 +34,6 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     if (!sameOrigin(req)) return NextResponse.json({ error: "Revision changes must come from this app." }, { status: 403 });
-    try { return NextResponse.json(await knowledgeRevisions.restore(writeSchema.parse(await req.json()))); }
+    try { return NextResponse.json(await knowledgeRevisions.restore(writeSchema.parse(await readJsonCapped(req)))); }
     catch (error) { return failure(error); }
 }

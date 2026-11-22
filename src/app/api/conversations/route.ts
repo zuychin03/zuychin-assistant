@@ -3,6 +3,7 @@ import { listConversations, createConversation, deleteConversation, getConversat
 import { setConversationProject } from "@/lib/projects";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { branchUserId } from "@/lib/conversations/branch-api";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function GET(req: NextRequest) {
     try {
@@ -28,12 +29,14 @@ export async function POST(req: NextRequest) {
     if (denied) return denied;
     try {
         // Body is optional; callers without one create an ungrouped chat.
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         const projectId = typeof body?.projectId === "string" ? body.projectId : undefined;
 
         const conversation = await createConversation({ projectId, userProfileId: await branchUserId() });
         return NextResponse.json(conversation);
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Conversations API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });
@@ -42,7 +45,7 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (!body?.id) {
             return NextResponse.json({ error: "Conversation ID is required." }, { status: 400 });
         }
@@ -50,6 +53,8 @@ export async function PUT(req: NextRequest) {
         await setConversationProject(body.id, typeof body.projectId === "string" ? body.projectId : null);
         return NextResponse.json({ success: true });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Conversations API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });

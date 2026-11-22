@@ -5,6 +5,7 @@ import { verifySessionValue } from "@/lib/auth/session";
 import { APP_TIMEZONE } from "@/lib/datetime";
 import { validateCron } from "@/lib/tasks/schedule";
 import type { ScheduledTask, TaskChannel } from "@/lib/tasks/store";
+import { bodyFailure } from "@/lib/http/body";
 
 export class TaskInputError extends Error {}
 export function taskId(value: unknown): string {
@@ -49,5 +50,5 @@ export function taskInput(value: unknown, existing?: ScheduledTask): Edit & { co
         ...(typeof body.conversationId === "string" && body.conversationId ? { conversationId: body.conversationId } : {}) };
 }
 export function taskFailure(error: unknown) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Task request failed." }, { status: error instanceof TaskInputError || error instanceof SyntaxError ? 400 : 503 });
+    return bodyFailure(error) ?? NextResponse.json({ error: error instanceof Error ? error.message : "Task request failed." }, { status: error instanceof TaskInputError || error instanceof SyntaxError ? 400 : 503 });
 }

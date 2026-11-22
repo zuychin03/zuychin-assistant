@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { resolveOwnerProfile } from "@/lib/owner-profile";
 import { patchProfilePreferences, ProfilePreferencesError } from "@/lib/profile-preferences";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const respond = (body: Record<string, unknown>, status = 200) =>
     NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -27,8 +28,8 @@ export async function PATCH(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
     let body: unknown;
-    try { body = await req.json(); } catch {
-        return respond({ error: "Provide a JSON object with a freeOnly boolean." }, 400);
+    try { body = await readJsonCapped(req); } catch (error) {
+        return bodyFailure(error) ?? respond({ error: "Provide a JSON object with a freeOnly boolean." }, 400);
     }
     if (!body || typeof body !== "object" || Array.isArray(body)
         || typeof (body as Record<string, unknown>).freeOnly !== "boolean"

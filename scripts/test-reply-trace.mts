@@ -51,6 +51,20 @@ check("external search is recorded without invented model tokens", () => {
 });
 Object.assign(process.env, { NEXT_PUBLIC_SUPABASE_URL: "https://trace.invalid", NEXT_PUBLIC_SUPABASE_ANON_KEY: "fixture", SUPABASE_SERVICE_ROLE_KEY: "fixture" });
 const fetchBefore = globalThis.fetch;
+check("a background merge keeps the tools that waited for approval", () => {
+    const foreground = { ...trace([call("a")]), asked: ["send_email"] };
+    assert.deepEqual(mergeReplyTrace(foreground, trace([call("b")], "complete")).asked, ["send_email"]);
+    assert.equal("asked" in mergeReplyTrace(undefined, trace([call("c")])), false);
+});
+const labels = await import("../src/app/home/tool-labels");
+check("a held send reads as asked for, and a send that ran still reads as sent", () => {
+    const asked = labels.askedTools({ asked: ["send_email", 7, "manage_calendar_event"] });
+    assert.deepEqual([...asked], ["send_email", "manage_calendar_event"]);
+    assert.equal(labels.toolActivity("send_email", asked), "Asked to send an email");
+    assert.equal(labels.toolActivity("manage_calendar_event", asked), "Asked to change Calendar");
+    assert.equal(labels.toolActivity("send_email", labels.askedTools({})), "Sent an email", "older replies and sends that ran keep their label");
+    assert.equal(labels.askedActivity("vault_write"), "Asked to use vault write");
+});
 const { saveReplyTrace } = await import("../src/lib/ai/reply-trace-store");
 let metadata: Record<string, unknown> = { artifacts: [{ id: "kept" }], knowledgeOnly: true };
 let patches = 0;

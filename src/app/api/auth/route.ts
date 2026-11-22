@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AUTH_CHALLENGE_COOKIE, AUTH_RECOVERY_COOKIE, authEnabled } from "@/lib/auth/config";
 import { createSessionValue, sessionCookie } from "@/lib/auth/session";
 import { createChallenge, getTotpConfig } from "@/lib/auth/store";
-import { checkPassword, clientAddress, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
+import { checkPassword, clientAddress, passwordAttemptsBlocked, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const clearCookie = {
     httpOnly: true,
@@ -13,9 +14,13 @@ const clearCookie = {
 };
 
 export async function POST(req: NextRequest) {
-    const { password } = await req.json();
     if (!authEnabled()) return NextResponse.json({ error: "Access password not configured" }, { status: 500 });
-    const checked = checkPassword(clientAddress(req.headers), password);
+    const client = clientAddress(req.headers);
+    // A locked-out client is refused before its body is read.
+    if (passwordAttemptsBlocked(client)) return NextResponse.json({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
+    let password: unknown;
+    try { ({ password } = await readJsonCapped(req)); } catch (error) { return bodyFailure(error) ?? NextResponse.json({ error: "Could not read the request." }, { status: 400 }); }
+    const checked = checkPassword(client, password);
     if (checked === "blocked") return NextResponse.json({ error: TOO_MANY_ATTEMPTS }, { status: 429 });
     if (checked === "wrong") return NextResponse.json({ error: "Wrong password" }, { status: 401 });
     // Fails closed: when TOTP state cannot be read, the password alone must not

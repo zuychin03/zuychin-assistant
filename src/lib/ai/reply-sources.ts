@@ -3,10 +3,15 @@ import type { ReplySource } from "@/lib/ai/reply-trace";
 
 const MAX_SOURCES = 8;
 const LABEL_LIMIT = 120;
-const scope = new AsyncLocalStorage<ReplySource[]>();
+const scope = new AsyncLocalStorage<{ sources: ReplySource[]; asked: Set<string> }>();
 
-export function withReplySources<T>(sources: ReplySource[], fn: () => T): T {
-    return scope.run(sources, fn);
+export function withReplySources<T>(sources: ReplySource[], fn: () => T, asked = new Set<string>()): T {
+    return scope.run({ sources, asked }, fn);
+}
+
+/** A tool call that waited for the owner's approval, or was refused, instead of running. */
+export function recordAskedTool(name: string) {
+    scope.getStore()?.asked.add(name);
 }
 
 const clip = (value: string) => {
@@ -15,7 +20,7 @@ const clip = (value: string) => {
 };
 
 export function recordReplySources(items: ReplySource[]) {
-    const sources = scope.getStore();
+    const sources = scope.getStore()?.sources;
     if (!sources) return;
     for (const item of items) {
         const label = clip(item.label);

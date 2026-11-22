@@ -9,6 +9,7 @@ import { readModelStats, readProfiles, setModelRemoved } from "@/lib/ai/models/s
 import { statsKey } from "@/lib/ai/models/stats";
 import { adminModelInfo, rowModel } from "@/lib/ai/models/admin-view";
 import { PURPOSE_TAGS, TAG_INFO } from "@/lib/ai/models/tags";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -55,7 +56,8 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const body: unknown = await req.json().catch(() => null);
+    let body: unknown = null;
+    try { body = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
     const ref = catalogueModelRef(body);
     const { approved, removed } = (body ?? {}) as { approved?: unknown; removed?: unknown };
     if (ref && typeof removed === "boolean") {
@@ -84,7 +86,9 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const ref = catalogueModelRef(await req.json().catch(() => null));
+    let input: unknown = null;
+    try { input = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
+    const ref = catalogueModelRef(input);
     if (!ref) return NextResponse.json({ error: "Send providerId and modelId." }, { status: 400 });
     if (PROVIDERS.some((provider) => provider.id === ref.providerId && provider.chatModels.some((model) => model.id === ref.modelId))) {
         return NextResponse.json({ error: "Built-in models live in providers.ts, so deleting one is a code change. Remove it from the list instead." }, { status: 400 });

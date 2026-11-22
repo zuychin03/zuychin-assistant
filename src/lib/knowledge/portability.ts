@@ -13,7 +13,10 @@ export { safeVaultPath } from "@/lib/knowledge/paths";
 
 const MAX_FILES = 2_000;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES = 200 * 1024 * 1024;
+// The archive arrives in one request under the 10,000,000-byte body limit (src/lib/http/limits.ts) and is
+// unpacked in memory under the service's 800 MB limit.
+const MAX_ARCHIVE_BYTES = 9 * 1024 * 1024;
+const MAX_EXPANDED_BYTES = 100 * 1024 * 1024;
 const MANIFEST_PATH = ".zuychin/manifest.json";
 
 function sha256(content: Buffer): string {
@@ -96,7 +99,7 @@ interface LoadedImport {
 }
 
 async function loadImport(archive: Buffer): Promise<LoadedImport> {
-    if (archive.length > MAX_ARCHIVE_BYTES) throw new Error("The vault archive is too large.");
+    if (archive.length > MAX_ARCHIVE_BYTES) throw new Error("The vault archive is too large. The limit is 9 MB.");
     const zip = await JSZip.loadAsync(archive, { createFolders: false });
     const entries = Object.values(zip.files).filter((entry) => !entry.dir && entry.name !== MANIFEST_PATH);
     if (entries.length > MAX_FILES) throw new Error(`A vault import is limited to ${MAX_FILES} files.`);
@@ -112,7 +115,7 @@ async function loadImport(archive: Buffer): Promise<LoadedImport> {
         const content = await entry.async("nodebuffer");
         if (content.length > MAX_FILE_BYTES) throw new Error(`${path} exceeds the per-file import limit.`);
         totalBytes += content.length;
-        if (totalBytes > MAX_ARCHIVE_BYTES) throw new Error("The expanded vault is too large.");
+        if (totalBytes > MAX_EXPANDED_BYTES) throw new Error("The expanded vault is too large. The limit is 100 MB unpacked.");
         contents.set(path, content);
 
         const existing = current.get(path);

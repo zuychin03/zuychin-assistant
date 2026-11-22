@@ -3,6 +3,7 @@ import { sameOrigin } from "@/lib/auth/config";
 import { startOnlineCouncil } from "@/lib/council/online/service";
 import type { OnlineSeatInput } from "@/lib/council/online/seats";
 import { readResearchRequest } from "@/lib/council/online/research";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 
@@ -25,7 +26,7 @@ function readSeats(raw: unknown): OnlineSeatInput[] | null {
 export async function POST(req: NextRequest) {
     if (!sameOrigin(req)) return respond({ error: "Start councils from this site." }, 403);
     try {
-        const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return null; }) as Record<string, unknown> | null;
         if (!body) return respond({ error: "Send the council as JSON." }, 400);
         const seats = readSeats(body.seats);
         if (!seats) return respond({ error: "Send 2 to 5 seats." }, 400);
@@ -42,6 +43,8 @@ export async function POST(req: NextRequest) {
         if (!result.ok) return respond({ error: result.error }, result.status);
         return respond(result);
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Council API] online start failed:", error);
         return respond({ error: "The council could not be started." }, 500);
     }

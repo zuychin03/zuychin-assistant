@@ -675,7 +675,7 @@ import {
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
 import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
-import { recordReplySources } from "@/lib/ai/reply-sources";
+import { recordAskedTool, recordReplySources } from "@/lib/ai/reply-sources";
 import { executeCaptureAdd } from "@/lib/capture/chat-tool";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelStatus } from "@/lib/ai/models/status";
@@ -688,10 +688,10 @@ export async function executeTool(
     toolName: string, args: Record<string, unknown>, embRef?: ResolvedEmbedding, ctx?: ToolContext,
 ): Promise<string> {
     const pending = await gateUnattendedTool(toolName, args, proposeWithNotice);
-    if (pending) return pending;
+    if (pending) { recordAskedTool(toolName); return pending; }
     // An approved action runs under the unattended permit, which already authorised it.
     const held = isUnattendedRun() ? null : await gateChatSend(toolName, args);
-    if (held) return held;
+    if (held) { recordAskedTool(toolName); return held; }
     recordReplySources([{ kind: toolName === "search_web" ? "web" : "tool", label: toolName, ref: toolName, weight: 0.5 }]);
     const knowledgeTool = ["search_knowledge", "vault_read", "vault_search", "vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);
     const knowledgePayload = ["vault_ingest", "vault_write", "vault_lint", "save_note"].includes(toolName);

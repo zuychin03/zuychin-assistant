@@ -34,7 +34,8 @@ edited and deleted in place.
 - Projects: group conversations into collapsible sidebar sections, each with its own
   instructions injected into every chat inside it; extracted facts can be scoped to a
   project so they only surface in that project's chats
-- File upload: images, audio, video, PDFs and code/text files (up to 20 MB)
+- File upload: images, audio, video, PDFs and code/text files (up to 7 MB in web chat and Discord,
+  where the file travels inside the request; Telegram files up to 20 MB)
 - MCP tools: two dozen tools covering calendar, Gmail, a to-do list, notes, knowledge search,
   message-history search, the second-brain vault, scheduled tasks, current time and recent
   conversations
@@ -165,9 +166,11 @@ edited and deleted in place.
   calendar, write to the vault, change to-dos or memories), the action waits for your
   approval; read-only tools run without it. Each one also arrives in Telegram with Approve and
   Reject buttons, and the message updates with the outcome once it is decided anywhere
-- Ask before sending: in a live Telegram chat, sending an email or changing the calendar waits
-  for your tap on the same buttons (listing and reading events do not). The request expires
-  after an hour, and the outcome is saved into the conversation
+- Ask before sending: in every live chat, sending an email or changing the calendar waits for
+  you (listing and reading events do not). Web chat shows an Approve card under the reply;
+  Telegram and Discord requests arrive as Telegram buttons and on `/tasks`. The request expires
+  after an hour, and the outcome is saved into the conversation. Outside a chat, a send runs
+  only with an approval
 - Branches: start a branch from any saved message to try another prompt or model, and compare the
   branches at `/conversations/compare`
 - Knowledge only and Free only: one switch answers only from saved knowledge, with sources;
@@ -458,6 +461,16 @@ The database script also creates the server-only `auth_passkeys`, `auth_challeng
 `auth_totp` tables. Re-run it after upgrading so the auth schema is present before the first
 passkey enrolment.
 
+**Sign out everywhere.** The same screen has a **Signed-in browsers** box. With your current
+password it signs out every other browser and device within about 30 seconds; the browser you
+press it in gets a fresh session and stays signed in. It needs
+[`scripts/migrations/v7-security-hardening.sql`](scripts/migrations/v7-security-hardening.sql)
+(one `auth_session_epoch` row); until then the button explains it is off and sign-in works as
+before. It does not touch agent keys (revoke those under **Agents**), `CHAT_API_KEY`,
+`CRON_SECRET` or the webhook secrets, which have their own rotation. Do not rotate
+`AUTH_SESSION_SECRET` to sign people out: the authenticator-app secret is encrypted with a key
+derived from it, so recovery would stop working until you set the authenticator up again.
+
 ### 4. Google OAuth (optional, Calendar + Gmail)
 
 Create an OAuth client in the Google Cloud Console with the redirect URI
@@ -533,8 +546,9 @@ npm run dev
 | GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
 | GET/POST/PATCH/DELETE | `/api/tasks` | Scheduled tasks with runs and approvals / create / edit, pause or resume / delete |
 | POST | `/api/tasks/run` | Run a task now (202 when accepted, 409 while it is already running) |
-| POST | `/api/tasks/approvals` | Approve or reject an action an unattended task or a Telegram chat proposed |
+| GET / POST | `/api/tasks/approvals` | Read one approval (`?id=`) / approve or reject an action a scheduled task or a chat proposed. Session only |
 | POST / DELETE | `/api/auth` | Login / logout |
+| GET / POST | `/api/auth/sessions` | Sign-out time and whether it is set up / sign out every other browser (needs the access password) |
 | GET / POST | `/api/auth/passkey` | List passkeys or run WebAuthn sign-in, enrolment and removal actions |
 | GET / POST | `/api/auth/totp` | Read TOTP status, set up an authenticator app, verify recovery codes |
 | GET | `/api/council` | Open councils, those waiting on you, and recent closed ones for the council dashboard |
@@ -600,6 +614,14 @@ Browser routes require the signed `zuychin-auth` session when authentication is 
 public webhook, cron and headless-chat routes protect themselves with bearer credentials:
 `CRON_SECRET` for cron endpoints and `CHAT_API_KEY` for `/api/chat`. See `src/proxy.ts` and
 `src/lib/auth/guard.ts` for the enforcement boundary.
+
+Every API route has a request size limit (`src/lib/http/limits.ts`): 64 KB for sign-in and
+other small routes, 1 MB by default, 2 MB for the Telegram and GitHub webhooks, 4 MB for MCP,
+vault pages, documents and export, and 10,000,000 bytes for chat and vault import. The proxy
+refuses a declared size over the limit with a 413 before any sign-in check, and each route reads
+through `src/lib/http/body.ts`, which counts bytes and stops at the limit. Every limit sits under
+Next's 10 MB `proxyClientMaxBodySize`, because over that Next silently passes on only the first
+10 MB.
 
 ## Providers & Models
 
@@ -1029,7 +1051,7 @@ node bot.js
 
 - Set `ZUYCHIN_API_URL` to your deployed web app (defaults to `http://localhost:3000`).
 - Honors `/search`, `/think`, `/agent`, `/model` and `/embed-model` prefixes (use the `!` variant
-  so Discord doesn't capture `/`), downloads attachments (up to 20 MB), uploads any generated
+  so Discord doesn't capture `/`), downloads attachments (up to 7 MB; larger ones get a "too large" reply), uploads any generated
   files (reports/code) as attachments, and chunks replies to Discord's 2000-char limit.
 - `!new` starts a new conversation and `!help` lists the commands. The web app keeps the
   channel's conversation, so the bot sends no conversation id.

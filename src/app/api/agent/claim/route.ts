@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { beginClaimAttempt, exchangeClaim, finishClaimAttempt, hashClientIp } from "@/lib/agents/clients";
 import { clientAddress } from "@/lib/auth/attempts";
+import { readJsonCapped } from "@/lib/http/body";
 
 // The only unauthenticated write surface in the application, so it carries its
 // own limits rather than relying on proxy.ts.
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429 });
     }
     try {
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch(() => ({}));
         const claim = typeof body.claim === "string" ? body.claim.trim() : "";
         const result = claim ? await exchangeClaim(claim) : null;
         if (!result) return NextResponse.json(REFUSED, { status: 400 });

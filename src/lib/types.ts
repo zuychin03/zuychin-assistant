@@ -46,10 +46,19 @@ export interface CouncilProposal {
     research?: { web: boolean; notes: boolean; query?: string };
 }
 
+/** A send the model asked for in a web chat turn, waiting for the owner's Approve or Reject. */
+export interface HeldApproval {
+    id: string;
+    label: string;
+    lines: string[];
+    expiresAt: string;
+}
+
 export interface MessageMetadata {
     artifacts?: ArtifactDescriptor[];
     replyTo?: ReplyRef;
     councilProposal?: CouncilProposal;
+    approvals?: HeldApproval[];
     [key: string]: unknown;
 }
 
@@ -89,8 +98,16 @@ export const SUPPORTED_MIME_TYPES: Record<string, string[]> = {
 
 export const ALL_SUPPORTED_MIME_TYPES = Object.values(SUPPORTED_MIME_TYPES).flat();
 
-export const MAX_FILE_SIZE_MB = 20;
+// 7 MiB as base64 JSON stays under the chat body limit (src/lib/http/limits.ts) and Next's 10 MB cut-off.
+export const MAX_FILE_SIZE_MB = 7;
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+/** Decoded size of base64 text without decoding it; the client's own size field is not trusted. */
+export function base64Bytes(value: unknown): number {
+    if (typeof value !== "string") return 0;
+    const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
+}
 
 export const TEXT_LIKE_EXTENSIONS = [
     "txt", "text", "md", "markdown", "mdx", "rst",

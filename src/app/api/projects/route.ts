@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listProjects, createProject, updateProject, deleteProject } from "@/lib/projects";
 import { getDefaultProfile } from "@/lib/db";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function GET() {
     try {
@@ -15,7 +16,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const name = typeof body?.name === "string" ? body.name.trim() : "";
         if (!name) {
             return NextResponse.json({ error: "Project name is required." }, { status: 400 });
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
         });
         return NextResponse.json(project);
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Projects API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });
@@ -38,7 +41,7 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (!body?.id) {
             return NextResponse.json({ error: "Project ID is required." }, { status: 400 });
         }
@@ -51,6 +54,8 @@ export async function PUT(req: NextRequest) {
         });
         return NextResponse.json({ success: true });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Projects API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });

@@ -52,6 +52,8 @@ const route = await import("../src/app/api/capture/route");
 const { acquireSlot } = await import("../src/lib/capture/extract/gate");
 const { NextRequest } = await import("next/server");
 const { createSessionValue } = await import("../src/lib/auth/session");
+// Sign-out-everywhere reads would add a request these exact request counts do not expect.
+(await import("../src/lib/auth/session-epoch")).setSessionEpochSourceForTests(async () => null);
 const { AUTH_COOKIE } = await import("../src/lib/auth/config");
 const req = (body?: unknown, auth = true) => new NextRequest("https://fixture.invalid/api/capture", { method: body ? "POST" : "GET",
     headers: { ...(auth ? { authorization: "Bearer fixture-chat" } : {}), "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });

@@ -39,7 +39,7 @@ function clip(text: string, limit: number): string {
     return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
 }
 
-function argumentLines(args: Record<string, unknown>): string[] {
+export function approvalArgumentLines(args: Record<string, unknown>): string[] {
     const keys = Object.keys(args).filter((key) => args[key] !== null && args[key] !== undefined && args[key] !== "");
     keys.sort((a, b) => (FIRST_KEYS.indexOf(a) + 1 || 99) - (FIRST_KEYS.indexOf(b) + 1 || 99));
     const lines = keys.slice(0, MAX_ARGUMENT_LINES).map((key) => {
@@ -72,7 +72,7 @@ export function approvalNoticeText(approval: Notice): string {
         `From: ${approval.taskTitle}`,
         "",
         approvalActionLabel(approval.tool),
-        ...argumentLines(approval.args),
+        ...approvalArgumentLines(approval.args),
         "",
         `Expires ${expiry(approval.expiresAt)}.`,
     ].join("\n");

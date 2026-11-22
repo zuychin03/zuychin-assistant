@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listMemories, insertMemory, updateMemoryFact, deleteMemory, type MemoryCategory } from "@/lib/ai/memory/store";
 import { getDefaultProfile } from "@/lib/db";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const CATEGORIES = ["identity", "preference", "relationship", "project", "routine", "fact", "other"];
 
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const fact = typeof body.fact === "string" ? body.fact.trim() : "";
         if (!fact) return NextResponse.json({ error: "Fact text is required." }, { status: 400 });
 
@@ -35,6 +36,8 @@ export async function POST(req: NextRequest) {
         if (!id) return NextResponse.json({ error: "Failed to save memory." }, { status: 500 });
         return NextResponse.json({ id });
     } catch (err) {
+        const failed = bodyFailure(err);
+        if (failed) return failed;
         console.error("[Admin Memories] Create failed:", err);
         return NextResponse.json({ error: "Failed to save memory." }, { status: 500 });
     }
@@ -42,7 +45,7 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const id = typeof body.id === "string" ? body.id : "";
         const fact = typeof body.fact === "string" ? body.fact.trim() : "";
         if (!id || !fact) return NextResponse.json({ error: "id and fact are required." }, { status: 400 });
@@ -55,6 +58,8 @@ export async function PUT(req: NextRequest) {
         if (!ok) return NextResponse.json({ error: "Failed to update memory." }, { status: 500 });
         return NextResponse.json({ success: true });
     } catch (err) {
+        const failed = bodyFailure(err);
+        if (failed) return failed;
         console.error("[Admin Memories] Update failed:", err);
         return NextResponse.json({ error: "Failed to update memory." }, { status: 500 });
     }

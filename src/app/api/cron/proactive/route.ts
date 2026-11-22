@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import { ai, MODEL } from "@/lib/gemini";
 import { getRecentMessages, getDefaultProfile } from "@/lib/db";
 import { notify, type NotificationType } from "@/lib/messaging/router";
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
         const denied = requireCron(req);
         if (denied) return denied;
 
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const { type = "daily_check" } = body;
 
         const profile = await getDefaultProfile();
@@ -96,6 +97,8 @@ Be friendly and concise.`;
             type,
         });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Proactive] Error:", error);
         return NextResponse.json(
             { error: "Proactive check failed." },

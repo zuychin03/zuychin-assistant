@@ -4,6 +4,9 @@ const { Client, GatewayIntentBits, Events } = require("discord.js");
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const API_URL = process.env.ZUYCHIN_API_URL || "http://localhost:3000";
 const CHAT_API_KEY = process.env.CHAT_API_KEY;
+// Matches MAX_FILE_SIZE_MB in src/lib/types.ts: larger files do not fit the app's chat request limit as base64.
+const MAX_ATTACHMENT_MB = 7;
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
 // Discord is now a mostly-outbound dashboard; the bot only holds conversations
 // in #ask-zuychin. Notification channels are written to by the crons over REST.
 // Falls back to the legacy single channel so existing setups keep working.
@@ -49,6 +52,11 @@ client.on(Events.MessageCreate, async (message) => {
     const hasText = message.content.trim().length > 0;
     const attachment = message.attachments.first();
     if (!hasText && !attachment) return;
+    if (attachment && attachment.size > MAX_ATTACHMENT_BYTES) {
+        console.warn(`[Bot] Attachment too large: ${(attachment.size / 1024 / 1024).toFixed(1)} MB`);
+        await message.reply(`Attachment too large (max ${MAX_ATTACHMENT_MB} MB). Nothing was sent.`).catch(() => { });
+        return;
+    }
 
     console.log(`[Bot] ${message.author.tag}: ${message.content.substring(0, 50)}${attachment ? ` [+${attachment.name}]` : ""}`);
 
@@ -80,7 +88,7 @@ client.on(Events.MessageCreate, async (message) => {
             agent: useAgent,
         };
 
-        if (attachment && attachment.size <= 20 * 1024 * 1024) {
+        if (attachment) {
             try {
                 const fileRes = await fetch(attachment.url);
                 const arrayBuf = await fileRes.arrayBuffer();
@@ -95,8 +103,6 @@ client.on(Events.MessageCreate, async (message) => {
             } catch (dlErr) {
                 console.error("[Bot] Failed to download attachment:", dlErr.message);
             }
-        } else if (attachment) {
-            console.warn(`[Bot] Attachment too large: ${(attachment.size / 1024 / 1024).toFixed(1)} MB`);
         }
 
         const res = await fetch(`${API_URL}/api/chat`, {
@@ -163,9 +169,11 @@ function splitMessage(text, maxLen) {
 
 const http = require("http");
 const PORT = process.env.PORT || 3001;
+// Loopback by default: only checks on the box itself need it.
+const HEALTH_HOST = process.env.HEALTH_HOST || "127.0.0.1";
 http.createServer((_, res) => {
     res.writeHead(200);
     res.end("OK");
-}).listen(PORT, () => console.log(`[Health] Listening on port ${PORT}`));
+}).listen(PORT, HEALTH_HOST, () => console.log(`[Health] Listening on ${HEALTH_HOST}:${PORT}`));
 
 client.login(BOT_TOKEN);

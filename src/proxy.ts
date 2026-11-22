@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AUTH_COOKIE, authEnabled, authOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
 import { loginSearch } from "@/lib/auth/next-path";
+import { bodyLimit, describeLimit } from "@/lib/http/limits";
+import { declaredTooLarge } from "@/lib/http/body";
 
 const PUBLIC_PATHS = [
   "/login", "/api/webhooks", "/api/cron", "/api/chat", "/api/telegram/webhook", "/api/mcp", "/api/knowledge/webhook",
@@ -56,6 +58,12 @@ function secured(res: NextResponse): NextResponse {
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (crossOriginMutation(req)) return secured(NextResponse.json({ error: "Cross-site request refused." }, { status: 403 }));
+  // Before any sign-in check, so an unauthenticated caller cannot make a route parse an oversized body.
+  // Bodies with no declared length are counted by the route's reader instead.
+  if (pathname.startsWith("/api/")) {
+    const limit = bodyLimit(pathname);
+    if (declaredTooLarge(req.headers, limit)) return secured(NextResponse.json({ error: `Request too large. The limit is ${describeLimit(limit)}.` }, { status: 413 }));
+  }
   if (isStaticAsset(pathname) || isPublicPath(pathname)) return secured(NextResponse.next());
   if (!authEnabled()) return secured(NextResponse.next());
   if (await verifySessionValue(req.cookies.get(AUTH_COOKIE)?.value)) return secured(NextResponse.next());

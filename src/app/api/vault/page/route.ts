@@ -4,6 +4,7 @@ import { writeVaultPage } from "@/lib/vault/ingest";
 import { deleteGraphPage } from "@/lib/vault/graph";
 import { listVaultPages } from "@/lib/vault/store";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const path = typeof body?.path === "string" ? body.path : null;
         const markdown = typeof body?.markdown === "string" ? body.markdown : "";
         if (badPath(path) || !markdown.trim() || typeof body.expectedMarkdown !== "string") {
@@ -51,6 +52,8 @@ export async function PUT(req: NextRequest) {
         });
         return NextResponse.json({ success: true, commit: result.commit });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         if (error instanceof VaultConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
         console.error("[Vault Page API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { AUTH_COOKIE, authEnabled, sameOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // web-push needs Node; keep this route off the edge runtime.
 export const runtime = "nodejs";
@@ -26,9 +27,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
     let sub: { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
     try {
-        sub = await req.json();
-    } catch {
-        return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+        sub = await readJsonCapped(req);
+    } catch (error) {
+        return bodyFailure(error) ?? NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
     if (!sub.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
         return NextResponse.json({ error: "endpoint and keys are required" }, { status: 400 });
@@ -55,8 +56,10 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
     let endpoint = "";
     try {
-        endpoint = ((await req.json()) as { endpoint?: string }).endpoint ?? "";
-    } catch { }
+        endpoint = ((await readJsonCapped(req)) as { endpoint?: string }).endpoint ?? "";
+    } catch (error) {
+        if (error instanceof BodyTooLargeError) return bodyFailure(error)!;
+    }
     if (!endpoint) {
         return NextResponse.json({ error: "endpoint is required" }, { status: 400 });
     }

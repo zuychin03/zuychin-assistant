@@ -4,16 +4,19 @@ import { canonicalAction } from "@/lib/tasks/unattended-policy";
 import { mapApproval, TaskStorageError } from "@/lib/tasks/run-store";
 import { sendApprovalNotice } from "@/lib/tasks/approval-notices";
 import type { ActionApproval } from "@/lib/tasks/types";
+import type { MessageChannel } from "@/lib/types";
 
-/** A live chat turn whose sends wait for the owner. Only the Telegram webhook opens one. */
+/** A live chat turn whose sends wait for the owner. runRagChat opens one for every interactive turn. */
 export interface ChatTurn {
-    channel: "telegram";
+    channel: MessageChannel;
     conversationId: string | null;
     turnId: string;
     instruction: string;
     userProfileId: string | null;
+    /** Called once per pending approval, so the web chat can show its card. */
+    onHeld?: (approval: ActionApproval) => void;
 }
-export interface ProposedChatAction extends ChatTurn {
+export interface ProposedChatAction extends Omit<ChatTurn, "onHeld"> {
     tool: string; args: Record<string, unknown>; argsHash: string;
 }
 export type ChatProposer = (action: ProposedChatAction) => Promise<ActionApproval>;
@@ -42,24 +45,43 @@ export async function proposeChatAction(action: ProposedChatAction): Promise<Act
     return mapApproval(data);
 }
 
-/** The chat proposer used in production: records the action, then sends its Telegram buttons. */
+/** The chat proposer used in production: records the action, then sends its notice. Web chat shows a card instead. */
 export async function proposeChatWithNotice(action: ProposedChatAction): Promise<ActionApproval> {
     const approval = await proposeChatAction(action);
-    if (approval.status === "pending") await sendApprovalNotice(approval);
+    if (approval.status === "pending" && action.channel !== "web") await sendApprovalNotice(approval);
     return approval;
+}
+
+export const NO_TURN_REFUSAL = "Sending needs the owner's approval from a chat, so nothing was sent.";
+
+function heldText(channel: MessageChannel): string {
+    const expires = `expires in ${CHAT_APPROVAL_MINUTES / 60} hour`;
+    const rest = "Nothing has been sent yet.";
+    const repeat = "do not call this tool again for the same action.";
+    switch (channel) {
+        case "web": return `Waiting for the owner's approval: an Approve card is shown under this reply (${expires}). ${rest} Tell the owner it is waiting for their approval, and ${repeat}`;
+        case "discord": return `Waiting for the owner's approval in Telegram or on the Tasks page (${expires}). ${rest} Tell the owner where to approve it, and ${repeat}`;
+        default: return `Waiting for the owner's approval in Telegram (buttons sent; ${expires}). ${rest} Tell the owner it is waiting for their tap, and ${repeat}`;
+    }
 }
 
 /** Null lets the tool run. Otherwise the text the model gets instead of a result; nothing was sent. */
 export async function gateChatSend(tool: string, args: Record<string, unknown>, propose: ChatProposer = proposeChatWithNotice): Promise<string | null> {
+    if (!chatSendNeedsApproval(tool, args)) return null;
     const turn = scope.getStore();
-    if (!turn || !chatSendNeedsApproval(tool, args)) return null;
+    // Fails closed: approved actions and scheduled runs pass under their permit before this gate.
+    if (!turn) {
+        console.warn(`[ChatApproval] Refused ${tool} outside a chat turn.`);
+        return NO_TURN_REFUSAL;
+    }
     if (!turn.userProfileId) return "This chat has no confirmed owner, so the action was not sent.";
     try {
         const action = canonicalAction(tool, args);
-        const approval = await propose({ ...turn, tool, args: action.args, argsHash: action.hash });
-        return approval.status === "pending"
-            ? `Waiting for the owner's approval in Telegram (buttons sent; expires in ${CHAT_APPROVAL_MINUTES / 60} hour). Nothing has been sent yet. Tell the owner it is waiting for their tap, and do not call this tool again for the same action.`
-            : `This action is already recorded as ${approval.status.replaceAll("_", " ")}. It was not repeated.`;
+        const { onHeld, ...identity } = turn;
+        const approval = await propose({ ...identity, tool, args: action.args, argsHash: action.hash });
+        if (approval.status !== "pending") return `This action is already recorded as ${approval.status.replaceAll("_", " ")}. It was not repeated.`;
+        onHeld?.(approval);
+        return heldText(turn.channel);
     } catch (error) {
         console.warn("[ChatApproval] Could not record the approval:", error instanceof Error ? error.message : error);
         return "The approval could not be recorded safely, so the action was not sent. Tell the owner and suggest trying again later.";

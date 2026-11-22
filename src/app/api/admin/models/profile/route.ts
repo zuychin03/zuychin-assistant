@@ -11,6 +11,7 @@ import { capsOf } from "@/lib/ai/models/view";
 import { rowModel } from "@/lib/ai/models/admin-view";
 import { approveProfile, readProfile } from "@/lib/ai/models/store";
 import { getVaultConfig } from "@/lib/vault/github";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
@@ -21,7 +22,8 @@ const bad = (error: string, status = 400) => NextResponse.json({ error }, { stat
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const body: unknown = await req.json().catch(() => null);
+    let body: unknown = null;
+    try { body = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
     const ref = catalogueModelRef(body);
     if (!ref) return bad("Send providerId and modelId.");
     const input = body as { tags?: unknown; profile?: unknown; approveModel?: unknown };

@@ -6,6 +6,10 @@ import { requireChatAuth } from "@/lib/auth/guard";
 import { withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { sameOrigin } from "@/lib/auth/config";
+import { BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
+
+// Clients send one reply chunk or a filler phrase at a time; the server speaks at most FULL_TTS_CHARS of it.
+const MAX_TEXT_CHARS = 20_000;
 
 // TTS generation scales with text length; the full-reply streaming cap is
 // sized to finish inside this window (~45s worst case).
@@ -31,16 +35,19 @@ export async function POST(req: NextRequest) {
     let wantStream = false;
     let requestedFreeOnly = false;
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (typeof body.text === "string") text = body.text;
         if (typeof body.voiceName === "string") voiceName = body.voiceName;
         wantStream = body.stream === true;
         if (body.freeOnly !== undefined && typeof body.freeOnly !== "boolean") return NextResponse.json({ error: "Free only must be a boolean." }, { status: 400 });
         requestedFreeOnly = body.freeOnly === true;
-    } catch { }
+    } catch (error) {
+        if (error instanceof BodyTooLargeError) return NextResponse.json({ error: error.message }, { status: 413 });
+    }
     if (!text.trim()) {
         return NextResponse.json({ error: "text is required" }, { status: 400 });
     }
+    if (text.length > MAX_TEXT_CHARS) return NextResponse.json({ error: "The text is too long to speak (max 20,000 characters)." }, { status: 400 });
 
     try {
         const profile = await getDefaultProfile();

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { renderDocument, type ExportFormat } from "@/lib/export";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const FORMATS: ExportFormat[] = ["docx", "pdf", "md"];
 
@@ -9,7 +10,7 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
     try {
-        const { content, format, title = "Document" } = await req.json();
+        const { content, format, title = "Document" } = await readJsonCapped(req);
 
         if (!content || typeof content !== "string") {
             return NextResponse.json({ error: "Content is required." }, { status: 400 });
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
             },
         });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Export] Error:", error);
         return NextResponse.json({ error: "Export failed." }, { status: 500 });
     }

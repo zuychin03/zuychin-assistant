@@ -74,6 +74,14 @@ export async function ownedTask(id: string, userId: string): Promise<ScheduledTa
     if (error) throw new TaskStorageError("Task lookup failed.");
     return data ? mapScheduledTask(data) : null;
 }
+/** One approval for its owner; a pending one past its expiry reads as expired, as taskReport would mark it. */
+export async function ownedApproval(id: string, userId: string): Promise<ActionApproval | null> {
+    const { data, error } = await db.from("assistant_action_approvals").select("*").eq("id", id).eq("user_profile_id", userId).abortSignal(deadline()).maybeSingle();
+    if (error) throw new TaskStorageError("Approval lookup failed.");
+    if (!data) return null;
+    const approval = mapApproval(data);
+    return approval.status === "pending" && Date.parse(approval.expiresAt) <= Date.now() ? { ...approval, status: "expired" } : approval;
+}
 export async function decideAction(id: string, userId: string, decision: "approve" | "reject") {
     const { data, error } = await db.rpc("assistant_decide_action", { p_id: id, p_user_id: userId, p_decision: decision }).abortSignal(deadline());
     if (error) throw new TaskStorageError("Approval could not be claimed safely. Refresh before trying again.");

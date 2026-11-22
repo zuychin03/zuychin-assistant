@@ -303,6 +303,7 @@ test("push status read enforces the owner session, origin, bounded endpoint and 
         if (name === "@/lib/supabase") return { supabaseAdmin: database };
         if (name === "@/lib/auth/config") return { AUTH_COOKIE: "owner-cookie", authEnabled: () => true, sameOrigin };
         if (name === "@/lib/auth/session") return { verifySessionValue: async (value?: string) => value === "valid-owner-session" };
+        if (name === "@/lib/http/body") return { BodyTooLargeError: class extends Error {}, bodyFailure: () => null, readJsonCapped: async () => ({}) };
         throw new Error(`Unmocked route import: ${name}`);
     } });
     async function read(value: string | null, session?: string, origin?: string) {

@@ -54,6 +54,8 @@ const original = await import("../src/app/api/capture/original/route");
 const download = await import("../src/app/api/capture/download/route");
 const { NextRequest } = await import("next/server");
 const { createSessionValue } = await import("../src/lib/auth/session");
+// Sign-out-everywhere reads would add a request these exact request counts do not expect.
+(await import("../src/lib/auth/session-epoch")).setSessionEpochSourceForTests(async () => null);
 const { AUTH_COOKIE } = await import("../src/lib/auth/config");
 const req = (path: string, body?: unknown, auth = true) => new NextRequest(`https://fixture.invalid${path}`, { method: body ? "POST" : "GET", headers: { ...(auth ? { authorization: "Bearer fixture-chat" } : {}), "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
 for (const handler of [route.GET, session.GET, original.GET, download.GET]) assert.equal((await handler(req("/api/capture", undefined, false))).status, 401);

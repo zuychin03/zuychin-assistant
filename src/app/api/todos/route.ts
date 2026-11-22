@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Backs the Notes checklist in the web sidebar.
 
@@ -16,7 +17,7 @@ export async function GET() {
 
 export async function PATCH(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const id = typeof body.id === "string" ? body.id : "";
         const status = typeof body.status === "string" ? body.status : "done";
 
@@ -33,6 +34,8 @@ export async function PATCH(req: NextRequest) {
         }
         return NextResponse.json({ success: true });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Todos API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });

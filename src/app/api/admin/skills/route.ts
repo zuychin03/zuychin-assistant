@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SKILLS } from "@/lib/ai/skills/registry";
 import { listCustomSkills, updateCustomSkill, deleteCustomSkill } from "@/lib/ai/skills/custom-store";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function GET() {
     try {
@@ -15,7 +16,7 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const id = typeof body.id === "string" ? body.id : "";
         if (!id) return NextResponse.json({ error: "id is required." }, { status: 400 });
 
@@ -29,6 +30,8 @@ export async function PUT(req: NextRequest) {
         if (!ok) return NextResponse.json({ error: "Failed to update skill." }, { status: 500 });
         return NextResponse.json({ success: true });
     } catch (err) {
+        const failed = bodyFailure(err);
+        if (failed) return failed;
         console.error("[Admin Skills] Update failed:", err);
         return NextResponse.json({ error: "Failed to update skill." }, { status: 500 });
     }

@@ -3,12 +3,13 @@ import { requireChatAuth } from "@/lib/auth/guard";
 import { claimTaskRun } from "@/lib/tasks/run-store";
 import { runScheduledTask } from "@/lib/tasks/runner";
 import { taskId, taskOwner, taskFailure, TaskInputError } from "@/lib/tasks/http";
+import { readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 300;
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (!body || typeof body !== "object" || Object.keys(body).some((key) => !["id","requestId"].includes(key))) throw new TaskInputError("Provide only a task ID and request ID.");
         const claim = await claimTaskRun(taskId(body.id), taskId(body.requestId), "manual", await taskOwner());
         if (!claim) throw new Error("The run could not be claimed.");

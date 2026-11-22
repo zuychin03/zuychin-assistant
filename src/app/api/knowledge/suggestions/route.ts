@@ -4,6 +4,7 @@ import {
     listKnowledgeSuggestions, resolveKnowledgeSuggestion, runKnowledgeMaintenance,
 } from "@/lib/knowledge/maintenance";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 120;
 
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json() as {
+        const body = await readJsonCapped(req) as {
             action?: "scan" | "dismiss" | "merge";
             suggestionId?: string;
             includeAssisted?: boolean;
@@ -72,6 +73,8 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ error: "Unknown maintenance action." }, { status: 400 });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Knowledge Suggestions]", error);
         return NextResponse.json({
             error: error instanceof Error ? error.message : "Maintenance action failed.",

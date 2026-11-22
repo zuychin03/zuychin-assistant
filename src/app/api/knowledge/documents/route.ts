@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { getFile, requireVaultConfig, VaultConflictError } from "@/lib/vault/github";
 import { applyKnowledgeLifecycle, type KnowledgeLifecycleAction } from "@/lib/knowledge/lifecycle";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 
@@ -51,7 +52,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json() as {
+        const body = await readJsonCapped(req) as {
             action?: KnowledgeLifecycleAction;
             documentId?: string;
             markdown?: string;
@@ -77,6 +78,8 @@ export async function POST(req: NextRequest) {
         });
         return NextResponse.json(result);
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         if (error instanceof VaultConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
         console.error("[Knowledge Lifecycle]", error);
         return NextResponse.json({

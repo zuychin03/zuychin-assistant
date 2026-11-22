@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateSystemPrompt, getDefaultProfile } from "@/lib/db";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function PUT(req: NextRequest) {
     try {
-        const { systemPrompt } = await req.json();
+        const { systemPrompt } = await readJsonCapped(req);
 
         if (!systemPrompt || typeof systemPrompt !== "string") {
             return NextResponse.json(
@@ -34,6 +35,8 @@ export async function PUT(req: NextRequest) {
             message: "Bot personality updated.",
         });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Admin Personality] Error:", error);
         return NextResponse.json(
             { error: "Failed to update personality." },

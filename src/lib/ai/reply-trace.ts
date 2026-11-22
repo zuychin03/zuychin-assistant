@@ -29,6 +29,8 @@ export interface ReplyTrace {
     background: "pending" | "complete" | "failed" | "skipped";
     saved: boolean;
     sources?: ReplySource[];
+    /** Tools that waited for the owner's approval, or were refused, instead of running. */
+    asked?: string[];
     /** Agent runs only: the plan, tools, sub-agents and files, for the summary under the reply. */
     agent?: AgentActivity;
 }
@@ -47,5 +49,6 @@ export function mergeReplyTrace(previous: ReplyTrace | undefined, incoming: Repl
     const externalServices = [...new Map([...(previous?.externalServices ?? []), ...incoming.externalServices].map((call) => [call.id, call])).values()];
     const sources = incoming.sources ?? previous?.sources;
     const agent = incoming.agent ?? previous?.agent;
-    return { ...incoming, ...(sources ? { sources } : {}), ...(agent ? { agent } : {}), background, calls, externalServices, dataClasses: mergeDataClasses(...calls.map(call => call.dataClasses), ...externalServices.map(call => call.dataClasses)), usage: aggregateUsage(calls.map((call) => call.usage)), saved: true };
+    const asked = incoming.asked ?? previous?.asked;
+    return { ...incoming, ...(sources ? { sources } : {}), ...(asked ? { asked } : {}), ...(agent ? { agent } : {}), background, calls, externalServices, dataClasses: mergeDataClasses(...calls.map(call => call.dataClasses), ...externalServices.map(call => call.dataClasses)), usage: aggregateUsage(calls.map((call) => call.usage)), saved: true };
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import QRCode from "qrcode";
 import { AUTH_RECOVERY_COOKIE } from "@/lib/auth/config";
 import { createSessionValue, sessionCookie, verifySessionValue } from "@/lib/auth/session";
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (body.action === "recover") {
             const challengeId = req.cookies.get(AUTH_RECOVERY_COOKIE)?.value;
             const challenge = challengeId ? await getChallenge(challengeId, "totp_recovery") : null;
@@ -58,6 +59,8 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ error: "Unknown authenticator action." }, { status: 400 });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Auth] Authenticator-app operation failed:", error);
         return NextResponse.json({ error: "Authenticator-app recovery is not configured yet. Apply the authentication SQL migration first." }, { status: 503 });
     }

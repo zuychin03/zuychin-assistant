@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { MODERATOR_NAME } from "@/lib/council/protocol";
 import { appendMessage, getSessionByCode, pauseCouncil, resumeCouncil } from "@/lib/council/store";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Explicit stall controls, session-gated by proxy.ts. Zuychin can also pause and
 // resume from the owner channel; this is the same operation behind a button for
@@ -9,7 +10,7 @@ import { appendMessage, getSessionByCode, pauseCouncil, resumeCouncil } from "@/
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
         const { code } = await params;
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         const resume = body.resume === true;
 
         const session = await getSessionByCode(code);
@@ -43,6 +44,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
         return NextResponse.json({ paused: !resume, already: outcome.already === true });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Council API] pause failed:", error);
         return NextResponse.json({ error: "Failed to change the council." }, { status: 500 });
     }

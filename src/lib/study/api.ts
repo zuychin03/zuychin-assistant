@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { AUTH_COOKIE, authEnabled, sameOrigin } from "../auth/config";
 import { verifySessionValue } from "../auth/session";
+import { readJsonCapped } from "../http/body";
 import { StudyError } from "./contracts";
 import type { createStudyService } from "./service";
 
@@ -34,7 +35,7 @@ export function createStudyHandlers(service: ReturnType<typeof createStudyServic
             return id ? service.snapshot(id, owner) : service.report(owner);
         }),
         POST: wrap(async (req, owner) => {
-            const value = await req.json();
+            const value = await readJsonCapped(req);
             if (!value || typeof value !== "object" || Array.isArray(value)) throw new StudyError("Provide a study action.");
             const { action, ...body } = value;
             if (action === "create") return service.create(body, owner);

@@ -6,6 +6,7 @@ import {
     MIGRATION_TABLES, applyMigration, planMigration, prepareMigration, verifyMigration, type MigrationTable,
 } from "@/lib/ai/embedding-migration";
 import { createMigrationStore } from "@/lib/ai/embedding-migration-store";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 
@@ -41,12 +42,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
     let targetRef: ResolvedEmbedding;
     try {
-        const body = await req.json() as { target?: unknown } | null;
+        const body = await readJsonCapped(req) as { target?: unknown } | null;
         const target = typeof body?.target === "string" ? body.target.trim() : "";
         if (!target) throw new Error("Missing target.");
         targetRef = getEmbeddingRef(target);
-    } catch {
-        return NextResponse.json({ error: "A supported target model id is required." }, { status: 400 });
+    } catch (error) {
+        return bodyFailure(error) ?? NextResponse.json({ error: "A supported target model id is required." }, { status: 400 });
     }
 
     try {

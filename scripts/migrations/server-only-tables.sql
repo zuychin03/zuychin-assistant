@@ -33,7 +33,7 @@ insert into revoke_only_tables (name) values
   ('study_reviews'), ('study_feedback'), ('council_integration_attempts'), ('model_catalogue'),
   ('model_discovery_runs'), ('model_profiles'), ('model_feedback'), ('provider_keys'),
   ('assistant_channel_updates'), ('assistant_channel_threads'), ('assistant_approval_notices'),
-  ('council_owner_notes')
+  ('council_owner_notes'), ('auth_session_epoch')
 on conflict do nothing;
 
 do $$

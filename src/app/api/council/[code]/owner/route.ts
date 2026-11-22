@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionByCode, readOwnerThread } from "@/lib/council/store";
 import { ownerTurn } from "@/lib/council/owner-channel";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // The owner's private channel into a running council. Session-gated by
 // proxy.ts, which covers everything outside PUBLIC_PATHS - and deliberately NOT
@@ -25,7 +26,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ cod
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
         const { code } = await params;
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         const text = typeof body.text === "string" ? body.text.trim() : "";
         if (!text) return NextResponse.json({ error: "Say something first." }, { status: 400 });
 
@@ -41,6 +42,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             thread: await readOwnerThread(session.id),
         });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Council API] owner turn failed:", error);
         return NextResponse.json({ error: "Failed to send that." }, { status: 500 });
     }

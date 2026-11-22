@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import {
     generateAuthenticationOptions, generateRegistrationOptions,
     verifyAuthenticationResponse, verifyRegistrationResponse,
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const action = body.action as string;
 
         if (action === "authentication-options") {
@@ -115,6 +116,8 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ error: "Unknown passkey action." }, { status: 400 });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Auth] Passkey operation failed:", error);
         return NextResponse.json({ error: "Passkey authentication is not configured yet. Apply the authentication SQL migration first." }, { status: 503 });
     }

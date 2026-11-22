@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
     createAgentClient, listAgentClients, revokeAgentClient, type ClientKind,
 } from "@/lib/agents/clients";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Owner-only, session-gated by proxy.ts. No plaintext credential is returned
 // from here; minting lives on /api/agents/claim.
@@ -19,7 +20,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
         if (!displayName) return NextResponse.json({ error: "Name the agent first." }, { status: 400 });
         if (displayName.length > 64) {
@@ -38,6 +39,8 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ id: created.id, displayName, kind });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Agents API] create failed:", error);
         return NextResponse.json({ error: "Failed to add that agent." }, { status: 500 });
     }

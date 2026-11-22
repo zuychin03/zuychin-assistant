@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { reconcileKnowledge } from "@/lib/knowledge/sync";
+import { bodyFailure, readTextCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 
@@ -25,7 +26,9 @@ export async function POST(req: NextRequest) {
     const secret = process.env.GITHUB_VAULT_WEBHOOK_SECRET;
     if (!secret) return NextResponse.json({ error: "Webhook is not configured." }, { status: 503 });
 
-    const raw = await req.text();
+    // Capped before the signature check, which needs the whole body.
+    let raw: string;
+    try { raw = await readTextCapped(req); } catch (error) { return bodyFailure(error) ?? NextResponse.json({ error: "Could not read the request." }, { status: 400 }); }
     if (!validSignature(raw, req.headers.get("x-hub-signature-256"), secret)) {
         return NextResponse.json({ error: "Invalid signature." }, { status: 401 });
     }

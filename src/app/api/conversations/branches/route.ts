@@ -4,13 +4,14 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { BranchError, parseForkRequest, validConversationId } from "@/lib/conversations/branches";
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { branchFailure, branchResponse, branchUserId } from "@/lib/conversations/branch-api";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
     try {
         let body: unknown;
-        try { body = await req.json(); } catch { throw new BranchError("Provide a JSON branch request.", 400); }
+        try { body = await readJsonCapped(req); } catch (error) { const failed = bodyFailure(error); if (failed) return failed; throw new BranchError("Provide a JSON branch request.", 400); }
         const input = parseForkRequest(body);
         const userId = await branchUserId();
         const conversation = await createBranchStore(supabaseAdmin).fork(input, userId, req.signal);

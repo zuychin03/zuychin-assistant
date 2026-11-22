@@ -124,6 +124,8 @@ const { executeTool } = await import("../src/lib/ai/mcp-service");
 const { POST: approvalPost } = await import("../src/app/api/tasks/approvals/route");
 const { POST: runPost } = await import("../src/app/api/tasks/run/route");
 const { createSessionValue } = await import("../src/lib/auth/session");
+// Sign-out-everywhere reads would add a request these exact request counts do not expect.
+(await import("../src/lib/auth/session-epoch")).setSessionEpochSourceForTests(async () => null);
 const { AUTH_COOKIE } = await import("../src/lib/auth/config");
 const { NextRequest } = await import("next/server");
 const session = await createSessionValue();

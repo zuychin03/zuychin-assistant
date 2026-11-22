@@ -2,11 +2,17 @@
 
 /* eslint-disable @next/next/no-img-element */
 import { useEffect, useState } from "react";
-import { Check, Fingerprint, KeyRound, LockKeyhole, ShieldCheck, Smartphone } from "lucide-react";
+import { Check, Fingerprint, KeyRound, LockKeyhole, LogOut, ShieldCheck, Smartphone } from "lucide-react";
 import { startRegistration } from "@simplewebauthn/browser";
+import { APP_TIMEZONE } from "@/lib/datetime";
 
 interface Passkey { credentialId: string; deviceType: string; backedUp: boolean; }
 interface TotpSetup { qrCode: string; secret: string; }
+interface SessionEpoch { configured: boolean; validAfter: string | null; }
+
+function signedOutAt(iso: string): string {
+    return new Intl.DateTimeFormat("en-AU", { timeZone: APP_TIMEZONE, dateStyle: "medium", timeStyle: "short", timeZoneName: "short" }).format(new Date(iso)).replace(/\u202f/g, " ");
+}
 
 export default function SecurityPanel() {
     const [loaded, setLoaded] = useState(false);
@@ -17,7 +23,9 @@ export default function SecurityPanel() {
     const [totpEnabled, setTotpEnabled] = useState(false);
     const [setup, setSetup] = useState<TotpSetup | null>(null);
     const [message, setMessage] = useState("");
-    const [busy, setBusy] = useState<"passkey" | "totp" | "verify" | null>(null);
+    const [busy, setBusy] = useState<"passkey" | "totp" | "verify" | "signout" | null>(null);
+    const [epoch, setEpoch] = useState<SessionEpoch | null>(null);
+    const [epochNote, setEpochNote] = useState("");
 
     const load = async () => {
         setLoaded(false);
@@ -28,6 +36,27 @@ export default function SecurityPanel() {
             const [keys, totp] = await Promise.all([passkeyResponse.json(), totpResponse.json()]);
             setPasskeys(keys.passkeys ?? []); setTotpEnabled(totp.enabled === true); setLoaded(true);
         } catch { setLoadError(true); }
+        try {
+            const response = await fetch("/api/auth/sessions");
+            const data = await response.json().catch(() => ({}));
+            setEpoch(response.ok ? data : null);
+            setEpochNote(response.ok ? "" : typeof data.error === "string" ? data.error : "");
+        } catch { setEpoch(null); setEpochNote(""); }
+    };
+
+    const signOutEverywhere = async () => {
+        setBusy("signout");
+        setMessage("");
+        try {
+            const response = await fetch("/api/auth/sessions", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sign_out_everywhere", password }),
+            });
+            const data = await response.json();
+            if (!response.ok) { setMessage(data.error ?? "Sign out everywhere failed."); return; }
+            setEpoch({ configured: true, validAfter: data.validAfter });
+            setMessage("Every other browser and device is signed out. You are still signed in here.");
+        } catch { setMessage("Sign out everywhere failed."); }
+        finally { setBusy(null); }
     };
 
     useEffect(() => { void load(); }, []);
@@ -163,6 +192,20 @@ export default function SecurityPanel() {
                         <button type="button" className="btn" style={{ marginTop: 8 }} disabled={busy !== null} onClick={() => { setSetup(null); setCode(""); }}>Cancel setup</button>
                     </div>
                 </div>}
+            </section>
+
+            <section className="box">
+                <div style={styles.cardHead}>
+                    <LogOut size={16} style={styles.icon} />
+                    <div style={{ flex: 1, minWidth: 0 }}><h3 style={styles.cardTitle}>Signed-in browsers</h3><p className="meta">Sign out every other browser and device. You stay signed in here.</p></div>
+                </div>
+                <div className="meta" style={styles.tip}>
+                    {epoch === null ? epochNote || "Status unavailable." : !epoch.configured ? "Apply v7-security-hardening.sql to turn this on."
+                        : epoch.validAfter ? `Last used ${signedOutAt(epoch.validAfter)}.` : "Not used yet."}
+                </div>
+                <button className="btn" onClick={() => void signOutEverywhere()} disabled={!password || busy !== null || !epoch?.configured}>
+                    <LogOut size={14} /> {busy === "signout" ? "Signing out..." : "Sign out everywhere"}
+                </button>
             </section>
         </div>
         {message && <div className="notice" role="status">{message}</div>}

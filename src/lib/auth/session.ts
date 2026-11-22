@@ -1,7 +1,10 @@
 import { AUTH_COOKIE, authSecret } from "./config";
+import { sessionValidAfter } from "./session-epoch";
 
 type AuthSession = {
     exp: number;
+    /** Issue time in seconds; cookies from before it existed count as issued at 0. */
+    iat?: number;
     nonce: string;
     v: 1;
 };
@@ -41,9 +44,11 @@ function equalBytes(left: Uint8Array, right: Uint8Array) {
 }
 
 export async function createSessionValue() {
+    const now = Math.floor(Date.now() / 1000);
     const session: AuthSession = {
         v: 1,
-        exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE_SECONDS,
+        iat: now,
+        exp: now + SESSION_MAX_AGE_SECONDS,
         nonce: base64Url(crypto.getRandomValues(new Uint8Array(24))),
     };
     const payload = base64Url(encoder.encode(JSON.stringify(session)));
@@ -57,7 +62,9 @@ export async function verifySessionValue(value?: string) {
     try {
         if (!equalBytes(fromBase64Url(signature), await hmac(payload))) return false;
         const session = JSON.parse(decoder.decode(fromBase64Url(payload))) as AuthSession;
-        return session.v === 1 && Number.isSafeInteger(session.exp) && session.exp > Math.floor(Date.now() / 1000);
+        if (session.v !== 1 || !Number.isSafeInteger(session.exp) || session.exp <= Math.floor(Date.now() / 1000)) return false;
+        const validAfter = await sessionValidAfter();
+        return validAfter === null || (Number.isSafeInteger(session.iat) ? session.iat! : 0) >= validAfter;
     } catch {
         return false;
     }

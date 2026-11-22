@@ -8,7 +8,7 @@ import { approvalRest, type RestState } from "./fixtures/approval-rest.mts";
 Object.assign(process.env, {
     NEXT_PUBLIC_SUPABASE_URL: "https://chat-approval-fixture.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "fixture-anon",
     SUPABASE_SERVICE_ROLE_KEY: "fixture-service", AUTH_ORIGIN: "https://assistant.test", AUTH_SESSION_SECRET: "fixture-session",
-    TELEGRAM_BOT_TOKEN: "fixture-bot", TELEGRAM_WEBHOOK_SECRET: "fixture-webhook-secret", TELEGRAM_CHAT_ID: "1001",
+    TELEGRAM_BOT_TOKEN: "fixture-bot", TELEGRAM_WEBHOOK_SECRET: "fixture-webhook-secret", TELEGRAM_CHAT_ID: "1001", CHAT_API_KEY: "fixture-chat-key",
     GEMINI_API_KEY: "fixture-gemini", GITHUB_VAULT_TOKEN: "", GITHUB_VAULT_REPO: "", KNOWLEDGE_EMBEDDING_MODEL: "",
 });
 // Without Google credentials the Gmail tool fails before any network call, so "sent" can never happen by accident.
@@ -59,6 +59,7 @@ const { executeTool } = await import("../src/lib/ai/mcp-service");
 const { withApprovedAction, canonicalAction } = await import("../src/lib/tasks/unattended-policy");
 const webhook = await import("../src/app/api/telegram/webhook/route");
 const approvalsRoute = await import("../src/app/api/tasks/approvals/route");
+const chatRoute = await import("../src/app/api/chat/route");
 const { createSessionValue } = await import("../src/lib/auth/session");
 const { AUTH_COOKIE } = await import("../src/lib/auth/config");
 
@@ -99,10 +100,100 @@ await check("only email and calendar changes wait; reads, drafts and in-app writ
     }
 });
 
-await check("outside a Telegram turn the tool runs as before", async () => {
-    const result = await executeTool("send_email", EMAIL);
-    assert.match(result, /Failed to send email/, "it reached the Gmail tool, which has no fixture credentials");
+await check("outside a chat turn and without a permit the send is refused, and reads still run", async () => {
+    assert.equal(await executeTool("send_email", EMAIL), chat.NO_TURN_REFUSAL);
+    assert.equal(await executeTool("manage_calendar_event", { action: "create", summary: "Dentist" }), chat.NO_TURN_REFUSAL);
     assert.equal(proposals().length, 0);
+    assert.doesNotMatch(await executeTool("manage_calendar_event", { action: "list" }), /owner's approval/);
+    const hash = canonicalAction("send_email", EMAIL).hash;
+    const permitted = await withApprovedAction({ runId: "", taskId: "", taskTitle: "Web chat", instruction: "x", userProfileId: OWNER, tool: "send_email", argsHash: hash },
+        () => executeTool("send_email", EMAIL));
+    assert.match(permitted, /Failed to send email/, "an approved action reaches the Gmail tool, which has no fixture credentials");
+});
+
+await check("in a web turn an email waits with no Telegram notice, and the card hears about it once", async () => {
+    const heldIds: string[] = [];
+    const t = turn({ channel: "web", onHeld: (approval) => heldIds.push(approval.id) });
+    const first = await chat.withChatApprovals(t, () => executeTool("send_email", EMAIL));
+    await chat.withChatApprovals(t, () => executeTool("send_email", { ...EMAIL }));
+    assert.match(first, /^Waiting for the owner's approval: an Approve card is shown under this reply \(expires in 1 hour\)\. Nothing has been sent yet\./);
+    const rows = (await chatRows()).rows.filter((row) => row.turn_id === t.turnId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].channel, "web");
+    assert.equal(rows[0].task_title, "Web chat");
+    assert.deepEqual([...new Set(heldIds)], [rows[0].id]);
+    assert.equal(telegram("sendMessage").length, 0, "web chat shows a card instead of a Telegram notice");
+});
+
+await check("the web card reads one approval with the owner's session only", async () => {
+    const t = turn({ channel: "web" });
+    await chat.withChatApprovals(t, () => executeTool("send_email", EMAIL));
+    const row = (await chatRows()).rows.find((r) => r.turn_id === t.turnId)!;
+    const read = (id: string, headers: Record<string, string>) => approvalsRoute.GET(new NextRequest(`https://assistant.test/api/tasks/approvals?id=${id}`, { headers }));
+    const owner = await read(row.id, { cookie: `${AUTH_COOKIE}=${session}` });
+    assert.equal(owner.status, 200);
+    const body = await owner.json();
+    assert.equal(body.approval.id, row.id);
+    assert.equal(body.approval.status, "pending");
+    assert.equal(body.approval.channel, "web");
+    assert.equal((await read(row.id, {})).status, 401);
+    assert.equal((await read(row.id, { Authorization: "Bearer fixture-chat-key" })).status, 401, "the chat API key cannot read approvals");
+    assert.equal((await read(randomUUID(), { cookie: `${AUTH_COOKIE}=${session}` })).status, 404);
+    assert.equal((await read("not-an-id", { cookie: `${AUTH_COOKIE}=${session}` })).status, 400);
+});
+
+await check("a web chat turn returns the held send and saves it on the reply for the card", async () => {
+    const { ragChat } = await import("../src/lib/ai/rag-service");
+    const conversationId = (await db.query<{ id: string }>("insert into conversations (title) values ('Web chat') returning id")).rows[0].id;
+    const result = await ragChat({ message: "Email me a test", channel: "web", conversationId, provider: "gemini", model: "gemini-3.5-flash-lite" });
+    assert.equal(result.approvals?.length, 1);
+    const [held] = result.approvals!;
+    assert.equal(held.label, "Send an email");
+    assert.deepEqual(held.lines.slice(0, 2), ["To: me@example.invalid", "Subject: Test from Telegram"]);
+    const row = (await chatRows()).rows.find((r) => r.id === held.id)!;
+    assert.equal(row.channel, "web");
+    assert.equal(row.conversation_id, conversationId);
+    const reply = rest.messages.find((m) => m.role === "assistant");
+    assert.deepEqual((reply?.metadata as { approvals?: unknown })?.approvals, result.approvals);
+    assert.deepEqual(result.replyTrace?.asked, ["send_email"], "the reply's summary says the email was asked for, not sent");
+    assert.ok(!result.replyTrace?.sources?.some((source) => source.ref === "send_email"));
+    assert.equal(telegram("sendMessage").length, 0);
+});
+
+await check("a held or refused send is recorded as asked, never as a tool the reply used", async () => {
+    const { withReplySources } = await import("../src/lib/ai/reply-sources");
+    const sources: { ref?: string }[] = [];
+    const asked = new Set<string>();
+    await withReplySources(sources as never, async () => {
+        await executeTool("send_email", EMAIL);
+        await chat.withChatApprovals(turn({ channel: "web" }), () => executeTool("manage_calendar_event", { action: "create", summary: "Dentist" }));
+        await executeTool("manage_calendar_event", { action: "list" });
+    }, asked);
+    assert.deepEqual([...asked], ["send_email", "manage_calendar_event"]);
+    assert.deepEqual(sources.map((source) => source.ref), ["manage_calendar_event"], "only the calendar read ran");
+});
+
+await check("in a Discord turn an email waits and the buttons go to Telegram", async () => {
+    const t = turn({ channel: "discord" });
+    const text = await chat.withChatApprovals(t, () => executeTool("send_email", EMAIL));
+    assert.match(text, /^Waiting for the owner's approval in Telegram or on the Tasks page \(expires in 1 hour\)\./);
+    const row = (await chatRows()).rows.find((r) => r.turn_id === t.turnId)!;
+    assert.equal(row.task_title, "Discord chat");
+    const notices = telegram("sendMessage");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].text, /^🔐 Approval needed\nFrom: Discord chat\n/);
+});
+
+await check("the chat API key cannot send email by naming another channel", async () => {
+    const res = await chatRoute.POST(new NextRequest("https://assistant.test/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer fixture-chat-key" },
+        body: JSON.stringify({ message: "Email me a test", channel: "telegram" }),
+    }));
+    assert.equal(res.status, 200);
+    const followUp = seen.find(({ url, body }) => url.hostname === "generativelanguage.googleapis.com" && body.includes("functionResponse"));
+    assert.match(followUp?.body ?? "", /Waiting for the owner's approval in Telegram/, "the model got the hold message, not a send result");
+    assert.doesNotMatch(followUp?.body ?? "", /Failed to send email|Email sent/);
+    assert.equal(proposals().length, 1);
 });
 
 await check("in a Telegram turn an email waits: one approval for an hour, one notice, nothing sent", async () => {

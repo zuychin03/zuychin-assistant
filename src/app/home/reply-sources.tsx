@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { ArrowUpRight, ChevronRight } from "lucide-react";
 import type { ReplySource, ReplyTrace } from "@/lib/ai/reply-trace";
 import { ReplyTraceBody, validTrace } from "./reply-trace";
-import { toolInfo } from "./tool-labels";
+import { askedActivity, askedTools, toolActivity, toolInfo } from "./tool-labels";
 import { parseAgentActivity } from "@/lib/ai/agent/activity";
 import ui from "./reply-sources.module.css";
 
@@ -39,8 +39,13 @@ export function activitySummary(trace: ReplyTrace) {
     const agent = parseAgentActivity(trace.agent);
     if (agent?.steps.length) parts.push(`Ran ${plural(agent.steps.length, "step")}`);
     if (agent?.workers.length) parts.push(`Used ${plural(agent.workers.length, "sub-agent")}`);
+    const asked = askedTools(trace);
     for (const tool of agent?.tools ?? []) {
-        const phrase = toolInfo(tool.name).activity;
+        const phrase = toolActivity(tool.name, asked);
+        if (!parts.includes(phrase)) parts.push(phrase);
+    }
+    for (const name of asked) {
+        const phrase = askedActivity(name);
         if (!parts.includes(phrase)) parts.push(phrase);
     }
     for (const source of sources) {

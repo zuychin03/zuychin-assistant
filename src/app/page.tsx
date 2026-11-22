@@ -14,7 +14,8 @@ import { chatMarkdownComponents } from "./home/markdown";
 import { CHANNEL_NAMES, isSupportedAttachment, UPLOAD_ACCEPT, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "@/lib/types";
 import { matchSlashCommands, type SlashCommand } from "@/lib/commands";
 import { CouncilProposalCard } from "./home/council-card";
-import type { ArtifactDescriptor, CouncilProposal, MessageChannel } from "@/lib/types";
+import { ApprovalCard } from "./home/approval-card";
+import type { ArtifactDescriptor, CouncilProposal, HeldApproval, MessageChannel } from "@/lib/types";
 import type { AgentEvent } from "@/lib/ai/agent/events";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -46,6 +47,10 @@ interface ChatMessage {
   artifacts?: ArtifactDescriptor[];
   /** A council Zuychin drafted; the card under the reply is what launches it. */
   councilProposal?: CouncilProposal;
+  /** Sends held for the owner in this turn; the card under the reply approves them. */
+  approvals?: HeldApproval[];
+  /** True while the approvals came from this session's stream, so the card need not fetch their state. */
+  liveApprovals?: boolean;
   /** Which model produced this reply (only known for messages sent this session). */
   modelLabel?: string;
   replyTrace?: ReplyTrace;
@@ -95,6 +100,7 @@ interface ServerMessage {
     artifacts?: ArtifactDescriptor[];
     replyTo?: { role: "user" | "assistant"; content: string };
     councilProposal?: CouncilProposal;
+    approvals?: HeldApproval[];
     inputMode?: string;
   };
 }
@@ -107,6 +113,7 @@ const mapServerMessages = (msgs: ServerMessage[]): ChatMessage[] =>
     content: m.content,
     artifacts: m.metadata?.artifacts,
     councilProposal: m.metadata?.councilProposal,
+    approvals: m.metadata?.approvals,
     replyTo: m.metadata?.replyTo,
     at: m.createdAt,
     modelLabel: m.metadata?.knowledgeOnly ? "Saved sources" : m.metadata?.historicalModels?.map((model) => `${model.providerId} / ${model.modelId}`).join(", "),
@@ -941,7 +948,7 @@ export default function Home() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let done: { reply: string; messageId: string; userMessageId?: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal; replyTrace?: ReplyTrace } | null = null;
+      let done: { reply: string; messageId: string; userMessageId?: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; replyTrace?: ReplyTrace } | null = null;
       let streamError = "";
       let runId = "";
 
@@ -1010,7 +1017,7 @@ export default function Home() {
             if (evt.reset && live) live.from = 0;
             if (spokenTurn()) feedLive(false);
           } else if (evt.type === "done") {
-            done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, replyTrace: evt.replyTrace };
+            done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, approvals: evt.approvals, replyTrace: evt.replyTrace };
           } else if (evt.type === "error") {
             streamError = evt.message;
           }
@@ -1044,6 +1051,8 @@ export default function Home() {
         content: done.reply,
         artifacts: done.artifacts,
         councilProposal: done.councilProposal,
+        approvals: done.approvals,
+        liveApprovals: true,
         modelLabel: p.knowledgeOnly ? "Saved sources" : requestModel?.label,
         replyTrace: done.replyTrace,
         at: new Date().toISOString(),
@@ -1923,6 +1932,7 @@ export default function Home() {
                       </div>
                     )}
                     {msg.councilProposal && <CouncilProposalCard proposal={msg.councilProposal} />}
+                    {msg.approvals?.map((approval) => <ApprovalCard key={approval.id} approval={approval} live={msg.liveApprovals} />)}
                     {!!msg.replyTrace?.sources?.length && <SourceChart sources={msg.replyTrace.sources} vaultHref={vaultHref} cosmosHref={cosmosHrefFor(msg.replyTrace.sources)} />}
                     <div className={ui.msgActions}>
                       {msg.resume && (

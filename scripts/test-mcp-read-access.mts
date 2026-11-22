@@ -40,6 +40,7 @@ const dependencies: Record<string, unknown> = {
     "@/lib/vault/github": { getVaultConfig: boundary("getVaultConfig", {}), getFile: boundary("getFile", { text: "private vault page fixture" }) },
     "@/lib/vault/ingest": { VAULT_CATEGORIES: ["study"] },
     "@/lib/agents/mcp-auth": {},
+    "@/lib/http/body": {},
 };
 function loadSource(path: string): unknown {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");

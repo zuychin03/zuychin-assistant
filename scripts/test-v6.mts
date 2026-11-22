@@ -82,7 +82,9 @@ const tests = [
     "telegram-voice",
     "channel-threads",
     "approval-buttons",
-    "chat-approval"
+    "chat-approval",
+    "session-epoch",
+    "body-limits"
 ];
 const failed: string[] = [];
 for (const test of tests) {

@@ -3,7 +3,8 @@ import { ragChat } from "@/lib/ai/rag-service";
 import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
-import { CHANNEL_NAMES, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MESSAGE_CHANNELS } from "@/lib/types";
+import { base64Bytes, CHANNEL_NAMES, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
+import { BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
 import type { FileAttachment, ReplyRef } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 import { broadcastPush } from "@/lib/messaging/push-service";
@@ -26,8 +27,9 @@ export async function POST(req: NextRequest) {
 
     let body: Record<string, unknown>;
     try {
-        body = await req.json();
-    } catch {
+        body = await readJsonCapped(req);
+    } catch (error) {
+        if (error instanceof BodyTooLargeError) return oneShot({ type: "error", message: error.message }, 413);
         return oneShot({ type: "error", message: "Invalid request body." }, 400);
     }
 
@@ -56,10 +58,11 @@ export async function POST(req: NextRequest) {
         if (!isSupportedAttachment(file.mimeType, file.name)) {
             return oneShot({ type: "error", message: `Unsupported file type: ${file.mimeType || file.name}` }, 400);
         }
-        if (file.size > MAX_FILE_SIZE_BYTES) {
-            return oneShot({ type: "error", message: "File too large." }, 400);
+        if (file.size > MAX_FILE_SIZE_BYTES || base64Bytes(file.base64) > MAX_FILE_SIZE_BYTES) {
+            return oneShot({ type: "error", message: `File too large. Max ${MAX_FILE_SIZE_MB} MB.` }, 400);
         }
     }
+    if (base64Bytes(body.imageBase64) > MAX_FILE_SIZE_BYTES) return oneShot({ type: "error", message: `Image too large. Max ${MAX_FILE_SIZE_MB} MB.` }, 400);
     // Channel context is filtered by channel, so a web turn here would be invisible to the next Telegram or Discord turn.
     if (typeof body.conversationId === "string" && body.conversationId) {
         const conversation = await getConversation(body.conversationId);
@@ -93,7 +96,7 @@ export async function POST(req: NextRequest) {
             }, 15000);
 
             try {
-                const { reply, messageId, userMessageId, artifacts, councilProposal, replyTrace } = await ragChat({
+                const { reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace } = await ragChat({
                     message: message.trim(),
                     channel,
                     imageBase64: body.imageBase64 as string | undefined,
@@ -113,7 +116,7 @@ export async function POST(req: NextRequest) {
                     genParams: sanitizeGenParams(body.genParams),
                     signal: ac.signal,
                 }, send);
-                send({ type: "done", reply, messageId, userMessageId, artifacts, councilProposal, replyTrace });
+                send({ type: "done", reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace });
                 if (sawAgentRun && reply) {
                     const convId = body.conversationId as string | undefined;
                     await broadcastPush({

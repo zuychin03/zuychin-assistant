@@ -499,6 +499,7 @@ try {
     const refresh = await import("../src/app/api/admin/models/refresh/route");
     const models = await import("../src/app/api/admin/models/route");
     const { createSessionValue } = await import("../src/lib/auth/session");
+    (await import("../src/lib/auth/session-epoch")).setSessionEpochSourceForTests(async () => null);
     const { AUTH_COOKIE } = await import("../src/lib/auth/config");
 
     await check("the cron route needs CRON_SECRET and does nothing when MODEL_DISCOVERY is off", async () => {

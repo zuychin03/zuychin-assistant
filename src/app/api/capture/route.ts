@@ -8,6 +8,7 @@ import { ocrTiers } from "@/lib/capture/extract/ocr";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { VaultConflictError } from "@/lib/vault/github";
 import { sameOrigin } from "@/lib/auth/config";
+import { BodyTooLargeError, readTextCapped } from "@/lib/http/body";
 export const maxDuration = 60;
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 const extractOptions = z.object({ refresh: z.boolean().optional(), ocr: z.enum(["free", "paid"]).optional() });
@@ -29,8 +30,9 @@ export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     if (!sameOrigin(req)) return respond({ error: "Open the capture inbox on this site before saving." }, 403);
     try {
-        const raw = await req.text();
-        if (raw.length > 3_000_000) throw new CaptureError("This capture is too large.", 413);
+        const raw = await readTextCapped(req).catch((error) => {
+            throw error instanceof BodyTooLargeError ? new CaptureError("This capture is too large.", 413) : error;
+        });
         const input = JSON.parse(raw);
         const profile = await captureProfile();
         if (input.profileId !== profile.id) throw new CaptureError("The account changed. Reopen the inbox before saving.", 409);

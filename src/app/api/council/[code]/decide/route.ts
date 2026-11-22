@@ -4,11 +4,12 @@ import { continueTheCouncil } from "@/lib/council/owner-channel";
 import { getSessionByCode } from "@/lib/council/store";
 import { isOnlineCouncil } from "@/lib/council/online/store";
 import { ensureOnlineRunner } from "@/lib/council/online/service";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
     try {
         const { code } = await params;
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         const decision = body.decision === "continue" ? "continue" : "accept";
         const directive = typeof body.directive === "string" ? body.directive.trim() : "";
 
@@ -41,6 +42,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         }
         return NextResponse.json({ decision: "continue", ...outcome });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Council API] decide failed:", error);
         return NextResponse.json({ error: "Failed to record that decision." }, { status: 500 });
     }

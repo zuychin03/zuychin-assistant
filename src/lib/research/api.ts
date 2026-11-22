@@ -4,6 +4,7 @@ import { AUTH_COOKIE, authEnabled, sameOrigin } from "@/lib/auth/config";
 import { verifySessionValue } from "@/lib/auth/session";
 import { branchUserId } from "@/lib/conversations/branch-api";
 import { validConversationId } from "@/lib/conversations/branches";
+import { BodyParseError, BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
 import { deleteEntrySchema, ResearchError } from "./contracts";
 import type { createResearchService } from "./service";
 
@@ -40,7 +41,7 @@ export function createResearchHandlers(service: Service, dependencies: { auth?: 
             return response;
         } catch (error) { return failure(error); }
     };
-    const json = async (req: NextRequest) => { try { return await req.json(); } catch { throw new ResearchError("Provide a valid JSON research request."); } };
+    const json = async (req: NextRequest) => { try { return await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError || error instanceof BodyParseError) throw error; throw new ResearchError("Provide a valid JSON research request."); } };
     return {
         GET: run(async (req, userId) => {
             const id = req.nextUrl.searchParams.get("questionId");

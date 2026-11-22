@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createGraphLink, deleteGraphLink } from "@/lib/vault/graph";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 60;
 
@@ -7,7 +8,7 @@ const PAGE_PATH_RE = /^wiki\/(sources|concepts|entities|synthesis)\/[a-z0-9-]+\.
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         const source = typeof body.source === "string" ? body.source : "";
         const target = typeof body.target === "string" ? body.target : "";
         const label = typeof body.label === "string" ? body.label : "related";
@@ -17,6 +18,8 @@ export async function POST(req: NextRequest) {
         const result = await createGraphLink(source, target, label);
         return NextResponse.json({ success: true, ...result });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Vault Link API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
         return NextResponse.json({ error: errorMessage }, { status: 500 });

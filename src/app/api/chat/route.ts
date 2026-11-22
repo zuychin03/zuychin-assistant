@@ -4,7 +4,8 @@ import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { getArtifact } from "@/lib/artifacts/store";
-import { isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
+import { base64Bytes, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
+import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import type { FileAttachment } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
 import { inputModeError } from "@/lib/voice/input-mode";
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
     try {
-        const body = await req.json();
+        const body = await readJsonCapped(req);
         if (body.freeOnly !== undefined && typeof body.freeOnly !== "boolean") return NextResponse.json({ error: "Free only must be a boolean." }, { status: 400 });
         const knowledgeError = knowledgeOnlyRequestError(body);
         if (knowledgeError) return NextResponse.json({ error: knowledgeError }, { status: 400 });
@@ -56,13 +57,16 @@ export async function POST(req: NextRequest) {
                     { status: 400 }
                 );
             }
-            if (file.size > MAX_FILE_SIZE_BYTES) {
+            if (file.size > MAX_FILE_SIZE_BYTES || base64Bytes(file.base64) > MAX_FILE_SIZE_BYTES) {
                 return NextResponse.json(
                     { error: `File too large. Max ${MAX_FILE_SIZE_MB} MB.` },
                     { status: 400 }
                 );
             }
             validatedFile = file;
+        }
+        if (base64Bytes(imageBase64) > MAX_FILE_SIZE_BYTES) {
+            return NextResponse.json({ error: `Image too large. Max ${MAX_FILE_SIZE_MB} MB.` }, { status: 400 });
         }
 
         // The bot posts #ask-zuychin without a conversation id; the server keeps that chat's conversation.
@@ -114,6 +118,8 @@ export async function POST(req: NextRequest) {
         const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal) : null;
         return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: speech ? [...artifactsWithData, speech] : artifactsWithData });
     } catch (error: unknown) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[Chat API Error]", error);
 
         const errorMessage =

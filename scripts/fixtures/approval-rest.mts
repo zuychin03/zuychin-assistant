@@ -42,6 +42,10 @@ export function approvalRest(db: PGlite, owner: string, state: RestState) {
             const row = { id: crypto.randomUUID() };
             return Response.json(row, { status: 201 });
         }
+        if (path === "assistant_action_approvals" && method === "GET") {
+            const { rows } = await db.query("select * from assistant_action_approvals where id = $1 and user_profile_id = $2", [eq(url, "id"), eq(url, "user_profile_id")]);
+            return Response.json(rows);
+        }
         if (path === "assistant_approval_notices") {
             if (state.noticesMissing) return Response.json({ code: "PGRST205", message: "Could not find the table", details: null, hint: null }, { status: 404 });
             if (method === "POST") {

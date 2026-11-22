@@ -5,6 +5,7 @@ import { readMasterKeys } from "@/lib/ai/provider-keys/master";
 import { refreshProviderKeys } from "@/lib/ai/provider-keys/snapshot";
 import { liveKeyStore } from "@/lib/ai/provider-keys/store";
 import { clearProviderKey, confirmPassword, providerKeysView, saveProviderKey, type CatalogueCheckStart, type KeyAdminDeps } from "@/lib/ai/provider-keys/admin";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Keys and their last characters are owner data: never cache a response.
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -30,8 +31,9 @@ function deps(): KeyAdminDeps {
     };
 }
 
-async function body(req: NextRequest): Promise<Record<string, unknown>> {
-    const parsed: unknown = await req.json().catch(() => null);
+async function body(req: NextRequest): Promise<Record<string, unknown> | NextResponse> {
+    let parsed: unknown = null;
+    try { parsed = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
 }
 
@@ -46,6 +48,7 @@ export async function PUT(req: NextRequest) {
     const denied = await requireSession(req);
     if (denied) return denied;
     const input = await body(req);
+    if (input instanceof NextResponse) return input;
     const refused = confirmPassword(req.headers, input.password);
     if (refused) return NextResponse.json(refused.body, { status: refused.status, headers: NO_STORE });
     await refreshProviderKeys();
@@ -57,6 +60,7 @@ export async function DELETE(req: NextRequest) {
     const denied = await requireSession(req);
     if (denied) return denied;
     const input = await body(req);
+    if (input instanceof NextResponse) return input;
     const refused = confirmPassword(req.headers, input.password);
     if (refused) return NextResponse.json(refused.body, { status: refused.status, headers: NO_STORE });
     await refreshProviderKeys();

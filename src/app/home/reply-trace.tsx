@@ -4,7 +4,7 @@ import { Check, ChevronRight, Circle } from "lucide-react";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
 import type { ModelCallObservation } from "@/lib/ai/model-observations";
 import { parseAgentActivity, type AgentActivity } from "@/lib/ai/agent/activity";
-import { toolInfo } from "./tool-labels";
+import { askedTools, toolActivity } from "./tool-labels";
 
 const STATUS_LABELS = {
     success: "Succeeded", auth: "Authentication failed", rate_limit: "Rate limited", transient: "Temporary failure",
@@ -44,8 +44,8 @@ function groupCalls(calls: readonly ModelCallObservation[]): CallGroup[] {
     return [...groups.values()].map((group) => ({ ...group, dataClasses: DATA_CLASS_ORDER.filter((value) => group.dataClasses.includes(value)) }));
 }
 
-function AgentRun({ agent }: { agent: AgentActivity }) {
-    const tools = agent.tools.map((tool) => `${toolInfo(tool.name).activity}${tool.count > 1 ? ` ×${tool.count}` : ""}`);
+function AgentRun({ agent, asked }: { agent: AgentActivity; asked: ReadonlySet<string> }) {
+    const tools = agent.tools.map((tool) => `${toolActivity(tool.name, asked)}${tool.count > 1 ? ` ×${tool.count}` : ""}`);
     return <section style={styles.agent} aria-label="Agent run">
         <p style={styles.heading}>Agent run</p>
         {agent.steps.length > 0 && <ol style={styles.steps}>
@@ -73,7 +73,7 @@ export function ReplyTraceBody({ trace, id }: { trace: ReplyTrace; id?: string }
     const groups = groupCalls(trace.calls);
     return (
             <div id={id} style={styles.content}>
-                {agent && <AgentRun agent={agent} />}
+                {agent && <AgentRun agent={agent} asked={askedTools(trace)} />}
                 <p style={styles.note}>{trace.origin === "scheduled" ? "Scheduled request" : "Interactive request"} · {trace.freeOnly ? "Free only" : "Standard model selection"} · {duration(trace.durationMs)} overall · first answer {duration(trace.firstAnswerMs).toLowerCase()}.</p>
                 <dl style={styles.usage}>
                     <div><dt>Input tokens</dt><dd>{measured(trace.usage?.promptTokens)}</dd></div>

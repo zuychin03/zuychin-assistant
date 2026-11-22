@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sameOrigin } from "@/lib/auth/config";
 import { STT_MAX_BYTES, sttConfigured, transcribePcm } from "@/lib/voice/stt-client";
+import { BodyTooLargeError, readBodyCapped } from "@/lib/http/body";
 
 export const maxDuration = 30;
 
@@ -12,27 +13,6 @@ function fallback(reason: string) {
     return NextResponse.json({ fallback: true, reason }, { status: 503, headers: NO_STORE });
 }
 
-async function readLimited(req: NextRequest, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
-    if (!req.body) return new Uint8Array();
-    const reader = req.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (; ;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > limit) {
-            await reader.cancel().catch(() => { });
-            return null;
-        }
-        chunks.push(value);
-    }
-    const out = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
-    return out;
-}
-
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     if (!sameOrigin(req)) return NextResponse.json({ error: "Voice requests must come from this app." }, { status: 403 });
@@ -40,8 +20,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Send 16 kHz 16-bit PCM as application/octet-stream." }, { status: 415 });
     }
     const tooLong = NextResponse.json({ error: "Voice turns are limited to 60 seconds." }, { status: 413 });
-    if (Number(req.headers.get("content-length") ?? 0) > STT_MAX_BYTES) return tooLong;
-    const pcm = await readLimited(req, STT_MAX_BYTES);
+    const pcm = await readBodyCapped(req, STT_MAX_BYTES).catch((error) => { if (error instanceof BodyTooLargeError) return null; throw error; });
     if (!pcm) return tooLong;
     if (!pcm.byteLength || pcm.byteLength % 2) return NextResponse.json({ error: "The recording was empty or malformed." }, { status: 400 });
     if (!sttConfigured()) return fallback("unconfigured");

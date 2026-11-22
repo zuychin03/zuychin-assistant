@@ -12,6 +12,7 @@ import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
 import { getFile, getVaultConfig } from "@/lib/vault/github";
 import { ingestToVault, writeVaultPage, VAULT_CATEGORIES } from "@/lib/vault/ingest";
 import { verifyMcpToken } from "@/lib/agents/mcp-auth";
+import { bodyFailure, readBodyCapped } from "@/lib/http/body";
 import { canWriteNotes, canWriteVault } from "@/lib/agents/scopes";
 import { requireKnowledgeRead as assertKnowledgeRead } from "@/lib/agents/read-access";
 
@@ -421,4 +422,16 @@ function errMsg(error: unknown): string {
 
 const authHandler = withMcpAuth(handler, verifyMcpToken, { required: true });
 
-export { authHandler as GET, authHandler as POST, authHandler as DELETE };
+// mcp-handler reads the body itself with no limit, so it gets a copy read under the route's cap.
+// A request with no bearer goes straight through and is refused by withMcpAuth before anything is read.
+async function cappedPost(req: Request): Promise<Response> {
+    if (!/^Bearer\s+\S/i.test(req.headers.get("authorization") ?? "")) return authHandler(req);
+    let body: Uint8Array<ArrayBuffer>;
+    try { body = await readBodyCapped(req); } catch (error) { return bodyFailure(error) ?? Response.json({ error: "Could not read the request." }, { status: 400 }); }
+    const headers = new Headers(req.headers);
+    headers.delete("content-length");
+    headers.delete("transfer-encoding");
+    return authHandler(new Request(req.url, { method: req.method, headers, body, signal: req.signal }));
+}
+
+export { authHandler as GET, cappedPost as POST, authHandler as DELETE };

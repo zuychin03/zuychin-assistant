@@ -5,12 +5,15 @@ import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { readCatalogueRows } from "@/lib/ai/catalogue/store";
 import { executeModelLookup, liveDiscoveryDeps, startFailure } from "@/lib/ai/catalogue/run";
 import { markDraftPending } from "@/lib/ai/models/store";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Drafts a profile on request. Free sources and free drafting models only; the draft waits for the owner's approval.
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const ref = catalogueModelRef(await req.json().catch(() => null));
+    let input: unknown = null;
+    try { input = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
+    const ref = catalogueModelRef(input);
     if (!ref) return NextResponse.json({ error: "Send providerId and modelId." }, { status: 400 });
     if (!PROVIDERS.some((entry) => entry.id === ref.providerId)) return NextResponse.json({ error: "Unknown provider." }, { status: 404 });
     try {

@@ -4,6 +4,7 @@ import {
     listConversationCleanupRecommendations,
     reviewConversationCleanup,
 } from "@/lib/conversation-cleanup";
+import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 export const maxDuration = 300;
 
@@ -18,7 +19,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json().catch(() => ({}));
+        const body = await readJsonCapped(req).catch((error: unknown) => { if (error instanceof BodyTooLargeError) throw error; return {}; });
         if (body.action === "dismiss" && typeof body.conversationId === "string") {
             await dismissConversationCleanupRecommendation(body.conversationId);
             return NextResponse.json({ success: true });
@@ -29,6 +30,8 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ error: "Unknown cleanup action." }, { status: 400 });
     } catch (error) {
+        const failed = bodyFailure(error);
+        if (failed) return failed;
         console.error("[ConversationCleanup] Action failed:", error);
         return NextResponse.json({ error: "Conversation cleanup action failed." }, { status: 500 });
     }

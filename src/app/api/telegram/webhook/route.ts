@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { after, NextRequest, NextResponse } from "next/server";
+import { BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
 import { ragChat } from "@/lib/ai/rag-service";
 import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
@@ -14,7 +14,6 @@ import { transcribeVoiceNote, VOICE_NOTE_FALLBACK_TEXT } from "@/lib/voice/voice
 import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
 import { APPROVAL_CALLBACK } from "@/lib/tasks/approval-notices";
 import { claimApproval, completeApproval, type ApprovalDecision } from "@/lib/tasks/decide";
-import { withChatApprovals } from "@/lib/tasks/chat-approval";
 import type { ApprovalStatus } from "@/lib/tasks/types";
 import type { FileAttachment } from "@/lib/types";
 
@@ -258,10 +257,8 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
 
     console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
     const message = spoken !== null ? [text, spoken].filter(Boolean).join("\n\n") : text || fallback;
-    const owner = await getDefaultProfile();
-    // Email and calendar changes asked for in this turn wait for Approve / Reject buttons.
-    const turn = { channel: "telegram" as const, conversationId: conversationId ?? null, turnId: randomUUID(), instruction: message, userProfileId: owner?.id ?? null };
-    const { reply, artifacts, freeOnly } = await withChatApprovals(turn, () => ragChat({
+    // Email and calendar changes asked for in this turn wait for Approve / Reject buttons (runRagChat opens the gate).
+    const { reply, artifacts, freeOnly } = await ragChat({
         message,
         channel: "telegram",
         conversationId,
@@ -270,7 +267,7 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
         thinking: command.thinking,
         search: command.search,
         agent: command.agent,
-    }));
+    });
 
     console.log(`[Telegram] ragChat done. Reply length: ${reply?.length ?? 0}, artifacts: ${artifacts.length}`);
     await sendTelegramMessage(chatId, reply || "No response.");
@@ -305,8 +302,9 @@ export async function POST(req: NextRequest) {
 
     let update: Record<string, unknown>;
     try {
-        update = await req.json();
-    } catch {
+        update = await readJsonCapped(req);
+    } catch (error) {
+        if (error instanceof BodyTooLargeError) console.warn("[Telegram] Ignored an update over the size limit.");
         return NextResponse.json({ ok: true });
     }
 

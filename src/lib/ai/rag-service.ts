@@ -36,7 +36,9 @@ import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
 import { expandSlashCommand } from "@/lib/commands";
-import { isTextLikeAttachment } from "@/lib/types";
+import { isTextLikeAttachment, type HeldApproval } from "@/lib/types";
+import { withChatApprovals } from "@/lib/tasks/chat-approval";
+import { approvalActionLabel, approvalArgumentLines } from "@/lib/tasks/approval-notices";
 import { formatTextAttachment } from "@/lib/attachments";
 import { inputModeError, userMessageMetadata, VOICE_TRANSCRIPT_NOTE, type InputMode } from "@/lib/voice/input-mode";
 import { linkArtifactsToMessage } from "@/lib/artifacts/store";
@@ -560,12 +562,13 @@ type RagChatParams = {
     /** Runs without chat history and saves neither message; the caller records what it delivers. */
     unrecorded?: boolean;
 };
-type RagChatResult = { reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; freeOnly?: boolean; replyTrace?: ReplyTrace };
+type RagChatResult = { reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; freeOnly?: boolean; replyTrace?: ReplyTrace };
 
 export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): Promise<RagChatResult> {
     const calls: ModelCallObservation[] = [];
     const externalServices: ExternalServiceObservation[] = [];
     const sources: ReplySource[] = [];
+    const asked = new Set<string>();
     const background: (() => Promise<void>)[] = [];
     const savedMessages = new Set<string>();
     const startedAt = new Date().toISOString();
@@ -578,7 +581,7 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
                 if (event.type === "token" && event.text && firstAnswerMs === null) firstAnswerMs = performance.now() - started;
                 activity.record(event);
                 onEvent?.(event);
-            }, (task) => { background.push(task); }, (id) => { if (id) savedMessages.add(id); }));
+            }, (task) => { background.push(task); }, (id) => { if (id) savedMessages.add(id); }), asked);
             params.signal?.throwIfAborted();
             if (!result.messageId) {
                 await persistModelObservations(calls, { conversationId: params.conversationId });
@@ -591,6 +594,7 @@ export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): 
                 origin: params.paidOnly ? "scheduled" : "interactive", freeOnly: result.freeOnly === true,
                 background: background.length ? "pending" : "skipped",
                 sources: rankReplySources(sources),
+                ...(asked.size ? { asked: [...asked] } : {}),
                 ...(agent ? { agent } : {}),
             });
             const replyTrace = await saveReplyTrace(result.messageId, trace, params.conversationId);
@@ -707,6 +711,15 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     const artifacts: ArtifactDescriptor[] = [];
     // Last one wins: a turn that proposes twice meant to replace the first.
     let councilProposal: CouncilProposal | undefined;
+    const approvals: HeldApproval[] = [];
+    // Every live turn holds email and calendar changes for the owner; scheduled runs use the unattended gate.
+    const inChatTurn = (run: () => Promise<void>) => params.paidOnly ? run() : withChatApprovals({
+        channel, conversationId: conversationId ?? null, turnId: crypto.randomUUID(), instruction: message, userProfileId: profile?.id ?? null,
+        onHeld: channel === "web" ? (approval) => {
+            if (approvals.some((held) => held.id === approval.id)) return;
+            approvals.push({ id: approval.id, label: approvalActionLabel(approval.tool), lines: approvalArgumentLines(approval.args), expiresAt: approval.expiresAt });
+        } : undefined,
+    }, run);
 
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
     let mode: "chat" | "agent" = "chat";
@@ -714,73 +727,75 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     else if (!slash && channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message, rag.lastAssistantMessage, freeOnly)).mode;
     if (mode === "agent" && hasVisualAttachment) mode = "chat";
 
-    let reply: string;
+    let reply = "";
     try {
-        if (mode === "agent") {
-            const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
-                ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
-                : effectiveMessage;
-            onEvent?.({ type: "status", message: "Understanding your request…" });
-            const resumePrefix = resumeRun ? buildResumePrefix(resumeRun) : undefined;
-            const res = await runAgent({
-                rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
-                resumePrefix, resumeRunId: params.resumeRunId, signal,
-            });
-            reply = res.reply;
-            artifacts.push(...res.artifacts);
-            // The agent loop has no channel; only the web chat renders a card.
-            councilProposal = channel === "web" ? res.councilProposal : undefined;
-        } else {
-            const toolCtx: ToolContext = {
-                freeOnly,
-                conversationId,
-                userProfileId: profile?.id,
-                onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
-                onCouncilProposal: channel === "web" ? (p) => { councilProposal = p; } : undefined,
-                onTool: onEvent ? (name, phase) => onEvent({ type: "tool", name, phase, chat: true }) : undefined,
-            };
-            // Chat-path replies stream to the client as they generate; the
-            // done event still carries the authoritative final text.
-            const onToken: TokenSink | undefined = onEvent
-                ? (text, reset) => onEvent({ type: "token", text, ...(reset ? { reset: true } : {}) })
-                : undefined;
-            const generate = (chat: ResolvedChat, allowThinking: boolean, allowSearch: boolean, sink?: TokenSink) =>
-                chat.provider.kind === "gemini"
-                    ? generateGeminiReply({
-                        contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
-                        thinking: allowThinking, search: allowSearch,
-                        model: chat.model.id, providerId: chat.provider.id, apiKey: getProviderApiKey(chat.provider),
-                        embRef: rag.embRef, genParams, ctx: toolCtx, signal,
-                        onToken: sink,
-                    })
-                    : openaiCompatChat({
-                        provider: chat.provider,
-                        model: chat.model,
-                        systemText: rag.contextBlock.trim(),
-                        userText: effectiveMessage,
-                        imageBase64,
-                        file,
-                        embRef: rag.embRef,
-                        thinking: allowThinking,
-                        search: allowSearch,
-                        genParams,
-                        ctx: toolCtx,
-                        signal,
-                        onToken: sink,
-                    });
-            if (freeOnly) assertFreeModel(rag.chat);
-            try {
-                reply = await generate(rag.chat, rag.allowThinking, rag.allowSearch, onToken);
-            } catch (err) {
-                if (signal?.aborted || !(err instanceof RequestLimitError)) throw err;
-                if (!canRepeatElsewhere(err, READ_ONLY_TOOLS)) throw stoppedAfterTools(err);
-                const fallback = requestLimitFallback(rag.chat, freeOnly);
-                if (!fallback) throw err;
-                console.warn(`[RAG] ${err.message} Answering with ${fallback.provider.id}::${fallback.model.id}.`);
-                const answer = await generate(fallback, thinking && fallback.model.supportsThinking, search && fallback.model.supportsSearch, resetOnFirst(onToken));
-                reply = answer + fallbackNote(err, fallback.model.label);
+        await inChatTurn(async () => {
+            if (mode === "agent") {
+                const agentMessage = file && isTextLikeAttachment(file.mimeType, file.name)
+                    ? `${effectiveMessage}\n\n${formatTextAttachment(file)}`
+                    : effectiveMessage;
+                onEvent?.({ type: "status", message: "Understanding your request…" });
+                const resumePrefix = resumeRun ? buildResumePrefix(resumeRun) : undefined;
+                const res = await runAgent({
+                    rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
+                    resumePrefix, resumeRunId: params.resumeRunId, signal,
+                });
+                reply = res.reply;
+                artifacts.push(...res.artifacts);
+                // The agent loop has no channel; only the web chat renders a card.
+                councilProposal = channel === "web" ? res.councilProposal : undefined;
+            } else {
+                const toolCtx: ToolContext = {
+                    freeOnly,
+                    conversationId,
+                    userProfileId: profile?.id,
+                    onArtifact: (a) => { artifacts.push(a); onEvent?.({ type: "artifact", artifact: a }); },
+                    onCouncilProposal: channel === "web" ? (p) => { councilProposal = p; } : undefined,
+                    onTool: onEvent ? (name, phase) => onEvent({ type: "tool", name, phase, chat: true }) : undefined,
+                };
+                // Chat-path replies stream to the client as they generate; the
+                // done event still carries the authoritative final text.
+                const onToken: TokenSink | undefined = onEvent
+                    ? (text, reset) => onEvent({ type: "token", text, ...(reset ? { reset: true } : {}) })
+                    : undefined;
+                const generate = (chat: ResolvedChat, allowThinking: boolean, allowSearch: boolean, sink?: TokenSink) =>
+                    chat.provider.kind === "gemini"
+                        ? generateGeminiReply({
+                            contextBlock: rag.contextBlock, message: effectiveMessage, imageBase64, file, channel,
+                            thinking: allowThinking, search: allowSearch,
+                            model: chat.model.id, providerId: chat.provider.id, apiKey: getProviderApiKey(chat.provider),
+                            embRef: rag.embRef, genParams, ctx: toolCtx, signal,
+                            onToken: sink,
+                        })
+                        : openaiCompatChat({
+                            provider: chat.provider,
+                            model: chat.model,
+                            systemText: rag.contextBlock.trim(),
+                            userText: effectiveMessage,
+                            imageBase64,
+                            file,
+                            embRef: rag.embRef,
+                            thinking: allowThinking,
+                            search: allowSearch,
+                            genParams,
+                            ctx: toolCtx,
+                            signal,
+                            onToken: sink,
+                        });
+                if (freeOnly) assertFreeModel(rag.chat);
+                try {
+                    reply = await generate(rag.chat, rag.allowThinking, rag.allowSearch, onToken);
+                } catch (err) {
+                    if (signal?.aborted || !(err instanceof RequestLimitError)) throw err;
+                    if (!canRepeatElsewhere(err, READ_ONLY_TOOLS)) throw stoppedAfterTools(err);
+                    const fallback = requestLimitFallback(rag.chat, freeOnly);
+                    if (!fallback) throw err;
+                    console.warn(`[RAG] ${err.message} Answering with ${fallback.provider.id}::${fallback.model.id}.`);
+                    const answer = await generate(fallback, thinking && fallback.model.supportsThinking, search && fallback.model.supportsSearch, resetOnFirst(onToken));
+                    reply = answer + fallbackNote(err, fallback.model.label);
+                }
             }
-        }
+        });
     } catch (err) {
         // Full drop on cancel: remove the just-saved user message and save no
         // reply, so a mistaken send leaves no trace. Re-throw so the route
@@ -807,8 +822,8 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
             channel,
             userProfileId: profile?.id,
             conversationId,
-            metadata: artifacts.length > 0 || councilProposal
-                ? { ...(artifacts.length > 0 ? { artifacts } : {}), ...(councilProposal ? { councilProposal } : {}) }
+            metadata: artifacts.length > 0 || councilProposal || approvals.length > 0
+                ? { ...(artifacts.length > 0 ? { artifacts } : {}), ...(councilProposal ? { councilProposal } : {}), ...(approvals.length > 0 ? { approvals } : {}) }
                 : undefined,
         });
         onSavedMessage?.(assistantMsgId);
@@ -840,7 +855,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     }
     signal?.throwIfAborted();
 
-    return { reply, messageId: assistantMsgId, userMessageId: userMsgId, artifacts, councilProposal, freeOnly };
+    return { reply, messageId: assistantMsgId, userMessageId: userMsgId, artifacts, councilProposal, ...(approvals.length > 0 ? { approvals } : {}), freeOnly };
 }
 
 export type TokenSink = (text: string, reset?: boolean) => void;

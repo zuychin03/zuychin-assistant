@@ -29,4 +29,23 @@ const TOOLS: Record<string, { service: string; action: string; activity: string 
     model_status: { service: "Models", action: "checked model health", activity: "Checked model health" },
 };
 
+const ASKED: Record<string, string> = {
+    send_email: "Asked to send an email",
+    manage_calendar_event: "Asked to change Calendar",
+};
+
 export const toolInfo = (name: string) => TOOLS[name] ?? { service: name.replaceAll("_", " "), action: "used", activity: `Used ${name.replaceAll("_", " ")}` };
+
+/** Tool names a reply's trace records as waiting for approval, or refused, instead of run. */
+export function askedTools(trace: { asked?: unknown }): ReadonlySet<string> {
+    return new Set(Array.isArray(trace.asked) ? trace.asked.filter((name): name is string => typeof name === "string") : []);
+}
+
+export function askedActivity(name: string): string {
+    return ASKED[name] ?? `Asked to use ${name.replaceAll("_", " ")}`;
+}
+
+/** Agent tool counts start before the approval gate, so a held send must not read as done. */
+export function toolActivity(name: string, asked: ReadonlySet<string>): string {
+    return asked.has(name) ? askedActivity(name) : toolInfo(name).activity;
+}
