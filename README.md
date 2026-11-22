@@ -977,6 +977,12 @@ key: the agent exchanges the claim at `POST /api/agent/claim` and writes its MCP
 the real key already in place. Every key is tracked, shows its last use, and is revocable on its own
 without touching any other agent.
 
+A claim works once. A retry within 60 seconds of the first exchange returns the same key (for a
+response lost on the way back); after that the claim is refused, so a claim copied from a chat
+transcript cannot recover the key. Existing installations apply
+[`scripts/migrations/v7-claim-single-use.sql`](scripts/migrations/v7-claim-single-use.sql) once;
+until then a claim can be retried for its whole 15 minutes.
+
 Three access levels, chosen when the claim is minted and not raisable by the agent:
 
 | Level | Grants |

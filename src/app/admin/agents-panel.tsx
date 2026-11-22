@@ -192,8 +192,8 @@ export default function AgentsPanel() {
             {brief && (
                 <div className="inset" style={styles.briefBox}>
                     <div style={styles.briefHead}>
-                        Setup brief for <strong>{brief.name}</strong>. The claim inside it expires in 15 minutes
-                        and is exchanged for the durable key by the agent itself.
+                        Setup brief for <strong>{brief.name}</strong>. The claim inside it expires in 15 minutes,
+                        works once, and is exchanged for the durable key by the agent itself.
                     </div>
                     <button
                         type="button"

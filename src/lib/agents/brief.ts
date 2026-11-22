@@ -32,8 +32,9 @@ response bodies and credentials. If you cannot do this safely, stop and report
 the limitation without exchanging the claim.
 
 If the claim is refused, stop and ask for a fresh one; do not guess a value.
-An interrupted exchange can retry the same claim within its validity window;
-it returns the same key. Do not print the retry response either.
+The claim works once. An interrupted exchange can retry it within 60 seconds of
+the first attempt and gets the same key; after that it is refused, so ask for a
+fresh claim. Do not print the retry response either.
 
 ## 2. Configure or migrate the MCP server
 

@@ -86,6 +86,9 @@ try {
     const migration = await readFile(new URL("./migrations/council-agent-claims.sql", import.meta.url), "utf8");
     assert(setup.includes(migration.trimEnd()), "Setup and incremental claim migration must not drift");
     await db.exec(migration); await db.exec(migration);
+    const singleUse = await readFile(new URL("./migrations/v7-claim-single-use.sql", import.meta.url), "utf8");
+    assert(setup.includes(singleUse.trimEnd()), "Setup and single-use claim migration must not drift");
+    await db.exec(singleUse); await db.exec(singleUse);
     await db.exec(`
         create table fixture_claim_failures(mode text);
         grant select on fixture_claim_failures to service_role;
@@ -258,6 +261,24 @@ try {
         await sqlExchange(hash(claim.claim));
         await db.query("update agent_client_keys set expires_at=now()-interval '1 second' where client_id=$1", [id]);
         assert.equal((await sqlExchange(hash(claim.claim))).ok, false);
+    });
+
+    await check("a claim retry within 60 seconds returns the same key", async () => {
+        const id = await client();
+        const claim = await mintKnowledgeClaim({ clientId: id, accessLevel: "read" });
+        assert.equal((await sqlExchange(hash(claim.claim))).ok, true);
+        await db.query("update agent_client_claims set claimed_at=now()-interval '50 seconds' where client_id=$1", [id]);
+        assert.equal((await sqlExchange(hash(claim.claim))).ok, true);
+        assert.equal(await scalar("select count(*)::int as value from agent_client_keys where client_id=$1 and revoked_at is null", [id]), 1);
+    });
+
+    await check("a claim retry after 60 seconds is refused and the issued key stays live", async () => {
+        const id = await client();
+        const claim = await mintKnowledgeClaim({ clientId: id, accessLevel: "read" });
+        assert.equal((await sqlExchange(hash(claim.claim))).ok, true);
+        await db.query("update agent_client_claims set claimed_at=now()-interval '61 seconds' where client_id=$1", [id]);
+        assert.equal((await sqlExchange(hash(claim.claim))).ok, false);
+        assert.equal(await scalar("select count(*)::int as value from agent_client_keys where client_id=$1 and revoked_at is null", [id]), 1);
     });
 
     await check("only service_role can execute the mint RPC after repeated migration application", async () => {

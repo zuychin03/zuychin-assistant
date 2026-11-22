@@ -128,6 +128,27 @@ try {
         }
     });
 
+    const singleUse = await readFile(new URL("./migrations/v7-claim-single-use.sql", import.meta.url), "utf8");
+    assert(setup.includes(singleUse.trimEnd()), "Setup and single-use claim migration must not drift");
+    await sql(singleUse);
+    await sql(singleUse);
+    await check("single-use migration keeps the exchange invoker-only and service-role only", async () => {
+        assert.equal(await sql("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname='exchange_agent_claim' and not prosecdef and proconfig @> array['search_path=public, pg_temp'];"), "1");
+        for (const role of ["anon", "authenticated"]) {
+            await assert.rejects(sql(`set role ${role}; ${exchange(hash(randomUUID()))}`), /permission denied/);
+        }
+    });
+
+    await check("a claim retry after 60 seconds is refused", async () => {
+        const id = await client(), digest = hash(randomUUID());
+        assert.equal((await json<{ ok: boolean }>(`set role service_role; ${mint(id, digest)}`)).ok, true);
+        assert.equal((await json<{ ok: boolean }>(`set role service_role; ${exchange(digest)}`)).ok, true);
+        assert.equal((await json<{ ok: boolean }>(`set role service_role; ${exchange(digest)}`)).ok, true);
+        await sql(`update public.agent_client_claims set claimed_at=now()-interval '61 seconds' where claim_hash=${quote(digest)};`);
+        assert.equal((await json<{ ok: boolean }>(`set role service_role; ${exchange(digest)}`)).ok, false);
+        assert.equal((await json<{ client_id: string }>(`set role service_role; ${resolve(digest)}`)).client_id, id);
+    });
+
     await check("two overlapping mints both finish and leave exactly one exchangeable pending claim", async () => {
         const id = await client(), prior = hash(randomUUID()), first = hash(randomUUID()), last = hash(randomUUID());
         await sql(mint(id, prior));
