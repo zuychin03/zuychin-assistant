@@ -96,8 +96,8 @@ export function replyVoicePlan(preferences: unknown, options: { audioTurn: boole
 function clampForSpeech(text: string, max: number): string {
     if (text.length <= max) return text;
     const cut = text.slice(0, max);
-    const sentenceEnd = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
-    if (sentenceEnd > max * 0.6) return cut.slice(0, sentenceEnd + 1).trim();
+    const sentenceEnd = Math.max(cut.lastIndexOf(". ") + 1, cut.lastIndexOf("! ") + 1, cut.lastIndexOf("? ") + 1, cut.lastIndexOf("\n"));
+    if (sentenceEnd > max * 0.6) return cut.slice(0, sentenceEnd).trim();
     const wordEnd = cut.lastIndexOf(" ");
     return (wordEnd > 0 ? cut.slice(0, wordEnd) : cut).trim();
 }

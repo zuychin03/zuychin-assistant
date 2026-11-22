@@ -7,9 +7,12 @@ export function stripMarkdown(text: string): string {
         .replace(/`([^`]+)`/g, "$1")
         .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
         .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-        .replace(/^#{1,6}\s+/gm, "")
-        .replace(/^\s*[-*+]\s+/gm, "")
+        .replace(/^[ \t]*#{1,6}[ \t]+/gm, "")
+        .replace(/^[ \t]*(?:[-*+•]|\d{1,3}[.)])[ \t]+/gm, "")
         .replace(/[*_~#>|]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+        // Lines stay separate: the speech service ends each one as a sentence, the only full stop most list items and headings get.
+        .split("\n")
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter((line) => /[\p{L}\p{N}]/u.test(line))
+        .join("\n");
 }

@@ -197,6 +197,16 @@ const aborted = new AbortController(); aborted.abort();
 await assert.rejects(drain(speechStream("Hello.", auto, 500, aborted.signal)), { name: "AbortError" });
 assert.equal(geminiCalls, 3, "an abort never falls back, and only the forced Gemini request called Gemini again");
 
+// A list reply reaches the voice line by line, and a long one is cut at a line end.
+{
+    await providers(auto, "Your day:\n- Dentist at 9:30\n- Gym after work");
+    assert.equal(JSON.parse(spokenBodies.at(-1)!).text, "Your day:\nDentist at 9:30\nGym after work");
+    const long = Array.from({ length: 40 }, (_, i) => `Item number ${i} on the list`).join("\n");
+    for await (const chunk of speechStream(long, auto, 200)) void chunk;
+    const sent = JSON.parse(spokenBodies.at(-1)!).text as string;
+    assert.ok(sent.length <= 200 && sent.endsWith("on the list") && sent.split("\n").length > 4, sent);
+}
+
 // Aggregated WAV (Telegram and Discord).
 {
     const wav = await synthesizeSpeech("Hello there.", auto);

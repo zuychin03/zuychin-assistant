@@ -70,6 +70,7 @@ const tests = [
     "voice-speech-routes",
     "voice-loop",
     "voice-reply-speech",
+    "speech-text",
     "approval-observations",
     "jev-decisions",
     "owner-profile",
