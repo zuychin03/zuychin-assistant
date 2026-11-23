@@ -38,7 +38,8 @@ function blocksFromMarkdown(markdown: string): Block[] {
 
     const flush = () => {
         const text = buffer.join("\n").trim();
-        if (text) blocks.push({ headingPath: [...headings], text, tokens: estimateTokens(text) });
+        // A skipped heading level leaves a hole that Postgres would store as a null element.
+        if (text) blocks.push({ headingPath: headings.filter(Boolean), text, tokens: estimateTokens(text) });
         buffer = [];
     };
 

@@ -78,9 +78,16 @@ const GEMINI_EMBED_2: ModelMeta = {
 
 const NEMOTRON_3_EMBED_1B: ModelMeta = {
     developer: "NVIDIA",
-    description: "Multilingual text embedding model covering 34 languages, including Vietnamese. Produces 2048-dimensional vectors in a new space requiring re-embedding.",
+    description: "Retired by NVIDIA on 23/11/2026. Multilingual text embedding model covering 34 languages, including Vietnamese, with 2048-dimensional vectors.",
     inputs: ["Text"],
     strengths: ["Retrieval", "Multilingual"],
+};
+
+const NEMOTRON_35_EMBED_1B: ModelMeta = {
+    developer: "NVIDIA",
+    description: "Text embedding model that replaced Nemotron 3 Embed 1B. Produces 2048-dimensional vectors in a new space, so switching to it needs a re-embed.",
+    inputs: ["Text"],
+    strengths: ["Retrieval"],
 };
 
 export const MODEL_META: Record<string, ModelMeta> = {
@@ -94,6 +101,7 @@ export const MODEL_META: Record<string, ModelMeta> = {
     "z-ai/glm-5.3-flash": GLM_53_FLASH,
     "nvidia/nemotron-3.5-lightning-30b-a3b": NEMOTRON_35_LIGHTNING,
     "nvidia/nemotron-3-embed-1b": NEMOTRON_3_EMBED_1B,
+    "nvidia/nemotron-3.5-embed-1b": NEMOTRON_35_EMBED_1B,
 };
 
 export function getModelMeta(id: string): ModelMeta | null {

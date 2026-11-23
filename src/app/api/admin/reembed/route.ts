@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
         const target = typeof body?.target === "string" ? body.target.trim() : "";
         if (!target) throw new Error("Missing target.");
         targetRef = getEmbeddingRef(target);
+        if (targetRef.model.retired) throw new Error("Retired target.");
     } catch (error) {
         return bodyFailure(error) ?? NextResponse.json({ error: "A supported target model id is required." }, { status: 400 });
     }

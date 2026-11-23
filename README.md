@@ -237,7 +237,7 @@ edited and deleted in place.
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
 | Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Nemotron, Gemma 4, GLM-5.3 Flash, Laguna XS) |
-| Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3 Embed 1B (2048d, default) |
+| Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3.5 Embed 1B (2048d, default) |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
 | Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio; or tiny-voca through a local `tts-service` (Python, onnxruntime), same PCM stream |
 | Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio |
@@ -300,7 +300,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `KILO_API_KEY` | Kilo gateway key for the qualified free-only catalogue: Nemotron Ultra/Lightning, Ling Flash VL, Step 3.7 Flash and Laguna S. See [setup and verification](scripts/KILO_SETUP.md) |
 | `GEMINI_FREE_API_KEY` | Second Google AI Studio key on a free-tier project. Lists the same Gemini models a second time as "(free)", and calls made with them go to that key's quota rather than the paid project's |
 | `DEEPSEEK_API_KEY` | DeepSeek key ([platform.deepseek.com](https://platform.deepseek.com)): canonical `deepseek-flash` and `deepseek-v4-pro`. Metered and excluded from the free worker pool |
-| `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3-embed-1b` knowledge embeddings |
+| `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3.5-embed-1b` knowledge embeddings |
 | `GROQ_API_KEY` | Groq free-tier key ([console.groq.com](https://console.groq.com)). Its free models are seeded unapproved: they join the picker once a test passes, and automatic routes wait for Approve. The free tier allows 8K tokens per minute |
 | `AGNES_API_KEY` | Agnes AI key ([platform.agnes-ai.com](https://platform.agnes-ai.com)), or save it on `/admin`. Its models come from discovery: they join the picker once a test passes, and automatic routes wait for Approve. Free at an "experience price" that may end; no data-use policy is published |
 | `OPENCODE_API_KEY` | OpenCode Console key (paid credits). Replaces `OPENCODE_ZEN_API_KEY`. Metered; no built-in models. See [setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
@@ -642,7 +642,7 @@ is not evidence that a model has retired.
 | Google Gemini (free) | native | the same two ids | Same models on a free-tier project's key. Picking one routes the call through that key's own client, so it draws on the free quota instead of the paid project |
 | DeepSeek | OpenAI-compatible | `deepseek-flash`, `deepseek-v4-pro` | Metered; excluded from the free worker pool. Flash is labelled V4.1 Flash. `json_object` only, no `json_schema` |
 | OpenRouter | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `poolside/laguna-s-2.1:free`, `google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it`, `nvidia/nemotron-3.5-lightning:free` | Gemma 4 26B is metered and excluded from free workers |
-| NVIDIA NIM | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.3-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3-embed-1b` at 2048 dimensions. Kimi K3, GLM-5.3, DeepSeek V4.1 Flash and DiffusionGemma reached end of life on NIM (HTTP 410 on 18/11/2026); saved choices resolve to replacements |
+| NVIDIA NIM | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-31b-it`, `z-ai/glm-5.3-flash`, `nvidia/nemotron-3.5-lightning-30b-a3b`, `poolside/laguna-xs-2.1` | Also `nvidia/nemotron-3.5-embed-1b` at 2048 dimensions; its predecessor `nvidia/nemotron-3-embed-1b` reached end of life on 23/11/2026 and stays registered only so a store still on it resolves until the re-embed. Kimi K3, GLM-5.3, DeepSeek V4.1 Flash and DiffusionGemma reached end of life on NIM (HTTP 410 on 18/11/2026); saved choices resolve to replacements |
 | Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
 | Groq | OpenAI-compatible | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` | Free tier (8K tokens per minute). Seeded as catalogue rows, not code models, so automatic routes wait for Approve. Requests drop `messages[].name` and send `max_completion_tokens` |
 | Agnes AI | OpenAI-compatible | From discovery (`agnes-3.0-flash` expected) | $0 at an early-user "experience price" with no end date, about 20 requests per minute; no published data-use policy. No built-in models: discovery adds them once a key is saved, and automatic routes wait for Approve. `agnes-2.0-flash` and `agnes-2.5-flash` (offline 30/11/2026) are retired |
@@ -781,18 +781,18 @@ re-entering each saved key.
 
 ### Migrating knowledge embeddings
 
-Supported targets are `nvidia/nemotron-3-embed-1b` (2048d, default) and
+Supported targets are `nvidia/nemotron-3.5-embed-1b` (2048d, default) and
 `gemini-embedding-2` (768d). Run a read-only plan first, using the environment that owns the
 store and the target provider's key:
 
 ```powershell
-npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3-embed-1b --concurrency 6
+npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3.5-embed-1b --concurrency 6
 ```
 
 For an authorised migration, add `--apply` to the same command:
 
 ```powershell
-npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3-embed-1b --concurrency 6 --apply
+npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3.5-embed-1b --concurrency 6 --apply
 ```
 
 The script scans `embeddings`, `memories`, `vault_pages`, `knowledge_chunks` and

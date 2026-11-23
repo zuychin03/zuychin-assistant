@@ -48,6 +48,8 @@ export interface EmbeddingModel {
     name: string;
     free?: boolean;
     dimension: number;
+    // Still resolves by id for stored vectors and overrides, but is never offered or picked by name.
+    retired?: boolean;
 }
 
 export interface ProviderConfig {
@@ -139,7 +141,10 @@ export const PROVIDERS: ProviderConfig[] = [
             { free: true, id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true },
         ],
         embeddingModels: [
-            { free: true, id: "nvidia/nemotron-3-embed-1b", label: "Nemotron 3 Embed 1B (free, 2048d)", name: "nemotron-3-embed-1b", dimension: 2048 },
+            { free: true, id: "nvidia/nemotron-3.5-embed-1b", label: "Nemotron 3.5 Embed 1B (free, 2048d)", name: "nemotron-3.5-embed-1b", dimension: 2048 },
+            // Retired by NVIDIA 23/11/2026 09:00 UTC (HTTP 410). Kept registered so a store or override still on it
+            // resolves instead of throwing until the re-embed moves it; it cannot embed anything new.
+            { free: true, id: "nvidia/nemotron-3-embed-1b", label: "Nemotron 3 Embed 1B (retired 23/11/2026)", name: "nemotron-3-embed-1b", dimension: 2048, retired: true },
         ],
     },
     {
@@ -316,7 +321,7 @@ function canonicalChatModelId(providerId: string, modelId?: string): string | un
     return LEGACY_CHAT_MODELS[providerId]?.[modelId] ?? modelId;
 }
 // Changing the embedding space requires scripts/reembed-knowledge.ts.
-export const DEFAULT_EMBEDDING = { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3-embed-1b" };
+export const DEFAULT_EMBEDDING = { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b" };
 
 // An approved discovered model counts as Fast for worker recruitment when its chat probe finished within this.
 export const FAST_PROBE_MS = 10_000;
@@ -619,7 +624,7 @@ export function resolveEmbedding(modelId?: string): ResolvedEmbedding {
 }
 
 export const MESSAGING_EMBEDDING_CHAIN: { providerId: string; modelId: string }[] = [
-    { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3-embed-1b" },
+    { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b" },
     { providerId: "gemini", modelId: "gemini-embedding-2" },
 ];
 
@@ -628,18 +633,18 @@ export function resolveEmbeddingByName(providerArg: string, modelArg: string): R
     if (!provider) return null;
     const m = modelArg.trim().toLowerCase();
     const model = provider.embeddingModels.find(
-        (mod) => mod.name.toLowerCase() === m || mod.id.toLowerCase() === m
+        (mod) => !mod.retired && (mod.name.toLowerCase() === m || mod.id.toLowerCase() === m)
     );
     return model ? { provider, model } : null;
 }
 
 export function availableEmbeddingModels(freeOnly = false): { provider: string; providerId: string; models: { name: string; label: string }[] }[] {
     return providers()
-        .filter((p) => isProviderAvailable(p) && p.embeddingModels.length > 0)
+        .filter((p) => isProviderAvailable(p) && p.embeddingModels.some((m) => !m.retired))
         .map((p) => ({
             provider: p.label,
             providerId: p.id,
-            models: p.embeddingModels.filter((m) => !freeOnly || m.free === true).map((m) => ({ name: m.name, label: m.label })),
+            models: p.embeddingModels.filter((m) => !m.retired && (!freeOnly || m.free === true)).map((m) => ({ name: m.name, label: m.label })),
         }));
 }
 
@@ -698,7 +703,7 @@ export function listProvidersPublic() {
             free: m.free === true,
             reason: chatModelUnavailableReason(m)!,
         })),
-        embeddingModels: p.embeddingModels.map((m) => ({
+        embeddingModels: p.embeddingModels.filter((m) => !m.retired).map((m) => ({
             id: m.id,
             label: m.label,
             free: m.free === true,

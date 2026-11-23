@@ -244,8 +244,12 @@ try {
     });
 
     check("embedding selection never aliases an obsolete vector space", () => {
-        assert.equal(resolveEmbedding().model.id, "nvidia/nemotron-3-embed-1b");
+        assert.equal(resolveEmbedding().model.id, "nvidia/nemotron-3.5-embed-1b");
         assert.equal(resolveEmbedding().model.dimension, 2048);
+        // The retired model still resolves for stored vectors and overrides, but is never offered or picked by name.
+        assert.equal(resolveEmbedding("nvidia/nemotron-3-embed-1b").model.retired, true);
+        assert.equal(resolveEmbeddingByName("nvidia-nim", "nemotron-3-embed-1b"), null);
+        assert.ok(!availableEmbeddingModels().flatMap((p) => p.models).some((m) => m.name === "nemotron-3-embed-1b"));
         assert.equal(resolveEmbedding("gemini-embedding-2").model.dimension, 768);
         for (const id of ["nvidia/llama-nemotron-embed-1b-v2", "nvidia/llama-embed-nemotron-8b", "gemini-embedding-2-preview", "unknown", ""]) {
             assert.throws(() => resolveEmbedding(id), /Unknown embedding model/);

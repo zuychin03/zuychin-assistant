@@ -55,6 +55,13 @@ assert.equal(
     "the same document must produce stable chunk ids",
 );
 
+const skipped = chunkMarkdown({
+    documentId: "zuychin-test",
+    path: "wiki/concepts/skipped-level.md",
+    markdown: "# Title\n\n## Section\n\n#### Deep\n\nText under a skipped heading level.\n",
+});
+assert.deepEqual(skipped.at(-1)?.headingPath, ["Title", "Section", "Deep"], "a skipped heading level must not leave a gap");
+
 const evergreen = computeKnowledgeScore({
     semantic: 0.8,
     lexical: 0.5,

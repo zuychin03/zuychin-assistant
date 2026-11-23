@@ -64,6 +64,11 @@ test("null vectors, null models, wrong dimensions and zero vectors remain pendin
 
 test("source text reproduces page and chunk indexing context", () => {
     assert.equal(migrationText("knowledge_chunks", row("knowledge_chunks")), "Document\n\nChapter > Section\n\nA source passage");
+    assert.equal(
+        migrationText("knowledge_chunks", row("knowledge_chunks", "1", { heading_path: ["Chapter", null, "Section"] })),
+        "Document\n\nChapter > Section\n\nA source passage",
+    );
+    assert.throws(() => migrationText("knowledge_chunks", row("knowledge_chunks", "1", { heading_path: ["Chapter", 3] })), /Invalid heading path/);
     assert.equal(migrationText("vault_pages", row("vault_pages", "1", { content: "x".repeat(9000) })).length, 8000);
     assert.equal(migrationText("memories", row("memories")), "A saved fact");
     assert.equal(migrationText("knowledge_assertions", row("knowledge_assertions")), "An assertion");

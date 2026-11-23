@@ -55,10 +55,12 @@ export function migrationText(table: MigrationTable, row: MigrationRow): string 
     if (table === "knowledge_chunks") {
         const document = row.document as { title?: unknown } | null;
         if (typeof document?.title !== "string") throw new Error("Missing parent title on a knowledge chunk.");
-        if (!Array.isArray(row.heading_path) || !row.heading_path.every((part) => typeof part === "string")) {
+        // Rows chunked before the skipped-level fix hold null elements; drop them as the chunker now does.
+        if (!Array.isArray(row.heading_path) || !row.heading_path.every((part) => typeof part === "string" || part === null)) {
             throw new Error("Invalid heading path on a knowledge chunk.");
         }
-        return [document.title, row.heading_path.join(" > "), requiredText(row, "content")].filter(Boolean).join("\n\n");
+        const headingPath = row.heading_path.filter(Boolean).join(" > ");
+        return [document.title, headingPath, requiredText(row, "content")].filter(Boolean).join("\n\n");
     }
     return requiredText(row, "content");
 }

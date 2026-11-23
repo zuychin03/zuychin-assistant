@@ -22,6 +22,7 @@ async function main() {
     const opts = options(process.argv.slice(2));
     const ref = getEmbeddingRef(opts.model);
     if (ref.model.id !== opts.model) throw new Error("The target embedding model is not registered.");
+    if (ref.model.retired) throw new Error("The target embedding model is retired; pick a current one.");
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         throw new Error("The Supabase URL and service-role key are required.");
     }
