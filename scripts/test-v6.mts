@@ -13,6 +13,8 @@ const tests = [
     "chat-preferences",
     "chat-preference-race",
     "provider-registry",
+    "embedding-migration",
+    "embedding-screening",
     "model-picker",
     "shared-control-accessibility",
     "anchored-menu",

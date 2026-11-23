@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createClient } from "@supabase/supabase-js";
 import { embedText, getEmbeddingRef } from "../src/lib/ai/embeddings";
 import { applyMigration, planMigration, prepareMigration } from "../src/lib/ai/embedding-migration";
+import { embedPastScreen, isScreenRefusal } from "../src/lib/ai/embedding-screening";
 import { createMigrationStore } from "../src/lib/ai/embedding-migration-store";
 
 function options(args: string[]) {
@@ -36,9 +37,12 @@ async function main() {
 
     const prepared = await prepareMigration(plan, async (text) => {
         for (let attempt = 0; attempt < 3; attempt++) {
-            try { return await embedText(ref, text, "passage"); }
-            catch {
-                if (attempt === 2) throw new Error("Embedding preparation failed after three attempts; no migration writes started.");
+            try { return await embedPastScreen(text, (input) => embedText(ref, input, "passage")); }
+            catch (error) {
+                if (attempt === 2 || isScreenRefusal(error)) {
+                    const detail = error instanceof Error ? ` Last error: ${error.message.slice(0, 300)}` : "";
+                    throw new Error(`Embedding preparation failed; no migration writes started.${detail}`);
+                }
                 await delay(500 * 2 ** attempt);
             }
         }
