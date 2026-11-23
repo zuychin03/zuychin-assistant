@@ -22,13 +22,13 @@ The database job runs every suite below, without a secret-dependent skip:
 4. `npm run council:protocol:test`
 5. `npm run journal:test`
 
-The schema, V3 and protocol suites still exercise the campaign, delivery and host SQL left from the retired local host. That SQL is unchanged and stays in `supabase-setup.sql` until the old Council tables are dropped.
+The schema, V3 and protocol suites cover what online councils use: host leases, host-issued seat keys, execution records, debate, pause and verdicts. Since the local council clean-up (`v7-council-local-cleanup.sql`, the last block of `supabase-setup.sql`), the V3 suite and the schema check also confirm that the campaign, delivery, owner-note and guest seat-key SQL is gone.
 
-Two additional transaction suites run in separate PostgreSQL 16 containers with networking disabled and no published ports: `test-agent-claim-postgres.mts` and `test-council-seat-renewal-postgres.mts`. They verify real lock contention, credential revocation/replacement and expiry after waits. Each suite removes its own database; the workflow always removes its owned container.
+An additional transaction suite, `test-agent-claim-postgres.mts`, runs in a separate PostgreSQL 16 container with networking disabled and no published ports. It verifies real lock contention on agent claims. It removes its own database, and the workflow always removes its owned container. The seat renewal suite was removed with the clean-up, because the campaign-time renewal and the guest seat resolver it tested are gone.
 
 Cleanup runs even after failure: it stops this Supabase stack with `--no-backup` and removes the temporary environment, status and log files. The offline suites remain a separate check.
 
-After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm the offline job, both transaction suites and all five database suites pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
+After an authorised commit and push or pull request, inspect the **checks** run for that exact commit. Confirm the offline job, the transaction suite and all five database suites pass. Re-running an older commit does not validate this workflow. A green local run does not close the remote CI gate.
 
 ## Local checks and remaining gates
 
@@ -48,4 +48,4 @@ Passing isolated database CI does not validate hosted configuration. Each knowle
 
 ## Seat credential renewal
 
-[`migrations/council-seat-renewal.sql`](migrations/council-seat-renewal.sql) is also included at the end of the full setup script. Host-issued seats renew to 24 hours when one hour remains, through a live host heartbeat. Renewal preserves the token and requires the same host and lease epoch. It never revives expired or revoked keys. The resolver rechecks identity, revocation and expiry after database lock waits.
+[`migrations/council-seat-renewal.sql`](migrations/council-seat-renewal.sql) is still in the full setup script, but the local council clean-up replaces its `renew_council_host_lease` with a body that only extends the lease, and drops its guest `issue_council_seat_key` and `resolve_council_seat_key`. Seat keys were only renewed during code campaigns, which no longer exist. Online council seats get a host-issued key bound to their run instead.

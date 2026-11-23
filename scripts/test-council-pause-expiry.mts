@@ -54,7 +54,6 @@ mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: Request
     assert.equal(url.origin, "https://council-test.invalid");
     requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
     const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-    if (url.pathname.endsWith("/rpc/touch_council_participant")) return json(true);
     if (["/rpc/pause_council", "/rpc/resume_council"].some(path => url.pathname.endsWith(path))) {
         assert.deepEqual(JSON.parse(String(init?.body)), { p_session_id: "session" });
         return json(actionOutcome);

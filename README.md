@@ -428,8 +428,9 @@ safe to run again, and it must run again after any re-run of `v6-scheduled-actio
 it, Telegram keeps one shared history, approvals send no buttons, and email and calendar
 changes asked for in a Telegram chat are refused.
 
-The `-- ===== Council owner notes =====` block holds `council_owner_notes`, left from the retired
-coding-agent campaigns. Nothing reads it now, and it stays until the old Council tables are dropped.
+The `-- ===== Council owner notes =====` block creates `council_owner_notes`, left from the retired
+coding-agent campaigns. The `-- ===== V7 local Council cleanup =====` block at the end drops it again,
+with the other local-only council tables (see the council section).
 
 
 ### Web authentication
@@ -924,9 +925,22 @@ if it earns it. Council messages are never embedded or indexed anywhere else.
 The council tables live in the `-- ===== Council wave =====`,
 `-- ===== Council work campaign wave =====`, `-- ===== Council ACP host wave =====`,
 `-- ===== Council V3 wave =====` and `-- ===== Council V3.5 wave =====` blocks at the bottom of
-`supabase-setup.sql`. The campaign and host blocks stay because old councils and the shared
-functions still use their tables. Run the full idempotent script in the Supabase SQL Editor before
-first use. For existing installations, follow the upgrade notes below.
+`supabase-setup.sql`. The campaign and host blocks still run on a fresh install, because later
+blocks build on them, and the `-- ===== V7 local Council cleanup =====` block at the very end then
+drops what only the retired local host used. Run the full idempotent script in the Supabase SQL
+Editor before first use. For existing installations, follow the upgrade notes below.
+
+**Local council clean-up.** [`scripts/migrations/v7-council-local-cleanup.sql`](scripts/migrations/v7-council-local-cleanup.sql)
+drops six tables (`council_campaigns`, `council_work_items`, `council_verification_runs`,
+`council_integration_attempts`, `council_owner_notes`, `council_deliveries`) and 34 functions that
+only the retired local host called: campaigns and work items, host verification and integration,
+owner notes, durable delivery, guest seat keys, floor election and `conclude_council`. It also
+redefines `renew_council_host_lease` without its campaign branch, which only renewed seat keys during
+a code campaign. Online councils keep sessions, messages, participants, owner messages, host leases,
+host-issued seat keys and execution records, and old councils keep their transcripts and verdicts.
+The drop deletes the old campaign rows, so take a database dump first. It is safe to re-run and uses
+no `CASCADE`, so an unexpected dependency fails the whole transaction. `npm run council:v3:test`
+rebuilds the council schema in PGlite and checks the migration offline.
 
 **Paused Council expiry.** A Council expires after seven consecutive paused days, retaining its
 transcript and pause history. Resuming before that deadline restores the running clocks; a later
@@ -953,9 +967,10 @@ and the evidence components offline.
 Several functions are defined more than once across the
 waves, so re-running an earlier block alone silently reverts a later definition. That happened once:
 acceptance quietly fell back to the pre-V3 behaviour with nothing logged anywhere. `npm run
-council:schema:check` exists to catch exactly that. It builds a throwaway V3 campaign and fails if
-the exact-commit gate is not actually enforced, so it detects the reversion rather than the missing
-table. Run it after any schema change.
+council:schema:check` exists to catch that. It claims and renews a throwaway host lease, which fails
+if an older block has put back a renewal body that reads the dropped campaign tables, and checks
+that the local-only functions stay dropped. It writes to the database, so run it only against a
+disposable Supabase (CI runs it).
 
 For existing installations with the Council V3.5 named-client tables, apply the complete
 [`scripts/migrations/council-agent-claims.sql`](scripts/migrations/council-agent-claims.sql)
@@ -1449,10 +1464,11 @@ stt-service/
 ├── segment.js                          # Cuts long turns at the quietest point
 └── test/                               # Offline tests with a fake recogniser
 scripts/
-├── check-council-schema.mts            # Behavioural guard: fails if the V3 exact-commit gate is not enforced
+├── check-council-schema.mts            # Behavioural guard: fails if an old block reverted lease renewal or the clean-up
 ├── test-council-protocol.mts           # Council Postgres protocol tests
 ├── test-council-v3.mts                 # Online seat capabilities and schema functions (local)
-├── test-council-v3-db.mts              # V3 lease, delivery, verification and manifest tests
+├── test-council-v3-db.mts              # V3 lease, seat key and execution tests, and the clean-up check
+├── test-council-local-cleanup.mts      # The local council clean-up migration in PGlite (offline)
 ├── test-agent-credentials.mts          # Scope split + per-agent key mint/exchange/revoke tests
 ├── test-mutation-journal.mts           # Mutation-journal tests
 ├── evaluate-knowledge.ts               # Knowledge-store retrieval eval

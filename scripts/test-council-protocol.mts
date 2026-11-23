@@ -6,10 +6,9 @@
 //
 // Requires the P1 migration to be applied. Every session it creates is prefixed
 // CN-T and deleted afterwards, including on failure; the cascade takes the
-// participants, messages and campaigns with it.
+// participants and messages with it.
 
 import { createClient } from "@supabase/supabase-js";
-import { randomUUID } from "node:crypto";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -108,13 +107,6 @@ async function testMessageCap(): Promise<void> {
 
     const fourth = await post(id, "beta", { intent: "refine", body: "four" });
     check("past the cap is refused", fourth.ok === false && fourth.reason === "message_cap", fourth);
-
-    // conclude_council must still work on a capped session, or the debate is
-    // unrecoverable rather than merely over.
-    const { data: concluded } = await db.rpc("conclude_council", {
-        p_session_id: id, p_closer: "alpha", p_verdict: "done", p_open_questions: [],
-    });
-    check("a capped council can still be concluded", (concluded as { changed?: boolean })?.changed === true, concluded);
 }
 
 async function testObligations(): Promise<void> {
@@ -143,104 +135,6 @@ async function testObligations(): Promise<void> {
 
     const again = await post(id, "beta", { intent: "answer", body: "again", replyToSeq: obligationSeq });
     check("answering twice is refused", again.reason === "already_answered", again);
-}
-
-async function testWorkItemValidation(): Promise<void> {
-    console.log("\nwork plan validation");
-    const id = await makeSession({ agents: ["alpha", "beta"], workspace: true, closer: "alpha" });
-
-    const valid = await db.rpc("validate_council_work_items", {
-        p_session_id: id, p_created_by: "alpha",
-        p_work_items: [{ agent_name: "alpha", title: "t", instructions: "i", acceptance_criteria: [] }],
-    });
-    check("a valid plan returns null", valid.data === null, valid.data);
-
-    const offRoster = await db.rpc("validate_council_work_items", {
-        p_session_id: id, p_created_by: "alpha",
-        p_work_items: [{ agent_name: "nobody", title: "t", instructions: "i", acceptance_criteria: [] }],
-    });
-    check("an agent off the roster is rejected", typeof offRoster.data === "string", offRoster.data);
-
-    const empty = await db.rpc("validate_council_work_items", {
-        p_session_id: id, p_created_by: "alpha", p_work_items: [],
-    });
-    check("an empty plan is rejected", typeof empty.data === "string", empty.data);
-
-    const wrongCloser = await db.rpc("validate_council_work_items", {
-        p_session_id: id, p_created_by: "beta",
-        p_work_items: [{ agent_name: "alpha", title: "t", instructions: "i", acceptance_criteria: [] }],
-    });
-    check("a non-closer is rejected", typeof wrongCloser.data === "string", wrongCloser.data);
-
-    // The whole point of splitting validation out: it must be answerable while
-    // the council is still open, before the verdict CAS.
-    const { data: session } = await db.from("council_sessions").select("status").eq("id", id).single();
-    check("validation works on an open council", session?.status === "open", session);
-}
-
-async function testWorkItemLease(): Promise<void> {
-    console.log("\nwork item leases");
-    const id = await makeSession({ agents: ["alpha"], workspace: true, closer: "alpha" });
-    await db.rpc("conclude_council", {
-        p_session_id: id, p_closer: "alpha", p_verdict: "v", p_open_questions: [],
-    });
-    const { error: campaignError } = await db.rpc("create_council_campaign", {
-        p_session_id: id, p_created_by: "alpha",
-        p_work_items: [{ agent_name: "alpha", title: "t", instructions: "i", acceptance_criteria: [] }],
-    });
-    if (campaignError) throw new Error(`campaign create failed: ${campaignError.message}`);
-
-    const first = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    const claimed = first.data as { id: string; attempts: number; lease_expires_at: string } | null;
-    check("claiming sets a lease", !!claimed?.lease_expires_at, claimed);
-    check("claiming counts an attempt", claimed?.attempts === 1, claimed);
-
-    await db.from("council_work_items")
-        .update({ lease_expires_at: new Date(Date.now() - 60_000).toISOString() })
-        .eq("id", claimed!.id);
-
-    const second = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    const reclaimed = second.data as { attempts: number; status: string } | null;
-    check("a lapsed lease is reclaimed", reclaimed?.status === "in_progress", reclaimed);
-    check("the reclaim counts a second attempt", reclaimed?.attempts === 2, reclaimed);
-
-    for (let attempt = 3; attempt <= 5; attempt++) {
-        const expired = await db.from("council_work_items")
-            .update({ lease_expires_at: new Date(Date.now() - 60_000).toISOString() })
-            .eq("id", claimed!.id);
-        if (expired.error) throw new Error(`lease expiry failed: ${expired.error.message}`);
-        const next = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-        if (next.error) throw new Error(`reclaim failed: ${next.error.message}`);
-        check(`lease expiry ${attempt - 1} permits another claim without a rejection`,
-            next.data?.id === claimed!.id && next.data?.status === "in_progress"
-            && next.data?.attempts === attempt && next.data?.rejections === 0, next.data);
-    }
-
-    for (let rejection = 1; rejection <= 3; rejection++) {
-        const completed = await db.rpc("complete_council_work_item", {
-            p_item_id: claimed!.id, p_agent_name: "alpha",
-            p_commit_hash: FIRST_SHA, p_verification: "ready for review",
-        });
-        if (completed.error) throw new Error(`completion failed: ${completed.error.message}`);
-        check(`submission ${rejection} reaches review`, completed.data === true, completed.data);
-        const reviewed = await db.rpc("review_council_work_item", {
-            p_item_id: claimed!.id, p_reviewer: "alpha", p_accepted: false, p_note: "needs rework",
-        });
-        if (reviewed.error) throw new Error(`review failed: ${reviewed.error.message}`);
-        check(`rejection ${rejection} succeeds`, reviewed.data?.ok === true, reviewed.data);
-        const { data: item, error } = await db.from("council_work_items")
-            .select("status, rejections").eq("id", claimed!.id).single();
-        if (error) throw new Error(`work item read failed: ${error.message}`);
-        check(`rejection ${rejection} ${rejection < 3 ? "requeues" : "blocks"} the item`,
-            item.rejections === rejection && item.status === (rejection < 3 ? "queued" : "blocked"), item);
-        const next = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-        if (next.error) throw new Error(`claim after review failed: ${next.error.message}`);
-        check(`rejection ${rejection} ${rejection < 3 ? "allows rework" : "prevents further claims"}`,
-            rejection < 3 ? next.data?.id === claimed!.id : next.data === null, next.data);
-    }
-    const campaign = await db.from("council_campaigns").select("status").eq("session_id", id).single();
-    if (campaign.error) throw new Error(`campaign read failed: ${campaign.error.message}`);
-    check("exhausted rejections block the campaign", campaign.data.status === "blocked", campaign.data);
 }
 
 async function testPause(): Promise<void> {
@@ -383,168 +277,6 @@ async function testOwnerGate(): Promise<void> {
     check("accepting twice changes nothing", (again.data as { changed?: boolean })?.changed === false, again.data);
 }
 
-async function testSeatKeys(): Promise<void> {
-    console.log("\nguest seat keys");
-    const { createHash, randomBytes } = await import("node:crypto");
-    const hash = (t: string) => createHash("sha256").update(t).digest("hex");
-
-    const id = await makeSession({ agents: ["alpha", "beta"] });
-    const token = `zcs_${randomBytes(32).toString("hex")}`;
-
-    const issued = await db.rpc("issue_council_seat_key", {
-        p_session_id: id, p_seat_name: "alpha", p_token_hash: hash(token),
-        p_expires_at: new Date(Date.now() + 3600_000).toISOString(),
-    });
-    check("issuing for a roster seat succeeds", (issued.data as { ok?: boolean })?.ok === true, issued.data);
-
-    const offRoster = await db.rpc("issue_council_seat_key", {
-        p_session_id: id, p_seat_name: "nobody", p_token_hash: hash("x"),
-        p_expires_at: new Date(Date.now() + 3600_000).toISOString(),
-    });
-    check("issuing for a seat off the roster is refused", (offRoster.data as { ok?: boolean })?.ok === false, offRoster.data);
-
-    const resolved = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token) });
-    const seat = resolved.data as { session_id?: string; seat_name?: string } | null;
-    check("a valid key resolves to its seat", seat?.seat_name === "alpha" && seat?.session_id === id, seat);
-
-    const unknown = await db.rpc("resolve_council_seat_key", { p_token_hash: hash("not-a-key") });
-    check("an unknown key resolves to nothing", unknown.data === null, unknown.data);
-
-    const { data: claimed } = await db.from("council_seat_keys")
-        .select("claimed_at").eq("session_id", id).eq("seat_name", "alpha").single();
-    check("first use stamps the key as claimed", !!claimed?.claimed_at, claimed);
-
-    // Re-issuing replaces the hash, which is how a mis-sent key is retired.
-    const token2 = `zcs_${randomBytes(32).toString("hex")}`;
-    await db.rpc("issue_council_seat_key", {
-        p_session_id: id, p_seat_name: "alpha", p_token_hash: hash(token2),
-        p_expires_at: new Date(Date.now() + 3600_000).toISOString(),
-    });
-    const stale = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token) });
-    check("re-issuing invalidates the previous key", stale.data === null, stale.data);
-
-    await db.from("council_seat_keys")
-        .update({ expires_at: new Date(Date.now() - 60_000).toISOString() })
-        .eq("session_id", id).eq("seat_name", "alpha");
-    const expired = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token2) });
-    check("an expired key resolves to nothing", expired.data === null, expired.data);
-
-    // A key has to survive the close: the campaign phase only begins once the
-    // council is closed, so dying at close would strand every guest agent
-    // before it could do any work. Expiry is what ends the key.
-    const token3 = `zcs_${randomBytes(32).toString("hex")}`;
-    await db.rpc("issue_council_seat_key", {
-        p_session_id: id, p_seat_name: "beta", p_token_hash: hash(token3),
-        p_expires_at: new Date(Date.now() + 3600_000).toISOString(),
-    });
-    await db.from("council_sessions").update({ status: "closed" }).eq("id", id);
-    const afterClose = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token3) });
-    check("a key still works while the closed council's work runs",
-        (afterClose.data as { seat_name?: string } | null)?.seat_name === "beta", afterClose.data);
-
-    await db.from("council_sessions").update({ status: "expired" }).eq("id", id);
-    const afterExpiry = await db.rpc("resolve_council_seat_key", { p_token_hash: hash(token3) });
-    check("a key stops working once its council expires", afterExpiry.data === null, afterExpiry.data);
-}
-
-// Acceptance is only reachable on a V3 council: the gate compares the run's
-// base sha against the campaign's, and a campaign only has one when the
-// session froze a base commit.
-const BASE_SHA = "0".repeat(40);
-const FIRST_SHA = "1".repeat(40);
-const SECOND_SHA = "2".repeat(40);
-
-async function testHostVerification(): Promise<void> {
-    console.log("\nhost-run verification");
-    const id = await makeSession({
-        agents: ["alpha"], workspace: true, closer: "alpha",
-        protocolVersion: 3, baseSha: BASE_SHA,
-    });
-    const lease = await db.rpc("claim_council_host_lease", {
-        p_session_id: id, p_host_id: randomUUID(), p_duration_seconds: 300,
-    });
-    const { hostId, leaseEpoch } = lease.data as { hostId: string; leaseEpoch: number };
-
-    // Only the lease holder may write evidence, so every check here rides it.
-    const verify = async (
-        _session: string, itemId: string, commitSha: string, passed: boolean, report: string,
-    ) => {
-        const { data } = await db.rpc("record_council_verification", {
-            p_item_id: itemId, p_host_id: hostId, p_lease_epoch: leaseEpoch,
-            p_commit_sha: commitSha, p_base_sha: BASE_SHA, p_branch_name: "council/x/alpha",
-            p_profile_id: "standard", p_command_receipts: [], p_output_digest: "d".repeat(64),
-            p_passed: passed, p_report: report,
-        });
-        return data;
-    };
-
-    await db.rpc("conclude_council", { p_session_id: id, p_closer: "alpha", p_verdict: "v", p_open_questions: [] });
-    await db.rpc("create_council_campaign", {
-        p_session_id: id, p_created_by: "alpha",
-        p_work_items: [{ agent_name: "alpha", title: "t", instructions: "i", acceptance_criteria: [] }],
-    });
-    const claim = await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    const item = claim.data as { id: string };
-    await db.rpc("complete_council_work_item", {
-        p_item_id: item.id, p_agent_name: "alpha",
-        p_commit_hash: FIRST_SHA, p_verification: "I ran the tests and they passed",
-    });
-
-    // The whole point: the agent's own account is not enough to accept. V3
-    // wants evidence tied to this exact commit, not a boolean the host set.
-    const premature = await db.rpc("review_council_work_item", {
-        p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "looks fine",
-    });
-    check("accepting before the host checks is refused",
-        (premature.data as { reason?: string })?.reason === "not_exactly_verified", premature.data);
-
-    const failed = await verify(id, item.id, FIRST_SHA, false, "FAIL commit does not descend from main");
-    check("a failed host check is recorded", (failed as { ok?: boolean })?.ok === true, failed);
-    const { data: bounced } = await db.from("council_work_items").select("status, host_verified, rejections").eq("id", item.id).single();
-    check("a failed host check returns the task to its owner and counts a rejection",
-        bounced?.status === "queued" && bounced.rejections === 1, bounced);
-
-    // Re-submit, then pass the host check.
-    await db.rpc("claim_council_work_item", { p_session_id: id, p_agent_name: "alpha" });
-    await db.rpc("complete_council_work_item", {
-        p_item_id: item.id, p_agent_name: "alpha",
-        p_commit_hash: SECOND_SHA, p_verification: "second try",
-    });
-
-    // Evidence for a different commit must not unlock this one, or the gate is
-    // just the boolean it replaced.
-    await verify(id, item.id, FIRST_SHA, true, "passes, but for the old commit");
-    const mismatched = await db.rpc("review_council_work_item", {
-        p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "x",
-    });
-    check("evidence for another commit does not unlock acceptance",
-        (mismatched.data as { reason?: string })?.reason === "not_exactly_verified", mismatched.data);
-
-    await verify(id, item.id, SECOND_SHA, true, "ok all checks");
-    const accepted = await db.rpc("review_council_work_item", {
-        p_item_id: item.id, p_reviewer: "alpha", p_accepted: true, p_note: "good",
-    });
-    check("accepting after a passing host check succeeds", (accepted.data as { ok?: boolean })?.ok === true, accepted.data);
-    const { data: pinned } = await db.from("council_work_items")
-        .select("status, accepted_commit_sha").eq("id", item.id).single();
-    check("acceptance pins the exact commit",
-        pinned?.status === "verified" && pinned?.accepted_commit_sha === SECOND_SHA, pinned);
-
-    const wrongReviewer = await db.rpc("review_council_work_item", {
-        p_item_id: item.id, p_reviewer: "beta", p_accepted: true, p_note: "x",
-    });
-    check("only the closer may review", (wrongReviewer.data as { reason?: string })?.reason === "not_the_closer", wrongReviewer.data);
-
-    // Integration is a separate gate from per-item acceptance. Recording the
-    // result itself is host-fenced and lives in the V3 suite.
-    const nominated = await db.rpc("set_campaign_integrator", { p_session_id: id, p_agent: "alpha" });
-    check("an integrator can be nominated once the campaign completes",
-        (nominated.data as { ok?: boolean })?.ok === true, nominated.data);
-
-    const offRoster = await db.rpc("set_campaign_integrator", { p_session_id: id, p_agent: "nobody" });
-    check("an integrator off the roster is refused", (offRoster.data as { ok?: boolean })?.ok === false, offRoster.data);
-}
-
 async function cleanup(): Promise<void> {
     if (created.length === 0) return;
     const { error } = await db.from("council_sessions").delete().in("id", created);
@@ -556,18 +288,11 @@ async function main(): Promise<void> {
     try {
         await testMessageCap();
         await testObligations();
-        await testWorkItemValidation();
-        await testWorkItemLease();
         await testPause();
         await testOwnerGate();
-        await testSeatKeys();
-        await testHostVerification();
     } catch (err) {
         failed++;
         console.error("\naborted:", err instanceof Error ? err.message : err);
-        if (err instanceof Error && /validate_council_work_items|lease_owner|max_attempts/.test(err.message)) {
-            console.error("This looks like the P1 migration has not been applied yet.");
-        }
     } finally {
         await cleanup();
     }

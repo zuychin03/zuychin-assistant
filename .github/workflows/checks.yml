@@ -177,28 +177,6 @@ jobs:
           fi
           npx tsx scripts/test-agent-claim-postgres.mts --container "$claims_container"
 
-      - name: seat credential transaction races
-        shell: bash
-        run: |
-          set -euo pipefail
-          seats_container="council-seat-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          trap 'docker rm -f "$seats_container" >/dev/null 2>&1 || true' EXIT
-          docker run --detach --rm --network none --name "$seats_container" \
-            --env POSTGRES_PASSWORD=disposable-test-only postgres:16-alpine >/dev/null
-          ready=false
-          for attempt in {1..30}; do
-            if docker exec "$seats_container" pg_isready -U postgres >/dev/null 2>&1; then
-              ready=true
-              break
-            fi
-            sleep 1
-          done
-          if [ "$ready" != true ]; then
-            echo "::error::The isolated seat-test database did not become ready."
-            exit 1
-          fi
-          npx tsx scripts/test-council-seat-renewal-postgres.mts --container "$seats_container"
-
       - name: council V3 against the database
         run: npm run council:v3:test:db
 

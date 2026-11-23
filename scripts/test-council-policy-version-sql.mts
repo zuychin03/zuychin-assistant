@@ -74,9 +74,6 @@ for (const [label, sql] of [["migration", migration], ["setup", councilTail]]) {
             assert.equal(session.policy_version, policy);
             assert.equal(session.host_generation, "typescript-node");
             assert.equal(execution.policy_version, policy);
-            const evidence = await value<Record<string, unknown>>("select council_execution_evidence($1,$2,'seat') as value", [result.executionId, f.session]);
-            assert.equal(evidence.policyVersion, policy);
-            assert.equal(evidence.hostGeneration, "typescript-node");
         });
         await t.test("legacy runs remain explicitly unknown", async () => {
             const f = await fixture();
