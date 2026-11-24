@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { PROVIDERS, isProviderAvailable, removalBlockedReason, retiredChatModelIds } from "@/lib/ai/providers";
+import { PROVIDERS, isProviderAvailable, removalBlockedReason, retiredChatModelIds, withAccount } from "@/lib/ai/providers";
+import { loadProviderRest, providerRestSnapshot } from "@/lib/ai/provider-rest";
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { catalogueTypesAvailable, deleteRetiredModel, listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval, type StorageFailure } from "@/lib/ai/catalogue/store";
 import { refreshCatalogueSnapshot, rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
@@ -33,7 +34,9 @@ export async function GET(req: NextRequest) {
     if (denied) return denied;
     const [catalogue, runs, profiles, stats, choices, mediaChoices] = await Promise.all([
         readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats(), readVoiceChoices(true), readMediaChoices(true), refreshEmbeddingOverride().catch(() => {}),
+        loadProviderRest(undefined, true),
     ]);
+    const resting = providerRestSnapshot();
     if (!catalogue.ok) {
         return NextResponse.json({ storage: catalogue.reason, error: startFailure(catalogue.reason).error }, { status: 503, headers: NO_STORE });
     }
@@ -79,9 +82,10 @@ export async function GET(req: NextRequest) {
             picks: Object.fromEntries(Object.entries(picks).map(([kind, pick]) => [kind, { normal: pickKey(pick.normal), freeOnly: pickKey(pick.freeOnly) }])),
         },
         tags: PURPOSE_TAGS.map((tag) => ({ tag, ...TAG_INFO[tag] })),
-        providers: PROVIDERS.map((provider) => ({
+        providers: PROVIDERS.map(withAccount).map((provider) => ({
             id: provider.id, label: provider.label, available: isProviderAvailable(provider),
             discovery: provider.discovery ? { include: provider.discovery.include, pricing: provider.discovery.pricing } : null,
+            restingUntil: resting[provider.id]?.until ?? null,
         })),
         rows: catalogue.rows.filter((row) => !kind || rowKind(row) === kind).map((row) => {
             if (rowKind(row) !== "chat") return typedRow(row);

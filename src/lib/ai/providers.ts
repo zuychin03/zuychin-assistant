@@ -4,9 +4,10 @@ import { catalogueSnapshot, rowKind, type CatalogueOrigin, type CatalogueRow, ty
 import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
 import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
 import { removedModelKeys } from "@/lib/ai/models/profiles";
-import { providerKeyOrEnv, storedProviderKey } from "@/lib/ai/provider-keys/snapshot";
+import { providerKeyOrEnv, providerKeySnapshot, storedProviderKey } from "@/lib/ai/provider-keys/snapshot";
 
-export type ProviderKind = "gemini" | "openai-compatible";
+/** "rest": the provider's own REST shapes only (LlamaParse); it never serves chat, embeddings or speech. */
+export type ProviderKind = "gemini" | "openai-compatible" | "rest";
 
 /** Present when the stored catalogue has a row for this model. */
 export interface ChatModelCatalogue {
@@ -112,6 +113,8 @@ export interface ProviderConfig {
     kind: ProviderKind;
     baseUrl?: string;
     apiKeyEnv: string;
+    /** Env var for the account id that `{account}` in `baseUrl` stands for. A dashboard key may carry it as `<account id>:<token>`. */
+    accountIdEnv?: string;
     unavailableReason?: string;
     extraHeaders?: Record<string, string>;
     /** Excludes paid providers from automatic worker recruitment. */
@@ -232,6 +235,40 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://apihub.agnes-ai.com/v1",
         apiKeyEnv: "AGNES_API_KEY",
         discovery: { source: "openai-list", include: "all", pricing: "all-free", exclude: /(image|video)/ },
+        chatModels: [],
+        embeddingModels: [],
+    },
+    {
+        // Free plan: 10,000 neurons a day shared by every model, reset 00:00 UTC; Workers Paid models answer 403 code 5035,
+        // and they are skipped from the listing. A Workers AI token cannot read its own account (checked 24/11/2026).
+        // Rows of a kind without a request shape here are listed but not tested until docs/V8_FREE_PROVIDERS_PLAN.md C3 to C5.
+        id: "cloudflare",
+        label: "Cloudflare Workers AI",
+        kind: "openai-compatible",
+        baseUrl: "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1",
+        apiKeyEnv: "CLOUDFLARE_AI_TOKEN",
+        accountIdEnv: "CLOUDFLARE_ACCOUNT_ID",
+        discovery: {
+            source: "cloudflare", include: "all", pricing: "all-free", maxProbes: 3, exclude: /(guard|-lora$)/,
+            kinds: {
+                embedding: { include: "all", untested: true }, speech: { include: "all", untested: true },
+                transcription: { include: "all", untested: true }, rerank: { include: "all", untested: true },
+                decision: { include: "all", untested: true }, image: { include: "all", untested: true },
+                translate: { include: "all", untested: true },
+            },
+        },
+        chatModels: [],
+        embeddingModels: [],
+    },
+    {
+        // Page to Markdown only, through upload and poll. Free plan 10,000 credits a month, 3 a page on cost_effective
+        // (checked 24/11/2026). The row is a seed (v8-free-providers.sql), tested weekly to spare the allowance.
+        id: "llamaparse",
+        label: "LlamaParse",
+        kind: "rest",
+        baseUrl: "https://api.cloud.llamaindex.ai",
+        apiKeyEnv: "LLAMA_CLOUD_API_KEY",
+        discovery: { source: "seeded", include: "all", pricing: "all-free", probeEveryDays: 7, kinds: { parse: { include: "all" } } },
         chatModels: [],
         embeddingModels: [],
     },
@@ -521,13 +558,41 @@ export function mergeCatalogue(config: readonly ProviderConfig[], allRows: reado
     });
 }
 
-let mergedProviders: { version: number; list: ProviderConfig[] } | null = null;
+const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
 
-/** Code providers merged with the stored catalogue. Synchronous: reads the in-memory snapshot. */
+/** A dashboard key for an account-scoped provider is `<account id>:<token>`; a bare token leaves the account to the env var. */
+export function splitAccountKey(raw: string): { accountId: string | null; apiKey: string } {
+    const at = raw.indexOf(":");
+    const head = at > 0 ? raw.slice(0, at) : "";
+    return ACCOUNT_ID.test(head) ? { accountId: head.toLowerCase(), apiKey: raw.slice(at + 1) } : { accountId: null, apiKey: raw };
+}
+
+export function providerAccountId(p: Pick<ProviderConfig, "id" | "accountIdEnv">): string | undefined {
+    if (!p.accountIdEnv) return undefined;
+    const stored = storedProviderKey(p.id);
+    const fromKey = stored ? splitAccountKey(stored).accountId : null;
+    const env = process.env[p.accountIdEnv]?.trim();
+    return fromKey ?? (env && ACCOUNT_ID.test(env) ? env.toLowerCase() : undefined);
+}
+
+/** Fills `{account}` in the base URL. With a token but no account id the provider is unavailable, with the reason shown. */
+export function withAccount(p: ProviderConfig): ProviderConfig {
+    if (!p.accountIdEnv || !p.baseUrl?.includes("{account}")) return p;
+    const accountId = providerAccountId(p);
+    if (accountId) return { ...p, baseUrl: p.baseUrl.replace("{account}", accountId) };
+    if (!getProviderApiKey(p) || p.unavailableReason) return p;
+    return { ...p, unavailableReason: `No account id. Save it with the token on /admin, or set ${p.accountIdEnv}.` };
+}
+
+let mergedProviders: { version: string; list: ProviderConfig[] } | null = null;
+
+/** Code providers merged with the stored catalogue. Synchronous: reads the in-memory snapshots. */
 export function providers(): ProviderConfig[] {
     const snapshot = catalogueSnapshot();
-    if (mergedProviders?.version !== snapshot.version) {
-        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, [...snapshot.rows, ...snapshot.typedRows], removedModelKeys(snapshot.profiles)) };
+    // A saved key can carry an account id, so key changes rebuild the list too.
+    const version = `${snapshot.version}:${providerKeySnapshot().version}:${PROVIDERS.map((p) => (p.accountIdEnv && process.env[p.accountIdEnv]) || "").join(",")}`;
+    if (mergedProviders?.version !== version) {
+        mergedProviders = { version, list: mergeCatalogue(PROVIDERS.map(withAccount), [...snapshot.rows, ...snapshot.typedRows], removedModelKeys(snapshot.profiles)) };
     }
     return mergedProviders.list;
 }
@@ -547,9 +612,10 @@ export function getProvider(id: string): ProviderConfig | undefined {
     return providers().find((p) => p.id === id);
 }
 
-/** A key saved on the dashboard wins over the env var. */
-export function getProviderApiKey(p: ProviderConfig): string | undefined {
-    return providerKeyOrEnv(p.id, p.apiKeyEnv);
+/** A key saved on the dashboard wins over the env var. For an account-scoped provider this is the token alone. */
+export function getProviderApiKey(p: Pick<ProviderConfig, "id" | "apiKeyEnv" | "accountIdEnv">): string | undefined {
+    const raw = providerKeyOrEnv(p.id, p.apiKeyEnv);
+    return raw && p.accountIdEnv ? splitAccountKey(raw).apiKey || undefined : raw;
 }
 
 export function providerKeySource(p: ProviderConfig): "dashboard" | "environment" | null {
@@ -558,7 +624,7 @@ export function providerKeySource(p: ProviderConfig): "dashboard" | "environment
 }
 
 export function isProviderAvailable(p: ProviderConfig): boolean {
-    return !p.unavailableReason && !!getProviderApiKey(p);
+    return !p.unavailableReason && !!getProviderApiKey(p) && !p.baseUrl?.includes("{account}");
 }
 
 /** False for models this app cannot call yet (Responses API only). */

@@ -24,6 +24,8 @@ interface ProviderKeyView {
     available: boolean;
     unavailableReason: string | null;
     checkable: boolean;
+    accountIdEnv?: string;
+    accountIdSet?: boolean;
 }
 
 interface ProviderKeysView {
@@ -66,6 +68,7 @@ export default function ProviderKeysPanel({ providers, onChanged }: { providers:
     const [loadError, setLoadError] = useState(false);
     const [editing, setEditing] = useState<{ id: string; action: "save" | "clear" } | null>(null);
     const [apiKey, setApiKey] = useState("");
+    const [accountId, setAccountId] = useState("");
     const [password, setPassword] = useState("");
     const [busy, setBusy] = useState<Busy>(null);
     const [results, setResults] = useState<Record<string, { tone: Tone; text: string }>>({});
@@ -84,12 +87,13 @@ export default function ProviderKeysPanel({ providers, onChanged }: { providers:
     useEffect(() => { void load(); }, [load]);
 
     const note = (id: string, tone: Tone, text: string) => setResults((current) => ({ ...current, [id]: { tone, text } }));
-    const close = () => { setEditing(null); setApiKey(""); setPassword(""); };
+    const close = () => { setEditing(null); setApiKey(""); setAccountId(""); setPassword(""); };
 
     const save = async (provider: ProviderKeyView) => {
-        const payload = { providerId: provider.id, apiKey, password };
+        const payload = { providerId: provider.id, apiKey, password, ...(provider.accountIdEnv ? { accountId } : {}) };
         // The key leaves component state before the request goes out.
         setApiKey("");
+        setAccountId("");
         setPassword("");
         setBusy({ id: provider.id, action: "save" });
         try {
@@ -201,6 +205,13 @@ export default function ProviderKeysPanel({ providers, onChanged }: { providers:
                                 <label htmlFor={`key-${provider.id}`} style={styles.label}>API key for {provider.label}</label>
                                 <input id={`key-${provider.id}`} className="field" style={styles.input} type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)}
                                     autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={isBusy} placeholder="Paste the key" />
+                                {key.accountIdEnv && <>
+                                    <label htmlFor={`account-${provider.id}`} style={styles.label}>Account id</label>
+                                    <input id={`account-${provider.id}`} className="field" style={styles.input} type="text" value={accountId} onChange={(event) => setAccountId(event.target.value)}
+                                        autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={isBusy}
+                                        placeholder={key.accountIdSet ? "Leave empty to keep the one in use" : "32 letters and digits"} />
+                                    <div className="meta">The token cannot look up its own account, so the id is saved with it, encrypted.</div>
+                                </>}
                                 <div className="meta">It is checked with {provider.label} first, then encrypted. Only the last 4 characters are shown afterwards.</div>
                             </>
                             : <div className="meta">Clear the saved key for {provider.label}? The app then uses {key.envVar} if it is set.</div>}
@@ -211,7 +222,7 @@ export default function ProviderKeysPanel({ providers, onChanged }: { providers:
                         </>}
                         <div style={styles.actions}>
                             <button type="submit" className="btn" data-tone={editing.action === "save" ? "primary" : "danger"}
-                                disabled={isBusy || (editing.action === "save" && !apiKey.trim()) || (!!view?.passwordRequired && !password)}>
+                                disabled={isBusy || (editing.action === "save" && (!apiKey.trim() || (!!key.accountIdEnv && !key.accountIdSet && !accountId.trim()))) || (!!view?.passwordRequired && !password)}>
                                 {editing.action === "save" ? (isBusy ? "Checking and saving..." : "Save key") : (isBusy ? "Clearing..." : "Clear key")}
                             </button>
                             <button type="button" className="btn" disabled={isBusy} onClick={close}>Cancel</button>

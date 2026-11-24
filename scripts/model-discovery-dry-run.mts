@@ -1,7 +1,7 @@
 // Lists each provider's models with its dashboard key (when PROVIDER_KEYS_SECRET is set) or the key in .env.local, and prints what a discovery run would do.
 // Writes nothing and never prints a key. Usage: npx tsx scripts/model-discovery-dry-run.mts [providerId...]
 import fs from "node:fs";
-import { PROVIDERS, getProviderApiKey, retiredChatModelIds } from "../src/lib/ai/providers";
+import { PROVIDERS, getProviderApiKey, retiredChatModelIds, withAccount } from "../src/lib/ai/providers";
 import { NON_CHAT_KINDS, listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName } from "../src/lib/ai/catalogue/sources";
 import { refreshProviderKeys } from "../src/lib/ai/provider-keys/snapshot";
 
@@ -10,7 +10,7 @@ if (process.env.PROVIDER_KEYS_SECRET) await refreshProviderKeys();
 const MAX_PROBES = Number(process.env.MODEL_DISCOVERY_MAX_PROBES) || 10;
 const only = new Set(process.argv.slice(2));
 
-for (const provider of PROVIDERS) {
+for (const provider of PROVIDERS.map(withAccount)) {
     if (only.size && !only.has(provider.id)) continue;
     const discovery = provider.discovery;
     if (!discovery) { console.log(`\n${provider.id}: discovery off${provider.unavailableReason ? " (provider unavailable)" : ""}`); continue; }
@@ -18,6 +18,7 @@ for (const provider of PROVIDERS) {
     const key = getProviderApiKey(provider);
     if (!key) { console.log(`\n${provider.id}: skipped, no key`); continue; }
 
+    if (discovery.source === "seeded") { console.log(`\n${provider.id}: seeded, no list to read; seed rows are retested every ${discovery.probeEveryDays ?? 7} days`); continue; }
     const started = Date.now();
     const listing = await listProviderModels(provider, discovery, key);
     if (!listing.ok) { console.log(`\n${provider.id}: listing failed (${listing.status ?? "no status"}): ${listing.error}`); continue; }
@@ -37,7 +38,7 @@ for (const provider of PROVIDERS) {
 
     console.log(`\n${provider.id}: listed ${listing.models.length}, tracked ${tracked.length}, ${Date.now() - started} ms`);
     console.log(`  code models no longer listed (${missing.length}): ${missing.map((model) => model.id).join(", ") || "none"}`);
-    console.log(`  new free models (${freeNew.length}), first ${Math.min(freeNew.length, MAX_PROBES)} would be probed this run:`);
+    console.log(`  new free models (${freeNew.length}), first ${Math.min(freeNew.length, MAX_PROBES, discovery.maxProbes ?? MAX_PROBES)} would be probed this run:`);
     for (const model of freeNew) console.log(`    ${model.modelId}  name=${model.name}  label="${model.label}"  tools=${model.listedTools ?? "?"} inputs=${model.inputs.join("+") || "?"} maxOut=${model.maxOutputTokens ?? "?"}`);
     if (paidNew.length) {
         console.log(`  new paid models (${paidNew.length}), listed as Untested, probed only on Test:`);

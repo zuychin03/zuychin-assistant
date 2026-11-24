@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
-import { PROVIDERS, getProviderApiKey } from "@/lib/ai/providers";
+import { PROVIDERS, getProviderApiKey, withAccount } from "@/lib/ai/providers";
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { readCatalogueRows } from "@/lib/ai/catalogue/store";
 import { executeModelTest, liveDiscoveryDeps, startFailure } from "@/lib/ai/catalogue/run";
@@ -14,8 +14,9 @@ export async function POST(req: NextRequest) {
     try { input = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
     const ref = catalogueModelRef(input);
     if (!ref) return NextResponse.json({ error: "Send providerId and modelId." }, { status: 400 });
-    const provider = PROVIDERS.find((entry) => entry.id === ref.providerId);
-    if (!provider) return NextResponse.json({ error: "Unknown provider." }, { status: 404 });
+    const listed = PROVIDERS.find((entry) => entry.id === ref.providerId);
+    if (!listed) return NextResponse.json({ error: "Unknown provider." }, { status: 404 });
+    const provider = withAccount(listed);
     if (provider.unavailableReason || !getProviderApiKey(provider)) {
         return NextResponse.json({ error: `${provider.label} is unavailable or has no key.` }, { status: 409 });
     }

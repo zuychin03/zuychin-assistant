@@ -1,6 +1,7 @@
 import type { ProviderConfig } from "@/lib/ai/providers";
 
-export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list" | "opencode";
+/** "seeded": the provider has no model list; its rows come from SQL seeds and are only retested. */
+export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list" | "opencode" | "cloudflare" | "seeded";
 
 /** V8 kinds: stored only once v8-media.sql widens the kind check. */
 export const MEDIA_KINDS = ["rerank", "parse", "image", "decision", "live", "translate"] as const;
@@ -23,8 +24,12 @@ export interface ProviderDiscovery {
     nameSuffix?: string;
     /** Ids the list carries that are not chat models and that the shared filters miss. */
     exclude?: RegExp;
-    /** Non-chat kinds this provider tracks; a kind left out is never stored. */
-    kinds?: Partial<Record<NonChatKind, { include: "free" | "all" }>>;
+    /** Non-chat kinds this provider tracks; a kind left out is never stored. `untested`: listed, but this app has no request shape for it yet. */
+    kinds?: Partial<Record<NonChatKind, { include: "free" | "all"; untested?: boolean }>>;
+    /** Probes per run for this provider, below the global cap (each probe spends a daily allowance). */
+    maxProbes?: number;
+    /** Retest passed rows this often instead of the default (a monthly allowance). */
+    probeEveryDays?: number;
 }
 
 export interface ListedModel {
@@ -315,6 +320,67 @@ export function parseOpenCodeModels(raw: unknown): ListedModel[] {
     });
 }
 
+const CLOUDFLARE_TASKS: Readonly<Record<string, ModelKind>> = {
+    "Text Generation": "chat",
+    "Text Embeddings": "embedding",
+    "Multimodal Embeddings": "embedding",
+    "Text-to-Speech": "speech",
+    "Automatic Speech Recognition": "transcription",
+    "Text-to-Image": "image",
+    "Translation": "translate",
+};
+// Clef is listed as Text Generation and the reranker as Text Classification.
+const CLOUDFLARE_DECISION = /^@cf\/cloudflare\/clef/;
+const CLOUDFLARE_RERANK = /reranker/;
+// FLUX.1 schnell: a 2024 model on any host (V8 plan Decision 2). Deepgram Flux: websocket only.
+const CLOUDFLARE_SKIP = /(flux-1-schnell|\/deepgram\/flux$)/;
+
+function propertyFlag(value: unknown): boolean | null {
+    return value === true || value === "true" ? true : value === false || value === "false" ? false : null;
+}
+
+function propertyCount(value: unknown): number | null {
+    return typeof value === "string" && /^\d+$/.test(value) ? count(Number(value)) : count(value);
+}
+
+/** Workers AI model search (24/11/2026 shape): `result[]` with `name`, `task.name` and `properties[]`. Workers Paid models are left out. */
+export function parseCloudflareModels(raw: unknown): ListedModel[] {
+    const result = record(raw).result;
+    return (Array.isArray(result) ? result : []).flatMap((value) => {
+        const entry = record(value);
+        const id = text(entry.name);
+        if (!id) return [];
+        const props = new Map((Array.isArray(entry.properties) ? entry.properties : []).map((item) => [text(record(item).property_id) ?? "", record(item).value]));
+        if (propertyFlag(props.get("require_workers_paid"))) return [];
+        const kind: ModelKind | null = CLOUDFLARE_SKIP.test(id) ? null
+            : CLOUDFLARE_DECISION.test(id) ? "decision"
+                : CLOUDFLARE_RERANK.test(id) ? "rerank" : CLOUDFLARE_TASKS[text(record(entry.task).name) ?? ""] ?? null;
+        const chat = kind === "chat";
+        const vision = propertyFlag(props.get("vision")) === true;
+        return [{
+            modelId: id,
+            label: cleanLabel(labelFromId(id), true),
+            description: description(entry.description),
+            developer: id.split("/")[1] ?? null,
+            free: true,
+            contextTokens: propertyCount(props.get("context_window")),
+            maxOutputTokens: null,
+            // A non-vision chat model lists text only, so the probe skips its vision step.
+            inputs: chat ? (vision ? ["Text", "Image"] : ["Text"]) : [],
+            listedTools: propertyFlag(props.get("function_calling")),
+            listedStructured: null,
+            listedThinking: propertyFlag(props.get("reasoning")),
+            // Cloudflare does not train on Workers AI inputs (its data usage page, 16/10/2026).
+            mayTrain: false,
+            chat,
+            kind,
+            expiresAt: null,
+            voices: [],
+            familyId: familyFromId(id),
+        }];
+    });
+}
+
 export function parseListing(discovery: ProviderDiscovery, raw: unknown): ListedModel[] {
     const keyFree = discovery.pricing === "all-free";
     switch (discovery.source) {
@@ -323,6 +389,8 @@ export function parseListing(discovery: ProviderDiscovery, raw: unknown): Listed
         case "gemini": return parseGeminiModels(raw, keyFree);
         case "openai-list": return parseOpenAiModelList(raw, keyFree);
         case "opencode": return parseOpenCodeModels(raw);
+        case "cloudflare": return parseCloudflareModels(raw);
+        case "seeded": return [];
     }
 }
 
@@ -364,8 +432,27 @@ async function getJson(url: string, headers: Record<string, string>, fetchImpl: 
 
 function listingError(status: number | null, body: unknown, fallback: string): ListingResult {
     const error = record(record(body).error);
-    const message = text(error.message) ?? text(record(body).message) ?? fallback;
+    const errors = record(body).errors;
+    // Cloudflare answers `{ errors: [{ code, message }] }`.
+    const first = Array.isArray(errors) ? record(errors[0]) : {};
+    const message = text(error.message) ?? text(record(body).message) ?? text(first.message) ?? fallback;
     return { ok: false, status, error: message.slice(0, 200) };
+}
+
+const CLOUDFLARE_PAGE = 100;
+
+async function listCloudflare(baseUrl: string, apiKey: string, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<ListingResult> {
+    // The search's `total_count` counts more than it returns (338 against 52 on 24/11/2026), so stop on a short page.
+    const entries: unknown[] = [];
+    for (let page = 1; page <= 5; page++) {
+        const { status, body } = await getJson(`${baseUrl.replace(/\/v1$/, "")}/models/search?per_page=${CLOUDFLARE_PAGE}&page=${page}`, { Authorization: `Bearer ${apiKey}` }, fetchImpl, signal);
+        if (status !== 200) return listingError(status, body, `HTTP ${status}`);
+        const result = record(body).result;
+        if (!Array.isArray(result)) return listingError(status, body, "The model list has no result array.");
+        entries.push(...result);
+        if (result.length < CLOUDFLARE_PAGE) break;
+    }
+    return { ok: true, models: parseCloudflareModels({ result: entries }) };
 }
 
 export async function listProviderModels(
@@ -391,7 +478,9 @@ export async function listProviderModels(
             }
             return { ok: true, models: parseListing(discovery, { models: entries }) };
         }
+        if (discovery.source === "seeded") return { ok: false, status: null, error: "This provider has no model list; its rows are seeds." };
         if (!provider.baseUrl) return { ok: false, status: null, error: "Provider has no base URL." };
+        if (discovery.source === "cloudflare") return await listCloudflare(provider.baseUrl, apiKey, fetchImpl, options.signal);
         // Without the filter OpenRouter lists text-output models only.
         const query = discovery.source === "openrouter" ? "?output_modalities=all" : "";
         const { status, body } = await getJson(`${provider.baseUrl}/models${query}`, { Authorization: `Bearer ${apiKey}`, ...provider.extraHeaders }, fetchImpl, options.signal);

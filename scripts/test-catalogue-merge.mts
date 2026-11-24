@@ -14,6 +14,7 @@ import {
     resolveModelKey,
     resolveWorkerChain,
     removalBlockedReason,
+    withAccount,
 } from "../src/lib/ai/providers";
 import type { ProfileRecord } from "../src/lib/ai/models/profiles";
 import { catalogueRowFromDb } from "../src/lib/ai/catalogue/rows";
@@ -50,7 +51,10 @@ const chainKeys = (needsTools: boolean) => resolveWorkerChain(needsTools).map((e
 try {
     check("an empty catalogue changes nothing", () => {
         assert.equal(providers().length, PROVIDERS.length);
-        providers().forEach((provider, index) => assert.equal(provider, PROVIDERS[index]));
+        // Account-scoped providers get their account filled in (or a missing-id reason); every other entry is the code object.
+        providers().forEach((provider, index) => PROVIDERS[index].accountIdEnv
+            ? assert.deepEqual(provider, withAccount(PROVIDERS[index]))
+            : assert.equal(provider, PROVIDERS[index]));
         for (const provider of listProvidersPublic()) {
             for (const model of provider.chatModels) {
                 assert.equal(model.origin, "code");

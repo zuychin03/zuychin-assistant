@@ -25,7 +25,7 @@
     "journal:test": "tsx --env-file=.env.local scripts/test-mutation-journal.mts",
     "v6:test": "tsx scripts/test-v6.mts",
     "v8:test": "tsx scripts/test-rerank.mts && tsx scripts/test-decisions.mts && tsx scripts/test-parse-markdown.mts && tsx scripts/test-capture-photos.mts && tsx scripts/test-image-index.mts && tsx scripts/test-long-audio.mts",
-    "catalogue:test": "tsx scripts/test-catalogue-sources.mts && tsx scripts/test-catalogue-merge.mts && tsx scripts/test-catalogue-probe.mts && tsx scripts/test-catalogue-run.mts && tsx scripts/test-catalogue-kinds.mts && tsx scripts/test-catalogue-probe-kinds.mts && tsx scripts/test-model-types-sql.mts && tsx scripts/test-catalogue-media-kinds.mts && tsx scripts/test-media-kinds-sql.mts",
+    "catalogue:test": "tsx scripts/test-catalogue-sources.mts && tsx scripts/test-catalogue-merge.mts && tsx scripts/test-catalogue-probe.mts && tsx scripts/test-catalogue-run.mts && tsx scripts/test-catalogue-kinds.mts && tsx scripts/test-catalogue-probe-kinds.mts && tsx scripts/test-model-types-sql.mts && tsx scripts/test-catalogue-media-kinds.mts && tsx scripts/test-media-kinds-sql.mts && tsx scripts/test-free-providers.mts",
     "models:test": "tsx scripts/test-model-awareness-sql.mts && tsx scripts/test-model-roster.mts && tsx scripts/test-model-lookup.mts && tsx scripts/test-model-profiles.mts && tsx scripts/test-agent-model-tools.mts && tsx scripts/test-model-status.mts",
     "typecheck": "tsc --noEmit"
   },

@@ -52,7 +52,7 @@ export async function PUT(req: NextRequest) {
     const refused = confirmPassword(req.headers, input.password);
     if (refused) return NextResponse.json(refused.body, { status: refused.status, headers: NO_STORE });
     await refreshProviderKeys();
-    const result = await saveProviderKey({ providerId: input.providerId, apiKey: input.apiKey }, deps());
+    const result = await saveProviderKey({ providerId: input.providerId, apiKey: input.apiKey, accountId: input.accountId }, deps());
     return NextResponse.json(result.body, { status: result.status, headers: NO_STORE });
 }
 

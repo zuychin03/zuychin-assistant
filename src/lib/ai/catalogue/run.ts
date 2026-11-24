@@ -1,4 +1,5 @@
-import { PROVIDERS, getProviderApiKey, retiredChatModelIds, type ProviderConfig } from "@/lib/ai/providers";
+import { PROVIDERS, getProviderApiKey, retiredChatModelIds, withAccount, type ProviderConfig } from "@/lib/ai/providers";
+import { enterProviderRest, loadProviderRest, quotaRestFromSteps, restingUntil } from "@/lib/ai/provider-rest";
 import { MEDIA_KINDS, MODEL_KINDS, familyFromId, isMediaKind, listProviderModels, mediaKindsEnabled, selectAllDiscoverable, selectDiscoverable, shortNameFor, typesDiscoveryEnabled, uniqueShortName, type ListedModel, type ListingResult, type ModelKind, type NonChatKind, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
 import { mediaRouteSupported } from "@/lib/ai/media/requests";
 import { probeModel, type ProbeResult, type ProbeTarget } from "@/lib/ai/catalogue/probe";
@@ -78,6 +79,15 @@ export interface DiscoveryDeps {
     inUse?(rows: readonly CatalogueRow[]): Promise<InUse>;
     /** Weekly retirement lookup for in-use non-chat models. Absent: none. */
     expiryLookups?: ExpiryLookups;
+    /** Quota rest (provider-rest.ts). Absent: no provider ever rests. */
+    rest?: ProviderRestDeps;
+}
+
+export interface ProviderRestDeps {
+    load(): Promise<void>;
+    restingUntil(providerId: string, nowMs: number): number | null;
+    /** Starts a rest and sends its one notice; false when the provider already rests that long. */
+    enter(input: { providerId: string; label: string; untilMs: number; reason: string; kinds: readonly string[] }): Promise<boolean>;
 }
 
 export type ExpiryLookupOutcome = { ok: true; date: string | null; url: string | null } | { ok: false; error: string };
@@ -103,8 +113,10 @@ export interface ProviderRunSummary {
     passed?: number;
     failed?: number;
     inconclusive?: number;
-    /** Due for a probe but left for a later run by the cap or the time budget. */
+    /** Due for a probe but left for a later run by the cap, the time budget or a rest. */
     deferred?: number;
+    /** Set while the provider's free allowance is used up: its probes wait until then. */
+    restingUntil?: string;
 }
 
 export interface RunSummary {
@@ -296,13 +308,23 @@ export function applyProbe(row: CatalogueRow, result: ProbeResult, at: string): 
 }
 
 /** Probe order: new free models (discovered, or seeded with no code entry), then inconclusive retries, then free picker models whose last probe is over 7 days old. Paid models never. */
-export function probePriority(row: CatalogueRow, inCode: boolean, listedNow: boolean, nowMs: number): number | null {
+export function probePriority(row: CatalogueRow, inCode: boolean, listedNow: boolean, nowMs: number, retestAfterMs = RETEST_AFTER_MS): number | null {
     if (!row.free || !listedNow || row.missingSince !== null) return null;
     if (row.probeStatus === "untested" && (row.origin === "discovered" || !inCode)) return 0;
     if (row.probeAttempts > 0 && row.probeAttempts < MAX_INCONCLUSIVE) return 1;
     const inPicker = inCode || row.approvedAt !== null || row.probeStatus === "passed";
-    const due = row.probedAt === null || nowMs - Date.parse(row.probedAt) > RETEST_AFTER_MS;
+    const due = row.probedAt === null || nowMs - Date.parse(row.probedAt) > retestAfterMs;
     return inPicker && due ? 2 : null;
+}
+
+function retestAfter(discovery: ProviderDiscovery | undefined): number {
+    return discovery?.probeEveryDays ? Math.max(RETEST_AFTER_MS, discovery.probeEveryDays * DAY_MS) : RETEST_AFTER_MS;
+}
+
+/** In-use rows are tested every run, except on a provider whose allowance is monthly (its `probeEveryDays`). */
+function inUseDue(row: CatalogueRow, discovery: ProviderDiscovery | undefined, nowMs: number): boolean {
+    if (!discovery?.probeEveryDays || !row.probedAt) return true;
+    return nowMs - Date.parse(row.probedAt) >= discovery.probeEveryDays * DAY_MS;
 }
 
 function inPicker(row: CatalogueRow, inCode: boolean): boolean {
@@ -368,7 +390,21 @@ export async function executeDiscovery(runId: string, trigger: DiscoveryTrigger,
 
 type ProviderListing =
     | { provider: ProviderConfig; discovery: ProviderDiscovery; state: "unavailable" | "no_key" }
+    | { provider: ProviderConfig; discovery: ProviderDiscovery; state: "seeded"; apiKey: string }
     | { provider: ProviderConfig; discovery: ProviderDiscovery; state: "listed"; apiKey: string; result: ListingResult };
+
+/** Kinds with an approved row on this provider, for the rest notice. */
+function approvedKindNames(rows: Iterable<CatalogueRow>, providerId: string): string[] {
+    const names = new Set<string>();
+    for (const row of rows) {
+        if (row.providerId !== providerId || row.approvedAt === null) continue;
+        const kind = rowKind(row);
+        names.add(kind === "chat" ? "chat" : KIND_NAMES[kind]);
+    }
+    const list = [...names];
+    if (list.length) list[0] = list[0].charAt(0).toUpperCase() + list[0].slice(1);
+    return list;
+}
 
 async function discover(runId: string, trigger: DiscoveryTrigger, deps: DiscoveryDeps, startedMs: number): Promise<RunSummary> {
     const now = new Date(startedMs).toISOString();
@@ -389,9 +425,11 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     const probeable = (row: CatalogueRow, provider: ProviderConfig) => {
         const kind = rowKind(row);
         if (kind === "chat") return true;
-        if (!typedProbes) return false;
+        if (!typedProbes || provider.discovery?.kinds?.[kind]?.untested) return false;
         return !isMediaKind(kind) || (mediaOn && mediaRouteSupported(kind, provider));
     };
+    await deps.rest?.load().catch(() => {});
+    const resting = (providerId: string) => deps.rest?.restingUntil(providerId, deps.now()) ?? null;
     const inUse = typesOn && deps.inUse ? await deps.inUse(read.rows).catch((error) => {
         console.error("[ModelDiscovery] Could not read the models in use:", error instanceof Error ? error.message : error);
         return null;
@@ -412,12 +450,45 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         if (provider.unavailableReason) return { provider, discovery, state: "unavailable" };
         const apiKey = deps.apiKey(provider);
         if (!apiKey) return { provider, discovery, state: "no_key" };
+        if (discovery.source === "seeded") return { provider, discovery, state: "seeded", apiKey };
         const result = await deps.list(provider, discovery, apiKey).catch((error): ListingResult => ({ ok: false, status: null, error: error instanceof Error ? error.message : String(error) }));
         return { provider, discovery, state: "listed", apiKey, result };
     }));
 
+    const queueFor = (provider: ProviderConfig, discovery: ProviderDiscovery, apiKey: string, entry: ProviderRunSummary, retired: ReadonlySet<string>, onList: (row: CatalogueRow) => boolean) => {
+        const codeIds = codeModelIds(provider);
+        // In-use models are tested in their own pass below, outside the cap.
+        const queue = [...after.values()]
+            .filter((row) => row.providerId === provider.id && probeable(row, provider) && !inUseKeys.has(keyOf(row)) && !retired.has(row.modelId) && !removed.has(keyOf(row)))
+            .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), onList(row), startedMs, retestAfter(discovery)) }))
+            .filter((item): item is { row: CatalogueRow; priority: number } => item.priority !== null)
+            .sort((a, b) => a.priority - b.priority
+                || (a.priority === 2 ? (a.row.probedAt ?? "").localeCompare(b.row.probedAt ?? "") : a.row.firstSeenAt.localeCompare(b.row.firstSeenAt))
+                || a.row.modelId.localeCompare(b.row.modelId))
+            .map((item) => item.row);
+        const until = resting(provider.id);
+        if (until !== null) {
+            // Listing costs nothing, so new and missing models are still tracked; the probes wait for the reset.
+            entry.restingUntil = new Date(until).toISOString();
+            entry.deferred = queue.length;
+            return;
+        }
+        const cap = Math.min(deps.maxProbes, discovery.maxProbes ?? deps.maxProbes);
+        entry.deferred = Math.max(0, queue.length - cap);
+        probeQueues.push({ provider, apiKey, rows: queue.slice(0, cap), entry });
+    };
+
     for (const item of listed) {
         if (!item) continue;
+        if (item.state === "seeded") {
+            // No list to compare against: seed rows are never marked missing here, only retested.
+            const { provider, discovery, apiKey } = item;
+            keyed.set(provider.id, { provider, apiKey });
+            const entry: ProviderRunSummary = { listing: "ok", listingFailures: 0, listed: 0, tracked: [...after.values()].filter((row) => row.providerId === provider.id).length };
+            summary.providers[provider.id] = entry;
+            queueFor(provider, discovery, apiKey, entry, new Set(), () => true);
+            continue;
+        }
         if (item.state !== "listed") {
             summary.providers[item.provider.id] = { listing: item.state, listingFailures: 0 };
             continue;
@@ -434,7 +505,6 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         }
 
         const retired = retiredChatModelIds(provider.id);
-        const codeIds = codeModelIds(provider);
         const listing = new Map(result.models.map((model) => [model.modelId, model]));
         const tracked = typesOn ? selectAllDiscoverable(result.models, discovery, retired, kinds) : selectDiscoverable(result.models, discovery, retired);
         const entry: ProviderRunSummary = { listing: "ok", listingFailures: 0, listed: result.models.length, tracked: tracked.length, added: 0, missing: 0 };
@@ -476,17 +546,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
             entry.added = (entry.added ?? 0) + 1;
         }
 
-        // In-use models are tested in their own pass below, outside the cap.
-        const queue = [...after.values()]
-            .filter((row) => row.providerId === provider.id && probeable(row, provider) && !inUseKeys.has(keyOf(row)) && !retired.has(row.modelId) && !removed.has(keyOf(row)))
-            .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), listing.has(row.modelId) || offList(row), startedMs) }))
-            .filter((item): item is { row: CatalogueRow; priority: number } => item.priority !== null)
-            .sort((a, b) => a.priority - b.priority
-                || (a.priority === 2 ? (a.row.probedAt ?? "").localeCompare(b.row.probedAt ?? "") : a.row.firstSeenAt.localeCompare(b.row.firstSeenAt))
-                || a.row.modelId.localeCompare(b.row.modelId))
-            .map((item) => item.row);
-        entry.deferred = Math.max(0, queue.length - deps.maxProbes);
-        probeQueues.push({ provider, apiKey, rows: queue.slice(0, deps.maxProbes), entry });
+        queueFor(provider, discovery, apiKey, entry, retired, (row) => listing.has(row.modelId) || offList(row));
     }
 
     const probeDetails = new Map<string, unknown>();
@@ -500,10 +560,23 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         entry.probed = (entry.probed ?? 0) + 1;
         entry[status] = (entry[status] ?? 0) + 1;
     };
-    const typedProbe = async (provider: ProviderConfig, apiKey: string, row: CatalogueRow): Promise<TypedProbeResult> => {
+    /** True when a step hit the provider's spent allowance: the rest starts and the row stays as it was. */
+    const restIfQuota = async (provider: ProviderConfig, steps: Readonly<Record<string, { httpStatus: number | null; detail: string | null }>>): Promise<boolean> => {
+        if (!deps.rest) return false;
+        const until = quotaRestFromSteps(provider.id, steps, deps.now());
+        if (until === null) return false;
+        const entry = summary.providers[provider.id];
+        if (entry) entry.restingUntil = new Date(until).toISOString();
+        const reason = Object.values(steps).find((step) => step.detail)?.detail ?? "Free allowance used up.";
+        await deps.rest.enter({ providerId: provider.id, label: provider.label, untilMs: until, reason, kinds: approvedKindNames(after.values(), provider.id) })
+            .catch((error) => console.error("[ModelDiscovery] Could not start a rest:", error instanceof Error ? error.message : error));
+        return true;
+    };
+    const typedProbe = async (provider: ProviderConfig, apiKey: string, row: CatalogueRow): Promise<TypedProbeResult | null> => {
         const result = await deps.probeTyped!({
             kind: rowKind(row) as NonChatKind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices, reference: referenceFor(row), template: row.traits?.promptTemplate,
         }).catch((error) => typedCrash(error, keyOf(row)));
+        if (await restIfQuota(provider, result.steps)) return null;
         const next = applyTypedProbe(after.get(keyOf(row)) ?? row, result, atNow());
         after.set(keyOf(next), next);
         probeDetails.set(keyOf(next), { retired: result.retired, retiredAt: result.retiredAt, steps: result.steps });
@@ -514,15 +587,18 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         // In-use pass: the knowledge model first, so its vectors are the same-space reference for the rest.
         if (typedProbes && inUse) {
             const targets = [...after.values()]
-                .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && row.free && !removed.has(keyOf(row)) && keyed.has(row.providerId) && probeable(row, keyed.get(row.providerId)!.provider))
+                .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && row.free && !removed.has(keyOf(row)) && keyed.has(row.providerId)
+                    && probeable(row, keyed.get(row.providerId)!.provider) && inUseDue(row, keyed.get(row.providerId)!.provider.discovery, startedMs))
                 .sort((a, b) => Number(keyOf(b) === primaryKey) - Number(keyOf(a) === primaryKey));
             for (const row of targets) {
                 if (deps.now() - startedMs >= deps.runBudgetMs) {
                     summary.budgetReached = true;
                     break;
                 }
+                if (resting(row.providerId) !== null) continue;
                 const { provider, apiKey } = keyed.get(row.providerId)!;
                 const result = await typedProbe(provider, apiKey, row);
+                if (!result) continue;
                 tally(summary.providers[provider.id], result.status);
                 if (keyOf(row) === primaryKey && result.vectors) {
                     reference = { partitionId: inUse.embedding!.modelId, ...result.vectors };
@@ -541,8 +617,17 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
                     entry.deferred = (entry.deferred ?? 0) + rows.length - index;
                     break;
                 }
+                if (resting(provider.id) !== null) {
+                    entry.deferred = (entry.deferred ?? 0) + rows.length - index;
+                    break;
+                }
                 if (rowKind(row) !== "chat") {
-                    tally(entry, (await typedProbe(provider, apiKey, row)).status);
+                    const result = await typedProbe(provider, apiKey, row);
+                    if (!result) {
+                        entry.deferred = (entry.deferred ?? 0) + rows.length - index;
+                        break;
+                    }
+                    tally(entry, result.status);
                     continue;
                 }
                 const checkVision = !row.inputs.length || row.inputs.includes("image");
@@ -551,6 +636,10 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
                     const step = { outcome: "transient" as const, httpStatus: null, ms: null, detail: "The probe crashed." };
                     return { status: "inconclusive", retired: false, chatMs: null, supportsTools: null, supportsSearch: null, supportsVision: null, steps: { chat: step, tools: step, forced: step, vision: step } };
                 });
+                if (await restIfQuota(provider, result.steps)) {
+                    entry.deferred = (entry.deferred ?? 0) + rows.length - index;
+                    break;
+                }
                 const next = applyProbe(after.get(keyOf(row)) ?? row, result, atNow());
                 after.set(keyOf(next), next);
                 probeDetails.set(keyOf(next), { retired: result.retired, steps: result.steps });
@@ -791,6 +880,9 @@ export async function executeModelTest(runId: string, providerId: string, modelI
         const provider = deps.providers.find((entry) => entry.id === providerId);
         const apiKey = provider ? deps.apiKey(provider) : undefined;
         if (!provider || provider.unavailableReason || !apiKey) throw new Error(`${provider?.label ?? providerId} is unavailable or has no key.`);
+        await deps.rest?.load().catch(() => {});
+        const restEnds = deps.rest?.restingUntil(provider.id, deps.now()) ?? null;
+        if (restEnds !== null) throw new Error(restingMessage(provider, restEnds));
         const read = await deps.readRows();
         if (!read.ok) throw new Error(`The model catalogue is ${read.reason === "migration_required" ? "not set up" : "unavailable"}.`);
         const row = read.rows.find((entry) => entry.providerId === providerId && entry.modelId === modelId);
@@ -800,6 +892,7 @@ export async function executeModelTest(runId: string, providerId: string, modelI
         const checkVision = !row.inputs.length || row.inputs.includes("image");
         const { value: result, observations } = await collectModelObservations(() => deps.probe({ provider, modelId, apiKey, checkVision }));
         await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
+        await restFromTest(provider, result.steps, read.rows, deps);
         const next = applyProbe(row, result, new Date(deps.now()).toISOString());
         await deps.saveRows([{ row: next, probeDetail: { retired: result.retired, steps: result.steps } }], new Date(deps.now()).toISOString());
         await deps.refreshSnapshot().catch((error) => console.error("[ModelDiscovery] Snapshot refresh failed:", error instanceof Error ? error.message : error));
@@ -827,6 +920,21 @@ async function referenceForTest(row: CatalogueRow, rows: readonly CatalogueRow[]
     return result?.vectors ? { partitionId: active.modelId, ...result.vectors } : undefined;
 }
 
+function restingMessage(provider: ProviderConfig, untilMs: number): string {
+    return `${provider.label} is resting until ${new Date(untilMs).toISOString().slice(0, 16).replace("T", " ")} UTC: its free allowance is used up. The model was not changed.`;
+}
+
+/** A manual test that hit the spent allowance starts the rest and fails the run without touching the row. */
+async function restFromTest(provider: ProviderConfig, steps: Readonly<Record<string, { httpStatus: number | null; detail: string | null }>>, rows: readonly CatalogueRow[], deps: DiscoveryDeps): Promise<void> {
+    if (!deps.rest) return;
+    const until = quotaRestFromSteps(provider.id, steps, deps.now());
+    if (until === null) return;
+    const reason = Object.values(steps).find((step) => step.detail)?.detail ?? "Free allowance used up.";
+    await deps.rest.enter({ providerId: provider.id, label: provider.label, untilMs: until, reason, kinds: approvedKindNames(rows, provider.id) })
+        .catch((error) => console.error("[ModelDiscovery] Could not start a rest:", error instanceof Error ? error.message : error));
+    throw new Error(restingMessage(provider, until));
+}
+
 async function testTypedModel(runId: string, provider: ProviderConfig, apiKey: string, row: CatalogueRow, rows: readonly CatalogueRow[], deps: DiscoveryDeps, startedMs: number): Promise<TestSummary> {
     if (!deps.probeTyped) throw new Error("Tests of non-chat models are not configured.");
     const kind = rowKind(row) as NonChatKind;
@@ -835,6 +943,7 @@ async function testTypedModel(runId: string, provider: ProviderConfig, apiKey: s
         reference: kind === "embedding" ? await referenceForTest(row, rows, deps) : undefined,
     }));
     await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
+    await restFromTest(provider, result.steps, rows, deps);
     const next = applyTypedProbe(row, result, new Date(deps.now()).toISOString());
     await deps.saveRows([{ row: next, probeDetail: { retired: result.retired, retiredAt: result.retiredAt, steps: result.steps } }], new Date(deps.now()).toISOString());
     await deps.refreshSnapshot().catch((error) => console.error("[ModelDiscovery] Snapshot refresh failed:", error instanceof Error ? error.message : error));
@@ -874,7 +983,7 @@ export async function liveDiscoveryDeps(): Promise<DiscoveryDeps> {
         import("@/lib/ai/models/store"),
     ]);
     return {
-        providers: PROVIDERS,
+        providers: PROVIDERS.map(withAccount),
         apiKey: getProviderApiKey,
         list: (provider, discovery, apiKey) => listProviderModels(provider, discovery, apiKey),
         probe: (target) => probeModel(target),
@@ -895,6 +1004,7 @@ export async function liveDiscoveryDeps(): Promise<DiscoveryDeps> {
         typesEnabled: () => typesDiscoveryEnabled() && store.catalogueTypesAvailable() === true,
         mediaEnabled: () => mediaKindsEnabled(),
         inUse: liveInUse,
+        rest: { load: () => loadProviderRest(), restingUntil: (providerId, nowMs) => restingUntil(providerId, nowMs), enter: (input) => enterProviderRest(input) },
         expiryLookups: lookupEnabled() ? {
             maxPerRun: MAX_EXPIRY_LOOKUPS,
             lookup: async (provider, row) => {

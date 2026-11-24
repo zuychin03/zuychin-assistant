@@ -1,4 +1,4 @@
-import { PROVIDERS, isProviderAvailable, providerKeySource, type ProviderConfig } from "@/lib/ai/providers";
+import { PROVIDERS, isProviderAvailable, providerAccountId, providerKeySource, splitAccountKey, withAccount, type ProviderConfig } from "@/lib/ai/providers";
 import { authEnabled } from "@/lib/auth/config";
 import { checkPassword, clientAddress, TOO_MANY_ATTEMPTS } from "@/lib/auth/attempts";
 import { KEY_CHECKS, type KeyCheckResult } from "@/lib/ai/provider-keys/check";
@@ -17,6 +17,10 @@ export interface ProviderKeyView {
     available: boolean;
     unavailableReason: string | null;
     checkable: boolean;
+    /** Set for a provider that needs an account id next to its key (Cloudflare). */
+    accountIdEnv?: string;
+    /** Whether an account id is known, from the saved key or the env var. Never the id itself. */
+    accountIdSet?: boolean;
 }
 
 export interface ProviderKeysView {
@@ -71,7 +75,8 @@ export function providerKeysView(snapshot: ProviderKeySnapshot = providerKeySnap
         previousLoaded: snapshot.previousLoaded,
         passwordRequired: authEnabled(),
         changesBlocked: changesBlockedReason(snapshot, env),
-        providers: PROVIDERS.map((provider) => {
+        providers: PROVIDERS.map((base) => {
+            const provider = withAccount(base);
             const source = providerKeySource(provider);
             const saved = snapshot.keys.get(provider.id);
             const envKey = env[provider.apiKeyEnv];
@@ -85,6 +90,7 @@ export function providerKeysView(snapshot: ProviderKeySnapshot = providerKeySnap
                 available: isProviderAvailable(provider),
                 unavailableReason: provider.unavailableReason ?? null,
                 checkable: provider.id in KEY_CHECKS,
+                ...(provider.accountIdEnv ? { accountIdEnv: provider.accountIdEnv, accountIdSet: !!providerAccountId(provider) } : {}),
             };
         }),
     };
@@ -114,11 +120,27 @@ function storageError(reason: string): AdminResult {
         : { status: 503, body: { error: "The key store could not be reached. Try again shortly." } };
 }
 
-export async function saveProviderKey(input: { providerId: unknown; apiKey: unknown }, deps: KeyAdminDeps): Promise<AdminResult> {
+const ACCOUNT_ID = /^[0-9a-f]{32}$/i;
+
+/** For an account-scoped provider the stored key is `<account id>:<token>`. A token saved alone keeps the earlier id. */
+function keyToStore(provider: ProviderConfig, token: string, accountInput: unknown): { key: string } | { error: string } {
+    if (!provider.accountIdEnv) return { key: token };
+    const typed = typeof accountInput === "string" ? accountInput.trim() : "";
+    if (typed && !ACCOUNT_ID.test(typed)) return { error: "The account id is 32 letters and digits. Copy it from the Cloudflare dashboard." };
+    const pasted = splitAccountKey(token);
+    const accountId = (typed || pasted.accountId || providerAccountId(provider))?.toLowerCase();
+    if (!accountId) return { error: `Add the account id next to the token (or set ${provider.accountIdEnv}).` };
+    return { key: `${accountId}:${pasted.apiKey}` };
+}
+
+export async function saveProviderKey(input: { providerId: unknown; apiKey: unknown; accountId?: unknown }, deps: KeyAdminDeps): Promise<AdminResult> {
     const provider = findProvider(input.providerId);
     if (!provider) return { status: 404, body: { error: "Unknown provider." } };
-    const apiKey = normaliseApiKey(input.apiKey);
-    if (!apiKey) return { status: 400, body: { error: "That does not look like an API key. Paste the whole key, with no spaces inside." } };
+    const token = normaliseApiKey(input.apiKey);
+    if (!token) return { status: 400, body: { error: "That does not look like an API key. Paste the whole key, with no spaces inside." } };
+    const storing = keyToStore(provider, token, input.accountId);
+    if ("error" in storing) return { status: 400, body: { error: storing.error } };
+    const apiKey = storing.key;
     const blocked = changesBlockedReason();
     if (blocked) return { status: 409, body: { error: blocked } };
     const key = currentKey(deps);
