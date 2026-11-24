@@ -45,6 +45,9 @@ export const RESEARCH_NOTE_EXCERPT_CHARS = 400;
 export const RESEARCH_TITLE_CHARS = 120;
 export const RESEARCH_QUERY_CHARS = 200;
 export const RESEARCH_SOURCE_TIMEOUT_MS = 15_000;
+// With a rerank model in use, Tavily returns more results (same credit cost) and the model picks the best ones.
+export const RESEARCH_WEB_CANDIDATES = 10;
+export const RESEARCH_RERANK_TIMEOUT_MS = 5_000;
 
 export const ADAPTER_VERSION = "zuychin-online-1";
 export const FAILED_PASS_PREFIX = "Model call failed:";

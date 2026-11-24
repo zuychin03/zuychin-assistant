@@ -8,10 +8,10 @@ import type { DiscoveryRunRecord } from "@/lib/ai/catalogue/store";
 import type { AdminModelInfo } from "@/lib/ai/models/admin-view";
 import type { ModelSpeed } from "@/lib/ai/models/stats";
 import type { PurposeTag } from "@/lib/ai/models/tags";
-import type { ModelKind } from "@/lib/ai/catalogue/sources";
+import type { MediaKind, ModelKind } from "@/lib/ai/catalogue/sources";
 import type { TranscriptionOrder } from "@/lib/ai/voice-choices";
 import { duration, keyOf, melbourneDate, melbourneTime, OUTCOME_LABELS, probeSteps, STEP_LABELS } from "./model-format";
-import { KIND_LABELS, KnowledgeStrip, SpeechStrip, TranscriptionStrip, TypedEntry, typedNeedsAttention, typedRank, type KnowledgeInfo, type SwitchJob, type TypedRow, type VoiceInfo } from "./typed-models";
+import { KIND_LABELS, KnowledgeStrip, MediaStrip, SpeechStrip, TranscriptionStrip, TypedEntry, isMediaKindName, isMediaRow, typedNeedsAttention, typedRank, type KnowledgeInfo, type MediaInfo, type SwitchJob, type TypedRow, type VoiceInfo } from "./typed-models";
 
 type ModelRow = CatalogueRow & AdminModelInfo & { kind: "chat"; probeDetail: unknown; inCode: boolean; retired: boolean };
 type AnyRow = ModelRow | TypedRow;
@@ -24,6 +24,7 @@ interface CataloguePayload {
     settings: { enabled: boolean; maxProbes: number; lookups: number; types?: { enabled: boolean; stored: boolean } };
     knowledge?: KnowledgeInfo | null;
     voice?: VoiceInfo;
+    media?: MediaInfo;
     tags: TagEntry[];
     providers: ProviderEntry[];
     rows: AnyRow[];
@@ -39,8 +40,9 @@ const FILTERS: { value: Filter; label: string }[] = [
     { value: "picker", label: "In the picker" }, { value: "hidden", label: "Not in the picker" }, { value: "removed", label: "Removed" },
 ];
 const TYPED_FILTERS: { value: Filter; label: string }[] = [{ value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "inuse", label: "In use" }];
-const KINDS: readonly ModelKind[] = ["chat", "embedding", "speech", "transcription"];
+const KINDS = Object.keys(KIND_LABELS) as ModelKind[];
 const TYPES_MIGRATION = "scripts/migrations/v7-model-types.sql";
+const MEDIA_MIGRATION = "scripts/migrations/v8-media.sql";
 const POLL_MS = 4000;
 const PROFILE_MIGRATION = "scripts/migrations/v7-model-awareness.sql";
 
@@ -490,6 +492,18 @@ export default function ModelsPanel() {
         void saveVoice({ transcription: { order, providerId: choice?.providerId ?? null, modelId: choice?.modelId ?? null } }, "The transcription order is saved.");
     };
 
+    const chooseMedia = (kind: MediaKind, row: TypedRow | null) => {
+        void (async () => {
+            setVoiceBusy(true);
+            setNotice(null);
+            const result = await send("/api/admin/media", "PUT", row ? { kind, providerId: row.providerId, modelId: row.modelId } : { kind, providerId: null });
+            setNotice(result.ok ? { text: row ? `${nameOf(row)} is chosen for ${KIND_LABELS[kind].toLocaleLowerCase()}.` : `${KIND_LABELS[kind]} uses the first tested, approved model again.` }
+                : { tone: "danger", text: result.error ?? "The choice could not be saved." });
+            await load();
+            setVoiceBusy(false);
+        })();
+    };
+
     const startSwitch = async (row: TypedRow, dimension: number) => {
         setBusyKey(keyOf(row));
         setNotice(null);
@@ -535,8 +549,11 @@ export default function ModelsPanel() {
     const typedGroups = (data?.providers ?? [])
         .map((entry) => ({ entry, rows: typedVisible.filter((row) => row.providerId === entry.id).sort((a, b) => typedRank(a) - typedRank(b) || a.label.localeCompare(b.label)) }))
         .filter((group) => group.rows.length > 0);
-    const counts: Record<ModelKind, number> = { chat: rows.length, embedding: 0, speech: 0, transcription: 0 };
+    const counts = Object.fromEntries(KINDS.map((entry) => [entry, entry === "chat" ? rows.length : 0])) as Record<ModelKind, number>;
     for (const row of typedRows) counts[row.kind]++;
+    const media = data?.media;
+    const rowByKey = new Map(typedRows.map((row) => [keyOf(row), row]));
+    const mediaLabel = (key: string | null) => key && rowByKey.has(key) ? nameOf(rowByKey.get(key)!) : null;
     const typesStored = data?.settings.types?.stored !== false;
     const showKinds = typesStored || typedRows.length > 0;
     const kindRows: AnyRow[] = kind === "chat" ? rows : ofKind;
@@ -556,7 +573,7 @@ export default function ModelsPanel() {
                 <Layers size={16} aria-hidden="true" />
                 <div className="panel-heading">
                     <h2>Model catalogue</h2>
-                    <p>Chat, embedding, speech and transcription models the daily check found and tested. Tested free chat models join the picker; approve a model to let automatic routes use it.</p>
+                    <p>Chat, embedding, speech, transcription and media models the daily check found and tested. Tested free chat models join the picker; approve a model to let automatic routes use it.</p>
                 </div>
                 <button type="button" className="btn" onClick={() => { void checkNow(); }} disabled={running || !data} aria-label="Check providers now">
                     <RefreshCw size={15} className={running ? "animate-spin" : undefined} aria-hidden="true" />
@@ -594,6 +611,7 @@ export default function ModelsPanel() {
                 {kind === "speech" && voice && <SpeechStrip voice={voice} label={backupRow ? nameOf(backupRow) : null} busy={voiceBusy}
                     onUseDefault={() => { void saveVoice({ backup: null }, "The backup voice is the default Gemini voice again."); }} />}
                 {kind === "transcription" && voice && <TranscriptionStrip voice={voice} label={transcriberRow ? nameOf(transcriberRow) : null} busy={voiceBusy} onOrder={setOrder} />}
+                {isMediaKindName(kind) && media && <MediaStrip kind={kind} media={media} labelOf={mediaLabel} busy={voiceBusy} onAutomatic={() => chooseMedia(kind, null)} />}
                 <div style={styles.filters}>
                     <label style={styles.filter}><span>Find a model</span><input className="field" style={styles.input} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model or provider" /></label>
                     <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model catalogue provider" className="field" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider}
@@ -636,7 +654,10 @@ export default function ModelsPanel() {
                             {providerRows.map((row) => {
                                 const key = keyOf(row);
                                 const chosenVoice = voice?.speech?.providerId === row.providerId && voice.speech.modelId === row.modelId ? voice.speech.voice ?? "" : "";
+                                const mediaChoice = isMediaRow(row) ? media?.choices[row.kind] : undefined;
+                                const mediaChosen = mediaChoice?.providerId === row.providerId && mediaChoice.modelId === row.modelId;
                                 return <TypedEntry key={`${key}|${chosenVoice}`} row={row} providerLabel={entry.label} voice={voice ?? { speech: null, transcription: { order: "local", providerId: null, modelId: null }, defaultSpeechModel: "" }}
+                                    mediaChosen={mediaChosen} onUseMedia={isMediaRow(row) && media?.enabled ? () => chooseMedia(row.kind, row) : undefined}
                                     locked={running} busy={busyKey === key || pending?.key === key || voiceBusy} switchRunning={switchJob?.status === "running"}
                                     confirming={confirmKey === key} confirmingDelete={deleteKey === key}
                                     onTest={() => { void test(row); }} onApproval={(approved) => { void setApproval(row, approved); }}
@@ -647,7 +668,8 @@ export default function ModelsPanel() {
                         </section>
                     ))}
                     {!typedGroups.length && <p className="empty">{ofKind.length ? "No models match these filters. Clear the search or choose another filter."
-                        : !typesStored ? `Apply ${TYPES_MIGRATION}, then press Check now.` : `No ${KIND_LABELS[kind].toLocaleLowerCase()} models yet. Press Check now to list them.`}</p>}
+                        : !typesStored ? `Apply ${TYPES_MIGRATION}, then press Check now.`
+                            : isMediaKindName(kind) && !media?.stored ? `Apply ${MEDIA_MIGRATION}, then press Check now.` : `No ${KIND_LABELS[kind].toLocaleLowerCase()} models yet. Press Check now to list them.`}</p>}
                 </div>}
             </>}
         </div>

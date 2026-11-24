@@ -6,6 +6,7 @@ import { CaptureError } from "@/lib/capture/service";
 import { captureDocuments } from "@/lib/capture/documents";
 import { ocrTiers } from "@/lib/capture/extract/ocr";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
+import { resolveModelOfKind } from "@/lib/ai/media/resolve";
 import { VaultConflictError } from "@/lib/vault/github";
 import { sameOrigin } from "@/lib/auth/config";
 import { BodyTooLargeError, readTextCapped } from "@/lib/http/body";
@@ -22,8 +23,10 @@ export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     try {
         const profile = await captureProfile();
-        const [items, documents] = await Promise.all([listCaptures(profile.id), captureDocuments(profile.id)]);
-        return respond({ profileId: profile.id, items, documents, ocr: ocrTiers(effectiveFreeOnly(profile)) });
+        const freeOnly = effectiveFreeOnly(profile);
+        const [items, documents, pageReader] = await Promise.all([listCaptures(profile.id), captureDocuments(profile.id),
+            resolveModelOfKind("parse", { freeOnly }).catch(() => null)]);
+        return respond({ profileId: profile.id, items, documents, ocr: ocrTiers(freeOnly), pageReader: pageReader?.row.label ?? null });
     } catch (error) { return failure(error); }
 }
 export async function POST(req: NextRequest) {
@@ -39,7 +42,8 @@ export async function POST(req: NextRequest) {
         const id = z.string().uuid().parse(input.id);
         if (input.action === "capture") {
             const saved = await captureService.capture(profile.id, id, input.source);
-            return respond({ item: { ...saved, source: { ...saved.source, ...(saved.source.pdf ? { pdf: { name: saved.source.pdf.name, base64: "" } } : {}) } } });
+            return respond({ item: { ...saved, source: { ...saved.source, ...(saved.source.pdf ? { pdf: { name: saved.source.pdf.name, base64: "" } } : {}),
+                ...(saved.source.image ? { image: { name: saved.source.image.name, base64: "" } } : {}) } } });
         }
         if (input.action === "preview") return respond(await captureService.preview(profile.id, id, input.review));
         if (input.action === "ingest") {
@@ -53,6 +57,9 @@ export async function POST(req: NextRequest) {
             if (result.background) after(result.background);
             return respond({ extract: result.extract }, result.background ? 202 : 200);
         }
-        throw new CaptureError("Choose capture, preview, ingest or extract.");
+        if (input.action === "pages") {
+            return respond({ extract: await captureService.savePages(profile.id, id, { text: input.text, pages: input.pages, unread: input.unread, model: input.model }) });
+        }
+        throw new CaptureError("Choose capture, preview, ingest, extract or pages.");
     } catch (error) { return failure(error); }
 }

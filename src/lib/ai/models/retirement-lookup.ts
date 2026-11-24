@@ -1,7 +1,7 @@
 import type { DraftRequest } from "@/lib/ai/models/lookup";
 
-// Weekly check of an in-use embedding, speech or transcription model: search only the provider's own docs and keep a
-// date only when a page states one. Advisory: the result always carries its source link.
+// Weekly check of an in-use non-chat model: NVIDIA's build page first for NIM models, then a search of the provider's
+// own docs, keeping a date only when a page states one. Advisory: the result always carries its source link.
 
 export const RETIREMENT_DOMAINS: Readonly<Record<string, readonly string[]>> = {
     "nvidia-nim": ["build.nvidia.com", "docs.api.nvidia.com"],
@@ -13,6 +13,8 @@ export const RETIREMENT_DOMAINS: Readonly<Record<string, readonly string[]>> = {
 
 const SNIPPET_MAX = 1200;
 const RESULTS_MAX = 5;
+const PAGE_TIMEOUT_MS = 15_000;
+const PAGE_MAX_BYTES = 3_000_000;
 
 export type RetirementOutcome = { ok: true; date: string | null; url: string | null } | { ok: false; error: string };
 
@@ -26,6 +28,29 @@ export interface RetirementTarget {
 export interface RetirementLookupDeps {
     search(query: string, domains: readonly string[]): Promise<{ title: string; url: string; content: string }[] | null>;
     ask(request: DraftRequest): Promise<unknown | null>;
+    /** A page's HTML, or null when it could not be read. Absent: no build page check. */
+    page?(url: string): Promise<string | null>;
+}
+
+/** build.nvidia.com/<publisher>/<model>, with the dots in the model name written as underscores. */
+export function nimBuildPageUrl(modelId: string): string | null {
+    const parts = modelId.split("/");
+    if (parts.length !== 2 || !/^[a-z0-9][a-z0-9._-]*$/i.test(parts[0]) || !/^[a-z0-9][a-z0-9._-]*$/i.test(parts[1])) return null;
+    return `https://build.nvidia.com/${parts[0]}/${parts[1].replace(/\./g, "_")}`;
+}
+
+/**
+ * The deprecation date a NIM build page states, as an ISO timestamp. The page carries it as a
+ * `"DEPRECATION","value":"11/22/2026"` attribute and in "This API will be deprecated on 11/22/2026" (US day order).
+ */
+export function buildPageDate(html: string): string | null {
+    const match = /DEPRECATION\\?"\s*,\s*\\?"value\\?"\s*:\s*\\?"(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(html)
+        ?? /will be deprecated on (\d{1,2})\/(\d{1,2})\/(\d{4})/i.exec(html);
+    if (!match) return null;
+    const [month, day, year] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    const ms = Date.UTC(year, month - 1, day);
+    const date = new Date(ms);
+    return date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.toISOString() : null;
 }
 
 const SCHEMA = {
@@ -45,6 +70,15 @@ export function lookupDate(value: unknown): string | null {
 }
 
 export async function lookupRetirement(target: RetirementTarget, deps: RetirementLookupDeps): Promise<RetirementOutcome> {
+    const buildPage = target.providerId === "nvidia-nim" && deps.page ? nimBuildPageUrl(target.modelId) : null;
+    if (buildPage) {
+        const html = await deps.page!(buildPage).catch(() => null);
+        // A page that loaded is the answer either way; a failed one falls back to the search.
+        if (html !== null) {
+            const date = buildPageDate(html);
+            return { ok: true, date, url: date ? buildPage : null };
+        }
+    }
     const domains = RETIREMENT_DOMAINS[target.providerId];
     if (!domains) return { ok: true, date: null, url: null };
     const results = await deps.search(`"${target.modelId}" deprecation OR retirement OR "end of life" OR shutdown`, domains);
@@ -83,6 +117,16 @@ export function liveRetirementDeps(): RetirementLookupDeps {
         ask: async (request) => {
             const { draft } = await import("@/lib/ai/models/lookup-live");
             return (await draft(request))?.json ?? null;
+        },
+        page: async (url) => {
+            try {
+                const response = await fetch(url, { headers: { Accept: "text/html", "User-Agent": "zuychin-assistant" }, signal: AbortSignal.timeout(PAGE_TIMEOUT_MS), cache: "no-store" });
+                if (!response.ok) return null;
+                const html = await response.text();
+                return html.length > PAGE_MAX_BYTES ? html.slice(0, PAGE_MAX_BYTES) : html;
+            } catch {
+                return null;
+            }
         },
     };
 }

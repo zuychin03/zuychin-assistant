@@ -4,6 +4,9 @@ import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { indexKnowledgeDocument, recallKnowledge } from "@/lib/knowledge/store";
 import type { KnowledgeScoreBreakdown } from "@/lib/knowledge/types";
 import { firstHitPerPage } from "./page-hits";
+import { recordRanking, rerank } from "@/lib/ai/rerank";
+import { recordReplySources } from "@/lib/ai/reply-sources";
+import { isImageAssetPath } from "@/lib/knowledge/photo-paths";
 
 export interface VaultPageHit {
     path: string;
@@ -136,6 +139,8 @@ export async function searchVaultPages(params: {
     hybrid?: boolean;
     // Hybrid only: one hit per page, its best section, for tools that list pages.
     onePerPage?: boolean;
+    // Hybrid only: let the rerank model order the sections before pages are picked.
+    rerank?: { freeOnly: boolean; signal?: AbortSignal; timeoutMs?: number };
 }): Promise<VaultPageHit[]> {
     const embedding = await embedText(params.embRef, params.query, params.inputType ?? "query");
 
@@ -148,17 +153,28 @@ export async function searchVaultPages(params: {
             // Extra sections so enough distinct pages survive the merge.
             matchCount: params.onePerPage ? wanted * 3 : wanted,
         });
-        if (hits) return (params.onePerPage ? firstHitPerPage(hits, wanted) : hits).map((hit) => ({
-            path: hit.path,
-            title: hit.title,
-            summary: hit.excerpt.slice(0, 240),
-            category: hit.category,
-            similarity: hit.score.semantic,
-            documentId: hit.documentId,
-            chunkId: hit.chunkId,
-            heading: hit.heading,
-            score: hit.score,
-        }));
+        if (hits) {
+            const order = params.rerank
+                ? await rerank(params.query, hits, { ...params.rerank, text: (hit) => [hit.title, hit.heading, hit.excerpt].filter(Boolean).join("\n") })
+                : null;
+            if (order) recordRanking("vault", order, hits.length);
+            const ordered = order?.ok ? order.items : hits;
+            const picked = params.onePerPage ? firstHitPerPage(ordered, wanted) : ordered;
+            // Inside a chat turn, so a photo the reply cites is sent with it; a no-op elsewhere.
+            recordReplySources(picked.filter((hit) => isImageAssetPath(hit.path))
+                .map((hit) => ({ kind: "photo" as const, label: hit.title || hit.path, ref: hit.path, weight: hit.score.final })));
+            return picked.map((hit) => ({
+                path: hit.path,
+                title: hit.title,
+                summary: hit.excerpt.slice(0, 240),
+                category: hit.category,
+                similarity: hit.score.semantic,
+                documentId: hit.documentId,
+                chunkId: hit.chunkId,
+                heading: hit.heading,
+                score: hit.score,
+            }));
+        }
     }
 
     const { data, error } = await supabase.rpc("match_vault_pages", {

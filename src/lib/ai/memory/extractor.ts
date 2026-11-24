@@ -3,6 +3,7 @@ import { Type } from "@google/genai";
 import { embedText } from "@/lib/ai/embeddings";
 import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { observeGeminiClient } from "@/lib/ai/model-observations";
+import { worthExtracting } from "@/lib/ai/memory/gate";
 import {
     searchMemories, insertMemory, updateMemoryFact, deleteMemory, reinforceMemory,
     memoryEmbeddingRef, type MemoryCategory, type MemoryHit,
@@ -40,7 +41,7 @@ export async function extractMemories(params: {
     const { userMessage, assistantReply, channel, userProfileId, projectId, conversationId } = params;
     try {
         const trimmed = userMessage.trim();
-        if (trimmed.length < 15 || trimmed.startsWith("/")) return;
+        if (!worthExtracting(trimmed)) return;
 
         // Messaging channels have no conversation ids; a day bucket makes
         // "repeated on another day" count as fresh pattern evidence there.

@@ -1,6 +1,8 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { Type, ThinkingLevel } from "@google/genai";
 import { observeGeminiClient } from "@/lib/ai/model-observations";
+import { decide } from "@/lib/ai/decisions";
+import type { DecisionQuestion } from "@/lib/ai/media/requests";
 
 export interface RouteDecision {
     mode: "chat" | "agent";
@@ -27,7 +29,28 @@ ${context}User message:
 Respond ONLY with JSON: {"mode":"agent"} or {"mode":"chat"}.`;
 }
 
-export async function classifyIntent(message: string, lastAssistant?: string, freeOnly = false): Promise<RouteDecision> {
+const AGENT_CRITERION = "It needs multiple steps, research, producing a document or report, writing code or files, or maintaining the knowledge vault: anything that benefits from an autonomous multi-step agent that uses tools and can return downloadable files.";
+const CHAT_CRITERION = "A simple question, a quick fact, casual talk, memory or recall, scheduling a single reminder, or anything answerable in one short reply.";
+
+/** The decision model's question; the criteria are the generate prompt's descriptions. */
+export function routeQuestions(continuation: boolean): { mode: DecisionQuestion } {
+    return {
+        mode: {
+            type: "choice",
+            instructions: `How should a personal assistant handle the user's message?${continuation ? " The user is replying to the assistant's previous message: if they approve, choose or continue work the assistant proposed there, judge by THAT work, not by the reply's length." : ""}`,
+            criteria: { agent: AGENT_CRITERION, chat: CHAT_CRITERION },
+        },
+    };
+}
+
+export function routeInput(message: string, lastAssistant?: string): string {
+    const context = lastAssistant ? `The assistant's previous message:\n${lastAssistant.slice(-1500)}\n\n` : "";
+    return `${context}User message:\n${message.slice(0, 2000)}`;
+}
+
+type Decide = typeof decide;
+
+export async function classifyIntent(message: string, lastAssistant?: string, freeOnly = false, decideImpl: Decide = decide): Promise<RouteDecision> {
     const text = message.trim();
 
     const isShort = text.length < 16 || /^(yes|no|yep|nope|ok|okay)\b[.!]*$/i.test(text);
@@ -36,6 +59,9 @@ export async function classifyIntent(message: string, lastAssistant?: string, fr
     if (TRIVIAL.test(text)) return { mode: "chat" };
     if (isShort && !isContinuation) return { mode: "chat" };
 
+    const context = isContinuation ? lastAssistant : undefined;
+    const decided = await decideImpl(routeInput(text, context), routeQuestions(!!context), { freeOnly });
+    if (decided) return { mode: decided.answers.mode.type === "choice" && decided.answers.mode.value === "agent" ? "agent" : "chat" };
     if (freeOnly) return { mode: AGENT_HINT.test(text) || (isContinuation && AGENT_HINT.test(lastAssistant!)) ? "agent" : "chat" };
     try {
         const resp = await observeGeminiClient(ai, { providerId: "gemini", purpose: "routing" }).models.generateContent({

@@ -2,6 +2,7 @@
 
 import { Check, ChevronRight, Circle } from "lucide-react";
 import type { ReplyTrace } from "@/lib/ai/reply-trace";
+import { describeRanking, describeUntrusted } from "@/lib/ai/reply-notes";
 import type { ModelCallObservation } from "@/lib/ai/model-observations";
 import { parseAgentActivity, type AgentActivity } from "@/lib/ai/agent/activity";
 import { askedTools, toolActivity } from "./tool-labels";
@@ -75,6 +76,8 @@ export function ReplyTraceBody({ trace, id }: { trace: ReplyTrace; id?: string }
             <div id={id} style={styles.content}>
                 {agent && <AgentRun agent={agent} asked={askedTools(trace)} />}
                 <p style={styles.note}>{trace.origin === "scheduled" ? "Scheduled request" : "Interactive request"} · {trace.freeOnly ? "Free only" : "Standard model selection"} · {duration(trace.durationMs)} overall · first answer {duration(trace.firstAnswerMs).toLowerCase()}.</p>
+                {trace.untrusted && Array.isArray(trace.untrusted.sources) && <p style={styles.warning} role="status">{describeUntrusted(trace.untrusted)}</p>}
+                {Array.isArray(trace.ranking) && trace.ranking.map((ranking, index) => <p key={index} style={styles.compact}>{describeRanking(ranking)}</p>)}
                 <dl style={styles.usage}>
                     <div><dt>Input tokens</dt><dd>{measured(trace.usage?.promptTokens)}</dd></div>
                     <div><dt>Output tokens</dt><dd>{measured(trace.usage?.outputTokens)}</dd></div>
@@ -102,6 +105,7 @@ export function ReplyTraceBody({ trace, id }: { trace: ReplyTrace; id?: string }
                         {call.groundingRequested && <p style={styles.compact}>Grounding requested{call.capabilities.grounding ? "; returned source evidence observed." : "; returned source evidence not observed."}</p>}
                         {!call.groundingRequested && call.capabilities.grounding && <p style={styles.compact}>Grounding source evidence observed.</p>}
                         {call.dataRoute?.rule === "shared_embedding_partition" && <p style={styles.compact}>Scheduled generation uses the paid key. This embedding uses the existing shared knowledge partition and may be free.</p>}
+                        {call.dataRoute?.rule === "unattended_scoring" && <p style={styles.compact}>Scheduled generation uses the paid key. This call only ranks or scores and writes no text, so it may be free.</p>}
                     </li>)}
                 </ol>
                 {!trace.calls.length && <p style={styles.note}>No model calls were recorded in these reply details.</p>}

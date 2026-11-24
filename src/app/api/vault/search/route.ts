@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
+import { graphSearchPages } from "@/lib/vault/page-hits";
+import { getDefaultProfile } from "@/lib/db";
+import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 
 export const maxDuration = 30;
 
@@ -8,24 +11,15 @@ export async function GET(req: NextRequest) {
     if (!query) return NextResponse.json({ hits: [] });
 
     try {
-        const embRef = await vaultEmbeddingRef();
-        const hits = await searchVaultPages({ query, embRef, hybrid: true, matchCount: 30 });
+        const [embRef, profile] = await Promise.all([vaultEmbeddingRef(), getDefaultProfile().catch(() => null)]);
+        // Unknown preferences rank with free models only.
+        const freeOnly = profile ? effectiveFreeOnly(profile) : true;
+        const hits = await searchVaultPages({ query, embRef, hybrid: true, matchCount: 30, rerank: { freeOnly, signal: req.signal } });
 
-        // Hybrid recall is chunk-level, so one page can hit several times; keep its
-        // best score. score.final carries the blended rank, and keyword-only hits
+        // Hybrid recall is chunk-level, so one page can hit several times; its first
+        // hit is its best. score.final carries the blended rank, and keyword-only hits
         // score 0 on the semantic component alone.
-        const best = new Map<string, { path: string; title: string; similarity: number }>();
-        for (const hit of hits) {
-            const similarity = Math.max(0, Math.min(1, hit.score?.final ?? hit.similarity));
-            const current = best.get(hit.path);
-            if (!current || similarity > current.similarity) {
-                best.set(hit.path, { path: hit.path, title: hit.title, similarity });
-            }
-        }
-
-        return NextResponse.json({
-            hits: [...best.values()].sort((a, b) => b.similarity - a.similarity),
-        });
+        return NextResponse.json({ hits: graphSearchPages(hits) });
     } catch (error: unknown) {
         console.error("[Vault Search API Error]", error);
         const message = error instanceof Error ? error.message : "Vault search failed.";

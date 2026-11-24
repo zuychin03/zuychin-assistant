@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { probeEmbedding, PROBE_PASSAGES, PROBE_QUERIES } from "../src/lib/ai/catalogue/probe-embedding";
+import { probeEmbedding, PROBE_IMAGE_QUERY, PROBE_PASSAGES, PROBE_QUERIES } from "../src/lib/ai/catalogue/probe-embedding";
 import { probeSpeech } from "../src/lib/ai/catalogue/probe-speech";
 import { probeClip, probeTranscription } from "../src/lib/ai/catalogue/probe-transcription";
 import { errorDetail, retiredAtFrom } from "../src/lib/ai/embedding-request";
@@ -32,7 +32,9 @@ function fakeVector(text: string, inputType: string | undefined, salt = 7, dimen
     return out.slice(0, dimension);
 }
 
-interface EmbedFake { requireInputType?: boolean; refuseInputType?: boolean; status?: number; detail?: string; noBatch?: boolean; salt?: number }
+// What a route that takes images "sees" in the probe page: the words of its query.
+const PAGE_WORDS = "retrieval study notes table models";
+interface EmbedFake { requireInputType?: boolean; refuseInputType?: boolean; status?: number; detail?: string; noBatch?: boolean; salt?: number; images?: boolean; refuseImages?: boolean }
 function embedFetch(fake: EmbedFake, calls: Record<string, unknown>[] = []): typeof fetch {
     return (async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -42,9 +44,12 @@ function embedFetch(fake: EmbedFake, calls: Record<string, unknown>[] = []): typ
         if (fake.refuseInputType && body.input_type !== undefined) return json(400, { error: { message: "Unrecognized request argument supplied: input_type" } });
         const inputs = Array.isArray(body.input) ? body.input as string[] : [body.input as string];
         if (fake.noBatch && inputs.length > 1) return json(400, { error: { message: "input must be a string" } });
+        const modality = Array.isArray(body.modality) ? body.modality as string[] : [];
+        if (modality.length && fake.refuseImages) return json(400, { error: { message: "Unrecognized request argument supplied: modality" } });
         const inputType = fake.refuseInputType ? "query" : body.input_type as string | undefined;
         const dimension = typeof body.dimensions === "number" ? body.dimensions : 1024;
-        return json(200, { data: inputs.map((text, index) => ({ index, embedding: fakeVector(text, inputType, fake.salt, dimension) })) });
+        const seen = (text: string, index: number) => modality[index] === "image" && fake.images ? PAGE_WORDS : text;
+        return json(200, { data: inputs.map((text, index) => ({ index, embedding: fakeVector(seen(text, index), inputType, fake.salt, dimension) })) });
     }) as typeof fetch;
 }
 const embedTarget = { provider: nim, modelId: "vendor/embed-1b", apiKey: "fixture-key" };
@@ -54,11 +59,30 @@ await check("embedding: a full pass records dimension, input type, asymmetry, tr
     const result = await probeEmbedding(embedTarget, { fetchImpl: embedFetch({ requireInputType: true }, calls) });
     assert.equal(result.status, "passed");
     assert.equal(result.dimension, 1024);
-    assert.deepEqual(result.traits, { needsInputType: true, acceptsInputType: true, asymmetric: true, truncatable: true, batch: true });
+    assert.deepEqual(result.traits, { needsInputType: true, acceptsInputType: true, asymmetric: true, truncatable: true, batch: true, images: false });
+    assert.equal(result.steps.photo?.outcome, "fail", "a text-only route embeds the data URL as text, far from the page query");
     assert.equal(result.steps.space?.outcome, "skipped");
     assert.equal(result.vectors?.passages.length, PROBE_PASSAGES.length);
     assert.equal(result.vectors?.queries.length, PROBE_QUERIES.length);
     assert.equal(calls.filter((call) => call.input_type === undefined).length, 1, "only the first call goes without input_type");
+});
+
+await check("embedding: the photo step sends the probe page with a text and passes when the page lands near its query", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const result = await probeEmbedding(embedTarget, { fetchImpl: embedFetch({ requireInputType: true, images: true }, calls) });
+    assert.equal(result.status, "passed");
+    assert.equal(result.traits.images, true);
+    assert.equal(result.steps.photo?.outcome, "pass");
+    assert.match(result.steps.photo!.detail!, /^Page 0\.\d\d against an unrelated query 0\.00\.$/);
+    const pair = calls.find((call) => Array.isArray(call.modality))!;
+    assert.deepEqual(pair.modality, ["image", "text"]);
+    assert.match((pair.input as string[])[0], /^data:image\/png;base64,iVBOR/);
+    assert.equal((pair.input as string[])[1], PROBE_PASSAGES[0]);
+    assert.ok(calls.some((call) => call.input === PROBE_IMAGE_QUERY && call.input_type === "query"));
+    const refused = await probeEmbedding(embedTarget, { fetchImpl: embedFetch({ requireInputType: true, refuseImages: true }) });
+    assert.equal(refused.status, "passed", "the photo step never fails the probe");
+    assert.equal(refused.traits.images, false);
+    assert.equal(refused.steps.photo?.outcome, "fail");
 });
 
 await check("embedding: a route that refuses input_type is embedded without it", async () => {
@@ -104,6 +128,8 @@ await check("embedding: Gemini sends task types and uses batchEmbedContents for 
     const result = await probeEmbedding({ provider: gemini, modelId: "gemini-embedding-2", apiKey: "fixture-key" }, { fetchImpl });
     assert.equal(result.status, "passed");
     assert.equal(result.steps.plain, undefined, "Gemini has no untyped step");
+    assert.equal(result.steps.photo?.outcome, "skipped");
+    assert.equal(result.traits.images, undefined);
     assert.equal(result.traits.batch, true);
     assert.ok(urls.some((url) => url.endsWith(":batchEmbedContents")));
 });

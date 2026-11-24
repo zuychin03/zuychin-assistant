@@ -101,6 +101,9 @@
 .source textarea { margin-bottom: 10px; }
 .source .actions { margin-bottom: 0; }
 .source .error { margin: 0 0 10px; }
+.photo { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 14px; }
+.photo img { display: block; width: auto; max-width: min(160px, 100%); max-height: 120px; border: 1px solid var(--line); border-radius: var(--radius-sm); object-fit: contain; background: var(--raised); }
+.page .photo p { flex: 1 1 160px; margin: 0; }
 .gemini { display: grid; gap: 10px; margin: 0 0 12px; }
 .page .gemini p { margin: 4px 0 0; font-size: 12.5px; }
 
@@ -134,3 +137,5 @@
 @media (prefers-reduced-motion: reduce) {
     .page :where(button, .linkButton) { transition: none; }
 }
+.audioStatus { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 14px; }
+.page .audioStatus p { flex: 1 1 200px; margin: 0; }

@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { eligibleChatProviders, resolveChatSelection } from "../src/app/home/chat-policy.ts";
 import { ChatWorkspace, NEW_CHAT } from "../src/app/home/chat-state.ts";
+import { KIND_LABEL } from "../src/lib/capture/review-source.ts";
 
 function extract(path: string, names: string[], guardName?: string) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
@@ -314,7 +315,7 @@ function captureFixture() {
         refreshOffline: async () => undefined,
         request: async () => { throw new Error("Inbox unavailable"); },
     };
-    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy", "ocrTiers"]);
+    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy", "ocrTiers", "pageReader"]);
     const actions = runInNewContext(extract("../src/app/capture/page.tsx", ["load", "action"]), state) as {
         load: () => Promise<void>; action: (name: string, run: () => Promise<void>) => Promise<void>;
     };
@@ -332,7 +333,7 @@ function inboxText(state: Record<string, unknown>) {
     }
     visit(tree); assert(section);
     const code = ts.transpileModule(`(${section});`, { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
-    return runInNewContext(code, { ...state, selected: undefined, sourceBusy: "", styles: {}, RefreshCw: "icon",
+    return runInNewContext(code, { ...state, selected: undefined, sourceBusy: "", styles: {}, RefreshCw: "icon", KIND_LABEL,
         React: { createElement: (_tag: unknown, _props: unknown, ...children: unknown[]) => children.flat(Infinity).filter(value => typeof value === "string").join(" ") },
     }) as string;
 }

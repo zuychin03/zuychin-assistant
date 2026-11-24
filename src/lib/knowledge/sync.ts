@@ -8,6 +8,7 @@ import { documentMeta, indexKnowledgeDocument } from "@/lib/knowledge/store";
 import { knowledgeService } from "@/lib/knowledge/service";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
 import { safeVaultPath } from "@/lib/knowledge/paths";
+import { isImageAssetPath } from "@/lib/knowledge/photo-paths";
 
 interface IndexedDocument {
     id: string;
@@ -197,7 +198,8 @@ export async function reconcileKnowledge(options: {
     if (fullScan) {
         const seen = new Set(materialized.map((file) => file.path));
         for (const document of indexedByPath.values()) {
-            if (!seen.has(document.path)) deletedSet.add(document.path);
+            // Photo documents follow their files through Index photos, not the Markdown scan.
+            if (!seen.has(document.path) && !isImageAssetPath(document.path)) deletedSet.add(document.path);
         }
     }
 

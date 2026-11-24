@@ -27,7 +27,7 @@ export async function getCapture(profile: string, id: string) {
     if (error) throw new CaptureError("The capture inbox is unavailable. Check the capture migration and retry.", 503);
     return data ? item(data as Row) : null;
 }
-const LIST_COLUMNS = "id,profile_id,source_hash,created_at,receipt,kind:source->>kind,title:source->>title,text:source->>text,url:source->>url,pdf_name:source->pdf->>name,source_ref:source->source";
+const LIST_COLUMNS = "id,profile_id,source_hash,created_at,receipt,kind:source->>kind,title:source->>title,text:source->>text,url:source->>url,pdf_name:source->pdf->>name,image_name:source->image->>name,source_ref:source->source";
 export async function listCaptures(profile: string) {
     const list = (columns: string) => db.from("capture_inbox").select(columns)
         .eq("profile_id", profile).order("created_at", { ascending: false }).limit(100).abortSignal(AbortSignal.timeout(10_000));
@@ -35,7 +35,8 @@ export async function listCaptures(profile: string) {
     if (error && missingExtractColumn(error)) ({ data, error } = await list(LIST_COLUMNS));
     if (error) throw new CaptureError("The capture inbox is unavailable. Check the capture migration and retry.", 503);
     return ((data ?? []) as unknown as Record<string, string | null>[]).map(row => item({ ...row, source: { kind: row.kind, title: row.title, text: row.text,
-        ...(row.url ? { url: row.url } : {}), ...(row.pdf_name ? { pdf: { name: row.pdf_name, base64: "" } } : {}), ...(row.source_ref ? { source: row.source_ref } : {}) },
+        ...(row.url ? { url: row.url } : {}), ...(row.pdf_name ? { pdf: { name: row.pdf_name, base64: "" } } : {}), ...(row.image_name ? { image: { name: row.image_name, base64: "" } } : {}),
+        ...(row.source_ref ? { source: row.source_ref } : {}) },
         ...(row.extract_status !== undefined ? { extract_status: row.extract_status } : {}) } as unknown as Row));
 }
 export const captureService = createCaptureService({
@@ -67,12 +68,28 @@ export const captureService = createCaptureService({
         if (profile.preferences?.freeOnly === true) assertFreeModel(embRef);
         if (!await indexKnowledgeDocument({ path, title, markdown, category: "captures", summary: "", embRef })) throw new Error("Knowledge indexing schema is unavailable.");
     },
+    async indexPhoto(photo, profileId) {
+        const profile = await captureProfile();
+        if (profile.id !== profileId) throw new Error("The profile changed.");
+        const embRef = await vaultEmbeddingRef();
+        if (profile.preferences?.freeOnly === true) assertFreeModel(embRef);
+        const { indexPhotoDocument } = await import("@/lib/knowledge/photos");
+        const bytes = Buffer.from(photo.base64, "base64");
+        if (!await indexPhotoDocument({ path: photo.path, title: photo.title, text: photo.text, bytes, sourcePath: photo.notePath }, embRef)) throw new Error("Knowledge indexing schema is unavailable.");
+    },
     async saveExtract(profile, id, extract) {
         const { error } = await db.from("capture_inbox").update({ extract }).eq("profile_id", profile).eq("id", id).is("receipt", null).abortSignal(AbortSignal.timeout(10_000));
         if (error) throw new CaptureError(missingExtractColumn(error) ? "Source text needs the v7-capture-extract.sql migration." : "The source text could not be saved. Try again.", 503);
     },
     extractor: {
-        read: async (source) => (await import("./extract")).extractCapture(source),
+        async read(source, profileId) {
+            const extract = await import("./extract");
+            if (source.kind !== "image") return extract.extractCapture(source);
+            const profile = await captureProfile();
+            if (profile.id !== profileId) throw new CaptureError("The account changed. Reopen the inbox.", 409);
+            const { readPageImageRecorded } = await import("./extract/page-image");
+            return extract.extractCapture(source, { freeOnly: effectiveFreeOnly(profile), readImage: readPageImageRecorded });
+        },
         async ocr(source, stored, tier, profileId) {
             const profile = await captureProfile();
             if (profile.id !== profileId) throw new CaptureError("The account changed. Reopen the inbox.", 409);

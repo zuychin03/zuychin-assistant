@@ -22,10 +22,44 @@ function record(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function request(route: ApiSttRoute, wav: Buffer, language: string): { url: string; init: RequestInit } {
+/** A container the providers name by extension; `gemini` is the type Gemini lists for it (none for WebM). */
+export interface AudioFormat { ext: string; mime: string; gemini: string | null }
+
+const FORMATS: Record<string, AudioFormat> = {
+    wav: { ext: "wav", mime: "audio/wav", gemini: "audio/wav" },
+    ogg: { ext: "ogg", mime: "audio/ogg", gemini: "audio/ogg" },
+    mp3: { ext: "mp3", mime: "audio/mpeg", gemini: "audio/mp3" },
+    m4a: { ext: "m4a", mime: "audio/mp4", gemini: "audio/aac" },
+    flac: { ext: "flac", mime: "audio/flac", gemini: "audio/flac" },
+    webm: { ext: "webm", mime: "audio/webm", gemini: null },
+};
+const EXTENSIONS: Record<string, keyof typeof FORMATS> = { wav: "wav", ogg: "ogg", oga: "ogg", opus: "ogg", mp3: "mp3", m4a: "m4a", mp4: "m4a", aac: "m4a", flac: "flac", webm: "webm" };
+const MIMES: Record<string, keyof typeof FORMATS> = {
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/ogg": "ogg", "audio/opus": "ogg", "audio/mpeg": "mp3", "audio/mp3": "mp3",
+    "audio/mp4": "m4a", "audio/m4a": "m4a", "audio/x-m4a": "m4a", "audio/aac": "m4a", "audio/x-aac": "m4a", "audio/flac": "flac", "audio/webm": "webm",
+};
+export const WAV_FORMAT = FORMATS.wav;
+
+/** The extension decides first, since Telegram and Discord report some types loosely. */
+export function audioFormat(name: string, mimeType: string): AudioFormat | null {
+    const ext = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+    const key = (ext && EXTENSIONS[ext]) || MIMES[mimeType.toLowerCase().split(";")[0].trim()];
+    return key ? FORMATS[key] : null;
+}
+
+// Gemini caps a request at 20 MB and base64 adds a third; Groq's free tier takes 25 MB files.
+const INLINE_MAX_BYTES = 14 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 24 * 1024 * 1024;
+
+/** The largest audio file a route takes in one request. */
+export function apiAudioLimit(route: ApiSttRoute): number {
+    return route.provider.kind === "gemini" || route.provider.id === "openrouter" ? INLINE_MAX_BYTES : UPLOAD_MAX_BYTES;
+}
+
+function request(route: ApiSttRoute, audio: Buffer, format: AudioFormat, language: string): { url: string; init: RequestInit } {
     if (route.provider.kind === "gemini") {
         // Dedicated transcribe models need no instruction; others are told to transcribe.
-        const parts: Record<string, unknown>[] = [{ inlineData: { mimeType: "audio/wav", data: wav.toString("base64") } }];
+        const parts: Record<string, unknown>[] = [{ inlineData: { mimeType: format.gemini ?? format.mime, data: audio.toString("base64") } }];
         if (!/transcribe/.test(route.modelId)) parts.push({ text: TRANSCRIBE_PROMPT });
         return {
             url: `${GEMINI_API}/models/${encodeURIComponent(route.modelId)}:generateContent`,
@@ -35,10 +69,10 @@ function request(route: ApiSttRoute, wav: Buffer, language: string): { url: stri
     const url = `${route.provider.baseUrl}/audio/transcriptions`;
     const auth = { Authorization: `Bearer ${route.apiKey}`, ...(route.provider.extraHeaders ?? {}) };
     if (route.provider.id === "openrouter") {
-        return { url, init: { headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ model: route.modelId, language, input_audio: { data: wav.toString("base64"), format: "wav" } }) } };
+        return { url, init: { headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ model: route.modelId, language, input_audio: { data: audio.toString("base64"), format: format.ext } }) } };
     }
     const form = new FormData();
-    form.append("file", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "audio.wav");
+    form.append("file", new Blob([new Uint8Array(audio)], { type: format.mime }), `audio.${format.ext}`);
     form.append("model", route.modelId);
     form.append("language", language);
     form.append("response_format", "json");
@@ -54,13 +88,17 @@ function transcript(route: ApiSttRoute, json: Record<string, unknown>): string |
     return typeof json.text === "string" ? json.text.trim() : null;
 }
 
-export async function transcribeWithApi(
-    route: ApiSttRoute, wav: Buffer,
-    options: { signal?: AbortSignal; timeoutMs?: number; language?: string; fetchImpl?: typeof fetch } = {},
-): Promise<ApiSttResult> {
+type ApiSttOptions = { signal?: AbortSignal; timeoutMs?: number; language?: string; fetchImpl?: typeof fetch };
+
+export function transcribeWithApi(route: ApiSttRoute, wav: Buffer, options: ApiSttOptions = {}): Promise<ApiSttResult> {
+    return transcribeAudioWithApi(route, wav, WAV_FORMAT, options);
+}
+
+/** Any container in FORMATS, sent as it is; callers check apiAudioLimit first. */
+export async function transcribeAudioWithApi(route: ApiSttRoute, audio: Buffer, format: AudioFormat, options: ApiSttOptions = {}): Promise<ApiSttResult> {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 15_000);
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-    const { url, init } = request(route, wav, options.language ?? "en");
+    const { url, init } = request(route, audio, format, options.language ?? "en");
     const started = performance.now();
     const elapsed = () => Math.round(performance.now() - started);
     try {

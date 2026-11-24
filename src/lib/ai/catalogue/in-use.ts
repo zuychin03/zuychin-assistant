@@ -17,10 +17,11 @@ export interface InUse {
 
 export const DEFAULT_SPEECH_MODEL = () => geminiTtsModel();
 
-/** Every non-chat route the app uses now: the knowledge model, its approved same-space backups, the voice and the transcription model. */
-export function inUseRoutes(input: { embedding: ActiveEmbedding | null; speech: SpeechBackupChoice | null; transcription: TranscriptionChoice }, rows: readonly CatalogueRow[]): InUse {
+/** Every non-chat route the app uses now: the knowledge model, its approved same-space backups, the voice, the transcription model and each V8 kind's model in either mode. */
+export function inUseRoutes(input: { embedding: ActiveEmbedding | null; speech: SpeechBackupChoice | null; transcription: TranscriptionChoice; media?: readonly { providerId: string; modelId: string }[] }, rows: readonly CatalogueRow[]): InUse {
     const keys = new Set<string>();
     const { embedding, speech, transcription } = input;
+    for (const route of input.media ?? []) keys.add(`${route.providerId}::${route.modelId}`);
     if (embedding) {
         keys.add(`${embedding.providerId}::${embedding.modelId}`);
         for (const row of rows) {

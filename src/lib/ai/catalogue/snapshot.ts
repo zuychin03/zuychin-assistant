@@ -22,10 +22,23 @@ export interface ModelTraits {
     asymmetric?: boolean;
     truncatable?: boolean;
     batch?: boolean;
+    /** Embedding: an image and its text in one request, as photo indexing sends them (probed). */
+    images?: boolean;
     /** Share of the transcription clip's words heard in order, 0 to 1. */
     accuracy?: number;
     familyId?: string;
     lookupUrl?: string;
+    /** Rerank: the longest query plus passage it takes, and whether passages may be images. */
+    maxPairTokens?: number;
+    imagePassages?: boolean;
+    /** Parse: the output token cap the probe used. */
+    outputTokens?: number;
+    /** Image: "1024x1024" style sizes it accepts, and whether it takes an input image to edit. */
+    sizes?: string[];
+    editing?: boolean;
+    /** Translate: language codes from the model card and the prompt template the probe tested. */
+    languages?: string[];
+    promptTemplate?: string;
 }
 
 export interface CatalogueRow {
@@ -84,7 +97,7 @@ export interface CatalogueSnapshot {
     storage: CatalogueStorage;
     /** Chat rows only, so every chat-model path keeps its meaning. */
     rows: readonly CatalogueRow[];
-    /** Embedding, speech and transcription rows. */
+    /** Every non-chat row: embedding, speech, transcription and the V8 media kinds. */
     typedRows: readonly CatalogueRow[];
     /** Purpose tags and profiles; empty with its own storage state until v7-model-awareness.sql is applied. */
     profiles: readonly ProfileRecord[];

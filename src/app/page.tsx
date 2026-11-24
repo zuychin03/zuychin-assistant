@@ -23,7 +23,7 @@ import { ChatWorkspace, NEW_CHAT, completedRetry, emptyDraft, provisionalTitle, 
 import { readChatDrafts, writeChatDraft } from "./home/chat-drafts";
 import { safeReturnTo, documentDestination, withReturnTo } from "@/lib/document-navigation";
 import { eligibleChatProviders, resolveChatSelection } from "./home/chat-policy";
-import { ReplyActivity, SourceChart } from "./home/reply-sources";
+import { CitedPhotos, ReplyActivity, SourceChart } from "./home/reply-sources";
 import { DayStarters } from "./home/day-starters-list";
 import { BranchNavigation } from "./conversations/branch-navigation";
 import { BranchMessageAction } from "./conversations/branch-message-action";
@@ -1878,6 +1878,7 @@ export default function Home() {
                     )}
                     {msg.councilProposal && <CouncilProposalCard proposal={msg.councilProposal} />}
                     {msg.approvals?.map((approval) => <ApprovalCard key={approval.id} approval={approval} live={msg.liveApprovals} />)}
+                    {!!msg.replyTrace?.sources?.length && <CitedPhotos reply={msg.content} sources={msg.replyTrace.sources} />}
                     {!!msg.replyTrace?.sources?.length && <SourceChart sources={msg.replyTrace.sources} vaultHref={vaultHref} cosmosHref={cosmosHrefFor(msg.replyTrace.sources)} />}
                     <div className={ui.msgActions}>
                       {msg.resume && (

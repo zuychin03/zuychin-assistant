@@ -1,12 +1,15 @@
 import { getProvider, isProviderAvailable, partitionIdFor, resolveEmbedding } from "@/lib/ai/providers";
 import { catalogueSnapshot, refreshCatalogueSnapshot, rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import { assessDataRoute } from "@/lib/ai/data-policy";
-import { embedTexts, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { embedImagePassage, embedTexts, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { PAGE_IMAGE_BODY_LIMIT } from "@/lib/http/limits";
+import { photoMime } from "@/lib/knowledge/photo-paths";
 import { refreshEmbeddingOverride, setEmbeddingOverride } from "@/lib/ai/embedding-override";
 import {
     MAX_BATCH, SWITCH_CONCURRENCY, SWITCH_STATE_KEY, estimateSeconds, parseSwitchState, runSwitch, shouldResume, switchBusy,
     type SwitchState,
 } from "@/lib/ai/embedding-switch";
+import type { MigrationItem } from "@/lib/ai/embedding-migration";
 
 // pgvector stores and searches any dimension up to this.
 export const MAX_DIMENSION = 16_000;
@@ -27,6 +30,8 @@ export interface SwitchTarget {
     providerLabel: string;
     mayTrain: boolean;
     batch: boolean;
+    /** Passed the probe's photo step, so photo rows go with their images. */
+    images: boolean;
     msPerCall: number | null;
 }
 
@@ -57,7 +62,8 @@ export function switchTargetFor(providerId: string, modelId: string, dimension?:
         ok: true,
         target: {
             providerId, modelId, dimension: size, nativeDimension: native, partitionId, label: model.label, providerLabel: provider.label,
-            mayTrain: row.mayTrain === true || providerId === "gemini-free", batch: row.traits?.batch === true, msPerCall: row.probeChatMs,
+            mayTrain: row.mayTrain === true || providerId === "gemini-free", batch: row.traits?.batch === true, images: row.traits?.images === true,
+            msPerCall: row.probeChatMs,
         },
     };
 }
@@ -83,6 +89,26 @@ export async function pendingRows(target: string): Promise<number> {
     return Object.values(await migration.countPendingRows(sb, target)).reduce((sum, count) => sum + count, 0);
 }
 
+/** Active photo documents, one chunk each; zero when the table cannot be read. */
+export async function photoRows(): Promise<number> {
+    const { sb } = await stores();
+    const { count, error } = await sb.from("knowledge_documents").select("id", { count: "exact", head: true }).like("path", "attachments/%").eq("status", "active");
+    return error || count === null ? 0 : count;
+}
+
+/** A photo chunk with its image from the vault; the text alone when the file is gone or not a PNG or JPEG. */
+async function photoEmbedder(ref: ReturnType<typeof resolveEmbedding>) {
+    const github = await import("@/lib/vault/github");
+    const cfg = github.requireVaultConfig();
+    return async (item: MigrationItem): Promise<number[]> => {
+        const path = (item.row.document as { path: string }).path;
+        const file = await github.getBinaryFile(cfg, path);
+        const mimeType = file ? photoMime(file.content) : null;
+        if (!file || !mimeType || file.content.length > PAGE_IMAGE_BODY_LIMIT) return (await embedTexts(ref, [item.text], "passage"))[0];
+        return (await embedImagePassage(ref, { image: { mimeType, base64: file.content.toString("base64") }, text: item.text })).vector;
+    };
+}
+
 /** Runs a job in this process unless one already is. Resolves when the job stops. */
 export async function runSwitchLive(state: SwitchState): Promise<SwitchState | null> {
     const holder = globalThis as typeof globalThis & { [RUNNING_KEY]?: boolean };
@@ -99,6 +125,7 @@ export async function runSwitchLive(state: SwitchState): Promise<SwitchState | n
             pending: migration.createMigrationStore(sb, undefined, { pendingModel: state.target }),
             countRemaining: (target) => migration.countPendingRows(sb, target),
             embed: (texts) => embedTexts(ref, texts, "passage"),
+            ...(ref.model.images ? { embedPhoto: await photoEmbedder(ref) } : {}),
             batchSize: ref.model.batch ? MAX_BATCH : NON_BATCH_SIZE,
             concurrency: SWITCH_CONCURRENCY,
             saveState: (next) => cron.setCronState(SWITCH_STATE_KEY, { ...next }),
@@ -140,11 +167,13 @@ export async function switchToResume(): Promise<SwitchState | null> {
     return shouldResume(state, Date.now()) ? state : null;
 }
 
-export function switchEstimate(target: SwitchTarget, rows: number) {
+export function switchEstimate(target: SwitchTarget, rows: number, photos = 0) {
     const batchSize = target.batch ? MAX_BATCH : 1;
+    // Without the photo step, photo rows are plain text rows.
+    const photoCount = target.images ? Math.min(Math.max(0, photos), rows) : 0;
     return {
-        rows, batchSize, concurrency: SWITCH_CONCURRENCY, msPerCall: target.msPerCall,
-        seconds: estimateSeconds(rows, target.msPerCall, batchSize),
+        rows, photoRows: photoCount, batchSize, concurrency: SWITCH_CONCURRENCY, msPerCall: target.msPerCall,
+        seconds: estimateSeconds(rows, target.msPerCall, batchSize, SWITCH_CONCURRENCY, photoCount),
         storageBytes: storageEstimateBytes(rows, target.dimension),
         large: target.dimension > LARGE_DIMENSION,
     };

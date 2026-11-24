@@ -3,6 +3,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { getFile, requireVaultConfig, VaultConflictError } from "@/lib/vault/github";
 import { applyKnowledgeLifecycle, type KnowledgeLifecycleAction } from "@/lib/knowledge/lifecycle";
 import { bodyFailure, readJsonCapped } from "@/lib/http/body";
+import { isImageAssetPath, photoMarkdown } from "@/lib/knowledge/photo-paths";
 
 export const maxDuration = 60;
 
@@ -21,10 +22,13 @@ export async function GET(req: NextRequest) {
                     .eq("source_document_id", id),
             ]);
             if (error || !document) return NextResponse.json({ error: "Document not found." }, { status: 404 });
-            const file = await getFile(requireVaultConfig(), document.path);
+            // A photo's file is the image itself, so the reader gets the photo and its indexed text instead.
+            const markdown = isImageAssetPath(document.path)
+                ? photoMarkdown(document.title, document.path, (chunks ?? []).map((chunk: { content: string }) => chunk.content))
+                : (await getFile(requireVaultConfig(), document.path))?.text ?? "";
             return NextResponse.json({
                 document,
-                markdown: file?.text ?? "",
+                markdown,
                 chunks: chunks ?? [],
                 links: links ?? [],
             });

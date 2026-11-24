@@ -19,6 +19,8 @@ export interface VaultEntry {
     name: string;
     type: "file" | "dir";
     sha: string;
+    /** Bytes; from the full tree listing only. */
+    size?: number;
 }
 
 export interface CommitFileChange {
@@ -197,7 +199,7 @@ export async function listAllFiles(cfg: VaultConfig): Promise<VaultEntry[]> {
     const head = await getBranchHead(cfg);
     const result = await githubJson<{
         truncated: boolean;
-        tree: { path: string; type: string; sha: string }[];
+        tree: { path: string; type: string; sha: string; size?: number }[];
     }>(cfg, repoPath(cfg, `/git/trees/${head}?recursive=1`));
     if (result.truncated) {
         throw new Error("The vault tree is too large for a complete safe scan.");
@@ -207,6 +209,7 @@ export async function listAllFiles(cfg: VaultConfig): Promise<VaultEntry[]> {
         name: entry.path.split("/").pop() ?? entry.path,
         type: "file",
         sha: entry.sha,
+        ...(typeof entry.size === "number" ? { size: entry.size } : {}),
     }));
 }
 

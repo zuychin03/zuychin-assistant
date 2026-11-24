@@ -36,6 +36,28 @@
   transform: rotate(90deg);
 }
 
+.photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 2px;
+}
+
+.photos a {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.photos img {
+  display: block;
+  width: auto;
+  max-width: min(100%, 240px);
+  height: 120px;
+  object-fit: cover;
+}
+
 .recall {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);

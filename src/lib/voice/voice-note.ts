@@ -3,8 +3,9 @@ import { sttConfigured, transcribePcm, type SttFailure } from "@/lib/voice/stt-c
 import { cachedVoiceChoices, type TranscriptionChoice } from "@/lib/ai/voice-choices";
 import { apiTranscriptionRoute, transcribeInOrder, transcriptionSteps } from "@/lib/voice/transcribe-order";
 import type { transcribeWithApi } from "@/lib/voice/api-stt";
+import { LONG_AUDIO_SECONDS } from "@/lib/voice/recording-limits";
 
-export const VOICE_NOTE_MAX_SECONDS = 300;
+export const VOICE_NOTE_MAX_SECONDS = LONG_AUDIO_SECONDS;
 // The speech service gives a request 14 s including a cold model load; 30 s of audio
 // takes about 5 to 7 s on the box, where 60 s could run past the limit.
 export const VOICE_NOTE_PIECE_SECONDS = 30;

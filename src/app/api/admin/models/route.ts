@@ -4,7 +4,10 @@ import { PROVIDERS, isProviderAvailable, removalBlockedReason, retiredChatModelI
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { catalogueTypesAvailable, deleteRetiredModel, listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval, type StorageFailure } from "@/lib/ai/catalogue/store";
 import { refreshCatalogueSnapshot, rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
-import { MODEL_KINDS, typesDiscoveryEnabled } from "@/lib/ai/catalogue/sources";
+import { MEDIA_KINDS, MODEL_KINDS, isMediaKind, mediaKindsEnabled, typesDiscoveryEnabled } from "@/lib/ai/catalogue/sources";
+import { readMediaChoices } from "@/lib/ai/media/choices";
+import { mediaInUse, routableNow } from "@/lib/ai/media/resolve";
+import { removedModelKeys } from "@/lib/ai/models/profiles";
 import { DEFAULT_SPEECH_MODEL, inUseRoutes } from "@/lib/ai/catalogue/in-use";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
@@ -28,8 +31,8 @@ function removalFailure(reason: StorageFailure) {
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const [catalogue, runs, profiles, stats, choices] = await Promise.all([
-        readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats(), readVoiceChoices(true), refreshEmbeddingOverride().catch(() => {}),
+    const [catalogue, runs, profiles, stats, choices, mediaChoices] = await Promise.all([
+        readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats(), readVoiceChoices(true), readMediaChoices(true), refreshEmbeddingOverride().catch(() => {}),
     ]);
     if (!catalogue.ok) {
         return NextResponse.json({ storage: catalogue.reason, error: startFailure(catalogue.reason).error }, { status: 503, headers: NO_STORE });
@@ -41,7 +44,13 @@ export async function GET(req: NextRequest) {
         const ref = getEmbeddingRef();
         knowledge = { partitionId: ref.model.id, providerId: ref.provider.id, modelId: ref.model.apiId ?? ref.model.id, label: ref.model.label, dimension: ref.model.dimension };
     } catch { /* an unknown saved partition shows as none */ }
-    const inUse = inUseRoutes({ embedding: knowledge, speech: choices.speech, transcription: choices.transcription }, catalogue.rows);
+    const mediaOn = mediaKindsEnabled();
+    const picks = mediaOn ? mediaInUse(catalogue.rows, mediaChoices, removedModelKeys(profiles.ok ? profiles.profiles : []), routableNow, MEDIA_KINDS) : {};
+    const pickKey = (row: CatalogueRow | null | undefined) => row ? statsKey(row.providerId, row.modelId) : null;
+    const inUse = inUseRoutes({
+        embedding: knowledge, speech: choices.speech, transcription: choices.transcription,
+        media: Object.values(picks).flatMap((pick) => [pick.normal, pick.freeOnly].filter((row): row is CatalogueRow => !!row)),
+    }, catalogue.rows);
     const pinnedEmbeddings = new Set(PROVIDERS.flatMap((provider) => provider.embeddingModels.map((model) => statsKey(provider.id, model.id))));
     const typedRow = (row: CatalogueRow & { probeDetail: unknown }) => {
         const key = statsKey(row.providerId, row.modelId);
@@ -63,6 +72,12 @@ export async function GET(req: NextRequest) {
         },
         knowledge,
         voice: { speech: choices.speech, transcription: choices.transcription, defaultSpeechModel: DEFAULT_SPEECH_MODEL() },
+        media: {
+            enabled: mediaOn,
+            stored: catalogue.rows.some((row) => isMediaKind(rowKind(row))),
+            choices: mediaChoices,
+            picks: Object.fromEntries(Object.entries(picks).map(([kind, pick]) => [kind, { normal: pickKey(pick.normal), freeOnly: pickKey(pick.freeOnly) }])),
+        },
         tags: PURPOSE_TAGS.map((tag) => ({ tag, ...TAG_INFO[tag] })),
         providers: PROVIDERS.map((provider) => ({
             id: provider.id, label: provider.label, available: isProviderAvailable(provider),

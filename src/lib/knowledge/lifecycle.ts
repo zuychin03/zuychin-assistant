@@ -3,6 +3,7 @@ import { commitFiles, getBranchHead, getFile, requireVaultConfig, VaultConflictE
 import { parseFrontmatter, serializeFrontmatter } from "@/lib/knowledge/markdown";
 import { documentMeta, indexKnowledgeDocument } from "@/lib/knowledge/store";
 import { knowledgeService } from "@/lib/knowledge/service";
+import { isImageAssetPath } from "@/lib/knowledge/photo-paths";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
 import type { KnowledgeScope, KnowledgeStatus, KnowledgeTrust } from "@/lib/knowledge/types";
 
@@ -36,6 +37,8 @@ async function getDocument(id: string): Promise<DocumentRow> {
         .eq("id", id)
         .single();
     if (error || !data) throw new Error("Knowledge document not found.");
+    // Every action here commits Markdown to the document's path, which for a photo is the image file.
+    if (isImageAssetPath(data.path)) throw new Error("A photo is changed in the vault itself. Replace or remove the file, then use Index photos.");
     return data as DocumentRow;
 }
 

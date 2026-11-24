@@ -157,13 +157,11 @@ export async function editTelegramMessageReplyMarkup(
     }).catch(() => { });
 }
 
-export async function sendTelegramDocument(
-    chatId: string | number,
-    doc: { filename: string; mimeType: string; body: Buffer | string; caption?: string },
-    signal?: AbortSignal
-): Promise<boolean> {
+type TelegramFile = { filename: string; mimeType: string; body: Buffer | string; caption?: string; replyMarkup?: unknown };
+
+async function sendTelegramFile(method: "sendDocument" | "sendPhoto", field: "document" | "photo", chatId: string | number, doc: TelegramFile, signal?: AbortSignal): Promise<boolean> {
     if (!TELEGRAM_BOT_TOKEN) {
-        console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set, cannot send document.");
+        console.warn(`[Telegram] TELEGRAM_BOT_TOKEN not set, cannot ${method}.`);
         return false;
     }
 
@@ -172,22 +170,32 @@ export async function sendTelegramDocument(
         const form = new FormData();
         form.append("chat_id", String(chatId));
         if (doc.caption) form.append("caption", doc.caption.slice(0, 1024));
+        if (doc.replyMarkup) form.append("reply_markup", JSON.stringify(doc.replyMarkup));
 
         const blob = new Blob([new Uint8Array(bytes)], { type: doc.mimeType || "application/octet-stream" });
-        form.append("document", blob, doc.filename);
+        form.append(field, blob, doc.filename);
 
         signal?.throwIfAborted();
-        const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: "POST", body: form, signal });
+        const res = await fetch(`${TELEGRAM_API}/${method}`, { method: "POST", body: form, signal });
         if (!res.ok) {
             const err = await res.text();
-            console.error("[Telegram] sendDocument failed:", res.status, err);
+            console.error(`[Telegram] ${method} failed:`, res.status, err);
             return false;
         }
         return true;
     } catch (error) {
-        console.error("[Telegram] sendDocument error:", error);
+        console.error(`[Telegram] ${method} error:`, error);
         return false;
     }
+}
+
+export function sendTelegramDocument(chatId: string | number, doc: TelegramFile, signal?: AbortSignal): Promise<boolean> {
+    return sendTelegramFile("sendDocument", "document", chatId, doc, signal);
+}
+
+/** A PNG or JPEG shown inline in the chat (Telegram takes photos up to 10 MB). */
+export function sendTelegramPhoto(chatId: string | number, photo: TelegramFile, signal?: AbortSignal): Promise<boolean> {
+    return sendTelegramFile("sendPhoto", "photo", chatId, photo, signal);
 }
 
 export async function sendTelegramChatAction(

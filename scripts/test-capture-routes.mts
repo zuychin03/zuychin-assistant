@@ -80,8 +80,17 @@ const pdfId = "33333333-3333-4333-8333-333333333333";
 assert.equal((await route.POST(req("/api/capture", { action: "capture", profileId: profile, id: pdfId, source: { kind: "pdf", title: "Source PDF", text: "Manually reviewed note", pdf: { name: "source.pdf", base64: Buffer.from("%PDF-1.4\nfixture").toString("base64") } } }))).status, 200);
 const pdf = await original.GET(req(`/api/capture/original?id=${pdfId}`));
 assert.equal(pdf.status, 200); assert.equal(pdf.headers.get("cache-control"), "private, no-store"); assert.match(await pdf.text(), /^%PDF/);
+const photoId = "55555555-5555-4555-8555-555555555555", jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).toString("base64");
+const captured = await route.POST(req("/api/capture", { action: "capture", profileId: profile, id: photoId, source: { kind: "image", title: "Whiteboard", text: "", image: { name: "board.jpg", base64: jpeg } } }));
+assert.equal(captured.status, 200); assert.equal((await captured.json()).item.source.image.base64, "", "the photo is not sent back");
+const photo = await original.GET(req(`/api/capture/original?id=${photoId}`));
+assert.equal(photo.status, 200); assert.equal(photo.headers.get("content-type"), "image/jpeg"); assert.equal(photo.headers.get("x-content-type-options"), "nosniff");
+assert.equal(photo.headers.get("content-disposition"), `inline; filename="capture-${photoId}.jpg"`); assert.equal(Buffer.from(await photo.arrayBuffer()).toString("base64"), jpeg);
+assert.equal((await original.GET(req(`/api/capture/original?id=${id}`))).status, 404, "a link capture has no original");
 const inbox = await route.GET(req("/api/capture"));
-assert.equal(inbox.status, 200); assert.deepEqual((await inbox.json()).documents.map((document: { id: string }) => document.id), ["owned", "shared", "user"]);
+const listed = await inbox.json();
+assert.equal(inbox.status, 200); assert.deepEqual(listed.documents.map((document: { id: string }) => document.id), ["owned", "shared", "user"]);
+assert.equal(listed.pageReader, null, "no parse model is approved in this fixture");
 for (const documentId of ["foreign-owner", "foreign-project", "unknown-scope", "missing"]) {
     const beforeGit = calls.filter(call => call.url.hostname === "api.github.com").length;
     assert.equal((await download.GET(req(`/api/capture/download?documentId=${documentId}`))).status, 404);

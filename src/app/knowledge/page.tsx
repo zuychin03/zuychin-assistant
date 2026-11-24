@@ -4,7 +4,7 @@ import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef,
 import { WorkspaceLink as Link } from "@/components/workspace-link";
 import {
     AlertTriangle, Archive, ArrowLeft, BookOpen, CheckCircle2, CircleCheck, CircleDashed, Clock3, Download, ExternalLink, EyeOff,
-    FileText, GitBranch, History, Import, Loader2, Merge, Orbit,
+    FileText, GitBranch, History, Images, Import, Loader2, Merge, Orbit,
     RefreshCw, RotateCcw, Search, ShieldCheck, Sparkles, Trash2, Upload, Wrench, XCircle,
 } from "lucide-react";
 import { MarkdownReader } from "./markdown-reader";
@@ -21,6 +21,19 @@ import { useDocumentDestination } from "@/lib/use-document-destination";
 import { readDocumentPosition, rememberDocumentLocation, rememberDocumentPosition, safeReturnTo, withReturnTo } from "@/lib/document-navigation";
 
 type Tab = "library" | "recall" | "timeline" | "maintenance";
+function photoSummary(status: PhotoIndexStatus): string {
+    const counts = [`${status.indexed} searchable`, `${status.pending} waiting`, ...(status.tooLarge ? [`${status.tooLarge} over 2 MB, skipped`] : [])].join(" · ");
+    if (status.running) return `${counts}. Indexing now; check again in a few minutes.`;
+    const last = status.last;
+    if (!last) return `${counts}.`;
+    const failed = last.failed.length ? `, ${last.failed.length} failed (${last.failed[0].error})` : "";
+    return `${counts}. Last run: ${last.indexed.length} indexed${failed}.`;
+}
+
+interface PhotoIndexStatus {
+    indexed: number; pending: number; tooLarge: number; running: boolean; limit: number;
+    last: { indexed: string[]; failed: { path: string; error: string }[]; left: number } | null;
+}
 interface DocumentSummary {
     id: string; path: string; title: string; summary: string; category: string;
     kind: string; scope: string; status: string; trust: string; sensitivity: string; updated_at: string;
@@ -134,6 +147,7 @@ export default function KnowledgePage() {
     const [importPlan, setImportPlan] = useState<ImportPlan>();
     const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
     const [mergeSuggestion, setMergeSuggestion] = useState<Suggestion>();
+    const [photos, setPhotos] = useState<PhotoIndexStatus | null>(null);
     const [mergeTarget, setMergeTarget] = useState("");
     const [mergeMarkdown, setMergeMarkdown] = useState("");
     const [mergeBase, setMergeBase] = useState("");
@@ -252,6 +266,13 @@ export default function KnowledgePage() {
     }, [readingPage]);
     useEffect(() => { if (tab === "timeline") loadEvents().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadEvents]);
     useEffect(() => { if (tab === "maintenance") loadSuggestions().catch((reason) => setError(String(reason.message ?? reason))); }, [tab, loadSuggestions]);
+    const loadPhotos = useCallback(async () => {
+        const response = await fetch("/api/knowledge/photos");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "The photo index is unavailable.");
+        setPhotos(payload);
+    }, []);
+    useEffect(() => { if (tab === "maintenance") loadPhotos().catch(() => setPhotos(null)); }, [tab, loadPhotos]);
 
     useEffect(() => {
         const heading = mergeHeadingRef.current;
@@ -425,6 +446,19 @@ export default function KnowledgePage() {
             if (!response.ok) throw new Error(payload.error || "Import failed.");
             setImportPlan(payload); if (!dryRun) await loadDocuments();
         } catch (reason) { setError(reason instanceof Error ? reason.message : "Import failed."); }
+        finally { setBusy(""); }
+    }
+
+    async function indexPhotos() {
+        setBusy("photos"); setError("");
+        try {
+            if (!photos?.running) {
+                const response = await fetch("/api/knowledge/photos", { method: "POST" });
+                const payload = await response.json();
+                if (!response.ok && response.status !== 409) throw new Error(payload.error || "Photo indexing could not start.");
+            }
+            await loadPhotos();
+        } catch (reason) { setError(reason instanceof Error ? reason.message : "Photo indexing could not start."); }
         finally { setBusy(""); }
     }
 
@@ -735,6 +769,9 @@ export default function KnowledgePage() {
                 <article><Wrench /><h3>Governed curator</h3><p>Find duplicates, contradictions, stale episodes, broken links, orphans, and consolidation opportunities. Every result requires review.</p><button className={`${styles.button} ${styles.primary}`} onClick={scanMaintenance} disabled={!!busy}>{busy === "maintenance" && <Loader2 className={styles.spin} size={15} />} Scan knowledge</button></article>
                 <article><RefreshCw /><h3>Complete reconciliation</h3><p>Hash every Markdown file and infer deletions only after a complete scan.</p><button className={styles.button} disabled={!!busy} onClick={() => syncVault()}>Run reconciliation</button></article>
                 <article><ShieldCheck /><h3>Stable identities</h3><p>Add missing <code>zuychin_id</code> properties in one Git commit.</p><button className={styles.button} disabled={!!busy} onClick={() => syncVault(true)}>Add missing IDs</button></article>
+                <article><Images /><h3>Photo search</h3><p>Make photos in <code>attachments/</code> searchable. A free model describes each one, up to {photos?.limit ?? 20} a run, in the background.</p>
+                    {photos && <small className={styles.photoStatus} role="status">{photoSummary(photos)}</small>}
+                    <button className={styles.button} disabled={!!busy || (!!photos && !photos.running && !photos.pending)} onClick={indexPhotos}>{busy === "photos" && <Loader2 className={styles.spin} size={15} />} {photos?.running ? "Check progress" : "Index photos"}</button></article>
                 <article><Download /><h3>Obsidian export</h3><p>Download Markdown, attachments, settings, and checksums without conversion.</p><a className={styles.button} href="/api/knowledge/export">Download ZIP</a></article>
                 <article><Import /><h3>Obsidian import</h3><p>Inspect first, then accept the dry-run plan before overwriting files.</p><button className={styles.button} disabled={!!busy} onClick={() => fileInput.current?.click()}>Choose ZIP</button></article>
             </div>

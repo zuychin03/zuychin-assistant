@@ -2,6 +2,7 @@ import {
     MIGRATION_TABLES, applyMigration, mapBounded, planMigration, verifyMigration,
     type MigrationItem, type MigrationStore, type MigrationTable, type PreparedItem,
 } from "./embedding-migration.ts";
+import { isImageAssetPath } from "../knowledge/photo-paths.ts";
 
 // The knowledge model switch: re-embeds every stored row on the server, then activates the new partition.
 // Progress lives in cron_state so a restart, the daily cron or the next /admin visit can resume it.
@@ -14,6 +15,8 @@ const ROUND_ITEMS = 128;
 const BACKOFF_MS = [2_000, 4_000, 8_000];
 const MAX_FAILED_BATCHES = 5;
 const MAX_IDLE_ROUNDS = 3;
+// One photo with its text on NIM, measured 24/11/2026; photos go one per request.
+export const PHOTO_MS = 1_600;
 
 export type SwitchStatus = "running" | "paused" | "done" | "failed";
 
@@ -38,6 +41,8 @@ export interface SwitchDeps {
     pending: MigrationStore;
     countRemaining(target: string): Promise<Record<MigrationTable, number>>;
     embed(texts: string[]): Promise<number[][]>;
+    /** A photo chunk with its image; without it, photo chunks are embedded by their text like any other. */
+    embedPhoto?(item: MigrationItem): Promise<number[]>;
     batchSize: number;
     concurrency?: number;
     saveState(state: SwitchState): Promise<void>;
@@ -86,15 +91,26 @@ export function switchBusy(state: SwitchState | null, nowMs: number): boolean {
     return state?.status === "running" && nowMs - Date.parse(state.updatedAt) <= STALE_SWITCH_MS;
 }
 
-export function estimateSeconds(rows: number, msPerCall: number | null, batchSize: number, concurrency = SWITCH_CONCURRENCY): number | null {
-    if (msPerCall === null || rows <= 0) return rows <= 0 ? 0 : null;
-    return Math.ceil((Math.ceil(rows / Math.max(1, batchSize)) * msPerCall) / concurrency / 1000);
+/** Text rows go in batches; `photoRows` (part of `rows`) go one at a time at PHOTO_MS each. */
+export function estimateSeconds(rows: number, msPerCall: number | null, batchSize: number, concurrency = SWITCH_CONCURRENCY, photoRows = 0): number | null {
+    const photos = Math.min(Math.max(0, photoRows), Math.max(0, rows));
+    const texts = rows - photos;
+    if (rows <= 0) return 0;
+    if (msPerCall === null && texts > 0) return null;
+    const textMs = texts > 0 ? Math.ceil(texts / Math.max(1, batchSize)) * (msPerCall ?? 0) : 0;
+    return Math.ceil((textMs + photos * PHOTO_MS) / concurrency / 1000);
 }
 
-async function embedWithRetry(deps: SwitchDeps, texts: string[]): Promise<number[][]> {
+/** A knowledge chunk whose document is a photo in the vault. */
+export function isPhotoItem(item: MigrationItem): boolean {
+    const document = item.row.document as { path?: unknown } | null | undefined;
+    return item.table === "knowledge_chunks" && isImageAssetPath(typeof document?.path === "string" ? document.path : null);
+}
+
+async function withRetry<T>(deps: SwitchDeps, work: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
         try {
-            return await deps.embed(texts);
+            return await work();
         } catch (error) {
             if (dailyQuota(error)) throw new QuotaPause(error instanceof Error ? error.message : String(error));
             const status = statusOf(error);
@@ -103,6 +119,15 @@ async function embedWithRetry(deps: SwitchDeps, texts: string[]): Promise<number
             await deps.sleep(BACKOFF_MS[attempt]);
         }
     }
+}
+
+async function embedItems(deps: SwitchDeps, batch: readonly MigrationItem[]): Promise<number[][]> {
+    const photos = deps.embedPhoto ? batch.filter(isPhotoItem) : [];
+    const texts = batch.filter((item) => !photos.includes(item));
+    const textVectors = texts.length ? await withRetry(deps, () => deps.embed(texts.map((item) => item.text))) : [];
+    const photoVectors: number[][] = [];
+    for (const item of photos) photoVectors.push(await withRetry(deps, () => deps.embedPhoto!(item)));
+    return batch.map((item) => photos.includes(item) ? photoVectors[photos.indexOf(item)] : textVectors[texts.indexOf(item)]);
 }
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
@@ -132,7 +157,7 @@ export async function runSwitch(initial: SwitchState, deps: SwitchDeps): Promise
             const embedded = await mapBounded(batches, deps.concurrency ?? SWITCH_CONCURRENCY, async (batch): Promise<PreparedItem[] | null> => {
                 if (failedBatches >= MAX_FAILED_BATCHES) return null;
                 try {
-                    const vectors = await embedWithRetry(deps, batch.map((item) => item.text));
+                    const vectors = await embedItems(deps, batch);
                     failedBatches = 0;
                     return batch.map((item, index) => ({ ...item, vector: vectors[index] }));
                 } catch (error) {

@@ -32,7 +32,7 @@ create table if not exists public.model_call_observations (
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription', 'rerank', 'parse', 'image', 'decision', 'live', 'translate'));
 
 create index if not exists idx_model_observations_latest
   on public.model_call_observations (provider_id, model_id, started_at desc, id desc);

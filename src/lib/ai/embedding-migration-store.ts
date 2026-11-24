@@ -7,7 +7,8 @@ const PROJECTIONS: Record<MigrationTable, string> = {
     embeddings: "id,content,embedding_model,embedding",
     memories: "id,fact,updated_at,embedding_model,embedding",
     vault_pages: "id,title,content,updated_at,embedding_model,embedding",
-    knowledge_chunks: "id,content,heading_path,content_hash,updated_at,embedding_model,embedding,document:knowledge_documents(title)",
+    // The document path tells a photo chunk (re-embedded with its image) from a text one.
+    knowledge_chunks: "id,content,heading_path,content_hash,updated_at,embedding_model,embedding,document:knowledge_documents(title,path)",
     knowledge_assertions: "id,assertion,updated_at,embedding_model,embedding",
 };
 

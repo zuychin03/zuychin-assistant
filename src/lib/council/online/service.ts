@@ -26,10 +26,12 @@ import {
 import { COUNCIL_HOST_GENERATION, configuredCapabilities } from "@/lib/council/v3";
 import { getVaultConfig } from "@/lib/vault/github";
 import { searchVaultPages, vaultEmbeddingRef } from "@/lib/vault/store";
+import { rerank, resolveReranker } from "@/lib/ai/rerank";
 import { callSeatModel } from "./call";
 import {
     ADAPTER_VERSION, LEASE_SECONDS, ONLINE_DEFAULT_ROUNDS, ONLINE_MAX_ROUNDS, ONLINE_MIN_ROUNDS,
-    ONLINE_TTL_MINUTES, RESEARCH_NOTES, RESEARCH_VAULT_PAGES, RESUME_FIRST_SCAN_MS, RESUME_SCAN_MS,
+    ONLINE_TTL_MINUTES, RESEARCH_NOTES, RESEARCH_RERANK_TIMEOUT_MS, RESEARCH_VAULT_PAGES, RESEARCH_WEB_CANDIDATES,
+    RESUME_FIRST_SCAN_MS, RESUME_SCAN_MS,
 } from "./limits";
 import { gatherResearch, savedNotesOnly, type ResearchDeps, type ResearchPack, type ResearchRequest, type ResearchSummary } from "./research";
 import { acquireOnlineRun, driveOnlineCouncil, postResearchPack, prepareSeats, processHostId, type OnlineDeps, type OnlineRun, type RunOutcome } from "./runner";
@@ -226,7 +228,11 @@ function researchDeps(freeOnly: boolean): ResearchDeps {
         // Tavily alone: runWebSearch falls back to paid Gemini grounding, which Free only refuses.
         searchWeb: async (query) => {
             if (!tavilyConfigured()) return "unconfigured";
-            return (await webSearchResults(query, "quick"))?.results ?? null;
+            const route = await resolveReranker(freeOnly);
+            const results = (await webSearchResults(query, "quick", undefined, route ? RESEARCH_WEB_CANDIDATES : undefined))?.results;
+            if (!results || !route) return results ?? null;
+            const order = await rerank(query, results, { freeOnly, route, timeoutMs: RESEARCH_RERANK_TIMEOUT_MS, text: (hit) => `${hit.title}\n${hit.content}` });
+            return order.ok ? order.items : results;
         },
         searchNotes: async (query) => {
             await refreshEmbeddingOverride(undefined, freeOnly);
@@ -241,7 +247,8 @@ function researchDeps(freeOnly: boolean): ResearchDeps {
         },
         searchVault: async (query) => {
             if (!getVaultConfig()) return null;
-            const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, onePerPage: true, matchCount: RESEARCH_VAULT_PAGES });
+            const hits = await searchVaultPages({ query, embRef: await vaultEmbeddingRef(), hybrid: true, onePerPage: true, matchCount: RESEARCH_VAULT_PAGES,
+                rerank: { freeOnly, timeoutMs: RESEARCH_RERANK_TIMEOUT_MS } });
             return hits.map((hit) => ({ path: hit.path, title: hit.title, summary: hit.summary }));
         },
     };

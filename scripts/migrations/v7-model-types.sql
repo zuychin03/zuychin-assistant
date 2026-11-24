@@ -43,7 +43,7 @@ create index if not exists model_catalogue_kind on public.model_catalogue (kind)
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription', 'rerank', 'parse', 'image', 'decision', 'live', 'translate'));
 
 insert into public.model_catalogue (
   provider_id, model_id, kind, label, short_name, description, developer, free, metered, inputs, dimension,

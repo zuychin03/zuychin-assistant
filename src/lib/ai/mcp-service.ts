@@ -676,7 +676,7 @@ import {
 import { validateCron, describeNextRun } from "@/lib/tasks/schedule";
 import { listMemories, deleteMemory, updateMemoryFact, PROMOTE_EVIDENCE_COUNT } from "@/lib/ai/memory/store";
 import { addModelDataClasses, withModelDataClasses } from "@/lib/ai/model-observations";
-import { recordAskedTool, recordReplySources } from "@/lib/ai/reply-sources";
+import { recordAskedTool, recordFetchedContent, recordReplySources } from "@/lib/ai/reply-sources";
 import { executeCaptureAdd } from "@/lib/capture/chat-tool";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelStatus } from "@/lib/ai/models/status";
@@ -700,6 +700,7 @@ export async function executeTool(
     if (knowledgeTool) addModelDataClasses(["knowledge"]);
     if (toolName === "search_web") addModelDataClasses(["public_search"]);
     recordUnattendedSource(toolName, result, args);
+    recordFetchedContent(toolName, result);
     return result;
 }
 
@@ -778,7 +779,7 @@ async function dispatchTool(
         // turn ref: pages embed with whatever model was active at ingest, and
         // searching or writing in another partition misses/fragments them.
         case "vault_search":
-            return executeVaultSearch(args.query as string, await vaultEmbeddingRef());
+            return executeVaultSearch(args.query as string, await vaultEmbeddingRef(), ctx?.freeOnly === true);
 
         case "vault_read":
             return executeVaultRead(args.path as string);
@@ -1099,12 +1100,12 @@ async function executeSendEmail(
     }
 }
 
-async function executeVaultSearch(query: string, embRef: ResolvedEmbedding): Promise<string> {
+async function executeVaultSearch(query: string, embRef: ResolvedEmbedding, freeOnly: boolean): Promise<string> {
     if (!query) return "Error: query is required.";
     if (!getVaultConfig()) return "The second-brain vault is not configured.";
 
     try {
-        const hits = await searchVaultPages({ query, embRef, hybrid: true, onePerPage: true });
+        const hits = await searchVaultPages({ query, embRef, hybrid: true, onePerPage: true, rerank: { freeOnly } });
         if (hits.length === 0) {
             return "No vault pages matched. The topic may not have been ingested yet - check index.md via vault_read('index.md') if unsure.";
         }

@@ -10,6 +10,8 @@ import type { FileAttachment } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
 import { inputModeError } from "@/lib/voice/input-mode";
 import { discordSpeechAttachment } from "@/lib/voice/discord-speech";
+import { botPlaceholder, discordVoice, isDiscordVoice } from "@/lib/voice/discord-voice";
+import { photoAttachments } from "@/lib/knowledge/photo-files";
 import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
 
 export const maxDuration = 300;
@@ -72,6 +74,16 @@ export async function POST(req: NextRequest) {
         // The bot posts #ask-zuychin without a conversation id; the server keeps that chat's conversation.
         let text: string = message.trim();
         let turnConversationId = conversationId;
+        let inputMode: "voice" | undefined = body.inputMode === "voice" ? "voice" : undefined;
+        if (channel === "discord" && validatedFile && isDiscordVoice(validatedFile)) {
+            const heard = await discordVoice(validatedFile, body.freeOnly === true, req.signal);
+            if (heard.kind === "reply") return NextResponse.json({ reply: heard.reply, messageId: "", userMessageId: "", artifacts: heard.artifacts });
+            if (heard.kind === "spoken") {
+                text = [botPlaceholder(text, validatedFile) ? "" : text, heard.text].filter(Boolean).join("\n\n");
+                validatedFile = undefined;
+                inputMode = "voice";
+            }
+        }
         if (channel === "discord" && !conversationId) {
             const chatKey = typeof body.chatKey === "string" && /^[\w-]{1,128}$/.test(body.chatKey) ? body.chatKey : "ask-zuychin";
             const turn = await channelTurn("discord", chatKey, text);
@@ -83,7 +95,7 @@ export async function POST(req: NextRequest) {
             turnConversationId = turn.conversationId ?? undefined;
         }
 
-        const { reply, messageId, userMessageId, artifacts, replyTrace } = await ragChat({
+        const { reply, messageId, userMessageId, artifacts, replyTrace, photos } = await ragChat({
             message: text,
             channel,
             imageBase64,
@@ -94,7 +106,7 @@ export async function POST(req: NextRequest) {
             agent,
             resumeRunId: body.resumeRunId,
             freeOnly: body.freeOnly === true,
-            inputMode: body.inputMode === "voice" ? "voice" : undefined,
+            inputMode,
             knowledgeOnly: body.knowledgeOnly,
             provider,
             model,
@@ -115,8 +127,10 @@ export async function POST(req: NextRequest) {
             })
         );
 
-        const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal) : null;
-        return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: speech ? [...artifactsWithData, speech] : artifactsWithData });
+        const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal, inputMode === "voice") : null;
+        // The bot attaches every artifact with bytes, so cited photos arrive with the reply.
+        const cited = channel === "discord" ? await photoAttachments(photos) : [];
+        return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: [...artifactsWithData, ...(speech ? [speech] : []), ...cited] });
     } catch (error: unknown) {
         const failed = bodyFailure(error);
         if (failed) return failed;

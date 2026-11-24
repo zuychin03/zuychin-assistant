@@ -33,7 +33,7 @@ export function createStudyService(db: SupabaseClient, revisions: Revisions, clo
     async function documents(userId: string): Promise<StudyDocument[]> {
         const [{ data: projects, error: projectError }, { data, error }] = await Promise.all([
             db.from("projects").select("id").eq("user_profile_id", userId).abortSignal(AbortSignal.timeout(5000)),
-            db.from("knowledge_documents").select("id,path,title,project_id,user_profile_id,scope,status").eq("status", "active").order("title").limit(1001).abortSignal(AbortSignal.timeout(5000)),
+            db.from("knowledge_documents").select("id,path,title,project_id,user_profile_id,scope,status").eq("status", "active").not("path", "like", "attachments/%").order("title").limit(1001).abortSignal(AbortSignal.timeout(5000)),
         ]);
         databaseError(error || projectError);
         if ((data?.length ?? 0) > 1000) throw new StudyError("The source list exceeds 1,000 documents. Narrow the library before loading study sources.", 413);

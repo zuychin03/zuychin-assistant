@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowRightLeft, AudioLines, Check, Database, FlaskConical, Mic, Trash2, Undo2 } from "lucide-react";
+import { ArrowRightLeft, AudioLines, Check, Database, FlaskConical, Mic, Pin, Trash2, Undo2 } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import type { CatalogueRow } from "@/lib/ai/catalogue/snapshot";
-import type { ModelKind } from "@/lib/ai/catalogue/sources";
+import type { MediaKind, ModelKind } from "@/lib/ai/catalogue/sources";
+import type { MediaChoices } from "@/lib/ai/media/choices";
 import type { SpeechBackupChoice, TranscriptionChoice, TranscriptionOrder } from "@/lib/ai/voice-choices";
 import { duration, melbourneDate, melbourneTime, OUTCOME_LABELS, probeSteps, STEP_LABELS } from "./model-format";
 
@@ -14,16 +15,25 @@ export type TypedKind = Exclude<ModelKind, "chat">;
 export type TypedRow = CatalogueRow & { kind: TypedKind; probeDetail: unknown; inCode: boolean; retired: boolean; inUse: boolean; knowledge: boolean; deletable: boolean };
 export interface KnowledgeInfo { partitionId: string; providerId: string; modelId: string; label: string; dimension: number }
 export interface VoiceInfo { speech: SpeechBackupChoice | null; transcription: TranscriptionChoice; defaultSpeechModel: string }
+export interface MediaInfo { enabled: boolean; stored: boolean; choices: MediaChoices; picks: Partial<Record<MediaKind, { normal: string | null; freeOnly: string | null }>> }
 export interface SwitchJob {
     target: string; providerId: string; modelId: string; dimension: number; status: "running" | "paused" | "done" | "failed";
     done: number; remaining: number | null; rowsLeft: number; startedAt: string; updatedAt: string; error: string | null;
 }
 interface SwitchPreview {
     target: { providerId: string; modelId: string; dimension: number; nativeDimension: number; partitionId: string; label: string; providerLabel: string; mayTrain: boolean };
-    estimate: { rows: number; seconds: number | null; storageBytes: number; large: boolean };
+    estimate: { rows: number; photoRows?: number; seconds: number | null; storageBytes: number; large: boolean };
 }
 
-export const KIND_LABELS: Record<ModelKind, string> = { chat: "Chat", embedding: "Embeddings", speech: "Speech", transcription: "Transcription" };
+export const KIND_LABELS: Record<ModelKind, string> = {
+    chat: "Chat", embedding: "Embeddings", speech: "Speech", transcription: "Transcription",
+    rerank: "Rerank", parse: "Page reading", image: "Images", decision: "Decisions", live: "Live voice", translate: "Translation",
+};
+const MEDIA_USE: Record<MediaKind, string> = {
+    rerank: "Use for reranking", parse: "Use for page reading", image: "Use for images", decision: "Use for decisions", live: "Use for live talk", translate: "Use for translation",
+};
+export const isMediaKindName = (kind: ModelKind): kind is MediaKind => kind in MEDIA_USE;
+export const isMediaRow = (row: TypedRow): row is TypedRow & { kind: MediaKind } => isMediaKindName(row.kind);
 const ORDER_OPTIONS: { value: TranscriptionOrder; label: string }[] = [
     { value: "local", label: "On-box only" },
     { value: "local-first", label: "On-box first, then the API model" },
@@ -68,6 +78,7 @@ function facts(row: TypedRow): string {
             traits.needsInputType ? "needs query and passage types" : traits.acceptsInputType ? "query and passage types" : "one input type",
             traits.truncatable ? "smaller sizes work" : "fixed size",
             traits.batch ? "batches" : "one text per call",
+            ...(traits.images ? ["takes photos"] : []),
             `${duration(row.probeChatMs)} per call`,
         ].join(" · ");
     }
@@ -76,8 +87,17 @@ function facts(row: TypedRow): string {
         const format = traits.audioFormat ? `${traits.audioFormat.toUpperCase()}${traits.sampleRate ? ` at ${traits.sampleRate.toLocaleString()} Hz` : ""}` : "Format unknown";
         return [voices ? `${voices} ${voices === 1 ? "voice" : "voices"}` : "No voice list", format, `first audio in ${duration(traits.firstAudioMs ?? row.probeChatMs)}`].join(" · ");
     }
-    const accuracy = typeof traits.accuracy === "number" ? `${Math.round(traits.accuracy * 100)}% of words heard` : "Accuracy not measured";
-    return [`${duration(row.probeChatMs)} for the 4-second test clip`, accuracy].join(" · ");
+    if (row.kind === "transcription") {
+        const accuracy = typeof traits.accuracy === "number" ? `${Math.round(traits.accuracy * 100)}% of words heard` : "Accuracy not measured";
+        return [`${duration(row.probeChatMs)} for the 4-second test clip`, accuracy].join(" · ");
+    }
+    if (row.kind === "rerank") return `${duration(row.probeChatMs)} to rank 4 passages`;
+    if (row.kind === "parse") return [`${duration(row.probeChatMs)} per page`, traits.outputTokens ? `up to ${traits.outputTokens.toLocaleString()} tokens of text` : "Output limit unknown"].join(" · ");
+    if (row.kind === "image") return [traits.sizes?.length ? `${traits.sizes.join(", ")} tested` : "No size tested", `${duration(row.probeChatMs)} per image`, traits.editing ? "edits images" : "makes new images only"].join(" · ");
+    if (row.kind === "decision") return `${duration(row.probeChatMs)} for 3 questions`;
+    if (row.kind === "live") return [`first audio in ${duration(traits.firstAudioMs ?? row.probeChatMs)}`, traits.sampleRate ? `${traits.sampleRate.toLocaleString()} Hz audio` : "Audio format unknown"].join(" · ");
+    const languages = traits.languages?.length ?? 0;
+    return [languages ? `${languages} languages` : "Languages unknown", `${duration(row.probeChatMs)} per sentence`, traits.promptTemplate ? "prompt template tested" : "prompt template not tested"].join(" · ");
 }
 
 function expiryText(row: TypedRow): string | null {
@@ -130,7 +150,7 @@ function SwitchDialog({ row, busy, onStart, onCancel }: { row: TypedRow; busy: b
             {!loading && error && <span>{error}</span>}
             {!loading && estimate && preview && <>
                 <span>
-                    {estimate.rows.toLocaleString()} stored {estimate.rows === 1 ? "row is" : "rows are"} re-embedded on the server{estimate.seconds !== null ? `, which takes about ${roughTime(estimate.seconds)}` : ""}.
+                    {estimate.rows.toLocaleString()} stored {estimate.rows === 1 ? "row is" : "rows are"} re-embedded on the server{estimate.photoRows ? `, ${estimate.photoRows.toLocaleString()} of them ${estimate.photoRows === 1 ? "a photo" : "photos"} sent with ${estimate.photoRows === 1 ? "its image" : "their images"}` : ""}{estimate.seconds !== null ? `, which takes about ${roughTime(estimate.seconds)}` : ""}.
                     The new vectors take about {megabytes(estimate.storageBytes)}. Search keeps using the current model until every row is done, then switches on its own.
                     If the provider&apos;s daily limit runs out, the job pauses and carries on later.
                 </span>
@@ -148,10 +168,12 @@ function SwitchDialog({ row, busy, onStart, onCancel }: { row: TypedRow; busy: b
     );
 }
 
-export function TypedEntry({ row, providerLabel, voice, locked, busy, switchRunning, confirming, confirmingDelete, onTest, onApproval, onDelete, onCancel, onCancelDelete, onStartSwitch, onUseBackup, onUseTranscription }: {
+export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, locked, busy, switchRunning, confirming, confirmingDelete, onTest, onApproval, onDelete, onCancel, onCancelDelete, onStartSwitch, onUseBackup, onUseTranscription, onUseMedia }: {
     row: TypedRow;
     providerLabel: string;
     voice: VoiceInfo;
+    /** The owner chose this row for its V8 kind. */
+    mediaChosen?: boolean;
     locked: boolean;
     busy: boolean;
     switchRunning: boolean;
@@ -165,6 +187,7 @@ export function TypedEntry({ row, providerLabel, voice, locked, busy, switchRunn
     onStartSwitch: (dimension: number) => void;
     onUseBackup: (voiceName: string | null) => void;
     onUseTranscription: () => void;
+    onUseMedia?: () => void;
 }) {
     const [switching, setSwitching] = useState(false);
     const isBackupVoice = row.kind === "speech" && voice.speech?.providerId === row.providerId && voice.speech.modelId === row.modelId;
@@ -209,6 +232,9 @@ export function TypedEntry({ row, providerLabel, voice, locked, busy, switchRunn
                     {row.kind === "transcription" && usable(row) && !isTranscriber && <button type="button" className="btn" disabled={busy} onClick={onUseTranscription}>
                         <Mic size={14} aria-hidden="true" />Use for transcription
                     </button>}
+                    {isMediaRow(row) && usable(row) && !mediaChosen && onUseMedia && <button type="button" className="btn" disabled={busy} onClick={onUseMedia}>
+                        <Pin size={14} aria-hidden="true" />{MEDIA_USE[row.kind]}
+                    </button>}
                     {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
                 </div>
             </div>
@@ -218,6 +244,7 @@ export function TypedEntry({ row, providerLabel, voice, locked, busy, switchRunn
                 {row.knowledge && <span className="pill" data-tone="success"><Database size={12} aria-hidden="true" />Knowledge model</span>}
                 {row.inUse && !row.knowledge && <span className="pill" data-tone="success">In use</span>}
                 {(embeddingBackup || isBackupVoice) && <span className="pill">Backup</span>}
+                {mediaChosen && <span className="pill" data-tone="success"><Pin size={12} aria-hidden="true" />Chosen</span>}
                 {row.spaceOf && <span className="pill" title={`Gives the same vectors as ${row.spaceOf}`}>Same space</span>}
                 {row.expiresAt && !row.retired && <span className="pill" data-tone={soon ? "warning" : undefined}>Retires {melbourneDate(row.expiresAt)}</span>}
                 {row.retired ? <span className="pill" data-tone="danger">Gone</span> : row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
@@ -319,6 +346,23 @@ export function SpeechStrip({ voice, label, busy, onUseDefault }: { voice: Voice
                     : `the default Gemini voice (${voice.defaultSpeechModel}). Choose Use as backup voice on a tested, approved model to change it.`}
             </p>
             {voice.speech && <div style={styles.actions}><button type="button" className="btn" disabled={busy} onClick={onUseDefault}>Use the default</button></div>}
+        </div>
+    );
+}
+
+export function MediaStrip({ kind, media, labelOf, busy, onAutomatic }: { kind: MediaKind; media: MediaInfo; labelOf: (key: string | null) => string | null; busy: boolean; onAutomatic: () => void }) {
+    const pick = media.picks[kind];
+    const normal = labelOf(pick?.normal ?? null), freeOnly = labelOf(pick?.freeOnly ?? null);
+    const chosen = media.choices[kind];
+    return (
+        <div className="inset" style={styles.strip}>
+            <p className="meta" style={styles.line}>
+                <strong style={styles.term}>{KIND_LABELS[kind]} model:</strong>{" "}
+                {!media.enabled ? "None. Every V8 model kind is off (MEDIA_KINDS=off), so each feature uses its fallback."
+                    : normal || freeOnly ? `${normal ?? "none"} in normal mode, ${freeOnly ?? "none"} in Free only.` : "None in use. A feature without one uses its fallback."}
+                {media.enabled && (chosen ? " You chose it; the first tested, approved model serves when your choice stops working." : " The first tested, approved model serves. Choose one to fix it.")}
+            </p>
+            {chosen && <div style={styles.actions}><button type="button" className="btn" disabled={busy} onClick={onAutomatic}>Use the automatic pick</button></div>}
         </div>
     );
 }

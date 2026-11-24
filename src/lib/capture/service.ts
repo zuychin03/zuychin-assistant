@@ -2,24 +2,34 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { safeVaultPath } from "@/lib/knowledge/paths";
 import { serializeFrontmatter } from "@/lib/knowledge/markdown";
+import { capText, countWords } from "./extract/text";
+import { PAGE_READ_LIMIT } from "./review-source";
 import type { CaptureExtract, CaptureExtractMethod, CaptureItem, CapturePreview, CaptureReview, CaptureSource, OcrTier } from "./types";
 
 export const MAX_CAPTURE_PDF_BYTES = 2 * 1024 * 1024;
+export const MAX_CAPTURE_IMAGE_BYTES = 2 * 1024 * 1024;
 export const SOURCE_TEXT_MAX = 120_000;
 export const OCR_STALE_MS = 10 * 60_000;
 const EXTRACTED_BY: Record<CaptureExtractMethod, string> = {
     html: "defuddle", plain: "plain", "pdf-text": "pdf.js", tavily: "tavily", "ocr-free": "gemini-free", "ocr-paid": "gemini-paid",
+    parse: "page-reader", caption: "vision-model",
 };
 export class CaptureError extends Error {
     constructor(message: string, readonly status = 400) { super(message); this.name = "CaptureError"; }
 }
 const sha = z.string().regex(/^[a-f0-9]{40}$/), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const sourceSchema = z.object({
-    kind: z.enum(["text", "link", "pdf", "offline_note"]), title: z.string().trim().min(1).max(200), text: z.string().max(120_000),
+    kind: z.enum(["text", "link", "pdf", "image", "offline_note"]), title: z.string().trim().min(1).max(200), text: z.string().max(120_000),
     url: z.string().max(4000).optional(), pdf: z.object({ name: z.string().min(1).max(200), base64: z.string().max(Math.ceil(MAX_CAPTURE_PDF_BYTES / 3) * 4) }).optional(),
+    image: z.object({ name: z.string().min(1).max(200), base64: z.string().max(Math.ceil(MAX_CAPTURE_IMAGE_BYTES / 3) * 4) }).optional(),
     source: z.object({ documentId: z.string().min(1).max(200), path: z.string().max(1024), commitSha: sha, contentHash: hash }).optional(),
 }).strict();
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+const isJpeg = (bytes: Buffer) => bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+/** Where a capture's original file goes in the vault, beside the note. */
+export function originalAssetPath(id: string, source: Pick<CaptureSource, "pdf" | "image">): string | null {
+    return source.pdf ? `attachments/captures/${id}.pdf` : source.image ? `attachments/captures/${id}.jpg` : null;
+}
 export function validateCaptureSource(input: unknown): CaptureSource {
     const value = sourceSchema.parse(input);
     value.text = value.text.replace(/\r\n/g, "\n");
@@ -35,6 +45,13 @@ export function validateCaptureSource(input: unknown): CaptureSource {
         value.pdf.name = value.pdf.name.replace(/[\\/\x00-\x1f]/g, "_");
         value.pdf.base64 = bytes.toString("base64");
     } else if (value.pdf) throw new CaptureError("Only PDF captures accept an original file.");
+    if (value.kind === "image") {
+        if (!value.image || !/^[a-z0-9+/]*={0,2}$/i.test(value.image.base64)) throw new CaptureError("Attach a valid photo.");
+        const bytes = Buffer.from(value.image.base64, "base64");
+        if (bytes.length > MAX_CAPTURE_IMAGE_BYTES || !isJpeg(bytes)) throw new CaptureError("Attach a JPEG photo no larger than 2 MB.");
+        value.image.name = value.image.name.replace(/[\\/\x00-\x1f]/g, "_");
+        value.image.base64 = bytes.toString("base64");
+    } else if (value.image) throw new CaptureError("Only photo captures accept an image.");
     if (["text", "offline_note"].includes(value.kind) && !value.text.trim()) throw new CaptureError("A passage or note is required.");
     if (value.source) {
         if (value.kind !== "offline_note") throw new CaptureError("Only offline notes accept a source snapshot.");
@@ -51,16 +68,22 @@ interface Dependencies {
     read(path: string, head: string): Promise<string | null>;
     commit(changes: { path: string; content?: string; contentBase64?: string }[], head: string): Promise<{ commit: string }>;
     index(path: string, title: string, markdown: string, profile: string): Promise<void>;
+    /** A kept photo as its own knowledge document, so photo search finds it. */
+    indexPhoto?(photo: CapturePhoto, profile: string): Promise<void>;
     saveExtract?(profile: string, id: string, extract: CaptureExtract): Promise<void>;
     extractor?: {
-        read(source: CaptureSource): Promise<CaptureExtract>;
+        read(source: CaptureSource, profile: string): Promise<CaptureExtract>;
         ocr(source: CaptureSource, stored: CaptureExtract | null, tier: OcrTier, profile: string): Promise<CaptureExtract>;
         ocrTiers(profile: string): Promise<Record<OcrTier, boolean>>;
         acquire(slot: "extract" | "ocr"): (() => void) | null;
         now?(): Date;
     };
 }
+const pagesSchema = z.object({
+    text: z.string().max(2 * SOURCE_TEXT_MAX), pages: z.number().int().min(1).max(PAGE_READ_LIMIT), unread: z.number().int().min(0), model: z.string().trim().min(1).max(200),
+}).strict();
 export interface ExtractResult { extract: CaptureExtract; background?: () => Promise<void> }
+export interface CapturePhoto { path: string; notePath: string; title: string; text: string; base64: string }
 const isPdfExtract = (extract: CaptureExtract | null) => !!extract && (extract.contentType === "application/pdf" || extract.method === "pdf-text" || extract.method.startsWith("ocr-"));
 export function createCaptureService(deps: Dependencies) {
     async function get(profile: string, id: string) {
@@ -75,12 +98,12 @@ export function createCaptureService(deps: Dependencies) {
         let path: string; try { path = safeVaultPath(review.destination); } catch { throw new CaptureError("Choose a safe destination path."); }
         if (!path.endsWith(".md") || path.startsWith(".") || /[\x00-\x1f]/.test(path)) throw new CaptureError("The destination must be a Markdown path.");
         const item = await get(profile, id);
-        const originalPath = item.source.pdf ? `attachments/captures/${id}.pdf` : null;
+        const originalPath = originalAssetPath(id, item.source);
         const sourceText = review.sourceText?.replace(/\r\n/g, "\n").trim() ?? "";
         const body = [`# ${review.title.replace(/[\r\n]/g, " ")}`, review.text.replace(/\r\n/g, "\n")];
         if (sourceText) body.push("## Source text", sourceText);
         if (item.source.url) body.push(`Source: <${item.source.url.replace(/[<>]/g, encodeURIComponent)}>`);
-        if (originalPath) body.push(`[Original PDF](/api/capture/original?id=${id})`);
+        if (originalPath) body.push(`[Original ${item.source.pdf ? "PDF" : "photo"}](/api/capture/original?id=${id})`);
         if (item.source.source) body.push(`Source snapshot: ${item.source.source.path} at ${item.source.source.commitSha}\n\nContent SHA-256: ${item.source.source.contentHash}`);
         // Only with source text, so documents for older reviews stay byte-identical to their ingest claims.
         const fetched = item.extract?.status === "running" ? null : item.extract ?? null;
@@ -106,7 +129,7 @@ export function createCaptureService(deps: Dependencies) {
         if (!extractor || !save) throw new CaptureError("Source text is not available on this server.", 503);
         const item = await get(profile, id);
         if (item.receipt) throw new CaptureError("This capture is already in knowledge, so its source text is fixed.", 409);
-        if (item.source.kind !== "link" && item.source.kind !== "pdf") throw new CaptureError("Only link and PDF captures have source text.");
+        if (item.source.kind !== "link" && item.source.kind !== "pdf" && item.source.kind !== "image") throw new CaptureError("Only link, PDF and photo captures have source text.");
         const now = extractor.now?.() ?? new Date();
         let stored = item.extract ?? null;
         if (stored?.status === "running" && now.getTime() - Date.parse(stored.startedAt ?? stored.fetchedAt) > OCR_STALE_MS) {
@@ -118,7 +141,7 @@ export function createCaptureService(deps: Dependencies) {
             if (!(await extractor.ocrTiers(profile))[tier]) {
                 throw new CaptureError(tier === "paid" ? "Paid Gemini is unavailable: Free only is on or the key is not set." : "The free Gemini key is not set.", 403);
             }
-            if (item.source.kind !== "pdf" && !isPdfExtract(stored)) throw new CaptureError("Gemini reads PDFs only. Read this link first.");
+            if (item.source.kind !== "pdf" && item.source.kind !== "image" && !isPdfExtract(stored)) throw new CaptureError("Gemini reads PDFs and photos only. Read this link first.");
             if (stored?.status === "running") return { extract: stored };
             const release = extractor.acquire("ocr");
             if (!release) throw new CaptureError("Gemini is already reading a PDF. Try again when it finishes.", 429);
@@ -140,13 +163,33 @@ export function createCaptureService(deps: Dependencies) {
         const release = extractor.acquire("extract");
         if (!release) throw new CaptureError("Another source is being read. Try again in a moment.", 429);
         try {
-            const fresh = await extractor.read(item.source);
+            const fresh = await extractor.read(item.source, profile);
             await save(profile, id, fresh);
             return { extract: fresh };
         } finally { release(); }
     }
+    /** Stores the text the Capture page read page by page from a scanned PDF (V8 F2); the box never renders PDFs. */
+    async function savePages(profile: string, id: string, input: unknown): Promise<CaptureExtract> {
+        const save = deps.saveExtract;
+        if (!save) throw new CaptureError("Source text is not available on this server.", 503);
+        const value = pagesSchema.parse(input);
+        if (value.unread > value.pages) throw new CaptureError("Check the page counts and try again.");
+        const item = await get(profile, id);
+        if (item.receipt) throw new CaptureError("This capture is already in knowledge, so its source text is fixed.", 409);
+        if (item.source.kind !== "pdf") throw new CaptureError("Only PDF captures are read page by page.");
+        if (item.extract?.status === "running") throw new CaptureError("Gemini is reading this PDF. Wait for it to finish.", 409);
+        const capped = capText(value.text.replace(/\r\n/g, "\n").trim());
+        const extract: CaptureExtract = {
+            version: 1, status: capped.text ? "ok" : "empty", method: "parse", text: capped.text, truncated: capped.truncated, words: countWords(capped.text),
+            fetchedAt: (deps.extractor?.now?.() ?? new Date()).toISOString(), contentType: "application/pdf", pages: value.pages, model: value.model,
+            note: !capped.text ? `${value.model} found no readable text.` : value.unread ? `${value.unread} of ${value.pages} pages could not be read.` : undefined,
+        };
+        await save(profile, id, extract);
+        return extract;
+    }
     return {
         extract,
+        savePages,
         async capture(profile: string, id: string, input: unknown) {
             z.string().uuid().parse(id);
             const source = validateCaptureSource(input), sourceHash = digest(JSON.stringify(source));
@@ -164,14 +207,22 @@ export function createCaptureService(deps: Dependencies) {
             const wanted = { path: plan.path, contentHash: digest(plan.markdown) };
             const claim = await deps.claim(profile, input.id, wanted);
             if (claim.path !== wanted.path || claim.contentHash !== wanted.contentHash) throw new CaptureError("This capture is reserved for an earlier reviewed destination and content. Retry that review, or create a separate capture.", 409);
-            const changes = [{ path: plan.path, content: plan.markdown }, ...(item.source.pdf && plan.originalPath ? [{ path: plan.originalPath, contentBase64: item.source.pdf.base64 }] : [])];
+            const original = item.source.pdf?.base64 ?? item.source.image?.base64;
+            const changes = [{ path: plan.path, content: plan.markdown }, ...(original && plan.originalPath ? [{ path: plan.originalPath, contentBase64: original }] : [])];
             const commit = plan.existing ? plan.headSha : (await deps.commit(changes, plan.headSha)).commit;
             const receipt = { path: plan.path, commit, indexed: false };
             let recorded = true; try { await deps.receipt(profile, input.id, receipt); } catch { recorded = false; }
+            const photo: CapturePhoto | null = item.source.image?.base64 && plan.originalPath && deps.indexPhoto ? {
+                path: plan.originalPath, notePath: plan.path, title: plan.review.title, base64: item.source.image.base64,
+                text: [plan.review.sourceText?.trim(), plan.review.text.trim()].filter(Boolean).join("\n\n"),
+            } : null;
             // Source text can embed hundreds of chunks one by one, past Cloudflare's 100 s cut.
             const background = async () => {
                 try { await deps.index(plan.path, plan.review.title, plan.markdown, profile); }
                 catch (error) { console.error("[Capture] Indexing failed:", error instanceof Error ? error.message : error); return; }
+                // The note is searchable either way; a photo that failed is picked up by Index photos on the Knowledge page.
+                if (photo) await deps.indexPhoto!(photo, profile)
+                    .catch((error) => console.error("[Capture] Photo indexing failed:", error instanceof Error ? error.message : error));
                 await deps.receipt(profile, input.id, { ...receipt, indexed: true })
                     .catch((error) => console.error("[Capture] Indexed receipt not saved:", error instanceof Error ? error.message : error));
             };

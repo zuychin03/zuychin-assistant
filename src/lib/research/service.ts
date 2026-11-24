@@ -73,7 +73,7 @@ export function createResearchService(client: SupabaseClient, revisions: Revisio
             const [{ data: sources, error: sourceError }, { data: entries, error: entryError }, { data: documents, error: documentError }] = await Promise.all([
                 client.from("research_sources").select("*").eq("question_id", id).eq("user_profile_id", userId).order("created_at").limit(501),
                 client.from("research_entries").select("*").eq("question_id", id).eq("user_profile_id", userId).order("created_at").limit(2001),
-                client.from("knowledge_documents").select("id,path,title,project_id,user_profile_id,scope,status").eq("status", "active")
+                client.from("knowledge_documents").select("id,path,title,project_id,user_profile_id,scope,status").eq("status", "active").not("path", "like", "attachments/%")
                     .or(`project_id.eq.${current.projectId},project_id.is.null`).order("title").limit(501),
             ]);
             if (sourceError || entryError || documentError) databaseError(sourceError ?? entryError ?? documentError!);

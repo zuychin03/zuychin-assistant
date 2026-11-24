@@ -7,7 +7,11 @@ export default function manifest(): MetadataRoute.Manifest {
         description: "Personal AI assistant for research, coding and planning.",
         start_url: "/",
         display: "standalone",
-        share_target: { action: "/capture", method: "GET", params: { title: "title", text: "text", url: "url" } },
+        // Android reads this only when the app is installed, so a change needs a reinstall.
+        share_target: {
+            action: "/capture/share", method: "POST", enctype: "multipart/form-data",
+            params: { title: "title", text: "text", url: "url", files: [{ name: "files", accept: ["image/*", "application/pdf"] }] },
+        },
         background_color: "#0f1115",
         theme_color: "#0f1115",
         icons: [

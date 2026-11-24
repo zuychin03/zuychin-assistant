@@ -57,7 +57,7 @@ export function documentMeta(params: {
     };
 }
 
-function schemaUnavailable(message: string): boolean {
+export function schemaUnavailable(message: string): boolean {
     return /does not exist|schema cache|could not find the table|could not find the function/i.test(message);
 }
 

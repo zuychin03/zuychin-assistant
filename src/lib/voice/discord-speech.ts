@@ -6,14 +6,14 @@ import { readVoiceChoices } from "@/lib/ai/voice-choices";
 // The Discord bot attaches files up to this size and skips larger ones.
 export const MAX_DISCORD_FILE_BYTES = 8 * 1024 * 1024;
 
-// Discord has no voice input, so a spoken reply goes out only when the saved preference is "always". The bot
-// already attaches every artifact with data, so the speech rides along as reply.wav. Best effort: a failure
-// never costs the text reply.
-export async function discordSpeechAttachment(reply: string, requestedFreeOnly: boolean, signal?: AbortSignal) {
+// A transcribed voice message is an audio turn, as on Telegram; otherwise a spoken reply goes out only when the
+// saved preference is "always". The bot already attaches every artifact with data, so the speech rides along as
+// reply.wav. Best effort: a failure never costs the text reply.
+export async function discordSpeechAttachment(reply: string, requestedFreeOnly: boolean, signal?: AbortSignal, audioTurn = false) {
     if (!reply.trim()) return null;
     try {
         const [profile] = await Promise.all([getDefaultProfile(), readVoiceChoices()]);
-        const plan = replyVoicePlan(profile?.preferences, { audioTurn: false, freeOnly: effectiveFreeOnly(profile, requestedFreeOnly) });
+        const plan = replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: effectiveFreeOnly(profile, requestedFreeOnly) });
         if (!plan) return null;
         const { buffer } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, signal));
         if (buffer.length > MAX_DISCORD_FILE_BYTES) return null;

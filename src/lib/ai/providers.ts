@@ -1,6 +1,6 @@
 import { getModelMeta } from "@/lib/ai/model-meta";
-import { uniqueShortName, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
-import { catalogueSnapshot, rowKind, type CatalogueOrigin, type CatalogueRow, type ExpiresSource } from "@/lib/ai/catalogue/snapshot";
+import { isMediaKind, uniqueShortName, type MediaKind, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
+import { catalogueSnapshot, rowKind, type CatalogueOrigin, type CatalogueRow, type ExpiresSource, type ModelTraits } from "@/lib/ai/catalogue/snapshot";
 import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
 import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
 import { removedModelKeys } from "@/lib/ai/models/profiles";
@@ -56,6 +56,8 @@ export interface EmbeddingModel {
     inputType?: boolean;
     /** An array of inputs returns one vector per input, in order (probed). */
     batch?: boolean;
+    /** Takes an image with its text in one request (probed); photos are otherwise embedded by their text. */
+    images?: boolean;
     /** Knowledge partition id this route reproduces exactly (probed, then approved). */
     spaceOf?: string | null;
     catalogue?: TypedModelCatalogue;
@@ -93,6 +95,17 @@ export interface TranscriptionModel {
     catalogue: TypedModelCatalogue;
 }
 
+/** A rerank, parse, image, decision, live or translate route from the catalogue (V8). */
+export interface MediaModel {
+    id: string;
+    label: string;
+    kind: MediaKind;
+    free: boolean;
+    mayTrain: boolean | null;
+    traits: ModelTraits;
+    catalogue: TypedModelCatalogue;
+}
+
 export interface ProviderConfig {
     id: string;
     label: string;
@@ -111,6 +124,7 @@ export interface ProviderConfig {
     /** Catalogue rows only (none in code); absent until merged. */
     speechModels?: SpeechModel[];
     transcriptionModels?: TranscriptionModel[];
+    mediaModels?: MediaModel[];
 }
 
 // Pins and audited quirks only. Every other chat model comes from the catalogue (catalogue/snapshot.ts),
@@ -121,7 +135,7 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini",
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
-        discovery: { source: "gemini", include: "all", pricing: "all-paid", kinds: { speech: { include: "all" }, transcription: { include: "all" } } },
+        discovery: { source: "gemini", include: "all", pricing: "all-paid", kinds: { speech: { include: "all" }, transcription: { include: "all" }, decision: { include: "all" } } },
         chatModels: [
             { free: false, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", name: "gemini-3.8-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: false, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -136,7 +150,10 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini (free)",
         kind: "gemini",
         apiKeyEnv: "GEMINI_FREE_API_KEY",
-        discovery: { source: "gemini", include: "all", pricing: "all-free", nameSuffix: "-free", kinds: { embedding: { include: "all" }, speech: { include: "all" }, transcription: { include: "all" } } },
+        discovery: {
+            source: "gemini", include: "all", pricing: "all-free", nameSuffix: "-free",
+            kinds: { embedding: { include: "all" }, speech: { include: "all" }, transcription: { include: "all" }, decision: { include: "all" }, live: { include: "all" } },
+        },
         chatModels: [
             { free: true, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (free)", name: "gemini-3.8-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: true, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -153,7 +170,8 @@ export const PROVIDERS: ProviderConfig[] = [
             "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zuychin.app",
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
-        discovery: { source: "openrouter", include: "free", pricing: "listed", kinds: { embedding: { include: "free" }, speech: { include: "all" }, transcription: { include: "all" } } },
+        // Rerank and image rows are listed only: this app has no OpenRouter request for them, so they are never tested.
+        discovery: { source: "openrouter", include: "free", pricing: "listed", kinds: { embedding: { include: "free" }, speech: { include: "all" }, transcription: { include: "all" }, rerank: { include: "free" }, image: { include: "free" } } },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
         ],
@@ -178,7 +196,8 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "openai-compatible",
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
-        discovery: { source: "openai-list", include: "all", pricing: "all-free", kinds: { embedding: { include: "all" } } },
+        // Rerank, parse and image models are not on this list; they come from v8-media.sql seeds.
+        discovery: { source: "openai-list", include: "all", pricing: "all-free", kinds: { embedding: { include: "all" }, translate: { include: "all" } } },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
             { free: true, id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
@@ -410,7 +429,7 @@ function joins(row: CatalogueRow): boolean {
     return row.approvedAt !== null || row.probeStatus === "passed";
 }
 
-function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pick<ProviderConfig, "embeddingModels" | "speechModels" | "transcriptionModels"> {
+function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pick<ProviderConfig, "embeddingModels" | "speechModels" | "transcriptionModels" | "mediaModels"> {
     const byId = new Map(own.filter((row) => rowKind(row) === "embedding").map((row) => [row.modelId, row]));
     const embeddingModels: EmbeddingModel[] = provider.embeddingModels.map((model) => {
         const row = byId.get(model.id);
@@ -421,6 +440,7 @@ function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pic
             ...(rowGone(row) ? { retired: true } : {}),
             ...(model.inputType === undefined && traits.acceptsInputType !== undefined ? { inputType: traits.acceptsInputType } : {}),
             ...(traits.batch !== undefined ? { batch: traits.batch } : {}),
+            ...(traits.images !== undefined ? { images: traits.images } : {}),
             spaceOf: row.spaceOf ?? null,
             catalogue: typedCatalogue(row, "code", true),
         };
@@ -435,7 +455,7 @@ function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pic
         embeddingModels.push({
             id: row.modelId, label: row.label, name, free: row.free, dimension: row.dimension,
             ...(rowGone(row) ? { retired: true } : {}),
-            inputType: traits.acceptsInputType ?? false, batch: traits.batch ?? false, spaceOf: row.spaceOf ?? null,
+            inputType: traits.acceptsInputType ?? false, batch: traits.batch ?? false, images: traits.images ?? false, spaceOf: row.spaceOf ?? null,
             catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
         });
     }
@@ -452,7 +472,11 @@ function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pic
         ...(row.traits?.accuracy !== undefined ? { accuracy: row.traits.accuracy } : {}),
         catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
     }));
-    return { embeddingModels, speechModels, transcriptionModels };
+    const mediaModels: MediaModel[] = own.filter((row) => isMediaKind(rowKind(row)) && joins(row) && !rowGone(row)).sort((a, b) => a.label.localeCompare(b.label)).map((row) => ({
+        id: row.modelId, label: row.label, kind: rowKind(row) as MediaKind, free: row.free, mayTrain: row.mayTrain, traits: row.traits ?? {},
+        catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
+    }));
+    return { embeddingModels, speechModels, transcriptionModels, mediaModels };
 }
 
 /** Code entries win field by field; rows add discovered models and status. Untested or failed rows stay out unless approved. */
@@ -830,5 +854,6 @@ export function listProvidersPublic() {
         })),
         speechModels: (p.speechModels ?? []).map((m) => ({ id: m.id, label: m.label, free: m.free, voices: m.voices, approved: m.catalogue.approved, status: m.catalogue.status })),
         transcriptionModels: (p.transcriptionModels ?? []).map((m) => ({ id: m.id, label: m.label, free: m.free, approved: m.catalogue.approved, status: m.catalogue.status })),
+        mediaModels: (p.mediaModels ?? []).map((m) => ({ id: m.id, label: m.label, kind: m.kind, free: m.free, approved: m.catalogue.approved, status: m.catalogue.status })),
     }));
 }

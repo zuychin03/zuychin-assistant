@@ -2,7 +2,8 @@ import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { after, NextRequest, NextResponse } from "next/server";
 import { BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
 import { ragChat } from "@/lib/ai/rag-service";
-import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
+import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, sendTelegramPhoto, downloadTelegramFile, answerTelegramCallbackQuery, editTelegramMessageReplyMarkup } from "@/lib/messaging/telegram-service";
+import { readSavedPhoto } from "@/lib/knowledge/photo-files";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
 import { replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
@@ -12,6 +13,7 @@ import { allowedTelegramChats, allowedTelegramSenders, telegramSecretMatches, te
 import { claimChannelUpdate } from "@/lib/messaging/channel-updates";
 import { parseTelegramCommand, telegramFailureText, type TelegramCommand } from "@/lib/messaging/telegram-turn";
 import { transcribeVoiceNote, VOICE_NOTE_FALLBACK_TEXT } from "@/lib/voice/voice-note";
+import { longRecording, saveTranscriptTap, SAVE_TRANSCRIPT_CALLBACK, transcribeTelegramRecording } from "@/lib/messaging/telegram-recording";
 import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
 import { APPROVAL_CALLBACK } from "@/lib/tasks/approval-notices";
 import { claimApproval, completeApproval, type ApprovalDecision } from "@/lib/tasks/decide";
@@ -117,6 +119,10 @@ async function handleCallbackQuery(cb: Record<string, unknown>) {
         await handleApprovalTap(cbId, approval[1], approval[2] === "a" ? "approve" : "reject", chatId, messageId);
         return;
     }
+    if (data === SAVE_TRANSCRIPT_CALLBACK) {
+        await saveTranscriptTap(cb);
+        return;
+    }
 
     const match = /^ini:([0-9a-f-]{36}):(1|-1)$/.exec(data);
     if (!match) {
@@ -159,6 +165,13 @@ async function processUpdate(update: Record<string, unknown>) {
 
     if (!raw && !hasAttachment) {
         console.log(`[Telegram] Skipping chat ${chatId} - empty message`);
+        return;
+    }
+
+    // Over 5 minutes is a recording to file, not a chat turn (V8 F5); this already runs after the webhook's 200.
+    const recording = longRecording({ voice, audio, date: message.date });
+    if (recording) {
+        await transcribeTelegramRecording(chatId, recording);
         return;
     }
 
@@ -265,7 +278,7 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
     console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
     const message = spoken !== null ? [text, spoken].filter(Boolean).join("\n\n") : text || fallback;
     // Email and calendar changes asked for in this turn wait for Approve / Reject buttons (runRagChat opens the gate).
-    const { reply, artifacts, freeOnly } = await ragChat({
+    const { reply, artifacts, freeOnly, photos } = await ragChat({
         message,
         channel: "telegram",
         conversationId,
@@ -288,6 +301,13 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
             body: stored.body,
         });
         console.log(`[Telegram] Document ${stored.name} ${ok ? "sent" : "failed"}.`);
+    }
+
+    for (const path of photos ?? []) {
+        const photo = await readSavedPhoto(path);
+        if (!photo) continue;
+        const ok = await sendTelegramPhoto(chatId, { filename: photo.name, mimeType: photo.mimeType, body: photo.bytes });
+        console.log(`[Telegram] Cited photo ${ok ? "sent" : "failed"}.`);
     }
 
     await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"), freeOnly);

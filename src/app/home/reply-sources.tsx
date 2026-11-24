@@ -6,6 +6,7 @@ import type { ReplySource, ReplyTrace } from "@/lib/ai/reply-trace";
 import { ReplyTraceBody, validTrace } from "./reply-trace";
 import { askedActivity, askedTools, toolActivity, toolInfo } from "./tool-labels";
 import { parseAgentActivity } from "@/lib/ai/agent/activity";
+import { citedPhotoPaths, photoAssetUrl } from "@/lib/knowledge/photo-paths";
 import ui from "./reply-sources.module.css";
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -20,6 +21,7 @@ function vaultFamily(path = "") {
 
 function sourceColour(source: ReplySource) {
     if (source.kind === "vault") return `var(--fam-${vaultFamily(source.ref)})`;
+    if (source.kind === "photo") return "var(--fam-synthesis)";
     if (source.kind === "fact") return "var(--fam-entity)";
     if (source.kind === "memory") return "var(--faint)";
     return "var(--fam-source)";
@@ -30,6 +32,7 @@ function sourceText(source: ReplySource): { kind: string; text: string } {
     if (source.kind === "web") return { kind: "Web", text: source.label === "search_web" ? "searched" : source.label };
     if (source.kind === "fact") return { kind: "Fact", text: source.label };
     if (source.kind === "memory") return { kind: "Memory", text: source.label };
+    if (source.kind === "photo") return { kind: "Photo", text: source.label };
     return { kind: "Vault", text: source.detail ? `${source.label}, ${source.detail}` : source.label };
 }
 
@@ -56,6 +59,7 @@ export function activitySummary(trace: ReplyTrace) {
     if (!parts.includes("Searched the web") && trace.calls.some((call) => call.groundingRequested && call.capabilities?.grounding)) parts.push("Searched the web");
     const count = (kind: ReplySource["kind"]) => sources.filter((source) => source.kind === kind).length;
     if (count("vault")) parts.push(`Read ${plural(count("vault"), "vault page")}`);
+    if (count("photo")) parts.push(`Found ${plural(count("photo"), "photo")}`);
     if (count("fact")) parts.push(`Recalled ${plural(count("fact"), "fact")}`);
     if (count("memory")) parts.push(`Matched ${plural(count("memory"), "memory", "memories")}`);
     if (!parts.length) return trace.calls.length ? `Reply details, ${plural(trace.calls.length, "model call")}` : "Reply details";
@@ -105,6 +109,21 @@ export function sourcesSummary(sources: ReplySource[]) {
     }
     const parts = [...kinds].sort((a, b) => b[1] - a[1]).map(([kind, count]) => `${kind} ${count}`);
     return `${plural(sources.length, "source")}: ${parts.length > 3 ? `${parts.slice(0, 3).join(", ")}, ${parts.length - 3} more` : parts.join(", ")}`;
+}
+
+/** Saved photos the reply cites, shown under it. */
+export function CitedPhotos({ reply, sources }: { reply: string; sources: ReplySource[] }) {
+    const paths = citedPhotoPaths(reply, sources);
+    if (!paths.length) return null;
+    return <div className={ui.photos}>
+        {paths.map((path) => {
+            const label = sources.find((source) => source.ref === path)?.label ?? "Saved photo";
+            return <a key={path} href={photoAssetUrl(path)} target="_blank" rel="noopener" title={label}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- a private vault photo behind the session; the image optimiser would fetch it without one */}
+                <img src={photoAssetUrl(path)} alt={label} loading="lazy" />
+            </a>;
+        })}
+    </div>;
 }
 
 // Collapsed by default so a long chat is not a column of charts; each reply opens on its own.
@@ -164,8 +183,9 @@ function SourceConstellation({ id, sources, vaultHref, cosmosHref }: {
                     </>;
                     const hover = { onMouseEnter: () => setActive(index), onMouseLeave: () => setActive(null) };
                     return <li key={index}>
-                        {source.kind === "vault" && source.ref
-                            ? <a className={ui.item} href={vaultHref(source.ref)} {...hover} onFocus={() => setActive(index)} onBlur={() => setActive(null)}>{body}</a>
+                        {(source.kind === "vault" || source.kind === "photo") && source.ref
+                            ? <a className={ui.item} href={source.kind === "photo" ? photoAssetUrl(source.ref) : vaultHref(source.ref)} {...(source.kind === "photo" ? { target: "_blank", rel: "noopener" } : {})}
+                                {...hover} onFocus={() => setActive(index)} onBlur={() => setActive(null)}>{body}</a>
                             : <span className={ui.item} data-static {...hover}>{body}</span>}
                     </li>;
                 })}

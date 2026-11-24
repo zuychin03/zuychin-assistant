@@ -2,10 +2,17 @@ import type { ProviderConfig } from "@/lib/ai/providers";
 
 export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list" | "opencode";
 
-export type ModelKind = "chat" | "embedding" | "speech" | "transcription";
+/** V8 kinds: stored only once v8-media.sql widens the kind check. */
+export const MEDIA_KINDS = ["rerank", "parse", "image", "decision", "live", "translate"] as const;
+export type MediaKind = typeof MEDIA_KINDS[number];
+export type ModelKind = "chat" | "embedding" | "speech" | "transcription" | MediaKind;
 export type NonChatKind = Exclude<ModelKind, "chat">;
-export const MODEL_KINDS: readonly ModelKind[] = ["chat", "embedding", "speech", "transcription"];
-export const NON_CHAT_KINDS: readonly NonChatKind[] = ["embedding", "speech", "transcription"];
+export const MODEL_KINDS: readonly ModelKind[] = ["chat", "embedding", "speech", "transcription", ...MEDIA_KINDS];
+export const NON_CHAT_KINDS: readonly NonChatKind[] = ["embedding", "speech", "transcription", ...MEDIA_KINDS];
+
+export function isMediaKind(kind: string): kind is MediaKind {
+    return (MEDIA_KINDS as readonly string[]).includes(kind);
+}
 
 export interface ProviderDiscovery {
     source: DiscoverySource;
@@ -35,7 +42,7 @@ export interface ListedModel {
     mayTrain: boolean | null;
     /** Text-out chat model by the list's own description, before any probe. */
     chat: boolean;
-    /** What the list says the model does; null for kinds the app never uses (image, video, rerank, live audio). */
+    /** What the list says the model does; null for kinds the app never uses (video, music). */
     kind: ModelKind | null;
     /** Retirement date the list publishes (OpenRouter `expiration_date`), as an ISO timestamp. */
     expiresAt: string | null;
@@ -54,8 +61,8 @@ const LISTING_TIMEOUT_MS = 20_000;
 const MAX_DESCRIPTION = 400;
 
 const ROUTER_IDS = /^(openrouter|kilo-auto)\//;
-const GEMINI_NON_CHAT = /(tts|image|imagen|veo|lyria|embedding|aqa|live|native-audio|robotics|computer-use|nano-banana|transcribe|deep-research|antigravity|customtools|-latest$)/;
-const OPENAI_LIST_NON_CHAT = /(embed|rerank|guard|safety|reward|parse|retriever|nvclip|detector|whisper|orpheus|tts|playai)/;
+const GEMINI_NON_CHAT = /(tts|image|imagen|veo|lyria|embedding|aqa|live|native-audio|robotics|computer-use|nano-banana|transcribe|deep-research|antigravity|customtools|decision|-latest$)/;
+const OPENAI_LIST_NON_CHAT = /(embed|rerank|guard|safety|reward|parse|retriever|nvclip|detector|whisper|orpheus|tts|playai|translate|nmt)/;
 const OPENAI_LIST_EMBEDDING = /embed/;
 const OPENAI_LIST_NOT_EMBEDDING = /(rerank|clip)/;
 const OPENAI_LIST_SPEECH = /(tts|orpheus|playai)/;
@@ -63,6 +70,10 @@ const OPENAI_LIST_TRANSCRIPTION = /(whisper|transcri|parakeet|canary|(^|[-/])asr
 const GEMINI_SPEECH = /-tts(-|$)/;
 const GEMINI_TRANSCRIPTION = /transcribe/;
 const GEMINI_LIVE = /(live|native-audio)/;
+// Live ids that are not a two-way voice model, and moving aliases.
+const GEMINI_LIVE_OTHER = /(transcribe|translate|music|lyria|robotics|-latest$)/;
+const GEMINI_DECISION = /^gemini-decision/;
+const OPENAI_LIST_TRANSLATE = /(translate|(^|[-/])nmt([-/]|$))/;
 
 function record(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -103,6 +114,7 @@ function listedDate(value: unknown): string | null {
 
 function openAiListKind(id: string, chat: boolean): ModelKind | null {
     if (chat) return "chat";
+    if (OPENAI_LIST_TRANSLATE.test(id)) return "translate";
     if (OPENAI_LIST_EMBEDDING.test(id) && !OPENAI_LIST_NOT_EMBEDDING.test(id)) return "embedding";
     if (OPENAI_LIST_TRANSCRIPTION.test(id)) return "transcription";
     if (OPENAI_LIST_SPEECH.test(id)) return "speech";
@@ -143,7 +155,8 @@ function aggregatorModel(entry: Record<string, unknown>, free: boolean, mayTrain
     const name = text(entry.name);
     const chat = !ROUTER_IDS.test(id) && outputs.length === 1 && outputs[0] === "text" && (inputs.length === 0 || inputs.includes("text"));
     const only = outputs.length === 1 ? outputs[0] : null;
-    const kind: ModelKind | null = chat ? "chat" : only === "embeddings" ? "embedding" : only === "speech" ? "speech" : only === "transcription" ? "transcription" : null;
+    const kind: ModelKind | null = chat ? "chat" : only === "embeddings" ? "embedding" : only === "speech" ? "speech" : only === "transcription" ? "transcription"
+        : only === "rerank" ? "rerank" : outputs.includes("image") && !ROUTER_IDS.test(id) ? "image" : null;
     return {
         modelId: id,
         label: cleanLabel(name ?? labelFromId(id), free),
@@ -190,10 +203,13 @@ export function parseGeminiModels(raw: unknown, free: boolean): ListedModel[] {
         const methods = strings(entry.supportedGenerationMethods);
         const chat = methods.includes("generateContent") && !GEMINI_NON_CHAT.test(id);
         const generates = methods.includes("generateContent") && !GEMINI_LIVE.test(id);
+        const live = methods.includes("bidiGenerateContent") && GEMINI_LIVE.test(id) && !GEMINI_LIVE_OTHER.test(id);
         const kind: ModelKind | null = chat ? "chat"
             : methods.includes("embedContent") ? "embedding"
-                : generates && GEMINI_SPEECH.test(id) ? "speech"
-                    : generates && GEMINI_TRANSCRIPTION.test(id) ? "transcription" : null;
+                : methods.includes("createDecision") || GEMINI_DECISION.test(id) ? "decision"
+                    : live ? "live"
+                        : generates && GEMINI_SPEECH.test(id) ? "speech"
+                            : generates && GEMINI_TRANSCRIPTION.test(id) ? "transcription" : null;
         return [{
             modelId: id,
             label: cleanLabel(text(entry.displayName) ?? labelFromId(id), free),
@@ -324,13 +340,18 @@ export function selectDiscoverable(models: readonly ListedModel[], discovery: Pr
     });
 }
 
-/** Every model this provider tracks, all configured kinds together. */
-export function selectAllDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set(), typesEnabled = true): ListedModel[] {
-    const kinds: readonly ModelKind[] = typesEnabled ? MODEL_KINDS : ["chat"];
-    return kinds.flatMap((kind) => selectDiscoverable(models, discovery, retiredIds, kind));
+/** Every model this provider tracks, all configured kinds together. `kinds` true means every kind, false chat only. */
+export function selectAllDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set(), kinds: boolean | readonly ModelKind[] = true): ListedModel[] {
+    const list: readonly ModelKind[] = kinds === true ? MODEL_KINDS : kinds === false ? ["chat"] : kinds;
+    return list.flatMap((kind) => selectDiscoverable(models, discovery, retiredIds, kind));
 }
 
 export function typesDiscoveryEnabled(raw = process.env.MODEL_TYPES_DISCOVERY): boolean {
+    return raw?.trim().toLowerCase() !== "off";
+}
+
+/** MEDIA_KINDS=off keeps every V8 kind out of runs and features; each feature then uses its fallback. */
+export function mediaKindsEnabled(raw = process.env.MEDIA_KINDS): boolean {
     return raw?.trim().toLowerCase() !== "off";
 }
 

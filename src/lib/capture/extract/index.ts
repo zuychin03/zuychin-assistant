@@ -6,12 +6,17 @@ import { extractHtml, MIN_PAGE_WORDS } from "./html";
 import { transcribePdf, type OcrGenerate } from "./ocr";
 import { extractPdfText } from "./pdf";
 import { capText, countWords, decodeText, tidyMarkdown } from "./text";
+import type { PageRead } from "./page-image";
+import type { PageImage } from "@/lib/ai/media/requests";
 
 export interface ExtractOptions {
     fetch?: typeof fetchSource;
     fetchOptions?: FetchOptions;
     now?: () => Date;
     tavily?: (url: string) => Promise<ExtractedPage | null>;
+    /** Photos only: the owner's Free only setting, and the reader (page-image.ts). */
+    freeOnly?: boolean;
+    readImage?: (page: PageImage, options: { freeOnly: boolean }) => Promise<PageRead>;
 }
 
 type Draft = Omit<CaptureExtract, "version" | "truncated" | "words" | "fetchedAt"> & { truncated?: boolean };
@@ -53,13 +58,32 @@ async function fromPdf(bytes: Uint8Array, base: Partial<Draft>): Promise<Draft> 
     return { ...base, method: "pdf-text", status: pdf.status, text: pdf.text, pages: pdf.pages, truncated: pdf.truncated, note: pdf.note };
 }
 
+/** A photo read by the parse model, else described by a vision model; with neither, Gemini stays on offer. */
+export function photoDraft(read: PageRead): Draft {
+    if (read.method === "none") {
+        return read.failures.length
+            ? { method: "parse", status: "failed", text: "", note: `The photo could not be read. ${read.failures.join(" ")}` }
+            : { method: "parse", status: "empty", text: "", note: "No page reading or vision model is approved yet. Read it with Gemini or type the text." };
+    }
+    if (read.method === "caption") return { method: "caption", status: "ok", text: read.markdown, model: read.model };
+    return { method: "parse", status: read.markdown ? "ok" : "empty", text: read.markdown, model: read.model,
+        note: read.markdown ? undefined : `${read.model} found no readable text.` };
+}
+
+async function fromPhoto(source: CaptureSource, options: ExtractOptions): Promise<Draft> {
+    if (!source.image?.base64) throw new CaptureError("This capture has no photo to read.");
+    const read = options.readImage ?? (async (page: PageImage, readOptions: { freeOnly: boolean }) => (await import("./page-image")).readPageImage(page, readOptions));
+    return photoDraft(await read({ bytes: new Uint8Array(Buffer.from(source.image.base64, "base64")), mimeType: "image/jpeg" }, { freeOnly: options.freeOnly ?? true }));
+}
+
 export async function extractCapture(source: CaptureSource, options: ExtractOptions = {}): Promise<CaptureExtract> {
     const now = options.now ?? (() => new Date());
     if (source.kind === "pdf") {
         if (!source.pdf?.base64) throw new CaptureError("This capture has no PDF original to read.");
         return finishExtract(await fromPdf(Buffer.from(source.pdf.base64, "base64"), {}), now());
     }
-    if (source.kind !== "link" || !source.url) throw new CaptureError("Only link and PDF captures have source text.");
+    if (source.kind === "image") return finishExtract(await fromPhoto(source, options), now());
+    if (source.kind !== "link" || !source.url) throw new CaptureError("Only link, PDF and photo captures have source text.");
     const method: CaptureExtractMethod = "html";
     if (process.env.CAPTURE_FETCH === "off") {
         return finishExtract({ status: "failed", method, text: "", note: "Server fetching is turned off. Paste the passage instead." }, now());
@@ -102,6 +126,13 @@ export interface OcrOptions extends ExtractOptions { freeOnly: boolean; generate
 export async function ocrCapture(source: CaptureSource, stored: CaptureExtract | null, tier: OcrTier, options: OcrOptions): Promise<CaptureExtract> {
     const now = options.now ?? (() => new Date());
     let bytes: Uint8Array;
+    if (source.kind === "image" && source.image?.base64) {
+        const result = await transcribePdf(Buffer.from(source.image.base64, "base64"), tier, { freeOnly: options.freeOnly, generate: options.generate, mimeType: "image/jpeg" });
+        return finishExtract({
+            method: tier === "paid" ? "ocr-paid" : "ocr-free", status: result.text ? "ok" : "empty", text: result.text, truncated: result.truncated, contentType: "image/jpeg",
+            note: !result.text ? "Gemini found no readable text in the photo." : result.truncated ? "Gemini stopped before the end of the photo's text." : undefined,
+        }, now());
+    }
     if (source.kind === "pdf" && source.pdf?.base64) bytes = Buffer.from(source.pdf.base64, "base64");
     else if (source.kind === "link" && source.url) {
         const fetched = await (options.fetch ?? fetchSource)(source.url, options.fetchOptions).catch((error: unknown) => {

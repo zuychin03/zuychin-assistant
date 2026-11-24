@@ -1,5 +1,6 @@
 import { beginModelObservation } from "@/lib/ai/model-observations";
-import { cosine, requestEmbeddings, retiredAtFrom, type EmbedInputType, type EmbeddingResponse, type EmbeddingRoute } from "@/lib/ai/embedding-request";
+import { cosine, requestEmbeddings, retiredAtFrom, type EmbedInputType, type EmbedModality, type EmbeddingResponse, type EmbeddingRoute } from "@/lib/ai/embedding-request";
+import { PROBE_PAGE_PNG_BASE64 } from "@/lib/ai/catalogue/probe-page";
 import type { ProbeStep } from "@/lib/ai/catalogue/probe";
 import type { ModelTraits } from "@/lib/ai/catalogue/snapshot";
 import type { ProviderConfig } from "@/lib/ai/providers";
@@ -15,13 +16,18 @@ export const PROBE_QUERIES = [
     { text: "What is the weather forecast for tomorrow?", passage: 2 },
 ] as const;
 
+// Asks about the probe page's study-notes table; measured 0.49 against the page image and 0.01 against an unrelated query (24/11/2026).
+export const PROBE_IMAGE_QUERY = "Which models are in the retrieval study notes table?";
+const IMAGE_MIN_MATCH = 0.3;
+const IMAGE_MIN_MARGIN = 0.25;
+
 // Same-space and same-vector threshold; identical routes measured 1.0000 on 23/11/2026.
 export const SAME_SPACE_MIN = 0.999;
 const ASYMMETRIC_BELOW = 0.99;
 const TRUNCATED_DIMENSION = 512;
 const CALL_TIMEOUT_MS = 30_000;
 
-export type EmbeddingProbeStepName = "plain" | "typed" | "retrieval" | "truncate" | "batch" | "space";
+export type EmbeddingProbeStepName = "plain" | "typed" | "retrieval" | "truncate" | "batch" | "photo" | "space";
 
 /** Vectors of the active partition's primary route for the same fixed texts. */
 export interface SpaceReference {
@@ -73,9 +79,9 @@ export async function probeEmbedding(target: EmbeddingProbeTarget, options: { fe
     const timings: number[] = [];
     const traits: ModelTraits = {};
     const route = (inputType: boolean, dimension?: number): EmbeddingRoute => ({ provider: target.provider, modelId: target.modelId, apiKey: target.apiKey, inputType, ...(dimension ? { dimension } : {}) });
-    const call = async (embedRoute: EmbeddingRoute, texts: readonly string[], inputType: EmbedInputType): Promise<EmbeddingResponse> => {
+    const call = async (embedRoute: EmbeddingRoute, texts: readonly string[], inputType: EmbedInputType, modalities?: readonly EmbedModality[]): Promise<EmbeddingResponse> => {
         const observation = beginModelObservation({ providerId: target.provider.id, modelId: target.modelId, purpose: "probe" });
-        const response = await requestEmbeddings(embedRoute, texts, inputType, { ...options, timeoutMs: CALL_TIMEOUT_MS });
+        const response = await requestEmbeddings(embedRoute, texts, inputType, { ...options, timeoutMs: CALL_TIMEOUT_MS, ...(modalities ? { modalities } : {}) });
         if (response.ok) observation.finish();
         else observation.finish({ error: response.timedOut ? { name: "TimeoutError" } : response.status === null ? { name: "TypeError" } : { status: response.status } });
         return response;
@@ -157,7 +163,25 @@ export async function probeEmbedding(target: EmbeddingProbeTarget, options: { fe
         && cosine(batch.vectors[0], passages[0]) >= SAME_SPACE_MIN && cosine(batch.vectors[1], passages[1]) >= SAME_SPACE_MIN;
     steps.batch = step(traits.batch ? "pass" : batch.ok ? "fail" : transient(batch) ? "transient" : "fail", batch, batch.ok && !traits.batch ? "Batch vectors did not match single calls." : null);
 
-    // 6. Same space as the active partition.
+    // 6. Image input: the probe page with a fixed text in one request, as photo indexing sends them. Never fails the probe.
+    if (gemini) steps.photo = step("skipped", null, "Photos are embedded by their text on Gemini routes.");
+    else {
+        const pageQuery = await call(typedRoute, [PROBE_IMAGE_QUERY], "query");
+        const pair = pageQuery.ok ? await call(typedRoute, [`data:image/png;base64,${PROBE_PAGE_PNG_BASE64}`, PROBE_PASSAGES[0]], "passage", ["image", "text"]) : pageQuery;
+        if (!pair.ok || !pageQuery.ok) {
+            traits.images = false;
+            steps.photo = step(!pair.ok && transient(pair) ? "transient" : "fail", pair);
+        } else {
+            const match = cosine(pair.vectors[0], pageQuery.vectors[0]);
+            const unrelated = cosine(pair.vectors[0], queries[1]);
+            const sameText = cosine(pair.vectors[1], passages[0]) >= SAME_SPACE_MIN;
+            traits.images = sameText && match >= IMAGE_MIN_MATCH && match - unrelated >= IMAGE_MIN_MARGIN;
+            steps.photo = step(traits.images ? "pass" : "fail", pair,
+                `Page ${match.toFixed(2)} against an unrelated query ${unrelated.toFixed(2)}${sameText ? "." : "; the text vector changed beside the image."}`);
+        }
+    }
+
+    // 7. Same space as the active partition.
     let spaceOf: string | null = null;
     const reference = target.reference;
     if (reference && reference.passages.length === passages.length && reference.queries.length === queries.length && reference.passages[0]?.length === dimension) {

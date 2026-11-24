@@ -1,5 +1,5 @@
 // Probes one model with its dashboard key (when PROVIDER_KEYS_SECRET is set) or the key in .env.local, and prints the result. Never prints the key; stores nothing.
-// Usage: npx tsx scripts/model-probe.mts <providerId> <modelId> [--kind chat|embedding|speech|transcription] [--voice <id>] [--space <providerId>::<modelId>] [--no-vision] [--allow-paid]
+// Usage: npx tsx scripts/model-probe.mts <providerId> <modelId> [--kind chat|embedding|speech|transcription|rerank|parse|image|decision|live|translate] [--voice <id>] [--space <providerId>::<modelId>] [--no-vision] [--allow-paid]
 import fs from "node:fs";
 import { getProvider, getProviderApiKey } from "../src/lib/ai/providers";
 import { collectModelObservations } from "../src/lib/ai/model-observations";
@@ -17,7 +17,7 @@ const valued = new Set(["--kind", "--voice", "--space"].flatMap((name) => { cons
 const [providerId, modelId] = args.filter((arg, index) => !arg.startsWith("--") && !valued.has(index));
 const kind = option("--kind") ?? "chat";
 if (!providerId || !modelId || (kind !== "chat" && !NON_CHAT_KINDS.includes(kind as NonChatKind))) {
-    console.error("Usage: npx tsx scripts/model-probe.mts <providerId> <modelId> [--kind chat|embedding|speech|transcription] [--voice <id>] [--space <providerId>::<modelId>] [--no-vision] [--allow-paid]");
+    console.error("Usage: npx tsx scripts/model-probe.mts <providerId> <modelId> [--kind chat|embedding|speech|transcription|rerank|parse|image|decision|live|translate] [--voice <id>] [--space <providerId>::<modelId>] [--no-vision] [--allow-paid]");
     process.exit(2);
 }
 const provider = getProvider(providerId);

@@ -15,6 +15,25 @@ export class VoiceDecodeError extends Error {
 
 type DecodedAudio = { channelData: Float32Array[]; samplesDecoded: number };
 
+const OGG_PAGE = [0x4f, 0x67, 0x67, 0x53];
+const pageAt = (bytes: Uint8Array, at: number) => at + 27 <= bytes.length && OGG_PAGE.every((byte, index) => bytes[at + index] === byte) && bytes[at + 4] === 0;
+
+/** Length of an Ogg Opus file from its last page's granule position, without decoding; null when it is not Ogg Opus. */
+export function oggOpusSeconds(bytes: Uint8Array): number | null {
+    if (!pageAt(bytes, 0)) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const head = 27 + bytes[26];
+    if (head + 12 > bytes.length || new TextDecoder().decode(bytes.subarray(head, head + 8)) !== "OpusHead") return null;
+    const preSkip = view.getUint16(head + 10, true), serial = view.getUint32(14, true);
+    for (let at = bytes.length - 27; at > 0; at--) {
+        if (!pageAt(bytes, at) || view.getUint32(at + 14, true) !== serial) continue;
+        // Opus granule positions always count 48 kHz samples.
+        const granule = Number(view.getBigUint64(at + 6, true));
+        return granule > preSkip ? (granule - preSkip) / 48000 : null;
+    }
+    return null;
+}
+
 /** Ogg Opus to 16 kHz mono s16le, in pieces of at most pieceSeconds. libopus resamples while decoding. */
 export async function decodeOggOpus(bytes: Uint8Array, options: { maxSeconds: number; pieceSeconds: number }): Promise<Uint8Array<ArrayBuffer>[]> {
     const { OggOpusDecoder } = await import("ogg-opus-decoder");

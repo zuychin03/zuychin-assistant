@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Type, ThinkingLevel } from "@google/genai";
 import { ai, MODEL } from "@/lib/gemini";
 import { supabaseAdmin as supabase } from "@/lib/supabase";
+import { isImageAssetPath } from "@/lib/knowledge/photo-paths";
 
 export type SuggestionKind =
     | "duplicate" | "contradiction" | "stale" | "orphan" | "broken_link"
@@ -168,7 +169,7 @@ function deterministicSuggestions(
     if (documents.length > 1) {
         for (const document of documents) {
             if (connected.has(document.id)) continue;
-            if (isImmutableRaw(document.path) || isVaultControlFile(document.path)) continue;
+            if (isImmutableRaw(document.path) || isVaultControlFile(document.path) || isImageAssetPath(document.path)) continue;
             findings.push(suggestion(
                 "orphan",
                 "info",

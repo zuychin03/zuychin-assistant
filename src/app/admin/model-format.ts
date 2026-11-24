@@ -4,6 +4,8 @@ export const STEP_LABELS: Record<string, string> = {
     chat: "Chat", tools: "Tool call", forced: "Forced tool call", vision: "Vision",
     query: "Query", passage: "Passage", plain: "Plain call", typed: "Query and passage", retrieval: "Retrieval check",
     truncate: "Smaller size", batch: "Batch", space: "Same space", speak: "Speech", transcribe: "Transcription",
+    rerank: "Ranking", parse: "Page read", image: "Image", photo: "Photo input", decision: "Decisions", token: "Token", live: "Live turn",
+    vi: "English to Vietnamese", fr: "English to French",
 };
 export const OUTCOME_LABELS: Record<string, string> = { pass: "Passed", fail: "Failed", transient: "No clear result", skipped: "Skipped" };
 

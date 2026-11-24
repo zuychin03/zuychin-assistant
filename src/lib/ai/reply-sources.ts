@@ -1,12 +1,43 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ReplySource } from "@/lib/ai/reply-trace";
+import type { ReplyRanking, ReplySource } from "@/lib/ai/reply-trace";
+import type { UntrustedSource } from "@/lib/ai/reply-notes";
 
 const MAX_SOURCES = 8;
+const MAX_RANKINGS = 6;
+const MAX_FETCHED = 6;
+const FETCHED_CHARS = 2_000;
 const LABEL_LIMIT = 120;
-const scope = new AsyncLocalStorage<{ sources: ReplySource[]; asked: Set<string> }>();
 
-export function withReplySources<T>(sources: ReplySource[], fn: () => T, asked = new Set<string>()): T {
-    return scope.run({ sources, asked }, fn);
+/** Outside text a tool brought into the turn, for the memory gate's injection question. */
+export interface FetchedContent { source: UntrustedSource; text: string }
+
+const scope = new AsyncLocalStorage<{ sources: ReplySource[]; asked: Set<string>; rankings: ReplyRanking[]; fetched: FetchedContent[] }>();
+
+export function withReplySources<T>(sources: ReplySource[], fn: () => T, asked = new Set<string>(), rankings: ReplyRanking[] = []): T {
+    return scope.run({ sources, asked, rankings, fetched: [] }, fn);
+}
+
+// Tools whose results carry text written by someone other than the owner.
+const FETCHED_SOURCES: Record<string, UntrustedSource> = {
+    search_web: "search results", list_unread_emails: "emails", list_recent_emails: "emails", read_email: "emails", list_calendar_events: "calendar events",
+};
+
+export function recordFetchedContent(tool: string, result: string) {
+    const fetched = scope.getStore()?.fetched;
+    const source = FETCHED_SOURCES[tool];
+    const text = result.trim();
+    if (!fetched || !source || !text || fetched.length >= MAX_FETCHED) return;
+    fetched.push({ source, text: text.slice(0, FETCHED_CHARS) });
+}
+
+/** What tools fetched so far in this turn; read it inside the turn, since background work runs outside it. */
+export function fetchedContent(): FetchedContent[] {
+    return [...(scope.getStore()?.fetched ?? [])];
+}
+
+export function recordReplyRanking(ranking: ReplyRanking) {
+    const rankings = scope.getStore()?.rankings;
+    if (rankings && rankings.length < MAX_RANKINGS) rankings.push(ranking);
 }
 
 /** A tool call that waited for the owner's approval, or was refused, instead of running. */

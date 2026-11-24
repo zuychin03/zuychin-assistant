@@ -3,6 +3,8 @@ import type { ProviderConfig } from "@/lib/ai/providers";
 // Raw embedding requests for any route, one text or a batch. The live path (embeddings.ts) and the probes both use it.
 
 export type EmbedInputType = "query" | "passage";
+/** Per input: "image" inputs are data URLs. NIM's form, measured 24/11/2026. */
+export type EmbedModality = "text" | "image";
 
 export interface EmbeddingRoute {
     provider: Pick<ProviderConfig, "id" | "kind" | "baseUrl" | "extraHeaders">;
@@ -84,18 +86,22 @@ export async function requestEmbeddings(
     route: EmbeddingRoute,
     texts: readonly string[],
     inputType: EmbedInputType,
-    options: { signal?: AbortSignal; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+    options: { signal?: AbortSignal; timeoutMs?: number; fetchImpl?: typeof fetch; modalities?: readonly EmbedModality[] } = {},
 ): Promise<EmbeddingResponse> {
     if (!texts.length) throw new Error("No texts to embed.");
+    const modalities = options.modalities;
+    if (modalities && modalities.length !== texts.length) throw new Error("One modality is needed per input.");
+    const gemini = route.provider.kind === "gemini";
+    if (gemini && modalities?.includes("image")) throw new Error("This app sends images to OpenAI-shaped embedding routes only.");
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 60_000);
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-    const gemini = route.provider.kind === "gemini";
     const request = gemini ? geminiRequest(route, texts, inputType) : {
         url: `${route.provider.baseUrl}/embeddings`,
         body: {
-            model: route.modelId, input: texts.length === 1 ? texts[0] : texts, encoding_format: "float",
+            model: route.modelId, input: texts.length === 1 && !modalities ? texts[0] : texts, encoding_format: "float",
             ...(route.inputType ? { input_type: inputType } : {}),
             ...(route.dimension ? { dimensions: route.dimension } : {}),
+            ...(modalities ? { modality: modalities } : {}),
         },
     };
     const headers: Record<string, string> = gemini

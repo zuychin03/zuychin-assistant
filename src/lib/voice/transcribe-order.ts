@@ -32,16 +32,16 @@ export function apiTranscriptionRoute(choice: TranscriptionChoice, freeOnly: boo
     return { provider, modelId: model.id, apiKey };
 }
 
-function apiFailure(status: number | null, transient: boolean): SttFailure {
+export function apiFailure(status: number | null, transient: boolean): SttFailure {
     if (status === null) return "timeout";
     if (status === 429) return "busy";
     return transient ? "unavailable" : "error";
 }
 
-async function viaApi(pcm: Uint8Array<ArrayBuffer>, route: ApiSttRoute, transcribe: typeof transcribeWithApi, signal?: AbortSignal): Promise<OrderedTranscript> {
+async function viaApi(pcm: Uint8Array<ArrayBuffer>, route: ApiSttRoute, transcribe: typeof transcribeWithApi, signal?: AbortSignal, timeoutMs = API_TIMEOUT_MS): Promise<OrderedTranscript> {
     const observation = beginModelObservation({ providerId: route.provider.id, modelId: route.modelId, purpose: "transcription" });
     try {
-        const result = await transcribe(route, pcmToWav(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength), STT_SAMPLE_RATE), { signal, timeoutMs: API_TIMEOUT_MS });
+        const result = await transcribe(route, pcmToWav(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength), STT_SAMPLE_RATE), { signal, timeoutMs });
         if (!result.ok) {
             observation.finish({ error: result.status === null ? { name: "TimeoutError" } : { status: result.status } });
             return { ok: false, reason: apiFailure(result.status, result.transient) };
@@ -63,6 +63,8 @@ export async function transcribeInOrder(pcm: Uint8Array<ArrayBuffer>, options: {
     signal?: AbortSignal;
     local?: typeof transcribePcm;
     api?: typeof transcribeWithApi;
+    /** Longer pieces (Capture recordings) need more than a voice turn's 15 s. */
+    apiTimeoutMs?: number;
 }): Promise<OrderedTranscript> {
     let last: OrderedTranscript = { ok: false, reason: "unconfigured" };
     for (const step of options.steps) {
@@ -71,7 +73,7 @@ export async function transcribeInOrder(pcm: Uint8Array<ArrayBuffer>, options: {
             const result = await (options.local ?? transcribePcm)(pcm, { signal: options.signal });
             last = result.ok ? { ok: true, text: result.text, audioSec: result.audioSec, engine: "local", model: result.model } : { ok: false, reason: result.reason };
         } else if (options.apiRoute) {
-            last = await viaApi(pcm, options.apiRoute, options.api ?? transcribeWithApi, options.signal);
+            last = await viaApi(pcm, options.apiRoute, options.api ?? transcribeWithApi, options.signal, options.apiTimeoutMs);
         }
         if (last.ok || last.reason === "empty" || last.reason === "too_large") return last;
     }

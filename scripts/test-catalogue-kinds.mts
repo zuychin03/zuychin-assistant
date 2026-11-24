@@ -28,8 +28,8 @@ check("OpenRouter: output modalities give the kind; expiry, voices and family co
     assert.equal(kindOf(models, "nvidia/nemotron-3.5-embed-1b:free"), "embedding");
     assert.equal(kindOf(models, "heygen/heygen-voice-1-turbo:free"), "speech");
     assert.equal(kindOf(models, "openai/whisper-large-v3-turbo"), "transcription");
-    assert.equal(kindOf(models, "cohere/rerank-5-fast"), null);
-    assert.equal(kindOf(models, "microsoft/mai-image-2.7-flash"), null);
+    assert.equal(kindOf(models, "cohere/rerank-5-fast"), "rerank");
+    assert.equal(kindOf(models, "microsoft/mai-image-2.7-flash"), "image");
     const heygen = models.find((model) => model.modelId === "heygen/heygen-voice-1-turbo:free")!;
     assert.equal(heygen.expiresAt, "2026-11-30T00:00:00.000Z");
     assert.equal(heygen.free, true);
@@ -56,7 +56,7 @@ check("A kind left out of the discovery config is never tracked", () => {
     for (const kind of ["embedding", "speech", "transcription"] as const) assert.deepEqual(selectDiscoverable(models, chatOnly, new Set(), kind), []);
 });
 
-check("Gemini: embedContent, -tts and transcribe give the kind; live models are ignored", () => {
+check("Gemini: embedContent, -tts, transcribe and two-way live models give the kind; live transcription and aliases are ignored", () => {
     const models = parseGeminiModels(fixture("gemini-types"), true);
     assert.equal(kindOf(models, "gemini-3.8-flash"), "chat");
     assert.equal(kindOf(models, "gemini-embedding-2"), "embedding");
@@ -65,7 +65,7 @@ check("Gemini: embedContent, -tts and transcribe give the kind; live models are 
     assert.equal(kindOf(models, "gemini-3.8-flash-lite-tts"), "speech");
     assert.equal(kindOf(models, "gemini-3.5-transcribe"), "transcription");
     assert.equal(kindOf(models, "gemini-3.5-transcribe-live"), null);
-    assert.equal(kindOf(models, "gemini-3.8-live"), null);
+    assert.equal(kindOf(models, "gemini-3.8-live"), "live");
     assert.equal(kindOf(models, "gemini-2.5-flash-native-audio-latest"), null);
     assert.equal(models.find((model) => model.modelId === "gemini-embedding-2")!.maxOutputTokens, null, "the listed output limit of 1 is not kept");
 });
@@ -117,7 +117,8 @@ check("Rows: typed columns are read and sanitised; rows from before the migratio
     const legacy = catalogueRowFromDb(base)!;
     assert.equal(legacy.kind, undefined);
     assert.equal(rowKind(legacy), "chat");
-    assert.equal(catalogueRowFromDb({ ...base, kind: "rerank" })!.kind, "chat");
+    assert.equal(catalogueRowFromDb({ ...base, kind: "rerank" })!.kind, "rerank");
+    assert.equal(catalogueRowFromDb({ ...base, kind: "video" })!.kind, "chat", "an unknown kind reads as chat");
     assert.deepEqual(traitsFromDb("not an object"), {});
 });
 

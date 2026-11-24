@@ -235,7 +235,7 @@ await check("extract reads once, keeps the stored record, refreshes on request a
     const held = acquireSlot("extract")!;
     await assert.rejects(service.extract(profile, pdfId, { refresh: true }), (error: CaptureError) => error.status === 429);
     held();
-    await assert.rejects(service.extract(profile, textId), (error: CaptureError) => error.status === 400 && /link and PDF/.test(error.message));
+    await assert.rejects(service.extract(profile, textId), (error: CaptureError) => error.status === 400 && /link, PDF and photo/.test(error.message));
     await assert.rejects(service.extract(profile, linkId), (error: CaptureError) => error.status === 409);
     await assert.rejects(service.extract("other", pdfId), (error: CaptureError) => error.status === 404);
     const bare = createCaptureService({ get: async () => pdfRow } as unknown as Parameters<typeof createCaptureService>[0]);
@@ -269,9 +269,9 @@ await check("OCR runs in the background with one slot, a running state and tier 
     assert.equal(paid.extract.method, "ocr-paid"); await paid.background!();
     const linkOnly = "55555555-5555-4555-8555-555555555555";
     await service.capture(profile, linkOnly, { kind: "link", title: "Page", text: "", url: "https://example.test/page" });
-    await assert.rejects(service.extract(profile, linkOnly, { ocr: "free" }), /PDFs only/);
+    await assert.rejects(service.extract(profile, linkOnly, { ocr: "free" }), /PDFs and photos only/);
     await service.extract(profile, linkOnly);
-    await assert.rejects(service.extract(profile, linkOnly, { ocr: "free" }), /PDFs only/);
+    await assert.rejects(service.extract(profile, linkOnly, { ocr: "free" }), /PDFs and photos only/);
     tiers = { free: true, paid: false };
 });
 await check("a running OCR older than ten minutes is marked failed", async () => {

@@ -7,11 +7,11 @@ Object.assign(process.env, {
 });
 
 const { MIGRATION_TABLES } = await import("../src/lib/ai/embedding-migration");
-const { dailyQuota, estimateSeconds, parseSwitchState, runSwitch, shouldResume, switchBusy } = await import("../src/lib/ai/embedding-switch");
+const { PHOTO_MS, dailyQuota, estimateSeconds, isPhotoItem, parseSwitchState, runSwitch, shouldResume, switchBusy } = await import("../src/lib/ai/embedding-switch");
 const { parseEmbeddingSetting } = await import("../src/lib/ai/embedding-override");
 const { parsePartitionId, partitionIdFor, resolveEmbedding } = await import("../src/lib/ai/providers");
 const { setCatalogueSnapshotForTests } = await import("../src/lib/ai/catalogue/snapshot");
-const { switchTargetFor } = await import("../src/lib/ai/embedding-switch-live");
+const { switchEstimate, switchTargetFor } = await import("../src/lib/ai/embedding-switch-live");
 type MigrationStore = import("../src/lib/ai/embedding-migration").MigrationStore;
 type MigrationTable = import("../src/lib/ai/embedding-migration").MigrationTable;
 type MigrationRow = import("../src/lib/ai/embedding-migration").MigrationRow;
@@ -150,6 +150,44 @@ await check("stale running jobs and paused jobs resume after 10 minutes; a fresh
     assert.equal(estimateSeconds(2560, 460, 32), 19);
     assert.equal(estimateSeconds(0, null, 32), 0);
     assert.equal(estimateSeconds(10, null, 32), null);
+    assert.equal(PHOTO_MS, 1_600);
+    // 90 text rows in 3 batches at 460 ms, plus 10 photos at 1.6 s each, over 2 workers.
+    assert.equal(estimateSeconds(100, 460, 32, 2, 10), Math.ceil((3 * 460 + 10 * PHOTO_MS) / 2 / 1000));
+    assert.equal(estimateSeconds(10, null, 32, 2, 10), 8, "photos alone need no text timing");
+    assert.equal(estimateSeconds(10, null, 32, 2, 4), null);
+    assert.equal(estimateSeconds(5, 460, 32, 2, 50), 4, "photo rows never exceed the rows");
+});
+
+const photoChunk = (id: string, path: string): MigrationRow => ({
+    id, content: `caption ${id}`, heading_path: [], content_hash: "c".repeat(64), updated_at: "2026-11-24T00:00:00Z",
+    embedding_model: OLD, embedding: JSON.stringify(vector(1)), document: { title: `Title ${id}`, path },
+});
+
+await check("photo chunks are re-embedded one at a time with their image; text chunks keep batching", async () => {
+    const memory = memoryStore({ memories: 3 });
+    memory.rows.get("knowledge_chunks")!.push(photoChunk("900001", "attachments/captures/a.jpg"), photoChunk("900002", "notes/page.md"), photoChunk("900003", "attachments/b.png"));
+    const texts: string[] = [], photos: string[] = [];
+    const run = deps(memory, async (batch) => { texts.push(...batch); return batch.map(() => vector(5)); }, {
+        embedPhoto: async (item) => { photos.push(item.text); return vector(6); },
+    });
+    const state = await runSwitch(initial(), run.value);
+    assert.equal(state.status, "done");
+    assert.equal(state.done, 6);
+    assert.deepEqual(photos.sort(), ["Title 900001\n\ncaption 900001", "Title 900003\n\ncaption 900003"]);
+    assert.ok(texts.includes("Title 900002\n\ncaption 900002"));
+    assert.ok(!texts.some((text) => text.includes("900001") || text.includes("900003")));
+    assert.equal(memory.rows.get("knowledge_chunks")![0].embedding, JSON.stringify(vector(6)));
+    assert.equal(isPhotoItem({ table: "knowledge_chunks", row: photoChunk("1", "attachments/x.webp"), text: "" }), false, "WebP is not a photo the app indexes");
+    assert.equal(isPhotoItem({ table: "memories", row: { id: "1", document: { path: "attachments/x.jpg" } }, text: "" }), false);
+});
+
+await check("without a photo embedder (the new model takes no images), photo chunks go by their text", async () => {
+    const memory = memoryStore({});
+    memory.rows.get("knowledge_chunks")!.push(photoChunk("900004", "attachments/c.jpg"));
+    const sent: string[] = [];
+    const state = await runSwitch(initial(), deps(memory, async (batch) => { sent.push(...batch); return batch.map(() => vector(5)); }).value);
+    assert.equal(state.status, "done");
+    assert.deepEqual(sent, ["Title 900004\n\ncaption 900004"]);
 });
 
 await check("partition ids carry a reduced size, and the saved setting keeps its route", () => {
@@ -182,7 +220,7 @@ function embeddingRow(overrides: Partial<CatalogueRow> & Pick<CatalogueRow, "pro
 
 await check("a switch target must be approved, passing, listed and the right size", () => {
     setCatalogueSnapshotForTests([
-        embeddingRow({ providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b", origin: "seed" }),
+        embeddingRow({ providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b", origin: "seed", traits: { truncatable: true, batch: true, images: true } }),
         embeddingRow({ providerId: "openrouter", modelId: "vendor/candidate:free", approvedAt: null }),
         embeddingRow({ providerId: "openrouter", modelId: "vendor/failing:free", probeStatus: "failed" }),
         embeddingRow({ providerId: "openrouter", modelId: "vendor/fixed:free", traits: { batch: false } }),
@@ -193,6 +231,10 @@ await check("a switch target must be approved, passing, listed and the right siz
         assert.ok(good.ok);
         assert.equal(good.target.partitionId, "nvidia/nemotron-3.5-embed-1b");
         assert.equal(good.target.batch, true);
+        assert.equal(good.target.images, true);
+        assert.equal(switchEstimate(good.target, 100, 10).photoRows, 10);
+        assert.equal(switchEstimate({ ...good.target, images: false }, 100, 10).photoRows, 0, "without the photo step, photos are text rows");
+        assert.equal(switchEstimate({ ...good.target, images: false }, 100, 10).seconds, estimateSeconds(100, 460, 32));
         const reduced = switchTargetFor("nvidia-nim", "nvidia/nemotron-3.5-embed-1b", 512);
         assert.ok(reduced.ok);
         assert.equal(reduced.target.partitionId, "nvidia/nemotron-3.5-embed-1b@512");

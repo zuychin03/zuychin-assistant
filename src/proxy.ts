@@ -46,6 +46,9 @@ function isStaticAsset(pathname: string): boolean {
 function crossOriginMutation(req: NextRequest): boolean {
   if (!UNSAFE_METHODS.has(req.method) || !req.cookies.has(AUTH_COOKIE)) return false;
   const origin = req.headers.get("origin");
+  // The Android share sheet posts with no page behind it, which browsers send as Origin "null". That route only
+  // stages a draft the owner must still save.
+  if (origin === "null" && req.nextUrl.pathname === "/capture/share") return false;
   return origin !== null && origin !== authOrigin() && origin !== req.nextUrl.origin;
 }
 

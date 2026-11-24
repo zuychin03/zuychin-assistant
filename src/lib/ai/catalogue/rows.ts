@@ -23,14 +23,18 @@ export function missingColumn(error: unknown): boolean {
     return code === "42703" || code === "PGRST204";
 }
 
-const TRAIT_STRINGS = ["defaultVoice", "audioFormat", "familyId", "lookupUrl"] as const;
-const TRAIT_NUMBERS = ["sampleRate", "channels", "firstAudioMs", "audioSec", "accuracy"] as const;
-const TRAIT_FLAGS = ["needsInputType", "acceptsInputType", "asymmetric", "truncatable", "batch"] as const;
+const TRAIT_STRINGS = ["defaultVoice", "audioFormat", "familyId", "lookupUrl", "promptTemplate"] as const;
+const TRAIT_NUMBERS = ["sampleRate", "channels", "firstAudioMs", "audioSec", "accuracy", "maxPairTokens", "outputTokens"] as const;
+const TRAIT_FLAGS = ["needsInputType", "acceptsInputType", "asymmetric", "truncatable", "batch", "images", "imagePassages", "editing"] as const;
+const TRAIT_LISTS = { voices: 300, sizes: 40, languages: 200 } as const;
 
 export function traitsFromDb(raw: unknown): ModelTraits {
     const value = record(raw);
     const traits: ModelTraits = {};
-    if (Array.isArray(value.voices)) traits.voices = value.voices.filter((entry): entry is string => typeof entry === "string").slice(0, 300);
+    for (const [key, max] of Object.entries(TRAIT_LISTS) as [keyof typeof TRAIT_LISTS, number][]) {
+        const list = value[key];
+        if (Array.isArray(list)) traits[key] = list.filter((entry): entry is string => typeof entry === "string").slice(0, max);
+    }
     for (const key of TRAIT_STRINGS) if (typeof value[key] === "string" && value[key]) traits[key] = (value[key] as string).slice(0, 500);
     for (const key of TRAIT_NUMBERS) if (typeof value[key] === "number" && Number.isFinite(value[key])) traits[key] = value[key] as number;
     for (const key of TRAIT_FLAGS) if (typeof value[key] === "boolean") traits[key] = value[key] as boolean;

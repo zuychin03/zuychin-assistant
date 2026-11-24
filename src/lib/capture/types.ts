@@ -1,9 +1,11 @@
 export interface CaptureSource {
-    kind: "text" | "link" | "pdf" | "offline_note";
+    kind: "text" | "link" | "pdf" | "image" | "offline_note";
     title: string;
     text: string;
     url?: string;
     pdf?: { name: string; base64: string };
+    /** A JPEG the browser has already downscaled. */
+    image?: { name: string; base64: string };
     source?: { documentId: string; path: string; commitSha: string; contentHash: string };
 }
 export interface CaptureItem {
@@ -19,7 +21,7 @@ export interface CaptureItem {
 export interface CaptureReview { title: string; text: string; destination: string; sourceText?: string }
 export type OcrTier = "free" | "paid";
 export type CaptureExtractStatus = "ok" | "empty" | "scanned" | "locked" | "blocked" | "failed" | "running";
-export type CaptureExtractMethod = "html" | "plain" | "pdf-text" | "tavily" | "ocr-free" | "ocr-paid";
+export type CaptureExtractMethod = "html" | "plain" | "pdf-text" | "tavily" | "ocr-free" | "ocr-paid" | "parse" | "caption";
 export interface CaptureExtract {
     version: 1;
     status: CaptureExtractStatus;
@@ -32,6 +34,8 @@ export interface CaptureExtract {
     title?: string; author?: string; site?: string; published?: string;
     note?: string;
     startedAt?: string;
+    /** The catalogue label of the model that read a photo or page. */
+    model?: string;
 }
 export interface CapturePreview {
     id: string; review: CaptureReview; path: string; markdown: string; originalPath: string | null;

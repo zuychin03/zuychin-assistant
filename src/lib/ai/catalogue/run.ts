@@ -1,5 +1,6 @@
 import { PROVIDERS, getProviderApiKey, retiredChatModelIds, type ProviderConfig } from "@/lib/ai/providers";
-import { familyFromId, listProviderModels, selectAllDiscoverable, selectDiscoverable, shortNameFor, typesDiscoveryEnabled, uniqueShortName, type ListedModel, type ListingResult, type ModelKind, type NonChatKind, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
+import { MEDIA_KINDS, MODEL_KINDS, familyFromId, isMediaKind, listProviderModels, mediaKindsEnabled, selectAllDiscoverable, selectDiscoverable, shortNameFor, typesDiscoveryEnabled, uniqueShortName, type ListedModel, type ListingResult, type ModelKind, type NonChatKind, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
+import { mediaRouteSupported } from "@/lib/ai/media/requests";
 import { probeModel, type ProbeResult, type ProbeTarget } from "@/lib/ai/catalogue/probe";
 import { probeTypedModel, type TypedProbeResult, type TypedProbeTarget } from "@/lib/ai/catalogue/probe-typed";
 import type { SpaceReference } from "@/lib/ai/catalogue/probe-embedding";
@@ -71,6 +72,8 @@ export interface DiscoveryDeps {
     probeTyped?(target: TypedProbeTarget): Promise<TypedProbeResult>;
     /** Read after readRows. False keeps the run to chat rows (MODEL_TYPES_DISCOVERY=off, or v7-model-types.sql not applied). */
     typesEnabled?(): boolean;
+    /** MEDIA_KINDS switch. The run also needs a stored media row, which only v8-media.sql's seeds provide. Absent: off. */
+    mediaEnabled?(): boolean;
     /** Routes the app uses now; their free rows are tested on every run, outside the cap. */
     inUse?(rows: readonly CatalogueRow[]): Promise<InUse>;
     /** Weekly retirement lookup for in-use non-chat models. Absent: none. */
@@ -320,7 +323,10 @@ function section(title: string, lines: readonly string[]): string[] {
     return [`${title} (${lines.length}):`, ...shown];
 }
 
-const KIND_NAMES: Record<NonChatKind, string> = { embedding: "embedding", speech: "speech", transcription: "transcription" };
+const KIND_NAMES: Record<NonChatKind, string> = {
+    embedding: "embedding", speech: "speech", transcription: "transcription",
+    rerank: "rerank", parse: "page reading", image: "image", decision: "decision", live: "live voice", translate: "translation",
+};
 
 export function discoveryMessage(parts: {
     passed: string[]; missing: string[]; failedRetests: string[]; listingFailed: string[]; drafted?: string[];
@@ -375,6 +381,17 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     const removed = deps.removedKeys?.() ?? new Set<string>();
     const typesOn = deps.typesEnabled?.() === true;
     const typedProbes = typesOn && !!deps.probeTyped;
+    const mediaWanted = typesOn && deps.mediaEnabled?.() === true;
+    // Seeds arrive with v8-media.sql; without a media row the kind check would refuse every new one.
+    const mediaOn = mediaWanted && read.rows.some((row) => isMediaKind(rowKind(row)));
+    if (mediaWanted && !mediaOn) warnMediaMissing();
+    const kinds: readonly ModelKind[] = mediaOn ? MODEL_KINDS : MODEL_KINDS.filter((kind) => !isMediaKind(kind));
+    const probeable = (row: CatalogueRow, provider: ProviderConfig) => {
+        const kind = rowKind(row);
+        if (kind === "chat") return true;
+        if (!typedProbes) return false;
+        return !isMediaKind(kind) || (mediaOn && mediaRouteSupported(kind, provider));
+    };
     const inUse = typesOn && deps.inUse ? await deps.inUse(read.rows).catch((error) => {
         console.error("[ModelDiscovery] Could not read the models in use:", error instanceof Error ? error.message : error);
         return null;
@@ -419,13 +436,19 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         const retired = retiredChatModelIds(provider.id);
         const codeIds = codeModelIds(provider);
         const listing = new Map(result.models.map((model) => [model.modelId, model]));
-        const tracked = typesOn ? selectAllDiscoverable(result.models, discovery, retired) : selectDiscoverable(result.models, discovery, retired);
+        const tracked = typesOn ? selectAllDiscoverable(result.models, discovery, retired, kinds) : selectDiscoverable(result.models, discovery, retired);
         const entry: ProviderRunSummary = { listing: "ok", listingFailures: 0, listed: result.models.length, tracked: tracked.length, added: 0, missing: 0 };
         summary.providers[provider.id] = entry;
 
         const own = [...after.values()].filter((row) => row.providerId === provider.id && !retired.has(row.modelId));
+        // NIM lists no rerank, parse or image models; their seeds learn of retirement from a 410 or the build page instead.
+        const offList = (row: CatalogueRow) => {
+            const kind = rowKind(row);
+            return isMediaKind(kind) && !discovery.kinds?.[kind];
+        };
         for (const row of own) {
             const seen = listing.get(row.modelId);
+            if (!seen && offList(row)) continue;
             let next: CatalogueRow;
             if (seen) {
                 // A model marked missing by a 410 probe stays missing while it is still listed.
@@ -455,8 +478,8 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
 
         // In-use models are tested in their own pass below, outside the cap.
         const queue = [...after.values()]
-            .filter((row) => row.providerId === provider.id && (rowKind(row) === "chat" || typedProbes) && !inUseKeys.has(keyOf(row)) && !retired.has(row.modelId) && !removed.has(keyOf(row)))
-            .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), listing.has(row.modelId), startedMs) }))
+            .filter((row) => row.providerId === provider.id && probeable(row, provider) && !inUseKeys.has(keyOf(row)) && !retired.has(row.modelId) && !removed.has(keyOf(row)))
+            .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), listing.has(row.modelId) || offList(row), startedMs) }))
             .filter((item): item is { row: CatalogueRow; priority: number } => item.priority !== null)
             .sort((a, b) => a.priority - b.priority
                 || (a.priority === 2 ? (a.row.probedAt ?? "").localeCompare(b.row.probedAt ?? "") : a.row.firstSeenAt.localeCompare(b.row.firstSeenAt))
@@ -479,7 +502,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     };
     const typedProbe = async (provider: ProviderConfig, apiKey: string, row: CatalogueRow): Promise<TypedProbeResult> => {
         const result = await deps.probeTyped!({
-            kind: rowKind(row) as NonChatKind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices, reference: referenceFor(row),
+            kind: rowKind(row) as NonChatKind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices, reference: referenceFor(row), template: row.traits?.promptTemplate,
         }).catch((error) => typedCrash(error, keyOf(row)));
         const next = applyTypedProbe(after.get(keyOf(row)) ?? row, result, atNow());
         after.set(keyOf(next), next);
@@ -491,7 +514,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         // In-use pass: the knowledge model first, so its vectors are the same-space reference for the rest.
         if (typedProbes && inUse) {
             const targets = [...after.values()]
-                .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && row.free && !removed.has(keyOf(row)) && keyed.has(row.providerId))
+                .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && row.free && !removed.has(keyOf(row)) && keyed.has(row.providerId) && probeable(row, keyed.get(row.providerId)!.provider))
                 .sort((a, b) => Number(keyOf(b) === primaryKey) - Number(keyOf(a) === primaryKey));
             for (const row of targets) {
                 if (deps.now() - startedMs >= deps.runBudgetMs) {
@@ -805,10 +828,10 @@ async function referenceForTest(row: CatalogueRow, rows: readonly CatalogueRow[]
 }
 
 async function testTypedModel(runId: string, provider: ProviderConfig, apiKey: string, row: CatalogueRow, rows: readonly CatalogueRow[], deps: DiscoveryDeps, startedMs: number): Promise<TestSummary> {
-    if (!deps.probeTyped) throw new Error("Embedding, speech and transcription tests are not configured.");
+    if (!deps.probeTyped) throw new Error("Tests of non-chat models are not configured.");
     const kind = rowKind(row) as NonChatKind;
     const { value: result, observations } = await collectModelObservations(async () => deps.probeTyped!({
-        kind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices,
+        kind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices, template: row.traits?.promptTemplate,
         reference: kind === "embedding" ? await referenceForTest(row, rows, deps) : undefined,
     }));
     await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
@@ -820,17 +843,27 @@ async function testTypedModel(runId: string, provider: ProviderConfig, apiKey: s
     return summary;
 }
 
-/** Routes in use now: the knowledge model and its approved backups, the voice and the transcription model. */
+let mediaMissingWarned = false;
+function warnMediaMissing(): void {
+    if (mediaMissingWarned) return;
+    mediaMissingWarned = true;
+    console.warn("[ModelDiscovery] No rerank, parse, image, decision, live or translate rows are stored; apply scripts/migrations/v8-media.sql. Those kinds are skipped.");
+}
+
+/** Routes in use now: the knowledge model and its approved backups, the voice, the transcription model and each V8 kind's pick. */
 async function liveInUse(rows: readonly CatalogueRow[]): Promise<InUse> {
-    const [{ refreshEmbeddingOverride }, { getEmbeddingRef }, { readVoiceChoices }, { inUseRoutes }] = await Promise.all([
+    const [{ refreshEmbeddingOverride }, { getEmbeddingRef }, { readVoiceChoices }, { inUseRoutes }, media, { readMediaChoices }] = await Promise.all([
         import("@/lib/ai/embedding-override"), import("@/lib/ai/embeddings"), import("@/lib/ai/voice-choices"), import("@/lib/ai/catalogue/in-use"),
+        import("@/lib/ai/media/resolve"), import("@/lib/ai/media/choices"),
     ]);
     await refreshEmbeddingOverride();
     const ref = getEmbeddingRef();
-    const choices = await readVoiceChoices();
+    const [choices, mediaChoices] = await Promise.all([readVoiceChoices(), readMediaChoices()]);
+    const picks = mediaKindsEnabled() ? media.mediaInUse(rows, mediaChoices, removedModelKeys(catalogueSnapshot().profiles), media.routableNow, MEDIA_KINDS) : {};
     return inUseRoutes({
         embedding: { partitionId: ref.model.id, providerId: ref.provider.id, modelId: ref.model.apiId ?? ref.model.id },
         speech: choices.speech, transcription: choices.transcription,
+        media: Object.values(picks).flatMap((pick) => [pick.normal, pick.freeOnly].filter((row): row is CatalogueRow => row !== null)),
     }, rows);
 }
 
@@ -860,6 +893,7 @@ export async function liveDiscoveryDeps(): Promise<DiscoveryDeps> {
         removedKeys: () => removedModelKeys(catalogueSnapshot().profiles),
         probeTyped: (target) => probeTypedModel(target),
         typesEnabled: () => typesDiscoveryEnabled() && store.catalogueTypesAvailable() === true,
+        mediaEnabled: () => mediaKindsEnabled(),
         inUse: liveInUse,
         expiryLookups: lookupEnabled() ? {
             maxPerRun: MAX_EXPIRY_LOOKUPS,

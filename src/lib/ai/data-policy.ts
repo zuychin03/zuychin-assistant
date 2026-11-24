@@ -6,16 +6,16 @@ export interface DataRouteAssessment {
     tier: "free" | "paid" | "unknown";
     allowed: boolean | null;
     retention: "not_verified";
-    rule: "interactive" | "scheduled_generation" | "shared_embedding_partition" | "unclassified";
+    rule: "interactive" | "scheduled_generation" | "shared_embedding_partition" | "unattended_scoring" | "unclassified";
 }
 const APPROVED_PROVIDERS = new Set(["gemini", "gemini-free", "openrouter", "kilo", "nvidia-nim", "groq", "agnes", "deepseek", "opencode-zen"]);
 export const DATA_ROUTE_RULES = {
     personal: ["free", "paid"], knowledge: ["free", "paid"], public_search: ["free", "paid"],
-    unattended: ["paid_generation", "shared_embedding_partition"],
+    unattended: ["paid_generation", "shared_embedding_partition", "unattended_scoring"],
 } as const;
 export function assessDataRoute(input: { providerId: string; modelId: string; purpose: string; classes: ModelDataClass[]; freeOnly?: boolean }): DataRouteAssessment {
     const provider = getProvider(input.providerId);
-    const listed = provider && [...provider.chatModels, ...provider.embeddingModels, ...(provider.speechModels ?? []), ...(provider.transcriptionModels ?? [])]
+    const listed = provider && [...provider.chatModels, ...provider.embeddingModels, ...(provider.speechModels ?? []), ...(provider.transcriptionModels ?? []), ...(provider.mediaModels ?? [])]
         .find(candidate => candidate.id === input.modelId);
     // The default voice works before the catalogue lists it (no v7-model-types.sql yet).
     const defaultSpeech = !listed && input.purpose === "speech" && (input.providerId === "gemini" || input.providerId === "gemini-free")
@@ -23,10 +23,12 @@ export function assessDataRoute(input: { providerId: string; modelId: string; pu
     const model = listed ?? (defaultSpeech ? { free: input.providerId === "gemini-free" } : undefined);
     const tier = model?.free === true ? "free" : model?.free === false ? "paid" : "unknown";
     const scheduled = input.classes.includes("unattended"), embedding = input.purpose === "embedding";
-    const rule = scheduled ? embedding ? "shared_embedding_partition" : "scheduled_generation" : input.classes.length ? "interactive" : "unclassified";
+    // Rerank and decision calls write no text, so unattended use follows the embedding rule (V8 Decision 14).
+    const scoring = input.purpose === "rerank" || input.purpose === "decision";
+    const rule = scheduled ? embedding ? "shared_embedding_partition" : scoring ? "unattended_scoring" : "scheduled_generation" : input.classes.length ? "interactive" : "unclassified";
     if (!input.classes.length) return { tier, allowed: null, retention: "not_verified", rule };
     const registered = !!provider && !!model && APPROVED_PROVIDERS.has(provider.id) && !provider.unavailableReason && tier !== "unknown";
-    const permitted = scheduled && !embedding ? input.providerId === "gemini" && tier === "paid" : !input.freeOnly || tier === "free";
+    const permitted = scheduled && !embedding && !scoring ? input.providerId === "gemini" && tier === "paid" : !input.freeOnly || tier === "free";
     return { tier, allowed: registered && permitted, retention: "not_verified", rule };
 }
 export function assertDataRouteAllowed(assessment: DataRouteAssessment) {

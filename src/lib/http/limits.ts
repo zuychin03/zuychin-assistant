@@ -8,6 +8,14 @@ export const CHAT_BODY_LIMIT = 10_000_000;
 export const DEFAULT_BODY_LIMIT = 1 * MB;
 /** STT_MAX_BYTES in src/lib/voice/stt-client.ts: 60 s of 16 kHz 16-bit PCM. */
 export const VOICE_BODY_LIMIT = 1_920_000;
+/** PAGE_IMAGE_MAX_BYTES in src/lib/capture/extract/page-image.ts: one raw page image. */
+export const PAGE_IMAGE_BODY_LIMIT = 2 * MB;
+/** RECORDING_PIECE_BYTES in src/lib/voice/recording-limits.ts: 3 minutes of 16 kHz 16-bit mono PCM. */
+export const RECORDING_PIECE_BODY_LIMIT = 5_760_000;
+/** A transcript up to the 120,000-character capture limit, as UTF-8 JSON with room for non-Latin text. */
+export const RECORDING_SUMMARY_BODY_LIMIT = 512 * KB;
+/** A phone photo shared from Android before the Capture page downscales it, plus the form fields. */
+export const SHARE_BODY_LIMIT = 9_500_000;
 
 // Every limit stays under NEXT_BODY_LIMIT, so a body Next cut short is always over its limit: a 413, never a parse error.
 export const BODY_LIMIT_RULES: readonly { path: string; prefix?: true; limit: number }[] = [
@@ -22,6 +30,10 @@ export const BODY_LIMIT_RULES: readonly { path: string; prefix?: true; limit: nu
     { path: "/api/telegram/webhook", limit: 2 * MB },
     { path: "/api/knowledge/webhook", limit: 2 * MB },
     { path: "/api/capture", limit: 3_000_000 },
+    { path: "/api/capture/parse-page", limit: PAGE_IMAGE_BODY_LIMIT },
+    { path: "/api/capture/transcribe-piece", limit: RECORDING_PIECE_BODY_LIMIT },
+    { path: "/api/capture/recording", limit: RECORDING_SUMMARY_BODY_LIMIT },
+    { path: "/capture/share", limit: SHARE_BODY_LIMIT },
     { path: "/api/voice/transcribe", limit: VOICE_BODY_LIMIT },
     { path: "/api/mcp", prefix: true, limit: 4 * MB },
     { path: "/api/vault/page", limit: 4 * MB },

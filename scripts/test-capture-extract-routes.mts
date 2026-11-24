@@ -78,7 +78,7 @@ assert.equal((await post({ action: "extract", id: pdfId, profileId: "other" })).
 assert.equal((await extract(pdfId, { refresh: "yes" })).status, 400);
 assert.equal((await extract(pdfId, { ocr: "gold" })).status, 400);
 const textRefused = await extract(textId);
-assert.equal(textRefused.status, 400); assert.match(textRefused.body.error, /link and PDF/);
+assert.equal(textRefused.status, 400); assert.match(textRefused.body.error, /link, PDF and photo/);
 assert.equal(patches.length, 0);
 
 const first = await extract(pdfId);

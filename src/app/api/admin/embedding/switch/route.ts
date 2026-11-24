@@ -4,7 +4,7 @@ import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { refreshCatalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
-import { beginSwitch, pendingRows, readSwitchState, runSwitchLive, switchEstimate, switchTargetFor, switchToResume } from "@/lib/ai/embedding-switch-live";
+import { beginSwitch, pendingRows, photoRows, readSwitchState, runSwitchLive, switchEstimate, switchTargetFor, switchToResume } from "@/lib/ai/embedding-switch-live";
 import { BodyTooLargeError, bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
             const dimension = dimensionFrom(params.get("dimension"));
             const checked = dimension === null ? { ok: false as const, error: "The size must be a whole number." } : switchTargetFor(providerId, modelId, dimension);
             preview = checked.ok
-                ? { target: checked.target, estimate: switchEstimate(checked.target, await pendingRows(checked.target.partitionId)) }
+                ? { target: checked.target, estimate: switchEstimate(checked.target, await pendingRows(checked.target.partitionId), await photoRows()) }
                 : { error: checked.error };
         }
         return NextResponse.json({

@@ -1,9 +1,10 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { listProvidersPublic } from "@/lib/ai/providers";
 import { DEFAULT_SPEECH_MODEL } from "@/lib/ai/catalogue/in-use";
+import type { MediaKind } from "@/lib/ai/catalogue/sources";
 import type { ModelCallObservation } from "@/lib/ai/model-observations";
 
-const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech", "study", "probe", "lookup", "consult", "council", "transcription"] as const;
+const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech", "study", "probe", "lookup", "consult", "council", "transcription", "rerank", "parse", "image", "decision", "live", "translate"] as const;
 const STATUSES = ["success", "auth", "rate_limit", "transient", "unavailable", "retired", "aborted", "unknown"] as const;
 const ERROR_CLASSES = ["http", "abort", "timeout", "transport", "unknown"] as const;
 const CAPABILITIES = ["streaming", "tools", "vision", "grounding"] as const;
@@ -54,7 +55,7 @@ export interface ModelHealthEntry {
     providerLabel: string;
     modelId: string;
     modelLabel: string;
-    kind: "chat" | "embedding" | "speech" | "transcription" | "historical";
+    kind: "chat" | "embedding" | "speech" | "transcription" | MediaKind | "historical";
     catalogue: "current" | "unavailable" | "historical";
     configured: boolean;
     unavailableReason: string | null;
@@ -132,6 +133,7 @@ function catalogue(): ModelHealthEntry[] {
         ...provider.embeddingModels.map(model => ({ model, kind: "embedding" as const, unavailable: null as string | null })),
         ...provider.speechModels.map(model => ({ model, kind: "speech" as const, unavailable: null as string | null })),
         ...provider.transcriptionModels.map(model => ({ model, kind: "transcription" as const, unavailable: null as string | null })),
+        ...provider.mediaModels.map(model => ({ model, kind: model.kind, unavailable: null as string | null })),
         // The default voice speaks before the catalogue lists it (no v7-model-types.sql yet).
         ...((provider.id === "gemini" || provider.id === "gemini-free") && !provider.speechModels.some(model => model.id === DEFAULT_SPEECH_MODEL())
             ? [{ model: { id: DEFAULT_SPEECH_MODEL(), label: "Gemini speech", free: provider.id === "gemini-free" }, kind: "speech" as const, unavailable: null as string | null }] : []),

@@ -580,6 +580,71 @@ try {
         assert.equal(h.db.get("acme::acme/embed-copy")!.spaceOf, "acme/embed-primary");
     });
 
+    const mediaAcme: ProviderConfig = {
+        ...typedAcme,
+        discovery: { source: "openai-list", include: "all", pricing: "listed", kinds: { embedding: { include: "all" }, translate: { include: "all" } } },
+    };
+    const mediaListed = (modelId: string, kind: "translate" | "rerank"): ListedModel => ({ ...listed(modelId), chat: false, kind, familyId: modelId });
+    const mediaListing = (): ListingResult => ({ ok: true, models: [
+        typedListed("acme/embed-primary", "embedding", "embed"), mediaListed("acme/translate-new", "translate"), mediaListed("acme/translate-seed", "translate"),
+    ] });
+    const rerankRow = (providerId = "acme") => row({ providerId, modelId: "vendor/rerank-x", origin: "seed", kind: "rerank", probeStatus: "untested", probedAt: null, missedChecks: 1 });
+    const translateRow = () => row({ providerId: "acme", modelId: "acme/translate-seed", origin: "seed", kind: "translate", probeStatus: "untested", probedAt: null, traits: { promptTemplate: "Into {target}: {text}" } });
+
+    await check("media kinds wait for v8-media.sql: nothing of those kinds is stored or tested while no media row exists", async () => {
+        const h = harness({ providers: [mediaAcme], rows: [primaryRow()], listings: { acme: mediaListing() } });
+        const calls = typed(h);
+        h.deps.mediaEnabled = () => true;
+        const summary = await h.run();
+        assert.ok(!h.db.has("acme::acme/translate-new"));
+        assert.deepEqual(summary.added, []);
+        assert.deepEqual(calls.map((call) => call.key), ["acme::acme/embed-primary"]);
+    });
+
+    await check("with media rows stored, translate rows are added and tested with their template; a kind this app cannot call is not tested", async () => {
+        const h = harness({ providers: [mediaAcme], rows: [primaryRow(), rerankRow(), translateRow()], listings: { acme: mediaListing() } });
+        const templates: (string | undefined)[] = [];
+        const calls = typed(h, {
+            probe: (target) => {
+                templates.push(target.template);
+                return { status: "passed", retired: false, retiredAt: null, ms: 900, dimension: null, spaceOf: null, traits: {}, steps: { main: { outcome: "pass", httpStatus: 200, ms: 900, detail: null } } };
+            },
+        });
+        h.deps.mediaEnabled = () => true;
+        const summary = await h.run();
+        assert.equal(h.db.get("acme::acme/translate-new")!.kind, "translate");
+        assert.deepEqual(summary.added, ["acme::acme/translate-new"]);
+        assert.ok(calls.some((call) => call.key === "acme::acme/translate-new"));
+        assert.ok(calls.some((call) => call.key === "acme::acme/translate-seed"));
+        assert.ok(!calls.some((call) => call.key === "acme::vendor/rerank-x"), "acme has no rerank request shape");
+        assert.equal(h.db.get("acme::vendor/rerank-x")!.missingSince, null, "a kind its list never carries is not marked missing");
+        assert.ok(templates.includes("Into {target}: {text}"));
+        assert.match(h.notifications[0], /New translation models passed their tests/);
+    });
+
+    await check("NIM rerank, parse and image seeds are never on its list, yet are tested and never marked missing", async () => {
+        const nim: ProviderConfig = { ...mediaAcme, id: "nvidia-nim", label: "NIM fixture" };
+        const h = harness({ providers: [nim], rows: [rerankRow("nvidia-nim"), translateRow()], listings: { "nvidia-nim": { ok: true, models: [mediaListed("acme/translate-new", "translate")] } } });
+        const calls = typed(h);
+        h.deps.mediaEnabled = () => true;
+        await h.run();
+        assert.ok(calls.some((call) => call.key === "nvidia-nim::vendor/rerank-x"));
+        const stored = h.db.get("nvidia-nim::vendor/rerank-x")!;
+        assert.equal(stored.probeStatus, "passed");
+        assert.equal(stored.missedChecks, 1, "untouched by the listing");
+        assert.equal(stored.missingSince, null);
+    });
+
+    await check("MEDIA_KINDS off keeps stored media rows untested and adds no new ones", async () => {
+        const h = harness({ providers: [mediaAcme], rows: [primaryRow(), translateRow()], listings: { acme: mediaListing() } });
+        const calls = typed(h);
+        h.deps.mediaEnabled = () => false;
+        await h.run();
+        assert.deepEqual(calls.map((call) => call.key), ["acme::acme/embed-primary"]);
+        assert.ok(!h.db.has("acme::acme/translate-new"));
+        assert.equal(h.db.get("acme::acme/translate-seed")!.probeStatus, "untested");
+    });
+
     await check("the message stays short when many models change", () => {
         const many = Array.from({ length: 40 }, (_, index) => `Acme: Model ${index} (\`model-${index}\`)`);
         const text = discoveryMessage({ passed: many, missing: many, failedRetests: [], listingFailed: [] }, "https://owner.invalid/admin#models")!;
@@ -666,7 +731,7 @@ try {
     });
 
     await check("proxy and the admin routes refuse requests without a session", async () => {
-        for (const path of ["/api/admin/models", "/api/admin/models/refresh", "/api/admin/models/test"]) {
+        for (const path of ["/api/admin/models", "/api/admin/models/refresh", "/api/admin/models/test", "/api/admin/media"]) {
             const response = await proxy(new NextRequest(`https://fixture.invalid${path}`, { method: path.endsWith("models") ? "GET" : "POST" }));
             assert.equal(response.status, 307, path);
             assert.match(response.headers.get("location") ?? "", /\/login$/);
