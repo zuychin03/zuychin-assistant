@@ -19,7 +19,7 @@ const { setCatalogueSnapshotForTests } = await import("../src/lib/ai/catalogue/s
 const { setMediaChoicesForTests } = await import("../src/lib/ai/media/choices");
 const { resolveModelOfKind } = await import("../src/lib/ai/media/resolve");
 const { parseDirectCommand, runDirectCommand } = await import("../src/lib/ai/direct-commands");
-const { BRIEF_MAX_CHARS, briefPrompt, clampScript, dueWhen, eventWhen, gatherBriefFacts, writeBrief } = await import("../src/lib/ai/brief");
+const { BRIEF_MAX_CHARS, briefChats, briefPrompt, clampScript, dueWhen, eventWhen, gatherBriefFacts, writeBrief } = await import("../src/lib/ai/brief");
 const { findLanguage, guessSource, listsLanguage, looksCut, PIECE_CHARS, splitForTranslation, translateText, translationCredit, TRANSLATE_MAX_CHARS } = await import("../src/lib/ai/translate");
 const { briefingVoicePlan, replyVoicePlan } = await import("../src/lib/ai/tts");
 const { expandSlashCommand, matchSlashCommands } = await import("../src/lib/commands");
@@ -252,25 +252,74 @@ await check("the script is plain text, capped for one spoken reply, and written 
     assert.ok(!long.includes("**"));
     assert.equal(clampScript("Short and fine."), "Short and fine.");
     const turns: SingleTurn[] = [];
-    const written = await writeBrief({ chat: chat(), embRef, study: false, facts: await gatherBriefFacts(briefSources(), { study: false, now: NOW }) },
+    const written = await writeBrief({ chats: [chat()], embRef, study: false, facts: await gatherBriefFacts(briefSources(), { study: false, now: NOW }) },
         async (_chat, turn) => { turns.push(turn); return sentence.repeat(40); });
     assert.ok(written.script.length <= BRIEF_MAX_CHARS);
     assert.equal(written.model, chat().model.label);
     assert.equal(turns[0].purpose, "summary");
     assert.match(turns[0].system, /reads aloud/);
-    await assert.rejects(writeBrief({ chat: chat(), embRef, study: false, facts: await gatherBriefFacts(briefSources(), { study: false, now: NOW }) }, async () => "   "), /empty/);
+    await assert.rejects(writeBrief({ chats: [chat()], embRef, study: false, facts: await gatherBriefFacts(briefSources(), { study: false, now: NOW }) }, async () => "   "), /empty/);
 });
 
-await check("a /brief reply is spoken whatever the reply preference says, and stays text without a voice", () => {
+await check("briefings use only free routes: other free Gemini models first, then one other provider, never a preview", async () => {
+    const gemini = providers().find((entry) => entry.id === "gemini")!;
+    const paid: ResolvedChat = { provider: gemini, model: gemini.chatModels.find((model) => model.free !== true)! };
+    const routes = briefChats(paid);
+    const [first, second] = routes;
+    const ids = routes.map((route) => `${route.provider.id}::${route.model.id}`);
+    assert.equal(first.provider.id, "gemini-free", `a paid pick is swapped for the first free route: ${ids.join(", ")}`);
+    assert.ok(routes.every((route) => route.model.free === true), ids.join(", "));
+    assert.ok(routes.slice(1).every((route) => !/preview/i.test(route.model.id)), `no preview fallbacks: ${ids.join(", ")}`);
+    assert.equal(new Set(ids).size, ids.length, "no route twice");
+    assert.ok(routes.length <= 4);
+    assert.equal(second.provider.kind, "gemini", "another free Gemini model is tried next");
+    assert.notEqual(routes.at(-1)!.provider.kind, "gemini", "the last resort is another provider");
+    const fromNim = briefChats(chat());
+    assert.equal(fromNim[0].model.id, chat().model.id, "a free pick is kept");
+    assert.ok(fromNim.slice(1).every((route) => route.provider.id !== "nvidia-nim"), `fallbacks leave the failed provider: ${fromNim.map((route) => route.provider.id).join(", ")}`);
+
+    const facts = await gatherBriefFacts(briefSources(), { study: false, now: NOW });
+    const tried: string[] = [];
+    const written = await writeBrief({ chats: [first, second], embRef, study: false, facts }, async (route) => {
+        tried.push(route.provider.id);
+        if (route === first) throw new Error("503 high demand");
+        return "Good morning.";
+    });
+    assert.deepEqual(tried, [first.provider.id, second.provider.id]);
+    assert.deepEqual(written, { script: "Good morning.", model: second.model.label });
+    await assert.rejects(writeBrief({ chats: [first, second], embRef, study: false, facts }, async () => { throw new Error("503 high demand"); }), /503/);
+
+    const stopped = new AbortController();
+    stopped.abort();
+    let calls = 0;
+    await assert.rejects(writeBrief({ chats: [first, second], embRef, study: false, facts, signal: stopped.signal }, async () => { calls++; throw new Error("aborted"); }), /aborted/);
+    assert.equal(calls, 1, "a stopped briefing tries no second route");
+});
+
+await check("a /brief reply is spoken whatever the reply preference says, only by free voices, and stays text without one", () => {
     const off = { voice: { replyWithVoice: "off", speechEngine: "auto" } };
     assert.equal(replyVoicePlan(off, { audioTurn: false, freeOnly: false }), null, "ordinary replies follow the preference");
-    const paid = briefingVoicePlan(off, false);
-    assert.ok(paid?.api, "a briefing still speaks with the API voice when the on-box voice is not set up");
-    assert.equal(briefingVoicePlan(off, true), null, "Free only on Telegram and Discord with no on-box voice: text only");
+    assert.equal(replyVoicePlan({ voice: { replyWithVoice: "always", speechEngine: "auto" } }, { audioTurn: false, freeOnly: false })?.api?.route.providerId, "gemini",
+        "ordinary replies may use the paid voice");
+    assert.equal(replyVoicePlan({ voice: { replyWithVoice: "always", speechEngine: "auto" } }, { audioTurn: false, freeOnly: true }), null,
+        "ordinary Free only replies on Telegram and Discord still never use a free API voice");
+    assert.equal(briefingVoicePlan(off)?.api?.route.providerId, "gemini-free", "no on-box voice: the free Gemini key, never the paid voice");
+    assert.equal(briefingVoicePlan(off)?.local, null);
     process.env.TTS_SERVICE_URL = "http://127.0.0.1:9";
     process.env.TTS_SERVICE_TOKEN = "fixture";
-    try { assert.equal(briefingVoicePlan(off, true)?.local, "M2", "the on-box voice speaks in Free only"); }
-    finally { delete process.env.TTS_SERVICE_URL; delete process.env.TTS_SERVICE_TOKEN; }
+    const freeKey = process.env.GEMINI_FREE_API_KEY;
+    try {
+        const plan = briefingVoicePlan(off);
+        assert.equal(plan?.local, "M2", "the on-box voice speaks first");
+        assert.equal(plan?.api?.route.providerId, "gemini-free", "with a free API voice behind it");
+        assert.equal(briefingVoicePlan({ voice: { replyWithVoice: "off", speechEngine: "local" } })?.api, null, "a forced on-box voice keeps no fallback");
+        delete process.env.GEMINI_FREE_API_KEY;
+        assert.deepEqual(briefingVoicePlan(off), { local: "M2", api: null }, "without the free key only the on-box voice is left");
+    } finally {
+        delete process.env.TTS_SERVICE_URL; delete process.env.TTS_SERVICE_TOKEN;
+        process.env.GEMINI_FREE_API_KEY = freeKey;
+    }
+    assert.equal(briefingVoicePlan(off)?.api?.route.providerId, "gemini-free");
 });
 
 const direct = (deps: TranslateDeps, replyTo?: { role: "user" | "assistant"; content: string }) => ({
@@ -304,6 +353,15 @@ await check("/brief returns the capped script with the speak flag, and a study r
     assert.doesNotMatch(prompts[0], /study recap/);
     assert.match(prompts[1], /This is a study recap/);
     assert.match(prompts[1], /"decks":\[\{"deck":"SIT764","cards":2\}/);
+
+    const gemini = providers().find((entry) => entry.id === "gemini")!;
+    const routes: string[] = [];
+    const free = briefChats(null);
+    await runDirectCommand({ kind: "brief", study: false }, {
+        ...direct(translator().deps), chat: { provider: gemini, model: gemini.chatModels.find((model) => model.free !== true)! }, briefChats: free,
+        generate: async (route: ResolvedChat) => { routes.push(route.model.id); return "Hi."; },
+    });
+    assert.deepEqual(routes, [free[0].model.id], "the briefing is written on its free route, not the request's chat model");
 });
 
 await check("replies to translate arrive from Telegram and the web as quotes", () => {

@@ -9,9 +9,9 @@ import { cachedVoiceChoices, type SpeechBackupChoice } from "@/lib/ai/voice-choi
 import { apiSpeechStream, defaultVoice, knownVoices } from "@/lib/voice/api-speech";
 import { pcmToWav } from "@/lib/voice/audio";
 
-export async function observeSpeech<T>(userProfileId: string | undefined, run: () => Promise<T>): Promise<T> {
+export async function observeSpeech<T>(userProfileId: string | undefined, run: () => Promise<T>, freeOnly = false): Promise<T> {
     const calls: ModelCallObservation[] = [];
-    try { return await withModelObservationCollector(calls, () => { configureModelDataPolicy(false); return run(); }, [], ["personal"]); }
+    try { return await withModelObservationCollector(calls, () => { configureModelDataPolicy(freeOnly); return run(); }, [], ["personal"]); }
     finally { await persistModelObservations(calls, { userProfileId }); }
 }
 
@@ -81,7 +81,7 @@ export type SpeechPlan = {
 type PlanOptions = {
     freeOnly: boolean;
     voiceName?: string;
-    // Telegram and Discord never use a free API voice; in Free only they speak only with the on-box voice.
+    // Ordinary Telegram and Discord replies never use a free API voice; in Free only they speak only with the on-box voice.
     geminiFree?: boolean;
     env?: Record<string, string | undefined>;
     /** The /admin backup voice; defaults to the cached choice (callers refresh it with readVoiceChoices). */
@@ -128,9 +128,12 @@ export function replyVoicePlan(preferences: unknown, options: { audioTurn: boole
     return plan.local || plan.api ? plan : null;
 }
 
-/** A /brief reply on Telegram or Discord speaks whatever the reply preference says; null leaves it as text (V8 F8). */
-export function briefingVoicePlan(preferences: unknown, freeOnly: boolean): SpeechPlan | null {
-    const plan = planSpeech(getVoicePrefs(preferences), { freeOnly, geminiFree: false });
+/**
+ * A /brief reply on Telegram or Discord speaks whatever the reply preference says (V8 F8), always on free routes: the
+ * on-box voice, then a free API voice like the web's (Duy, 25/11/2026). Null leaves it as text.
+ */
+export function briefingVoicePlan(preferences: unknown): SpeechPlan | null {
+    const plan = planSpeech(getVoicePrefs(preferences), { freeOnly: true });
     return plan.local || plan.api ? plan : null;
 }
 

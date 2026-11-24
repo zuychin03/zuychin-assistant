@@ -58,8 +58,12 @@ edited and deleted in place.
   the turn's attached photo to vision models, and Agent mode with a photo attached runs the agent
 - Spoken briefings: `/brief` (web, Telegram, Discord) or **Brief me** on the Today panel reads out
   a short briefing of the next 24 hours: calendar, due and open tasks, new captures and Study
-  reviews. `/brief study` gives a Study recap instead. Web plays it whatever the voice setting
-  says; Telegram and Discord send audio when a voice is available, else text
+  reviews. `/brief study` gives a Study recap instead. Briefings always run on free routes, in
+  any mode: a free chat model writes the script (when it fails, up to two other free Gemini
+  models, then one free model on another provider) and only a free voice reads it: the on-box
+  voice, then the backup voice from `/admin#models` when it is free, else Gemini's voice on the
+  free key. Web plays it whatever the voice setting says; Telegram and Discord send audio when a
+  free voice answers, else text
 - Translation: `/translate <language> <text>`, or `/translate <language>` as a reply to a message,
   in 27 languages and up to 8,000 characters; on Capture, **Translate notes** adds a translation
   under the reviewed notes. An approved translation model takes English or Vietnamese text when it
@@ -625,7 +629,7 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
-| POST | `/api/brief` | A spoken briefing script for the Today panel (`study` for a Study recap); not saved to a conversation |
+| POST | `/api/brief` | A spoken briefing script for the Today panel (`study` for a Study recap), written on free routes only; not saved to a conversation |
 | GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM, `X-Sample-Rate` gives its rate). Speaks with the on-box voice when set up, else the backup voice chosen on `/admin` (Gemini by default); `X-Model-Provider` says which. Free only uses the on-box voice, a free backup voice or the free Gemini key, 409 without any |
 | POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service and, in the transcription order chosen on `/admin`, an API model; 503 `{ fallback: true }` tells the client to send the audio instead |
 | GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
@@ -830,7 +834,7 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
   a small test (rank 4 passages, read a test page, make an image, answer 3 questions, open a
   live session, translate a sentence) and a model choice on their tab (`/api/admin/media`,
   `cron_state.media_models`). Rerank, page reading, decisions, image making and translation
-  use them now; live models are only listed and tested, for Live talk still to come. NIM's rerank, parse
+  use them now; live models are only listed and tested, and no feature uses them. NIM's rerank, parse
   and image models are seeds, because NIM does not list them. `MEDIA_KINDS=off` turns all six off.
 - Rest: when Cloudflare answers that the free daily allowance is used up (HTTP 429, code 3036),
   the provider rests until 00:00 UTC; LlamaParse out of credits (HTTP 402) rests until the 1st of
@@ -1222,8 +1226,9 @@ since Discord reserves `/` for its own slash-command UI:
   `/model nvidia-nim nemotron-3-ultra` or `/model gemini gemini-3.8-flash`.
 - `/embed-model` names the knowledge model, which every channel shares. It is changed on
   `/admin#models`, because a switch re-embeds the whole store.
-- `/brief` (or `/brief study`) sends a spoken briefing: the text, plus audio when a voice is
-  available.
+- `/brief` (or `/brief study`) sends a spoken briefing: the text, plus audio from a free voice
+  (the on-box voice first). Briefings use free models and voices only; ordinary replies here
+  still never use a free API voice.
 - `/translate <language> <text>`, or `/translate <language>` as a reply to a message, translates
   it and names the model that did.
 

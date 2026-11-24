@@ -4,17 +4,17 @@ import { sameOrigin } from "@/lib/auth/config";
 import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import { getDefaultProfile } from "@/lib/db";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
-import { effectiveFreeOnly, ModelPolicyError } from "@/lib/ai/model-policy";
+import { ModelPolicyError } from "@/lib/ai/model-policy";
 import { configureModelDataPolicy, withModelObservationCollector, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { gatherBriefFacts, writeBrief } from "@/lib/ai/brief";
 import { liveBriefSources } from "@/lib/ai/brief-sources";
-import { resolveChatForRequest } from "@/lib/ai/rag-service";
+import { resolveBriefChats } from "@/lib/ai/rag-service";
 
 export const maxDuration = 60;
 const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 
-/** The Today panel's Brief me button (V8 F8): the script only; the panel speaks it through /api/tts. Nothing is saved. */
+/** The Today panel's Brief me button (V8 F8): the script only, on free routes; the panel speaks it through /api/tts. Nothing is saved. */
 export async function POST(req: NextRequest) {
     const denied = await requireChatAuth(req); if (denied) return denied;
     if (!sameOrigin(req)) return respond({ error: "Briefings must be asked for from this app." }, 403);
@@ -22,16 +22,15 @@ export async function POST(req: NextRequest) {
     let userProfileId: string | undefined;
     try {
         const body = await readJsonCapped(req);
-        if (body.freeOnly !== undefined && typeof body.freeOnly !== "boolean") return respond({ error: "Free only must be a boolean." }, 400);
         const study = body.study === true;
         const profile = await getDefaultProfile();
-        userProfileId = profile?.id;
-        const freeOnly = effectiveFreeOnly(profile, body.freeOnly === true);
-        const chat = resolveChatForRequest("web", undefined, undefined, profile, false, freeOnly);
+        if (!profile) throw new ModelPolicyError("Chat preferences are unavailable. Try again in a minute.");
+        userProfileId = profile.id;
+        const chats = resolveBriefChats("web", undefined, undefined, profile);
         return respond(await withModelObservationCollector(observations, async () => {
-            configureModelDataPolicy(freeOnly);
+            configureModelDataPolicy(true);
             const facts = await gatherBriefFacts(liveBriefSources(), { study });
-            return writeBrief({ chat, embRef: getEmbeddingRef(), study, facts, signal: req.signal });
+            return writeBrief({ chats, embRef: getEmbeddingRef(), study, facts, signal: req.signal });
         }, [], ["personal"]));
     } catch (error) {
         const failed = bodyFailure(error);

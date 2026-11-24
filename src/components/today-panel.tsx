@@ -133,7 +133,8 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
         voice?.stop();
     }, []);
 
-    // V8 F8: the script comes from /api/brief and is spoken through /api/tts; it stays as text when speech fails.
+    // V8 F8: the script comes from /api/brief and is spoken through /api/tts, both on free routes only; it stays as
+    // text when speech fails.
     async function briefMe() {
         if (brief?.status === "writing") return;
         if (brief?.status === "speaking") {
@@ -152,7 +153,7 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
             if (!response.ok || typeof data.script !== "string" || !data.script) throw new Error(typeof data.error === "string" ? data.error : "The briefing could not be written. Try again.");
             const script = data.script;
             const voice = new ReplySpeaker({
-                freeOnly: false,
+                freeOnly: true,
                 onEnd: (end) => {
                     if (speaker.current !== voice) return;
                     speaker.current = null;

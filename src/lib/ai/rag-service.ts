@@ -27,6 +27,7 @@ import { runAgent } from "@/lib/ai/agent/orchestrator";
 import type { ConsultImage } from "@/lib/ai/models/consult";
 import { parseDirectCommand, runDirectCommand, type DirectCommand } from "@/lib/ai/direct-commands";
 import { liveBriefSources } from "@/lib/ai/brief-sources";
+import { briefChats } from "@/lib/ai/brief";
 import { liveTranslateDeps } from "@/lib/ai/translate";
 import { getScopedResumeRun, type AgentRunDetail } from "@/lib/ai/agent/run-store";
 import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
@@ -212,6 +213,15 @@ export function resolveChatForRequest(
         return resolveModelKey(getStoredChannelModel(profile, channel)) ?? resolveMessagingDefault();
     }
     return resolveChat();
+}
+
+/** A briefing's free routes (`briefChats`): the model picked for this request when it is free, else the channel's. */
+export function resolveBriefChats(channel: MessageChannel, provider: string | undefined, model: string | undefined, profile: Profile): ResolvedChat[] {
+    let picked: ResolvedChat | null = null;
+    if ((provider || model) && !isRetiredChatModel(provider, model)) {
+        try { picked = resolveChat(provider, model); } catch { picked = null; }
+    }
+    return briefChats(picked?.model.free === true ? picked : resolveModelKey(getStoredChannelModel(profile, channel)));
 }
 
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile, freeOnly = false): Promise<string> {
@@ -888,8 +898,10 @@ function resetOnFirst(sink?: TokenSink): TokenSink | undefined {
 /** /brief and /translate: saved like any turn, answered without retrieval or tools. */
 async function directCommandChat(command: DirectCommand, params: RagChatParams, profile: Profile, freeOnly: boolean, onSavedMessage?: (id: string) => void): Promise<RagChatResult> {
     const { message, channel, conversationId, replyTo, signal } = params;
-    const chat = resolveChatForRequest(channel, params.provider, params.model, profile, false, freeOnly);
+    const briefing = command.kind === "brief" ? resolveBriefChats(channel, params.provider, params.model, profile) : undefined;
+    const chat = briefing?.[0] ?? resolveChatForRequest(channel, params.provider, params.model, profile, false, freeOnly);
     if (freeOnly) assertFreeModel(chat);
+    if (briefing) configureModelDataPolicy(true);
     let userId = "";
     let assistantId = "";
     try {
@@ -900,7 +912,7 @@ async function directCommandChat(command: DirectCommand, params: RagChatParams, 
         }
         signal?.throwIfAborted();
         const { reply, speak } = await runDirectCommand(command, {
-            chat, embRef: getEmbeddingRef(), freeOnly, replyTo, signal, briefSources: liveBriefSources, translateDeps: liveTranslateDeps,
+            chat, briefChats: briefing, embRef: getEmbeddingRef(), freeOnly, replyTo, signal, briefSources: liveBriefSources, translateDeps: liveTranslateDeps,
         });
         signal?.throwIfAborted();
         if (!params.unrecorded) {

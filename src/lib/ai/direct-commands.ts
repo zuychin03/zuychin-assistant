@@ -22,6 +22,8 @@ export function parseDirectCommand(message: string): DirectCommand | null {
 
 export interface DirectContext {
     chat: ResolvedChat;
+    /** Free routes for a briefing (`briefChats`); the first that answers writes it. */
+    briefChats?: readonly ResolvedChat[];
     embRef: ResolvedEmbedding;
     freeOnly: boolean;
     /** The message a /translate replies to; its text is translated when the command carries none. */
@@ -38,7 +40,7 @@ export async function runDirectCommand(command: DirectCommand, ctx: DirectContex
     if (command.kind === "brief") {
         const facts = await gatherBriefFacts(ctx.briefSources(), { study: command.study });
         ctx.signal?.throwIfAborted();
-        const { script } = await writeBrief({ chat: ctx.chat, embRef: ctx.embRef, study: command.study, facts, signal: ctx.signal }, ctx.generate);
+        const { script } = await writeBrief({ chats: ctx.briefChats ?? [ctx.chat], embRef: ctx.embRef, study: command.study, facts, signal: ctx.signal }, ctx.generate);
         return { reply: script, speak: true };
     }
     const target = findLanguage(command.language);

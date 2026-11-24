@@ -1043,8 +1043,8 @@ export default function Home() {
           live.speaker.finish();
         }
       } else if (chats.get() === target && done.reply && ((micTurn && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) || done.speak)) {
-        // A /brief reply is read aloud whatever the voice preference says (V8 F8).
-        toggleSpeak(assistantMessage);
+        // A /brief reply is read aloud whatever the voice preference says (V8 F8), always with a free voice.
+        toggleSpeak(assistantMessage, done.speak ? true : undefined);
       }
       canDrain = true;
       void loadConversations();
@@ -1224,12 +1224,12 @@ export default function Home() {
 
   // Becomes the current speech (stopping any other). When it ends, a voice conversation listens again,
   // also after a failure, so a TTS hiccup never ends the loop.
-  const startSpeaker = (messageId: string) => {
+  const startSpeaker = (messageId: string, freeOnly = chatPolicyRef.current.freeOnly) => {
     stopSpeaking();
     const seq = speakSeqRef.current;
     setSpeakingId(messageId);
     const speaker = new ReplySpeaker({
-      freeOnly: chatPolicyRef.current.freeOnly,
+      freeOnly,
       beforeFirstAudio: waitForFiller,
       onEnd: (end, error) => {
         if (seq !== speakSeqRef.current) return;
@@ -1246,13 +1246,13 @@ export default function Home() {
     return { speaker, seq };
   };
 
-  const toggleSpeak = (msg: ChatMessage) => {
+  const toggleSpeak = (msg: ChatMessage, freeOnly?: boolean) => {
     if (!chatPolicyRef.current.ready) return;
     if (speakingId === msg.id) {
       stopSpeaking();
       return;
     }
-    const { speaker } = startSpeaker(msg.id);
+    const { speaker } = startSpeaker(msg.id, freeOnly);
     speaker.push(msg.content);
     speaker.finish();
   };

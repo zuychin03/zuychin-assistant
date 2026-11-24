@@ -60,11 +60,11 @@ async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boo
     try {
         const [profile] = await Promise.all([getDefaultProfile(), readVoiceChoices()]);
         const free = effectiveFreeOnly(profile, freeOnly);
-        const plan = briefing ? briefingVoicePlan(profile?.preferences, free) : replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: free });
+        const plan = briefing ? briefingVoicePlan(profile?.preferences) : replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: free });
         if (!plan) return;
 
         await sendTelegramChatAction(chatId, "upload_document");
-        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, undefined, briefing ? FULL_TTS_CHARS : undefined));
+        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, undefined, briefing ? FULL_TTS_CHARS : undefined), briefing);
         const ok = await sendTelegramDocument(chatId, {
             filename: briefing ? "briefing.wav" : "reply.wav",
             mimeType,

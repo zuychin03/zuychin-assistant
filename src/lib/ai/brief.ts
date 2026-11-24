@@ -2,6 +2,7 @@ import { APP_TIMEZONE } from "@/lib/datetime";
 import { stripMarkdown } from "@/lib/speech";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { singleTurn, type SingleTurn } from "@/lib/ai/models/consult";
+import { freeChatCandidates, resolveFreeChat } from "@/lib/ai/model-policy";
 import type { ResolvedChat } from "@/lib/ai/providers";
 
 // V8 F8: a spoken briefing on request only (Decision 7). The app reads the facts itself; the chat model only words
@@ -125,11 +126,36 @@ export function clampScript(raw: string, max = BRIEF_MAX_CHARS): string {
     return (space > 0 ? window.slice(0, space) : window).trim();
 }
 
-export async function writeBrief(input: { chat: ResolvedChat; embRef: ResolvedEmbedding; study: boolean; facts: BriefFacts; signal?: AbortSignal },
+/**
+ * Briefings run only on free routes, in any mode and whatever model is picked (Duy, 25/11/2026): the picked model when
+ * it is free, else the first free route. Fallbacks are up to two other free Gemini models (a busy one answers 503 within
+ * about 3 s, measured 25/11), then one free route on another provider, last because free reasoning models there can
+ * write their thinking into the reply. Previews are never fallbacks (V8 Decision 2).
+ */
+export function briefChats(picked: ResolvedChat | null): ResolvedChat[] {
+    const first = resolveFreeChat(picked);
+    const rest = freeChatCandidates().filter((chat) => !/preview/i.test(chat.model.id)
+        && (chat.provider.id !== first.provider.id || chat.model.id !== first.model.id));
+    const gemini = rest.filter((chat) => chat.provider.kind === "gemini").slice(0, 2);
+    const other = rest.find((chat) => chat.provider.kind !== "gemini" && chat.provider.id !== first.provider.id);
+    return [first, ...gemini, ...(other ? [other] : [])];
+}
+
+/** The first route that answers writes the script; the time limit covers all of them. */
+export async function writeBrief(input: { chats: readonly ResolvedChat[]; embRef: ResolvedEmbedding; study: boolean; facts: BriefFacts; signal?: AbortSignal },
     generate: (chat: ResolvedChat, turn: SingleTurn) => Promise<string> = singleTurn): Promise<{ script: string; model: string }> {
     const signal = input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(BRIEF_TIMEOUT_MS)]) : AbortSignal.timeout(BRIEF_TIMEOUT_MS);
-    const raw = await generate(input.chat, { system: BRIEF_SYSTEM, prompt: briefPrompt(input.facts, input.study), maxTokens: 2048, purpose: "summary", embRef: input.embRef, signal });
-    const script = clampScript(raw);
-    if (!script) throw new Error("The briefing came back empty.");
-    return { script, model: input.chat.model.label };
+    const turn: SingleTurn = { system: BRIEF_SYSTEM, prompt: briefPrompt(input.facts, input.study), maxTokens: 2048, purpose: "summary", embRef: input.embRef, signal };
+    let failure: unknown = new Error("No free route can write the briefing.");
+    for (const chat of input.chats) {
+        try {
+            const script = clampScript(await generate(chat, turn));
+            if (script) return { script, model: chat.model.label };
+            failure = new Error("The briefing came back empty.");
+        } catch (error) {
+            failure = error;
+        }
+        if (signal.aborted) break;
+    }
+    throw failure;
 }

@@ -14,9 +14,9 @@ export async function discordSpeechAttachment(reply: string, requestedFreeOnly: 
     try {
         const [profile] = await Promise.all([getDefaultProfile(), readVoiceChoices()]);
         const freeOnly = effectiveFreeOnly(profile, requestedFreeOnly);
-        const plan = briefing ? briefingVoicePlan(profile?.preferences, freeOnly) : replyVoicePlan(profile?.preferences, { audioTurn, freeOnly });
+        const plan = briefing ? briefingVoicePlan(profile?.preferences) : replyVoicePlan(profile?.preferences, { audioTurn, freeOnly });
         if (!plan) return null;
-        const { buffer } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, signal, briefing ? FULL_TTS_CHARS : undefined));
+        const { buffer } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, signal, briefing ? FULL_TTS_CHARS : undefined), briefing);
         if (buffer.length > MAX_DISCORD_FILE_BYTES) return null;
         return { id: "spoken-reply", name: "reply.wav", mime: "audio/wav", kind: "document" as const, size: buffer.length, base64: buffer.toString("base64") };
     } catch {
