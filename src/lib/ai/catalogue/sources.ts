@@ -207,7 +207,8 @@ export function parseGeminiModels(raw: unknown, free: boolean): ListedModel[] {
             listedTools: null,
             listedStructured: null,
             listedThinking: typeof entry.thinking === "boolean" ? entry.thinking : null,
-            mayTrain: null,
+            // Google may train on free-tier requests and keeps paid-tier ones out of training.
+            mayTrain: free,
             chat,
             kind,
             expiresAt: null,

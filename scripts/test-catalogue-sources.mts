@@ -78,7 +78,10 @@ await check("Gemini: non-chat families, -latest aliases and retired ids are left
     assert.equal(flash.listedThinking, true);
     assert.equal(flash.maxOutputTokens, 65536);
     assert.equal(flash.label, "Gemini 3.8 Flash");
-    assert.equal(parseGeminiModels(fixture("gemini"), true).find((model) => model.modelId === "gemini-3.8-flash")!.label, "Gemini 3.8 Flash (free)");
+    assert.equal(flash.mayTrain, false, "the paid key keeps requests out of training");
+    const freeFlash = parseGeminiModels(fixture("gemini"), true).find((model) => model.modelId === "gemini-3.8-flash")!;
+    assert.equal(freeFlash.label, "Gemini 3.8 Flash (free)");
+    assert.equal(freeFlash.mayTrain, true, "the free key may train, so its rows show May train");
 });
 
 await check("DeepSeek: paid key, limits, modalities and effort are read", () => {
