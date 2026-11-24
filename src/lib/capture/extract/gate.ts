@@ -2,7 +2,7 @@
 const KEY = Symbol.for("zuychin.capture.slots");
 const scope = globalThis as unknown as Record<symbol, Set<string> | undefined>;
 
-export type SlotName = "extract" | "ocr" | "page" | "audio";
+export type SlotName = "extract" | "ocr" | "page" | "audio" | "video";
 
 export function acquireSlot(name: SlotName): (() => void) | null {
     const busy = (scope[KEY] ??= new Set());

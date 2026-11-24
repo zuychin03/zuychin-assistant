@@ -15,6 +15,8 @@ import { aggregateUsage, requestUsage, type CompatUsage } from "@/lib/ai/stream-
 import { groqBody } from "@/lib/ai/groq";
 import { beginModelObservation, type ModelCallPurpose } from "@/lib/ai/model-observations";
 import { budgetKey, estimateTokens, planRequest, recordTokens, RequestLimitError, MIN_REPLY_TOKENS } from "@/lib/ai/request-budget";
+import { maskChatMessages, streamRestorer, type Masker } from "@/lib/ai/privacy/mask";
+import { logMasking, maskerFor } from "@/lib/ai/privacy/policy";
 
 interface ToolCall {
     id?: string;
@@ -98,6 +100,8 @@ function dropDanglingThink(text: string): string {
 
 interface RequestOpts {
     purpose?: ModelCallPurpose;
+    /** The model's free flag, for the V8 F13 may-train check. */
+    free?: boolean;
     thinking: boolean;
     genParams: GenParams;
     signal?: AbortSignal;
@@ -149,6 +153,7 @@ async function runCompatChat(params: CompatChatParams, onRequestUsage: (usage: C
 
     const opts: RequestOpts = {
         purpose: params.purpose,
+        free: model.free,
         thinking: !!params.thinking && model.supportsThinking,
         genParams: params.genParams ?? {},
         signal: params.signal,
@@ -387,11 +392,16 @@ async function postChat(
 ): Promise<ChatCompletion> {
     opts.signal?.throwIfAborted();
     const { thinking, genParams } = opts;
+    // Masked afresh on every request: the history holds the real details, and numbering by first appearance keeps
+    // each placeholder the same from one tool round to the next.
+    const masker = maskerFor(provider.id, model, opts.free);
+    const sent = masker ? maskChatMessages(messages, masker) : messages;
+    if (masker) logMasking(provider.id, model, masker);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: Record<string, any> = {
         model,
-        messages,
+        messages: sent,
         ...(tools ? { tools, tool_choice: toolChoice } : {}),
         stream: true,
     };
@@ -431,7 +441,7 @@ async function postChat(
     // can count the requested maximum against the minute up front.
     const limit = provider.requestTokenLimit;
     const budget = budgetKey(provider.id, model);
-    const estimate = limit ? estimateTokens({ messages, tools }) : 0;
+    const estimate = limit ? estimateTokens({ messages: sent, tools }) : 0;
     if (limit) {
         const plan = planRequest(limit, budget, estimate, body.max_tokens);
         if (!plan.ok) throw new RequestLimitError(plan.reason, provider.label, model, limit, estimate, plan.used);
@@ -480,6 +490,8 @@ async function postChat(
 
         let answerText = "";
         let awaitingAnswer = true;
+        const restorer = masker && opts.onToken ? streamRestorer(masker, opts.onToken) : null;
+        const emit = restorer ? restorer.push : opts.onToken;
         const result = await accumulateStream(res.body, provider.label, (text) => {
             if (awaitingAnswer) {
                 answerText += text;
@@ -490,8 +502,10 @@ async function postChat(
                     answerText = "";
                 }
             }
-            opts.onToken?.(text);
+            emit?.(text);
         }, () => !!opts.signal?.aborted, (usage) => { latestUsage = usage; }, () => observation.capability("streaming"));
+        restorer?.flush();
+        if (masker) restoreCompletion(result, masker);
         streamFinished = !!result.streamFinished;
         if (result.choices?.[0]?.message.tool_calls?.length) observation.capability("tools");
         observation.finish({ usage: requestUsage(latestUsage, streamFinished), status: streamFinished ? "success" : result.truncated === "timeout" ? "transient" : "unknown" });
@@ -617,6 +631,16 @@ async function accumulateStream(
         }],
         truncated,
     };
+}
+
+/** The real details back in the answer, the reasoning and the tool arguments, before anything runs or is stored. */
+function restoreCompletion(data: ChatCompletion, masker: Masker): void {
+    const message = data.choices?.[0]?.message;
+    if (!message) return;
+    if (typeof message.content === "string") message.content = masker.unmask(message.content);
+    if (typeof message.reasoning_content === "string") message.reasoning_content = masker.unmask(message.reasoning_content);
+    if (typeof message.reasoning === "string") message.reasoning = masker.unmask(message.reasoning);
+    for (const call of message.tool_calls ?? []) call.function.arguments = masker.unmaskJson(call.function.arguments);
 }
 
 // A cut stream leaves the last call's arguments mid-JSON; running it would

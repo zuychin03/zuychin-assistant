@@ -4,6 +4,7 @@ import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { findEntry, formatModelDetail, formatRoster, rankForPurpose, type RosterEntry, type RosterPolicy } from "@/lib/ai/models/roster";
 import { isPurposeTag, PURPOSE_TAGS, type PurposeTag } from "@/lib/ai/models/tags";
 import type { FeedbackInput } from "@/lib/ai/models/store";
+import type { ConsultImage } from "@/lib/ai/models/consult";
 
 const TAG_LIST = PURPOSE_TAGS.join(", ");
 const ASK_ANSWER_MAX = 6000;
@@ -24,19 +25,21 @@ export const MODEL_TOOLS: McpTool[] = [
     },
     {
         name: "ask_model",
-        description: "Ask one other model a question and get its answer, with no tools. Use it for a second opinion or a task one model is known to do well. Shares a budget of 6 calls per run with compare_models. Paid models are allowed only when this run's orchestrator is on a paid model.",
+        description: "Ask one other model a question and get its answer, with no tools. Use it for a second opinion or a task one model is known to do well. When the user attached an image, it is sent along, so pick a vision model (list_models needs_vision). Shares a budget of 6 calls per run with compare_models. Paid models are allowed only when this run's orchestrator is on a paid model.",
         parameters: {
             model: { type: "string", description: "A provider::model key from list_models, or a model name.", required: true },
-            prompt: { type: "string", description: "The full, self-contained request. The model sees nothing else.", required: true },
+            prompt: { type: "string", description: "The full, self-contained request. The model sees nothing else apart from the attached image.", required: true },
             max_tokens: { type: "number", description: `Answer length cap, default ${DEFAULT_CONSULT_TOKENS}, at most ${MAX_CONSULT_TOKENS}.`, required: false },
+            include_image: { type: "boolean", description: "Send the user's attached image (default true when there is one). Set false to ask a text-only model.", required: false },
         },
     },
     {
         name: "compare_models",
-        description: "Send one prompt to 2 or 3 models in parallel, with no tools, and get each answer with its time. Use it before relying on an unfamiliar model for a kind of task. Each model counts toward the 6 consult calls per run.",
+        description: "Send one prompt to 2 or 3 models in parallel, with no tools, and get each answer with its time. Use it before relying on an unfamiliar model for a kind of task. When the user attached an image, it is sent along and models without vision are skipped. Each model asked counts toward the 6 consult calls per run.",
         parameters: {
             prompt: { type: "string", description: "The full, self-contained request.", required: true },
             models: { type: "array", description: "2 or 3 provider::model keys or model names.", required: true, items: { type: "string", description: "A model key or name." } },
+            include_image: { type: "boolean", description: "Send the user's attached image (default true when there is one). Set false to compare text-only models.", required: false },
         },
     },
     {
@@ -66,7 +69,7 @@ export const MODEL_TOOL_NAMES = new Set(MODEL_TOOLS.map((tool) => tool.name));
 export interface ModelToolDeps {
     roster(): RosterEntry[];
     resolve(entry: RosterEntry): ResolvedChat | null;
-    consult(resolved: ResolvedChat, prompt: string, maxTokens: number, signal: AbortSignal): Promise<string>;
+    consult(resolved: ResolvedChat, prompt: string, maxTokens: number, signal: AbortSignal, images: readonly ConsultImage[]): Promise<string>;
     saveFeedback(rows: readonly FeedbackInput[]): Promise<boolean>;
     now(): number;
 }
@@ -94,7 +97,15 @@ export function parsePurpose(raw: unknown): PurposeTag | null | "invalid" {
     return isPurposeTag(raw) ? raw : "invalid";
 }
 
-export function createModelToolkit(policy: RosterPolicy, deps: ModelToolDeps, opts: { runId: string | null; signal?: AbortSignal }) {
+/** V8 F11: the turn's image attachments go to vision models only; `include_image: false` asks without them. */
+function imagesFor(args: Record<string, unknown>, images: readonly ConsultImage[]): readonly ConsultImage[] {
+    return args.include_image === false ? [] : images;
+}
+
+const IMAGE_COUNT = (images: readonly ConsultImage[]) => images.length === 1 ? "the attached image" : `the ${images.length} attached images`;
+
+export function createModelToolkit(policy: RosterPolicy, deps: ModelToolDeps, opts: { runId: string | null; signal?: AbortSignal; images?: readonly ConsultImage[] }) {
+    const attached = opts.images ?? [];
     let consultCalls = 0;
     let rated = false;
     let nextWorker = 1;
@@ -108,11 +119,15 @@ export function createModelToolkit(policy: RosterPolicy, deps: ModelToolDeps, op
         return resolved ? { entry, resolved } : `${entry.key} could not be resolved.`;
     }
 
-    async function timedConsult(resolved: ResolvedChat, prompt: string, maxTokens: number): Promise<{ ok: true; text: string; ms: number } | { ok: false; error: string; ms: number }> {
+    function blind(entry: RosterEntry, images: readonly ConsultImage[]): string | null {
+        return images.length && !entry.caps.vision ? `${entry.key} cannot read images, so it was not asked about ${IMAGE_COUNT(images)}.` : null;
+    }
+
+    async function timedConsult(resolved: ResolvedChat, prompt: string, maxTokens: number, images: readonly ConsultImage[]): Promise<{ ok: true; text: string; ms: number } | { ok: false; error: string; ms: number }> {
         const started = deps.now();
         const signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(AGENT_CONFIG.consultTimeoutMs)]) : AbortSignal.timeout(AGENT_CONFIG.consultTimeoutMs);
         try {
-            const text = (await deps.consult(resolved, prompt, maxTokens, signal)).trim();
+            const text = (await deps.consult(resolved, prompt, maxTokens, signal, images)).trim();
             return text ? { ok: true, text, ms: deps.now() - started } : { ok: false, error: "empty answer", ms: deps.now() - started };
         } catch (error) {
             if (opts.signal?.aborted) throw error;
@@ -170,11 +185,15 @@ export function createModelToolkit(policy: RosterPolicy, deps: ModelToolDeps, op
             if (consultCalls >= AGENT_CONFIG.maxConsultCalls) return `The consult budget of ${AGENT_CONFIG.maxConsultCalls} calls for this run is used up. Carry on with what you have.`;
             const found = usable(args.model, deps.roster());
             if (typeof found === "string") return found;
+            const images = imagesFor(args, attached);
+            const refused = blind(found.entry, images);
+            if (refused) return `${refused} Pick a vision model (list_models with needs_vision), or set include_image to false for a question that needs no image. No consult call was used.`;
             consultCalls += 1;
             const maxTokens = Math.min(MAX_CONSULT_TOKENS, Math.max(64, Math.round(Number(args.max_tokens) || DEFAULT_CONSULT_TOKENS)));
-            const result = await timedConsult(found.resolved, prompt, maxTokens);
+            const result = await timedConsult(found.resolved, prompt, maxTokens, images);
             if (!result.ok) return `${found.entry.key} failed after ${secondsText(result.ms)}: ${result.error}. ${AGENT_CONFIG.maxConsultCalls - consultCalls} consult calls left.`;
-            return `Answer from ${found.entry.key} in ${secondsText(result.ms)} (${AGENT_CONFIG.maxConsultCalls - consultCalls} consult calls left):\n${clip(result.text, ASK_ANSWER_MAX)}`;
+            const seen = images.length ? `, given ${IMAGE_COUNT(images)}` : "";
+            return `Answer from ${found.entry.key}${seen} in ${secondsText(result.ms)} (${AGENT_CONFIG.maxConsultCalls - consultCalls} consult calls left):\n${clip(result.text, ASK_ANSWER_MAX)}`;
         },
 
         async compareModels(args: Record<string, unknown>): Promise<string> {
@@ -182,21 +201,24 @@ export function createModelToolkit(policy: RosterPolicy, deps: ModelToolDeps, op
             const refs = Array.isArray(args.models) ? [...new Set(args.models.filter((ref): ref is string => typeof ref === "string" && !!ref.trim()))] : [];
             if (!prompt || refs.length < 2 || refs.length > 3) return "Send a prompt and 2 or 3 models.";
             const roster = deps.roster();
+            const images = imagesFor(args, attached);
             const picked: { entry: RosterEntry; resolved: ResolvedChat }[] = [];
             const refused: string[] = [];
             for (const ref of refs) {
                 const found = usable(ref, roster);
-                if (typeof found === "string") refused.push(found);
-                else if (!picked.some((entry) => entry.entry.key === found.entry.key)) picked.push(found);
+                const skipped = typeof found === "string" ? found : blind(found.entry, images);
+                if (skipped) refused.push(skipped);
+                else if (typeof found !== "string" && !picked.some((entry) => entry.entry.key === found.entry.key)) picked.push(found);
             }
-            if (picked.length < 2) return [`Need at least 2 usable models to compare.`, ...refused].join("\n");
+            if (picked.length < 2) return [`Need at least 2 usable models to compare${images.length ? " that can read images" : ""}.`, ...refused].join("\n");
             const left = AGENT_CONFIG.maxConsultCalls - consultCalls;
             if (left < picked.length) return `Only ${left} of the ${AGENT_CONFIG.maxConsultCalls} consult calls for this run are left, and this comparison needs ${picked.length}.`;
             consultCalls += picked.length;
-            const results = await Promise.all(picked.map(async (entry) => ({ entry: entry.entry, result: await timedConsult(entry.resolved, prompt, DEFAULT_CONSULT_TOKENS) })));
+            const results = await Promise.all(picked.map(async (entry) => ({ entry: entry.entry, result: await timedConsult(entry.resolved, prompt, DEFAULT_CONSULT_TOKENS, images) })));
             const lines = results.map(({ entry, result }) => `### ${entry.key}\n${result.ok ? clip(result.text, COMPARE_ANSWER_MAX) : `(failed: ${result.error})`}`);
             const table = ["| Model | Time | Result |", "| --- | --- | --- |", ...results.map(({ entry, result }) => `| ${entry.key} | ${secondsText(result.ms)} | ${result.ok ? "answered" : `failed, ${result.error}`} |`)];
-            return [...lines, "", ...table, ...(refused.length ? ["", ...refused] : []), `${AGENT_CONFIG.maxConsultCalls - consultCalls} consult calls left.`].join("\n");
+            const seen = images.length ? [`Each model was given ${IMAGE_COUNT(images)}.`] : [];
+            return [...lines, "", ...table, ...(refused.length ? ["", ...refused] : []), ...seen, `${AGENT_CONFIG.maxConsultCalls - consultCalls} consult calls left.`].join("\n");
         },
 
         async rateWorkers(args: Record<string, unknown>): Promise<string> {

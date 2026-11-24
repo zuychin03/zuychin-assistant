@@ -448,6 +448,15 @@
   max-width: 68ch;
 }
 
+.artifactImage {
+  display: block;
+  width: min(100%, 480px);
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
 .artifactRow {
   display: flex;
   flex-wrap: wrap;

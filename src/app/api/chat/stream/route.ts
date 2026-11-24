@@ -3,9 +3,9 @@ import { ragChat } from "@/lib/ai/rag-service";
 import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
-import { base64Bytes, CHANNEL_NAMES, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
+import { base64Bytes, CHANNEL_NAMES, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS, parseReplyRef } from "@/lib/types";
 import { BodyTooLargeError, readJsonCapped } from "@/lib/http/body";
-import type { FileAttachment, ReplyRef } from "@/lib/types";
+import type { FileAttachment } from "@/lib/types";
 import { sseFormat, type AgentEvent } from "@/lib/ai/agent/events";
 import { broadcastPush } from "@/lib/messaging/push-service";
 import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     if (!isMessageChannel(channel)) {
         return oneShot({ type: "error", message: `Invalid channel. Must be one of: ${MESSAGE_CHANNELS.join(", ")}` }, 400);
     }
-    const replyTo = parseReplyTo(body.replyTo);
+    const replyTo = parseReplyRef(body.replyTo);
     const file = body.file as FileAttachment | undefined;
     if (file) {
         if (!isSupportedAttachment(file.mimeType, file.name)) {
@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
             }, 15000);
 
             try {
-                const { reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace } = await ragChat({
+                const { reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace, speak } = await ragChat({
                     message: message.trim(),
                     channel,
                     imageBase64: body.imageBase64 as string | undefined,
@@ -116,7 +116,7 @@ export async function POST(req: NextRequest) {
                     genParams: sanitizeGenParams(body.genParams),
                     signal: ac.signal,
                 }, send);
-                send({ type: "done", reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace });
+                send({ type: "done", reply, messageId, userMessageId, artifacts, councilProposal, approvals, replyTrace, ...(speak ? { speak } : {}) });
                 if (sawAgentRun && reply) {
                     const convId = body.conversationId as string | undefined;
                     await broadcastPush({
@@ -143,15 +143,6 @@ export async function POST(req: NextRequest) {
     });
 
     return new Response(stream, { headers: SSE_HEADERS });
-}
-
-function parseReplyTo(raw: unknown): ReplyRef | undefined {
-    if (!raw || typeof raw !== "object") return undefined;
-    const { role, content } = raw as Record<string, unknown>;
-    if ((role !== "user" && role !== "assistant") || typeof content !== "string" || !content.trim()) {
-        return undefined;
-    }
-    return { role, content: content.slice(0, 2000) };
 }
 
 function oneShot(event: AgentEvent, status: number): Response {

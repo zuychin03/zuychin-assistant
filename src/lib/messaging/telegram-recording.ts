@@ -18,7 +18,8 @@ export const SAVE_TRANSCRIPT_CALLBACK = "cap:save";
 // telegram-service's plain chunk size: a longer transcript goes as a text file so the button sees all of it.
 const INLINE_MAX = 3500;
 const SAVE_BUTTON = { inline_keyboard: [[{ text: "Save to Capture", callback_data: SAVE_TRANSCRIPT_CALLBACK }]] };
-const HEADING = /^Transcript: (.+) \((\d+ (?:min|s))\)$/;
+// Video notes (telegram-video.ts) use the same button; a video's length may be unknown.
+const HEADING = /^(?:Transcript|Video notes): (.+?)(?: \(\d+ (?:min|s)\))?$/;
 
 export interface TelegramRecording { fileId: string; fileSize: number; seconds: number; name: string; mimeType: string; title: string }
 
@@ -57,14 +58,18 @@ export function parseTranscriptMessage(text: string): { title: string; text: str
     return heading && body ? { title: heading[1].slice(0, 200), text: body } : null;
 }
 
-const fileName = (title: string) => `${title.replace(/[\\/:*?"<>|\x00-\x1f]+/g, "_").slice(0, 100)} transcript.txt`;
+const fileName = (title: string, suffix: string) => `${title.replace(/[\\/:*?"<>|\x00-\x1f]+/g, "_").slice(0, 100)} ${suffix}.txt`;
+
+/** The heading, then the body, with a Save to Capture button: inline when short, else as a text file. */
+export async function sendWithSaveButton(chatId: number, input: { heading: string; title: string; body: string; fileSuffix: string }): Promise<boolean> {
+    const full = `${input.heading}\n\n${input.body}`;
+    if (full.length <= INLINE_MAX) return sendTelegramMessage(chatId, full, { plain: true, replyMarkup: SAVE_BUTTON });
+    return sendTelegramDocument(chatId, { filename: fileName(input.title, input.fileSuffix), mimeType: "text/plain; charset=utf-8", body: `${full}\n`,
+        caption: `${input.heading}. The full text is attached.`, replyMarkup: SAVE_BUTTON });
+}
 
 export async function sendTranscript(chatId: number, recording: Pick<TelegramRecording, "title" | "seconds">, transcript: string): Promise<boolean> {
-    const heading = transcriptHeading(recording.title, recording.seconds);
-    const full = `${heading}\n\n${transcript}`;
-    if (full.length <= INLINE_MAX) return sendTelegramMessage(chatId, full, { plain: true, replyMarkup: SAVE_BUTTON });
-    return sendTelegramDocument(chatId, { filename: fileName(recording.title), mimeType: "text/plain; charset=utf-8", body: `${full}\n`,
-        caption: `${heading}. The full text is attached.`, replyMarkup: SAVE_BUTTON });
+    return sendWithSaveButton(chatId, { heading: transcriptHeading(recording.title, recording.seconds), title: recording.title, body: transcript, fileSuffix: "transcript" });
 }
 
 /** Runs in the webhook's after() work, so the model may take minutes. */

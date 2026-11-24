@@ -8,6 +8,7 @@ import RunsPanel from "./runs-panel";
 import MemoriesPanel from "./memories-panel";
 import SkillsPanel from "./skills-panel";
 import SecurityPanel from "./security-panel";
+import PrivacyPanel from "./privacy-panel";
 import AgentsPanel from "./agents-panel";
 import ConversationCleanupPanel from "./conversation-cleanup-panel";
 import NotificationsPanel from "./notifications-panel";
@@ -334,6 +335,10 @@ export default function DashboardPage() {
 
                     <section className={ui.panel} id="security">
                         <SecurityPanel />
+                    </section>
+
+                    <section className={ui.panel} id="privacy">
+                        <PrivacyPanel />
                     </section>
 
                     <section className={ui.panel} id="agents">

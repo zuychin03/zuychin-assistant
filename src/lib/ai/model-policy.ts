@@ -36,6 +36,8 @@ const FREE_TOOLS = new Set([
     "get_current_time", "search_knowledge", "search_history", "save_note", "get_recent_conversations",
     "list_calendar_events", "manage_calendar_event", "list_unread_emails", "list_recent_emails", "read_email",
     "draft_gmail_reply", "send_email", "vault_read", "manage_todo_list", "manage_scheduled_task", "capture_add", "model_status",
+    // Resolves only free image models in Free only.
+    "make_image",
 ]);
 
 export function freeToolRefusal(name: string, freeOnly?: boolean): string | null {

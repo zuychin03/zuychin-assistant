@@ -3,6 +3,7 @@ import { ai, MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
 import { assertFreeModel, resolveFreeChat } from "@/lib/ai/model-policy";
 import { getProviderApiKey } from "@/lib/ai/providers";
 import { configureModelDataPolicy, observeGeminiClient, withModelObservationCollector, type ModelCallObservation } from "@/lib/ai/model-observations";
+import { maskGeminiClient } from "@/lib/ai/privacy/gemini";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import type { ModelDataClass } from "@/lib/ai/data-policy";
 import type { StudyKind } from "./contracts";
@@ -56,7 +57,7 @@ async function generate(contents: string, freeOnly: boolean, classes: ModelDataC
     try {
         const response = await withModelObservationCollector(observations, () => {
             configureModelDataPolicy(freeOnly);
-            return observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai, { providerId, purpose: "study" }).models.generateContent({
+            return maskGeminiClient(observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai, { providerId, purpose: "study" }), providerId).models.generateContent({
                 model, contents, config: { abortSignal: AbortSignal.timeout(25000), maxOutputTokens: 2000, ...config },
             });
         }, undefined, classes);

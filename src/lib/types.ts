@@ -8,7 +8,7 @@ export interface Message {
     metadata?: MessageMetadata;
 }
 
-export type ArtifactKind = "document" | "code" | "archive";
+export type ArtifactKind = "document" | "code" | "archive" | "image";
 
 export interface ArtifactDescriptor {
     id: string;
@@ -22,6 +22,13 @@ export interface ArtifactDescriptor {
 export interface ReplyRef {
     role: "user" | "assistant";
     content: string;
+}
+
+export function parseReplyRef(raw: unknown, maxChars = 2000): ReplyRef | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const { role, content } = raw as Record<string, unknown>;
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string" || !content.trim()) return undefined;
+    return { role, content: content.slice(0, maxChars) };
 }
 
 /**

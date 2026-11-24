@@ -25,7 +25,7 @@ export function missingColumn(error: unknown): boolean {
 
 const TRAIT_STRINGS = ["defaultVoice", "audioFormat", "familyId", "lookupUrl", "promptTemplate"] as const;
 const TRAIT_NUMBERS = ["sampleRate", "channels", "firstAudioMs", "audioSec", "accuracy", "maxPairTokens", "outputTokens"] as const;
-const TRAIT_FLAGS = ["needsInputType", "acceptsInputType", "asymmetric", "truncatable", "batch", "images", "imagePassages", "editing"] as const;
+const TRAIT_FLAGS = ["needsInputType", "acceptsInputType", "asymmetric", "truncatable", "batch", "images", "imagePassages", "editing", "video", "videoSpeech"] as const;
 const TRAIT_LISTS = { voices: 300, sizes: 40, languages: 200 } as const;
 
 export function traitsFromDb(raw: unknown): ModelTraits {

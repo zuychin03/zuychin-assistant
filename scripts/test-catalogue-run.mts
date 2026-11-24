@@ -68,8 +68,8 @@ function probeResult(status: ProbeResult["status"], extra: Partial<ProbeResult> 
     const step = { outcome, httpStatus: status === "passed" ? 200 : null, ms: 50, detail: null } as const;
     return {
         status, retired: false, chatMs: status === "passed" ? 1200 : null,
-        supportsTools: status === "passed" ? true : null, supportsSearch: status === "passed" ? true : null, supportsVision: null,
-        steps: { chat: step, tools: step, forced: step, vision: { ...step, outcome: "skipped" } }, ...extra,
+        supportsTools: status === "passed" ? true : null, supportsSearch: status === "passed" ? true : null, supportsVision: null, supportsVideo: null, videoSpeech: null,
+        steps: { chat: step, tools: step, forced: step, vision: { ...step, outcome: "skipped" }, video: { ...step, outcome: "skipped" } }, ...extra,
     };
 }
 

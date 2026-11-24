@@ -128,6 +128,12 @@ export function replyVoicePlan(preferences: unknown, options: { audioTurn: boole
     return plan.local || plan.api ? plan : null;
 }
 
+/** A /brief reply on Telegram or Discord speaks whatever the reply preference says; null leaves it as text (V8 F8). */
+export function briefingVoicePlan(preferences: unknown, freeOnly: boolean): SpeechPlan | null {
+    const plan = planSpeech(getVoicePrefs(preferences), { freeOnly, geminiFree: false });
+    return plan.local || plan.api ? plan : null;
+}
+
 // Truncate on a sentence boundary where possible, else a word boundary, so
 // the spoken lead never ends mid-word.
 function clampForSpeech(text: string, max: number): string {
@@ -239,10 +245,11 @@ export async function synthesizeSpeech(
     text: string,
     plan: SpeechPlan,
     signal?: AbortSignal,
+    maxChars: number = LEAD_TTS_CHARS,
 ): Promise<{ buffer: Buffer; mimeType: "audio/wav"; provider: string; model: string }> {
     const parts: Buffer[] = [];
     let rate = 24000, provider = "", model = "";
-    for await (const chunk of speechStream(text, plan, LEAD_TTS_CHARS, signal)) {
+    for await (const chunk of speechStream(text, plan, maxChars, signal)) {
         parts.push(chunk.pcm);
         ({ sampleRate: rate, provider, model } = chunk);
     }

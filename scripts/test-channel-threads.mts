@@ -201,7 +201,7 @@ await check("the help text and the Telegram menu come from one list", async () =
         assert.ok(c.description.length >= 3 && c.description.length <= 256);
         assert.ok(help.includes(`/${c.command}`));
     }
-    assert.deepEqual(threads.CHANNEL_COMMANDS.map((c) => c.command), ["new", "search", "think", "agent", "model", "help"]);
+    assert.deepEqual(threads.CHANNEL_COMMANDS.map((c) => c.command), ["new", "search", "think", "agent", "model", "brief", "translate", "help"]);
 
     assert.equal(await setTelegramCommands([{ command: "new", description: "Start a new conversation" }]), true);
     const call = seen.find(({ url }) => url.pathname.endsWith("/setMyCommands"));

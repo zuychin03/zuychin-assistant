@@ -1,6 +1,7 @@
--- V8 media kinds for the stored catalogue: rerank, parse, image, decision, live and translate rows, and image rows in the
--- knowledge store. Apply manually after v7-model-types.sql; safe to re-run. Additive: one widened kind check, one widened
--- purpose check, seven seed rows, two knowledge_chunks columns with defaults and the chunk writer that fills them.
+-- V8 media kinds for the stored catalogue: rerank, parse, image, decision, live and translate rows, image rows in the
+-- knowledge store and made images as artifacts. Apply manually after v7-model-types.sql; safe to re-run. Additive: three
+-- widened checks (catalogue kind, observation purpose, artifact kind), seven seed rows, two knowledge_chunks columns with
+-- defaults and the chunk writer that fills them.
 begin;
 do $$ begin
   if to_regclass('public.model_catalogue') is null or not exists (
@@ -18,10 +19,13 @@ alter table public.model_call_observations drop constraint if exists model_call_
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
   check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription', 'rerank', 'parse', 'image', 'decision', 'live', 'translate'));
 
+alter table public.artifacts drop constraint if exists artifacts_kind_check;
+alter table public.artifacts add constraint artifacts_kind_check check (kind in ('document', 'code', 'archive', 'image'));
+
 -- Seeds: NIM serves rerank, parse and image models off its /v1/models list, so no listing finds them.
 -- Riva Translate stays unapproved: it failed its checks on 24/11/2026 and is used only after it passes and is approved.
-create temporary table v8_media_seeds on commit drop as
-select * from (values
+-- One statement, so a run that splits the file into separate transactions still sees the seeds.
+with seeds (provider_id, model_id, kind, label, short_name, description, developer, free, metered, inputs, traits, approve) as (values
   ('nvidia-nim', 'nvidia/nemotron-3.5-rerank-8b', 'rerank', 'Nemotron 3.5 Rerank 8B (free)', 'nemotron-3.5-rerank-8b', 'Scores passages against a query and returns them best first.', 'NVIDIA', true, false, array['Text'], '{}'::jsonb, true),
   ('nvidia-nim', 'nvidia/nemotron-3.5-parse', 'parse', 'Nemotron 3.5 Parse (free)', 'nemotron-3.5-parse', 'Reads a page image into tagged text blocks and LaTeX tables.', 'NVIDIA', true, false, array['Image'], '{}'::jsonb, true),
   ('nvidia-nim', 'black-forest-labs/flux.2-klein-4b', 'image', 'FLUX.2 klein 4B (free)', 'flux.2-klein-4b', 'Makes an image from a text prompt.', 'Black Forest Labs', true, false, array['Text'], '{}'::jsonb, true),
@@ -30,21 +34,21 @@ select * from (values
   ('gemini-free', 'gemini-3.8-live', 'live', 'Gemini 3.8 Live (free)', 'gemini-3.8-live-free', 'Two-way voice in a live session opened with a short-lived token. Returns 24 kHz PCM audio and transcripts.', 'Google DeepMind', true, false, array['Audio', 'Text'], '{}'::jsonb, true),
   ('nvidia-nim', 'nvidia/riva-translate-4b-instruct-v2', 'translate', 'Riva Translate 4B Instruct v2 (free)', 'riva-translate-4b-instruct-v2', 'Translation model with a fixed prompt template.', 'NVIDIA', true, false, array['Text'],
     '{"promptTemplate": "Translate the following text from {source} to {target}:\n{text}", "languages": ["bg", "cs", "da", "de", "el", "en", "es-es", "es-us", "et", "fi", "fr", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "nl", "no", "pl", "pt-br", "pt-pt", "ro", "ru", "sk", "sl", "sv", "th", "tr", "uk", "vi", "zh-cn", "zh-tw"]}'::jsonb, false)
-) as v (provider_id, model_id, kind, label, short_name, description, developer, free, metered, inputs, traits, approve);
-
+),
 -- A seed id that chat discovery already stored becomes its seed kind and waits for a new approval.
-update public.model_catalogue m
-set kind = s.kind, approved_at = null, traits = m.traits || s.traits, updated_at = now()
-from v8_media_seeds s
-where m.provider_id = s.provider_id and m.model_id = s.model_id and m.kind = 'chat';
-
+moved as (
+  update public.model_catalogue m
+  set kind = s.kind, approved_at = null, traits = m.traits || s.traits, updated_at = now()
+  from seeds s
+  where m.provider_id = s.provider_id and m.model_id = s.model_id and m.kind = 'chat'
+)
 insert into public.model_catalogue (
   provider_id, model_id, kind, label, short_name, description, developer, free, metered, inputs, traits,
   origin, probe_status, approved_at
 )
 select provider_id, model_id, kind, label, short_name, description, developer, free, metered, inputs, traits,
   'seed', 'untested', case when approve then now() end
-from v8_media_seeds
+from seeds
 on conflict (provider_id, model_id) do nothing;
 
 -- Image rows in the knowledge store: the chunk's text is the caption and page text, the image lives in the vault.

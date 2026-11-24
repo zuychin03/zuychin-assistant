@@ -3,6 +3,7 @@ import { geminiClient } from "@/lib/gemini";
 import { cappedMaxTokens, getProviderApiKey, type ResolvedChat } from "@/lib/ai/providers";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
 import { classifyModelError, collectModelObservations, configureModelDataPolicy, observeGeminiClient } from "@/lib/ai/model-observations";
+import { maskGeminiClient } from "@/lib/ai/privacy/gemini";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import type { ModelDataClass } from "@/lib/ai/data-policy";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
@@ -23,7 +24,7 @@ let storageWarned = false;
 async function generate(resolved: ResolvedChat, system: string, user: string, maxTokens: number, signal: AbortSignal): Promise<string> {
     const tokens = cappedMaxTokens(maxTokens + REASONING_HEADROOM_TOKENS, resolved.model.id);
     if (resolved.provider.kind === "gemini") {
-        const client = observeGeminiClient(geminiClient(getProviderApiKey(resolved.provider)), { providerId: resolved.provider.id, purpose: "council" });
+        const client = maskGeminiClient(observeGeminiClient(geminiClient(getProviderApiKey(resolved.provider)), { providerId: resolved.provider.id, purpose: "council" }), resolved.provider.id);
         const response = await client.models.generateContent({
             model: resolved.model.id,
             contents: [{ role: "user", parts: [{ text: user }] }],

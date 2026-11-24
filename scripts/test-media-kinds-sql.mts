@@ -15,7 +15,8 @@ async function database(): Promise<PGlite> {
     await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
         create table user_profiles (id uuid primary key); create table conversations (id uuid primary key);
         create table messages (id uuid primary key); create table agent_runs (id uuid primary key default gen_random_uuid());
-        create table knowledge_chunks (id uuid primary key default gen_random_uuid(), content text not null);`);
+        create table knowledge_chunks (id uuid primary key default gen_random_uuid(), content text not null);
+        create table artifacts (id uuid primary key default gen_random_uuid(), kind text not null default 'document' check (kind in ('document', 'code', 'archive')));`);
     await db.exec(await read("./migrations/v6-model-health.sql"));
     await db.exec(await read("./migrations/v7-model-catalogue.sql"));
     return db;
@@ -72,12 +73,14 @@ try {
         assert.equal(approved, true);
     });
 
-    await check("unknown kinds are refused and media purposes are accepted", async () => {
+    await check("unknown kinds are refused, media purposes and image artifacts are accepted", async () => {
         await assert.rejects(db.query("update model_catalogue set kind = 'video' where model_id = 'nvidia/nemotron-3.5-parse'"), /check/i);
         const insert = (purpose: string) => db.query(`insert into model_call_observations (id, provider_id, model_id, purpose, started_at, duration_ms, status, usage_completeness)
             values ($1, 'nvidia-nim', 'nvidia/nemotron-3.5-rerank-8b', $2, now(), 400, 'success', 'unavailable')`, [randomUUID(), purpose]);
         for (const purpose of ["rerank", "parse", "image", "decision", "live", "translate", "transcription"]) await insert(purpose);
         await assert.rejects(insert("dictation"), /check/i);
+        await db.query("insert into artifacts (kind) values ('image'), ('archive')");
+        await assert.rejects(db.query("insert into artifacts (kind) values ('video')"), /check/i);
     });
 
     await check("knowledge chunks gain a modality and a vault asset path, both checked", async () => {

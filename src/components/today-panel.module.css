@@ -114,6 +114,42 @@
     color: var(--ink);
 }
 
+.iconButton:disabled {
+    cursor: progress;
+    opacity: 0.6;
+}
+
+.header > .headerActions {
+    align-items: center;
+    gap: 2px;
+}
+
+.brief {
+    margin: 14px 20px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.briefText {
+    margin: 0;
+    color: var(--ink);
+    font-size: 13.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.briefText + .quiet {
+    padding-bottom: 0;
+}
+
+.briefError {
+    margin: 0;
+    color: var(--danger);
+    font-size: 13px;
+}
+
 .body {
     flex: 1;
     min-height: 0;

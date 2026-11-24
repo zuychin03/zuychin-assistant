@@ -914,7 +914,7 @@ export default function Home() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let done: { reply: string; messageId: string; userMessageId?: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; replyTrace?: ReplyTrace } | null = null;
+      let done: { reply: string; messageId: string; userMessageId?: string; artifacts?: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; replyTrace?: ReplyTrace; speak?: boolean } | null = null;
       let streamError = "";
       let runId = "";
 
@@ -983,7 +983,7 @@ export default function Home() {
             if (evt.reset && live) live.from = 0;
             if (spokenTurn()) feedLive(false);
           } else if (evt.type === "done") {
-            done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, approvals: evt.approvals, replyTrace: evt.replyTrace };
+            done = { reply: evt.reply, messageId: evt.messageId, userMessageId: evt.userMessageId, artifacts: evt.artifacts, councilProposal: evt.councilProposal, approvals: evt.approvals, replyTrace: evt.replyTrace, speak: evt.speak };
           } else if (evt.type === "error") {
             streamError = evt.message;
           }
@@ -1042,7 +1042,8 @@ export default function Home() {
           feedLive(true);
           live.speaker.finish();
         }
-      } else if (chats.get() === target && micTurn && done.reply && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) {
+      } else if (chats.get() === target && done.reply && ((micTurn && (voiceLoopRef.current || voicePrefsRef.current.replyWithVoice !== "off")) || done.speak)) {
+        // A /brief reply is read aloud whatever the voice preference says (V8 F8).
         toggleSpeak(assistantMessage);
       }
       canDrain = true;
@@ -1509,6 +1510,7 @@ export default function Home() {
   };
 
   const getArtifactIcon = (kind: ArtifactDescriptor["kind"]) => {
+    if (kind === "image") return <ImageIcon size={15} />;
     if (kind === "code") return <FileCode size={15} />;
     if (kind === "archive") return <FileArchive size={15} />;
     return <FileText size={15} />;
@@ -1864,6 +1866,10 @@ export default function Home() {
                     <div className="markdown-body">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>{msg.content}</ReactMarkdown>
                     </div>
+                    {msg.artifacts?.filter((art) => art.mime.startsWith("image/")).map((art) => (
+                      // eslint-disable-next-line @next/next/no-img-element -- served by /api/artifacts with the session cookie; next/image adds nothing here
+                      <img key={`image-${art.id}`} src={`/api/artifacts/${art.id}`} alt={`Made image: ${art.name.replace(/\.[a-z]+$/i, "").replace(/-/g, " ")}`} className={ui.artifactImage} loading="lazy" />
+                    ))}
                     {msg.artifacts && msg.artifacts.length > 0 && (
                       <div className={ui.artifactRow}>
                         {msg.artifacts.map((art) => (

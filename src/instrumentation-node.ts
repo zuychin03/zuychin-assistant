@@ -8,6 +8,9 @@ export async function registerNode() {
     enableCatalogueRefresh();
     enableStatsRefresh();
     enableProviderKeyRefresh();
+    const { enableMaskPrefsRefresh, refreshMaskPrefs } = await import("@/lib/ai/privacy/policy");
+    enableMaskPrefsRefresh();
+    void refreshMaskPrefs();
     void refreshStatsSnapshot();
     // Online councils run in this process, so a restart picks them back up here.
     const { startOnlineResumeScheduler } = await import("@/lib/council/online/service");

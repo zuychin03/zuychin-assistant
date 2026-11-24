@@ -7,6 +7,7 @@ import { AGENT_TOOLS } from "@/lib/ai/agent/tools";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { executeTool, geminiDeclarationsFor, MCP_TOOLS, WEB_SEARCH_TOOL, type ToolContext } from "@/lib/ai/mcp-service";
 import { ARTIFACT_TOOLS } from "@/lib/ai/tools/artifacts";
+import { imageTools } from "@/lib/ai/tools/images";
 import { buildSkillIndexAsync, getSkillInstructionsAsync } from "@/lib/ai/skills/registry";
 import { createDraftSkill } from "@/lib/ai/skills/custom-store";
 import { createAgentRun, RunEventBuffer } from "@/lib/ai/agent/run-store";
@@ -14,7 +15,7 @@ import { isJournalled, journalledCall } from "@/lib/ai/agent/journal";
 import { getProviderApiKey, providers, type ResolvedChat } from "@/lib/ai/providers";
 import { createModelToolkit, MODEL_TOOL_NAMES, MODEL_TOOLS, parsePurpose } from "@/lib/ai/agent/model-tools";
 import { currentRoster, formatRosterSummary, type RosterEntry, type RosterPolicy } from "@/lib/ai/models/roster";
-import { consultModel } from "@/lib/ai/models/consult";
+import { consultModel, type ConsultImage } from "@/lib/ai/models/consult";
 import { insertFeedback } from "@/lib/ai/models/store";
 import { isUnattendedRun } from "@/lib/tasks/unattended-policy";
 import type { PurposeTag } from "@/lib/ai/models/tags";
@@ -84,6 +85,13 @@ function normalizeSteps(raw: unknown): PlanStep[] {
         .filter((s) => s.title.length > 0);
 }
 
+/** The lead never receives the image itself; it reaches vision models only through the consult tools. */
+export function imageNote(count: number): string {
+    if (!count) return "";
+    const what = count === 1 ? "an image" : `${count} images`;
+    return `\n\n[The user attached ${what} to this request. You cannot see ${count === 1 ? "it" : "them"}. ask_model and compare_models send ${count === 1 ? "it" : "them"} to vision models (list_models with needs_vision), so ask one to describe or read ${count === 1 ? "it" : "them"} when the request depends on ${count === 1 ? "it" : "them"}.]`;
+}
+
 export async function runAgent(opts: {
     rag: RagContext;
     message: string;
@@ -93,6 +101,8 @@ export async function runAgent(opts: {
     resumePrefix?: string;
     resumeRunId?: string;
     signal?: AbortSignal;
+    /** The turn's image attachments, sent only through ask_model and compare_models (V8 F11). */
+    images?: readonly ConsultImage[];
 }): Promise<{ reply: string; artifacts: ArtifactDescriptor[]; steps: PlanStep[]; councilProposal?: CouncilProposal }> {
     const { rag, message, conversationId, userProfileId, resumePrefix, signal } = opts;
 
@@ -122,10 +132,10 @@ export async function runAgent(opts: {
     const models = createModelToolkit(policy, {
         roster: () => currentRoster(policy),
         resolve: resolveEntry,
-        consult: (resolved, prompt, maxTokens, consultSignal) => consultModel(resolved, prompt, maxTokens, rag.embRef, consultSignal),
+        consult: (resolved, prompt, maxTokens, consultSignal, images) => consultModel(resolved, prompt, maxTokens, rag.embRef, consultSignal, images),
         saveFeedback: insertFeedback,
         now: Date.now,
-    }, { runId, signal });
+    }, { runId, signal, images: opts.images });
 
     const artifacts: ArtifactDescriptor[] = [];
     let councilProposal: CouncilProposal | undefined;
@@ -258,8 +268,8 @@ export async function runAgent(opts: {
             model,
             apiKey: geminiApiKey,
             systemPrompt: `${AGENT_SYSTEM}${rosterSummary ? `\n\n${rosterSummary}` : ""}\n\nSKILLS - proven playbooks for common task types. When one fits, call use_skill(skill_id) to load its full steps before you carry out that work:\n${skillIndex}\n\n${rag.contextBlock}`,
-            userMessage: resumePrefix ? `${resumePrefix}${message}` : message,
-            toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...AGENT_TOOLS, ...MODEL_TOOLS]),
+            userMessage: `${resumePrefix ?? ""}${message}${imageNote(opts.images?.length ?? 0)}`,
+            toolDeclarations: geminiDeclarationsFor([...MCP_TOOLS, WEB_SEARCH_TOOL, ...ARTIFACT_TOOLS, ...imageTools(), ...AGENT_TOOLS, ...MODEL_TOOLS]),
             dispatch,
             maxRounds: AGENT_CONFIG.maxIterations,
             thinking: rag.allowThinking,

@@ -72,6 +72,8 @@ export const CHANNEL_COMMANDS: { command: string; argument?: string; description
     { command: "think", argument: "question", description: "Think it through first" },
     { command: "agent", argument: "task", description: "Work through it step by step" },
     { command: "model", description: "Show or change the model for this chat" },
+    { command: "brief", description: "Spoken briefing of today; add study for a Study recap" },
+    { command: "translate", argument: "language", description: "Translate the text after the language, or the message you reply to" },
     { command: "help", description: "Show this list" },
 ];
 

@@ -88,6 +88,14 @@ client.on(Events.MessageCreate, async (message) => {
             agent: useAgent,
         };
 
+        // /translate as a reply translates the message replied to (V8 F9).
+        if (/^[/!]translate\b/i.test(text) && message.reference?.messageId) {
+            const replied = await message.fetchReference().catch(() => null);
+            if (replied?.content?.trim()) {
+                body.replyTo = { role: replied.author?.id === client.user?.id ? "assistant" : "user", content: replied.content.slice(0, 2000) };
+            }
+        }
+
         if (attachment) {
             try {
                 const fileRes = await fetch(attachment.url);

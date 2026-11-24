@@ -16,7 +16,7 @@ export type AgentEvent =
     | { type: "artifact"; artifact: ArtifactDescriptor }
     /** Text delta of the forming reply; reset replaces everything shown so far (new model turn). */
     | { type: "token"; text: string; reset?: boolean }
-    | { type: "done"; reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; replyTrace?: ReplyTrace }
+    | { type: "done"; reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; replyTrace?: ReplyTrace; speak?: boolean }
     | { type: "error"; message: string };
 
 export type AgentEventSink = (event: AgentEvent) => void;

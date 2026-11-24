@@ -3,6 +3,7 @@ import { ThinkingLevel } from "@google/genai";
 import { READ_ONLY_TOOLS, type GeminiToolDeclarations } from "@/lib/ai/mcp-service";
 import { AGENT_CONFIG } from "@/lib/ai/agent/config";
 import { resumeTruncated, CONTINUE_PROMPT } from "@/lib/ai/continuation";
+import { maskGeminiClient } from "@/lib/ai/privacy/gemini";
 import { observeGeminiClient, withModelPurpose, type ModelCallPurpose, type ObservedGeminiClient } from "@/lib/ai/model-observations";
 
 export interface LoopUsage {
@@ -135,7 +136,7 @@ export async function runGeminiLoop(
     opts: GeminiLoopOpts,
 ): Promise<{ text: string; usage: LoopUsage; stopReason: LoopStopReason }> {
     const model = opts.model ?? MODEL;
-    const client = observeGeminiClient(geminiClient(opts.apiKey), { providerId: opts.providerId ?? "gemini", purpose: opts.purpose ?? "chat" });
+    const client = maskGeminiClient(observeGeminiClient(geminiClient(opts.apiKey), { providerId: opts.providerId ?? "gemini", purpose: opts.purpose ?? "chat" }), opts.providerId ?? "gemini");
     let contents: any[] = [
         { role: "user", parts: [{ text: `${opts.systemPrompt}\n\n## Task\n${opts.userMessage}` }] },
     ];

@@ -12,6 +12,7 @@ import {
     formatEmailSummary,
 } from "@/lib/integrations/gmail-service";
 import { ARTIFACT_TOOLS, executeArtifactTool } from "@/lib/ai/tools/artifacts";
+import { executeImageTool, imageTools } from "@/lib/ai/tools/images";
 import { supabaseAdmin } from "@/lib/supabase";
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { isolateBranchRecall } from "@/lib/conversations/branches";
@@ -717,6 +718,8 @@ async function dispatchTool(
 
     const artifactResult = await executeArtifactTool(toolName, args, ctx, embRef);
     if (artifactResult !== null) return artifactResult;
+    const imageResult = await executeImageTool(toolName, args, ctx);
+    if (imageResult !== null) return imageResult;
 
     switch (toolName) {
         case "get_current_time":
@@ -1533,7 +1536,7 @@ export type GeminiToolDeclarations = ReturnType<typeof geminiDeclarationsFor>;
 
 export function buildGeminiFunctionDeclarations() {
 
-    return geminiDeclarationsFor([...MCP_TOOLS, ...ARTIFACT_TOOLS]);
+    return geminiDeclarationsFor([...MCP_TOOLS, ...ARTIFACT_TOOLS, ...imageTools()]);
 }
 
 export interface OpenAITool {
@@ -1583,7 +1586,7 @@ export function toolRefusal(name: string): string {
 
 export function buildOpenAIToolDeclarations(allow?: ReadonlySet<string>): OpenAITool[] {
 
-    return [...MCP_TOOLS, ...ARTIFACT_TOOLS, WEB_SEARCH_TOOL].filter((t) => !allow || allow.has(t.name)).map((tool) => ({
+    return [...MCP_TOOLS, ...ARTIFACT_TOOLS, ...imageTools(), WEB_SEARCH_TOOL].filter((t) => !allow || allow.has(t.name)).map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.name,

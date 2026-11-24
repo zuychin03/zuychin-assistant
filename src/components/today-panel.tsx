@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, Check, PanelRight, PanelRightClose, Redo2, Repeat, X } from "lucide-react";
+import { AudioLines, CalendarClock, Check, PanelRight, PanelRightClose, Redo2, Repeat, Square, X } from "lucide-react";
 import { trapTab } from "./app-sidebar";
+import { ReplySpeaker } from "@/app/home/reply-speaker";
 import styles from "./today-panel.module.css";
 import { clock, dueState, fetchToday, isAllDay, parseDue, sameDay, type EventItem, type TodayResponse, type TodoItem } from "@/lib/today";
 
@@ -87,7 +88,10 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
     const [closing, setClosing] = useState<Record<string, CloseAs>>({});
     const [actionError, setActionError] = useState("");
     const [now, setNow] = useState(() => new Date());
+    const [brief, setBrief] = useState<{ status: "writing" | "speaking" | "done"; script: string; note: string } | null>(null);
     const panel = useRef<HTMLElement>(null);
+    const speaker = useRef<ReplySpeaker | null>(null);
+    const briefRequest = useRef<AbortController | null>(null);
 
     const load = useCallback(async (signal?: AbortSignal) => {
         try {
@@ -121,6 +125,49 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
     }, []);
 
     useEffect(() => { onDueCount?.(today?.dueTodos.length ?? 0); }, [today, onDueCount]);
+
+    useEffect(() => () => {
+        briefRequest.current?.abort();
+        const voice = speaker.current;
+        speaker.current = null;
+        voice?.stop();
+    }, []);
+
+    // V8 F8: the script comes from /api/brief and is spoken through /api/tts; it stays as text when speech fails.
+    async function briefMe() {
+        if (brief?.status === "writing") return;
+        if (brief?.status === "speaking") {
+            const voice = speaker.current;
+            speaker.current = null;
+            voice?.stop();
+            setBrief((current) => current && { ...current, status: "done" });
+            return;
+        }
+        const controller = new AbortController();
+        briefRequest.current = controller;
+        setBrief({ status: "writing", script: "", note: "" });
+        try {
+            const response = await fetch("/api/brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: controller.signal });
+            const data = await response.json().catch(() => ({})) as { script?: unknown; error?: unknown };
+            if (!response.ok || typeof data.script !== "string" || !data.script) throw new Error(typeof data.error === "string" ? data.error : "The briefing could not be written. Try again.");
+            const script = data.script;
+            const voice = new ReplySpeaker({
+                freeOnly: false,
+                onEnd: (end) => {
+                    if (speaker.current !== voice) return;
+                    speaker.current = null;
+                    setBrief((current) => current && { ...current, status: "done", note: end === "error" ? "It could not be spoken, so it is shown as text only." : "" });
+                },
+            });
+            speaker.current = voice;
+            setBrief({ status: "speaking", script, note: "" });
+            voice.push(script);
+            voice.finish();
+        } catch (error) {
+            if ((error as Error).name === "AbortError") return;
+            setBrief({ status: "done", script: "", note: error instanceof Error ? error.message : "The briefing could not be written. Try again." });
+        }
+    }
 
     useEffect(() => {
         if (variant !== "sheet") return;
@@ -206,12 +253,23 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
                     <h2 id={heading}>Today</h2>
                     <p>{now.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}</p>
                 </div>
-                <button type="button" className={styles.iconButton} onClick={onClose} aria-label={variant === "docked" ? "Hide Today" : "Close Today"} title={variant === "docked" ? "Hide Today" : "Close"}>
-                    {variant === "docked" ? <PanelRightClose size={17} aria-hidden="true" /> : <X size={18} aria-hidden="true" />}
-                </button>
+                <div className={styles.headerActions}>
+                    <button type="button" className={styles.iconButton} onClick={() => void briefMe()} disabled={brief?.status === "writing"} aria-busy={brief?.status === "writing" || undefined}
+                        aria-label={brief?.status === "speaking" ? "Stop the briefing" : "Brief me"} title={brief?.status === "speaking" ? "Stop the briefing" : "Brief me"}>
+                        {brief?.status === "speaking" ? <Square size={15} aria-hidden="true" /> : <AudioLines size={17} aria-hidden="true" />}
+                    </button>
+                    <button type="button" className={styles.iconButton} onClick={onClose} aria-label={variant === "docked" ? "Hide Today" : "Close Today"} title={variant === "docked" ? "Hide Today" : "Close"}>
+                        {variant === "docked" ? <PanelRightClose size={17} aria-hidden="true" /> : <X size={18} aria-hidden="true" />}
+                    </button>
+                </div>
             </header>
 
             <div className={styles.body}>
+                {brief && <section className={styles.brief} aria-label="Briefing" aria-live="polite">
+                    {brief.status === "writing" && <p className={styles.quiet} role="status">Writing your briefing…</p>}
+                    {brief.script && <p className={styles.briefText}>{brief.script}</p>}
+                    {brief.note && <p className={brief.script ? styles.quiet : styles.briefError}>{brief.note}</p>}
+                </section>}
                 {state === "loading" && !today && <p className={styles.quiet} role="status">Loading today…</p>}
                 {state === "error" && !today && <div className={styles.quiet} role="alert">
                     <p>Today could not be loaded.</p>

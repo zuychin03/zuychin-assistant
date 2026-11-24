@@ -6,19 +6,20 @@ import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, send
 import { readSavedPhoto } from "@/lib/knowledge/photo-files";
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
-import { replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
+import { briefingVoicePlan, FULL_TTS_CHARS, replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
 import { readVoiceChoices } from "@/lib/ai/voice-choices";
 import { getDefaultProfile } from "@/lib/db";
 import { allowedTelegramChats, allowedTelegramSenders, telegramSecretMatches, telegramSenderAllowed, updateChatId } from "@/lib/messaging/telegram-access";
 import { claimChannelUpdate } from "@/lib/messaging/channel-updates";
-import { parseTelegramCommand, telegramFailureText, type TelegramCommand } from "@/lib/messaging/telegram-turn";
+import { parseTelegramCommand, telegramFailureText, translateReplyRef, type TelegramCommand } from "@/lib/messaging/telegram-turn";
 import { transcribeVoiceNote, VOICE_NOTE_FALLBACK_TEXT } from "@/lib/voice/voice-note";
 import { longRecording, saveTranscriptTap, SAVE_TRANSCRIPT_CALLBACK, transcribeTelegramRecording } from "@/lib/messaging/telegram-recording";
+import { summariseTelegramVideo, telegramVideo } from "@/lib/messaging/telegram-video";
 import { CHANNEL_STARTED_TEXT, channelHelpText, channelTurn } from "@/lib/messaging/channel-threads";
 import { APPROVAL_CALLBACK } from "@/lib/tasks/approval-notices";
 import { claimApproval, completeApproval, type ApprovalDecision } from "@/lib/tasks/decide";
 import type { ApprovalStatus } from "@/lib/tasks/types";
-import type { FileAttachment } from "@/lib/types";
+import type { FileAttachment, ReplyRef } from "@/lib/types";
 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -53,18 +54,19 @@ function getMimeType(filePath: string): string {
 
 // Best-effort: the text reply is already delivered, so a TTS failure or
 // timeout must never take down the turn. sendVoice/sendAudio both reject WAV;
-// a document attachment still plays inline in Telegram.
-async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean, freeOnly = false) {
+// a document attachment still plays inline in Telegram. A /brief reply always speaks, at full length.
+async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean, freeOnly = false, briefing = false) {
     if (!reply) return;
     try {
         const [profile] = await Promise.all([getDefaultProfile(), readVoiceChoices()]);
-        const plan = replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: effectiveFreeOnly(profile, freeOnly) });
+        const free = effectiveFreeOnly(profile, freeOnly);
+        const plan = briefing ? briefingVoicePlan(profile?.preferences, free) : replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: free });
         if (!plan) return;
 
         await sendTelegramChatAction(chatId, "upload_document");
-        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan));
+        const { buffer, mimeType } = await observeSpeech(profile?.id, () => synthesizeSpeech(reply, plan, undefined, briefing ? FULL_TTS_CHARS : undefined));
         const ok = await sendTelegramDocument(chatId, {
-            filename: "reply.wav",
+            filename: briefing ? "briefing.wav" : "reply.wav",
             mimeType,
             body: buffer,
         });
@@ -161,7 +163,8 @@ async function processUpdate(update: Record<string, unknown>) {
     const video = message.video as Record<string, unknown> | undefined;
     const voice = message.voice as Record<string, unknown> | undefined;
     const audio = message.audio as Record<string, unknown> | undefined;
-    const hasAttachment = photo || document || video || voice || audio;
+    const videoNote = message.video_note as Record<string, unknown> | undefined;
+    const hasAttachment = photo || document || video || voice || audio || videoNote;
 
     if (!raw && !hasAttachment) {
         console.log(`[Telegram] Skipping chat ${chatId} - empty message`);
@@ -172,6 +175,12 @@ async function processUpdate(update: Record<string, unknown>) {
     const recording = longRecording({ voice, audio, date: message.date });
     if (recording) {
         await transcribeTelegramRecording(chatId, recording);
+        return;
+    }
+    // A video with no caption becomes notes (V8 F4); with a caption it stays a chat question about the video.
+    const clip = telegramVideo({ video, videoNote, document, caption: raw, date: message.date });
+    if (clip) {
+        await summariseTelegramVideo(chatId, clip);
         return;
     }
 
@@ -191,7 +200,8 @@ async function processUpdate(update: Record<string, unknown>) {
     await sendTelegramChatAction(chatId);
     const typing = setInterval(() => void sendTelegramChatAction(chatId), TYPING_EVERY_MS);
     try {
-        await answerMessage(chatId, command, turn.conversationId ?? undefined, { photo, document, video, voice, audio, hasAttachment: !!hasAttachment });
+        const replyTo = translateReplyRef(command.text, message.reply_to_message as Record<string, unknown> | undefined);
+        await answerMessage(chatId, command, turn.conversationId ?? undefined, { photo, document, video, voice, audio, hasAttachment: !!hasAttachment }, replyTo);
     } finally {
         clearInterval(typing);
     }
@@ -202,7 +212,7 @@ type Attachments = {
     voice?: Record<string, unknown>; audio?: Record<string, unknown>; hasAttachment: boolean;
 };
 
-async function answerMessage(chatId: number, command: TelegramCommand, conversationId: string | undefined, attachments: Attachments) {
+async function answerMessage(chatId: number, command: TelegramCommand, conversationId: string | undefined, attachments: Attachments, replyTo?: ReplyRef) {
     const { photo, document, video, voice, audio, hasAttachment } = attachments;
     const text = command.text;
     let file: FileAttachment | undefined;
@@ -278,10 +288,11 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
     console.log(`[Telegram] Calling ragChat for chat ${chatId}...`);
     const message = spoken !== null ? [text, spoken].filter(Boolean).join("\n\n") : text || fallback;
     // Email and calendar changes asked for in this turn wait for Approve / Reject buttons (runRagChat opens the gate).
-    const { reply, artifacts, freeOnly, photos } = await ragChat({
+    const { reply, artifacts, freeOnly, photos, speak } = await ragChat({
         message,
         channel: "telegram",
         conversationId,
+        replyTo,
         file: spoken !== null ? undefined : file,
         inputMode: spoken !== null ? "voice" : undefined,
         thinking: command.thinking,
@@ -295,12 +306,11 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
     for (const artifact of artifacts) {
         const stored = await getArtifact(artifact.id);
         if (!stored) continue;
-        const ok = await sendTelegramDocument(chatId, {
-            filename: stored.name,
-            mimeType: stored.mime,
-            body: stored.body,
-        });
-        console.log(`[Telegram] Document ${stored.name} ${ok ? "sent" : "failed"}.`);
+        const file = { filename: stored.name, mimeType: stored.mime, body: stored.body };
+        // Made images (V8 F10) arrive as pictures, everything else as files.
+        const picture = stored.mime.startsWith("image/");
+        const ok = picture ? await sendTelegramPhoto(chatId, file) : await sendTelegramDocument(chatId, file);
+        console.log(`[Telegram] ${picture ? "Image" : "Document"} ${stored.name} ${ok ? "sent" : "failed"}.`);
     }
 
     for (const path of photos ?? []) {
@@ -310,7 +320,7 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
         console.log(`[Telegram] Cited photo ${ok ? "sent" : "failed"}.`);
     }
 
-    await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"), freeOnly);
+    await maybeSendVoiceReply(chatId, reply, !!file && file.mimeType.startsWith("audio/"), freeOnly, speak === true);
     console.log(`[Telegram] Reply sent to chat ${chatId}.`);
 }
 

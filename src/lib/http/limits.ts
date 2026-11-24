@@ -14,6 +14,8 @@ export const PAGE_IMAGE_BODY_LIMIT = 2 * MB;
 export const RECORDING_PIECE_BODY_LIMIT = 5_760_000;
 /** A transcript up to the 120,000-character capture limit, as UTF-8 JSON with room for non-Latin text. */
 export const RECORDING_SUMMARY_BODY_LIMIT = 512 * KB;
+/** VIDEO_WEB_MAX_BYTES in src/lib/capture/video.ts: one video as the raw body (V8 Decision 19). */
+export const VIDEO_BODY_LIMIT = 7 * MB;
 /** A phone photo shared from Android before the Capture page downscales it, plus the form fields. */
 export const SHARE_BODY_LIMIT = 9_500_000;
 
@@ -33,6 +35,7 @@ export const BODY_LIMIT_RULES: readonly { path: string; prefix?: true; limit: nu
     { path: "/api/capture/parse-page", limit: PAGE_IMAGE_BODY_LIMIT },
     { path: "/api/capture/transcribe-piece", limit: RECORDING_PIECE_BODY_LIMIT },
     { path: "/api/capture/recording", limit: RECORDING_SUMMARY_BODY_LIMIT },
+    { path: "/api/capture/video", limit: VIDEO_BODY_LIMIT },
     { path: "/capture/share", limit: SHARE_BODY_LIMIT },
     { path: "/api/voice/transcribe", limit: VOICE_BODY_LIMIT },
     { path: "/api/mcp", prefix: true, limit: 4 * MB },

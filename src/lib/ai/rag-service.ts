@@ -8,6 +8,9 @@ import { buildConversationContext, formatContextMessages, stableContextPrefix, t
 import { createConversationContextStore } from "@/lib/ai/conversation-context-store";
 import { createBranchStore } from "@/lib/conversations/branch-store";
 import { isolateBranchRecall } from "@/lib/conversations/branches";
+import { maskGeminiClient } from "@/lib/ai/privacy/gemini";
+import { readMaskPrefs } from "@/lib/ai/privacy/mask";
+import { rememberMaskPrefs } from "@/lib/ai/privacy/policy";
 import { observeGeminiClient, withModelPurpose, withModelObservationCollector, configureModelDataPolicy, addModelDataClasses, type ModelCallObservation, type ExternalServiceObservation } from "@/lib/ai/model-observations";
 import { makeReplyTrace, type ReplyRanking, type ReplySource, type ReplyTrace } from "@/lib/ai/reply-trace";
 import { keywordRank, keywordTieBreak } from "@/lib/ai/keyword-rank";
@@ -21,6 +24,10 @@ import { buildGeminiFunctionDeclarations, executeTool, READ_ONLY_TOOLS, type Too
 import { canRepeatElsewhere, fallbackNote, stoppedAfterTools, RequestLimitError } from "@/lib/ai/request-budget";
 import { classifyIntent } from "@/lib/ai/agent/router";
 import { runAgent } from "@/lib/ai/agent/orchestrator";
+import type { ConsultImage } from "@/lib/ai/models/consult";
+import { parseDirectCommand, runDirectCommand, type DirectCommand } from "@/lib/ai/direct-commands";
+import { liveBriefSources } from "@/lib/ai/brief-sources";
+import { liveTranslateDeps } from "@/lib/ai/translate";
 import { getScopedResumeRun, type AgentRunDetail } from "@/lib/ai/agent/run-store";
 import { resumeRequestError } from "@/lib/ai/agent/resume-scope";
 import { searchMemories } from "@/lib/ai/memory/store";
@@ -99,8 +106,8 @@ async function summarizeHistory(input: SummaryInput, freeOnly = false): Promise<
     try {
         const route = freeOnly ? resolveFreeChat(null, true) : null;
         if (route) assertFreeModel(route);
-        const client = observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai,
-            { providerId: route?.provider.id ?? "gemini", purpose: "summary" });
+        const client = maskGeminiClient(observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai,
+            { providerId: route?.provider.id ?? "gemini", purpose: "summary" }), route?.provider.id ?? "gemini");
         const response = await client.models.generateContent({
             model: route?.model.id ?? MODEL,
             config: { abortSignal: signal, maxOutputTokens: 2400 },
@@ -184,7 +191,7 @@ async function saveChannelChoice(
     }
 }
 
-function resolveChatForRequest(
+export function resolveChatForRequest(
     channel: MessageChannel,
     provider: string | undefined,
     model: string | undefined,
@@ -526,6 +533,8 @@ type RagChatResult = {
     reply: string; messageId: string; userMessageId?: string; artifacts: ArtifactDescriptor[]; councilProposal?: CouncilProposal; approvals?: HeldApproval[]; freeOnly?: boolean; replyTrace?: ReplyTrace;
     /** Vault paths of saved photos the reply cites, for channels to send with it. */
     photos?: string[];
+    /** A /brief reply: channels read it aloud whatever the saved voice preference says. */
+    speak?: boolean;
 };
 
 export async function ragChat(params: RagChatParams, onEvent?: AgentEventSink): Promise<RagChatResult> {
@@ -614,6 +623,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     } = params;
 
     const profile = await getDefaultProfile();
+    if (profile) rememberMaskPrefs(readMaskPrefs(profile.preferences));
     const resumeRun = params.resumeRunId ? await getScopedResumeRun(params.resumeRunId, { conversationId, userProfileId: profile?.id }, signal) : null;
     const freeOnly = effectiveFreeOnly(profile, params.freeOnly, params.paidOnly);
     configureModelDataPolicy(freeOnly);
@@ -626,6 +636,16 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
         }
         if (/^[/!]model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
             return { reply: await handleModelCommand(message, channel, profile, freeOnly), messageId: "", artifacts: [], freeOnly };
+        }
+    }
+
+    const direct = parseDirectCommand(message);
+    if (direct && !file && !imageBase64) {
+        // Decision 7: scheduled text is written on paid Gemini, so a briefing never runs on a schedule.
+        if (params.paidOnly || isUnattendedRun()) {
+            if (direct.kind === "brief") throw new Error("Briefings run on request only, so a scheduled task cannot ask for one.");
+        } else {
+            return directCommandChat(direct, params, profile, freeOnly, onSavedMessage);
         }
     }
 
@@ -694,10 +714,13 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     }, run);
 
     const hasVisualAttachment = !!imageBase64 || (!!file && !isTextLikeAttachment(file.mimeType, file.name));
+    const images = attachedImages(imageBase64, file);
     let mode: "chat" | "agent" = "chat";
     if (agent || slash?.agent) mode = "agent";
     else if (!slash && channel === "web" && !hasVisualAttachment) mode = (await classifyIntent(message, rag.lastAssistantMessage, freeOnly)).mode;
-    if (mode === "agent" && hasVisualAttachment) mode = "chat";
+    // Only an explicit request reaches here with an attachment. Its images go to ask_model and compare_models (V8 F11);
+    // other files need the chat path.
+    if (mode === "agent" && hasVisualAttachment && !images.complete) mode = "chat";
 
     let reply = "";
     try {
@@ -710,7 +733,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
                 const resumePrefix = resumeRun ? buildResumePrefix(resumeRun) : undefined;
                 const res = await runAgent({
                     rag, message: agentMessage, conversationId, userProfileId: profile?.id, onEvent,
-                    resumePrefix, resumeRunId: params.resumeRunId, signal,
+                    resumePrefix, resumeRunId: params.resumeRunId, signal, images: images.list,
                 });
                 reply = res.reply;
                 artifacts.push(...res.artifacts);
@@ -862,6 +885,55 @@ function resetOnFirst(sink?: TokenSink): TokenSink | undefined {
     };
 }
 
+/** /brief and /translate: saved like any turn, answered without retrieval or tools. */
+async function directCommandChat(command: DirectCommand, params: RagChatParams, profile: Profile, freeOnly: boolean, onSavedMessage?: (id: string) => void): Promise<RagChatResult> {
+    const { message, channel, conversationId, replyTo, signal } = params;
+    const chat = resolveChatForRequest(channel, params.provider, params.model, profile, false, freeOnly);
+    if (freeOnly) assertFreeModel(chat);
+    let userId = "";
+    let assistantId = "";
+    try {
+        if (!params.unrecorded) {
+            userId = await saveMessage({ role: "user", content: message, channel, conversationId, userProfileId: profile?.id,
+                metadata: { ...userMessageMetadata(replyTo, params.inputMode), command: command.kind } });
+            onSavedMessage?.(userId);
+        }
+        signal?.throwIfAborted();
+        const { reply, speak } = await runDirectCommand(command, {
+            chat, embRef: getEmbeddingRef(), freeOnly, replyTo, signal, briefSources: liveBriefSources, translateDeps: liveTranslateDeps,
+        });
+        signal?.throwIfAborted();
+        if (!params.unrecorded) {
+            assistantId = await saveMessage({ role: "assistant", content: reply, channel, conversationId, userProfileId: profile?.id, metadata: { command: command.kind } });
+            onSavedMessage?.(assistantId);
+            if (conversationId) {
+                const conversation = await getConversation(conversationId).catch(() => null);
+                if (conversation && (!conversation.title || conversation.title === "New Chat")) {
+                    await updateConversationTitle(conversationId, command.kind === "brief" ? "Briefing" : "Translation").catch(() => {});
+                }
+            }
+        }
+        return { reply, messageId: assistantId, ...(userId ? { userMessageId: userId } : {}), artifacts: [], freeOnly, ...(speak ? { speak: true } : {}) };
+    } catch (error) {
+        if (signal?.aborted && !onSavedMessage) {
+            if (assistantId) await deleteMessage(assistantId).catch(() => {});
+            if (userId) await deleteMessage(userId).catch(() => {});
+        }
+        throw error;
+    }
+}
+
+/** Image attachments for the consult tools; `complete` is false when another file kind (PDF, audio) came with them. */
+export function attachedImages(imageBase64: string | undefined, file: FileAttachment | undefined): { list: ConsultImage[]; complete: boolean } {
+    const list: ConsultImage[] = [];
+    // As in generateGeminiReply, an API caller's imageBase64 is taken as JPEG.
+    if (imageBase64) list.push({ base64: imageBase64, mimeType: "image/jpeg" });
+    const fileIsImage = !!file && file.mimeType.startsWith("image/");
+    if (file && fileIsImage) list.push({ base64: file.base64, mimeType: file.mimeType });
+    const otherFile = !!file && !fileIsImage && !isTextLikeAttachment(file.mimeType, file.name);
+    return { list, complete: list.length > 0 && !otherFile };
+}
+
 async function generateGeminiReply(opts: {
     contextBlock: string; message: string; imageBase64?: string; file?: FileAttachment;
     channel: MessageChannel; thinking: boolean; search: boolean; model: string; providerId: string;
@@ -869,7 +941,7 @@ async function generateGeminiReply(opts: {
     signal?: AbortSignal; onToken?: TokenSink;
 }): Promise<string> {
     const { contextBlock, message, imageBase64, file, channel, thinking, search, model, embRef, genParams, ctx, signal, onToken } = opts;
-    const client = observeGeminiClient(geminiClient(opts.apiKey), { providerId: opts.providerId, purpose: "chat" });
+    const client = maskGeminiClient(observeGeminiClient(geminiClient(opts.apiKey), { providerId: opts.providerId, purpose: "chat" }), opts.providerId);
     const parts: Part[] = [{ text: `## Current Message\nUser: ${message}` }];
     if (imageBase64) parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64 } });
     if (file) parts.push(isTextLikeAttachment(file.mimeType, file.name)

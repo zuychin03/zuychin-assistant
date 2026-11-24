@@ -3,6 +3,7 @@ import { ai, MODEL, cutShortAtMaxTokens, geminiClient } from "@/lib/gemini";
 import { assertFreeModel, resolveFreeChat } from "@/lib/ai/model-policy";
 import { getProviderApiKey } from "@/lib/ai/providers";
 import { configureModelDataPolicy, observeGeminiClient, withModelObservationCollector, type ModelCallObservation } from "@/lib/ai/model-observations";
+import { maskGeminiClient } from "@/lib/ai/privacy/gemini";
 import { persistModelObservations } from "@/lib/ai/model-health";
 
 // The title and summary that open a Capture recording (V8 F5). Paid Gemini normally, a free Gemini route in Free only.
@@ -38,7 +39,7 @@ export async function summariseRecording(input: RecordingSummaryInput, freeOnly:
     try {
         const response = await withModelObservationCollector(observations, () => {
             configureModelDataPolicy(freeOnly);
-            return observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai, { providerId, purpose: "summary" }).models.generateContent({
+            return maskGeminiClient(observeGeminiClient(route ? geminiClient(getProviderApiKey(route.provider)) : ai, { providerId, purpose: "summary" }), providerId).models.generateContent({
                 model, contents: recordingSummaryPrompt(input),
                 config: {
                     abortSignal: AbortSignal.timeout(55_000), maxOutputTokens: 4000, responseMimeType: "application/json",

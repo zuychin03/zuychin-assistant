@@ -36,6 +36,9 @@ export interface ModelTraits {
     /** Image: "1024x1024" style sizes it accepts, and whether it takes an input image to edit. */
     sizes?: string[];
     editing?: boolean;
+    /** Chat: read the video probe clip's on-screen words, and heard its spoken sentence (probed). */
+    video?: boolean;
+    videoSpeech?: boolean;
     /** Translate: language codes from the model card and the prompt template the probe tested. */
     languages?: string[];
     promptTemplate?: string;

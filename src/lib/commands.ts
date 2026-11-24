@@ -7,11 +7,27 @@ export interface SlashCommand {
     description: string;
     /** Force the agent loop instead of the single-pass chat path. */
     agent?: boolean;
+    /** Answered by src/lib/ai/direct-commands.ts on every channel; listed here for the drop-up only. */
+    direct?: boolean;
     /** Builds the prompt from the args typed after the command. */
     build: (args: string) => string;
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
+    {
+        id: "brief",
+        usage: "/brief [study]",
+        description: "Spoken briefing of today's calendar, tasks and captures, or a Study recap",
+        direct: true,
+        build: () => "",
+    },
+    {
+        id: "translate",
+        usage: "/translate <language> <text>",
+        description: "Translate text, or the message you reply to",
+        direct: true,
+        build: () => "",
+    },
     {
         id: "draft_email_reply",
         usage: "/draft_email_reply [topic]",
@@ -258,7 +274,7 @@ export function expandSlashCommand(message: string): ExpandedCommand | null {
     const m = message.trim().match(COMMAND_RE);
     if (!m) return null;
     const command = SLASH_COMMANDS.find((c) => c.id === m[1].toLowerCase());
-    if (!command) return null;
+    if (!command || command.direct) return null;
     return { command, prompt: command.build(m[2].trim()), agent: !!command.agent };
 }
 

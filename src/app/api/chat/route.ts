@@ -4,7 +4,7 @@ import { knowledgeOnlyRequestError } from "@/lib/knowledge/chat";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sanitizeGenParams } from "@/lib/ai/providers";
 import { getArtifact } from "@/lib/artifacts/store";
-import { base64Bytes, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS } from "@/lib/types";
+import { base64Bytes, isMessageChannel, isSupportedAttachment, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MESSAGE_CHANNELS, parseReplyRef } from "@/lib/types";
 import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 import type { FileAttachment } from "@/lib/types";
 import { resumeRequestError, ResumeScopeError } from "@/lib/ai/agent/resume-scope";
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
             turnConversationId = turn.conversationId ?? undefined;
         }
 
-        const { reply, messageId, userMessageId, artifacts, replyTrace, photos } = await ragChat({
+        const { reply, messageId, userMessageId, artifacts, replyTrace, photos, speak } = await ragChat({
             message: text,
             channel,
             imageBase64,
@@ -107,6 +107,8 @@ export async function POST(req: NextRequest) {
             resumeRunId: body.resumeRunId,
             freeOnly: body.freeOnly === true,
             inputMode,
+            // The bot sends the message a /translate replies to (V8 F9).
+            replyTo: parseReplyRef(body.replyTo),
             knowledgeOnly: body.knowledgeOnly,
             provider,
             model,
@@ -127,7 +129,7 @@ export async function POST(req: NextRequest) {
             })
         );
 
-        const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal, inputMode === "voice") : null;
+        const speech = channel === "discord" ? await discordSpeechAttachment(reply, body.freeOnly === true, req.signal, inputMode === "voice", speak === true) : null;
         // The bot attaches every artifact with bytes, so cited photos arrive with the reply.
         const cited = channel === "discord" ? await photoAttachments(photos) : [];
         return NextResponse.json({ reply, messageId, userMessageId, replyTrace, artifacts: [...artifactsWithData, ...(speech ? [speech] : []), ...cited] });

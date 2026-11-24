@@ -1,4 +1,5 @@
-// Offline checks for the agent's model tools: hint rules under each policy, purpose picks, ratings, the consult budget and timeouts.
+// Offline checks for the agent's model tools: hint rules under each policy, purpose picks, ratings, the consult budget, timeouts
+// and attached images (V8 F11).
 import assert from "node:assert/strict";
 import { PROVIDERS, isProviderAvailable, providers, type ResolvedChat } from "../src/lib/ai/providers";
 import { setCatalogueSnapshotForTests } from "../src/lib/ai/catalogue/snapshot";
@@ -169,6 +170,27 @@ await check("compare_models reports a model that runs out of time and keeps the 
         clearInterval(keepAlive);
         AGENT_CONFIG.consultTimeoutMs = saved;
     }
+});
+
+await check("an attached image goes only to vision models, and a skipped model costs nothing (V8 F11)", async () => {
+    const sent: { key: string; images: number }[] = [];
+    const kit = createModelToolkit(FREE, {
+        roster: () => roster(FREE), resolve,
+        consult: async (resolved, _prompt, _max, _signal, images) => { sent.push({ key: keyOf(resolved), images: images.length }); return "a red mug"; },
+        saveFeedback: async () => true, now: () => 0,
+    }, { runId: null, images: [{ base64: "aW1hZ2U=", mimeType: "image/png" }] });
+    assert.match(await kit.askModel({ model: LAGUNA, prompt: "What is in the picture?" }), /cannot read images, so it was not asked about the attached image\. .*No consult call was used\./);
+    assert.match(await kit.askModel({ model: GLM, prompt: "What is in the picture?" }), /^Answer from nvidia-nim::z-ai\/glm-5\.3-flash, given the attached image in 0\.0 s \(5 consult calls left\)/);
+    assert.match(await kit.askModel({ model: LAGUNA, prompt: "Write a haiku", include_image: false }), /^Answer from nvidia-nim::poolside\/laguna-xs-2\.1 in 0\.0 s \(4 consult/);
+    const compared = await kit.compareModels({ prompt: "Describe it", models: [GLM, LAGUNA, "gemini-free::gemini-3.8-flash"] });
+    assert.match(compared, /nvidia-nim::poolside\/laguna-xs-2\.1 cannot read images, so it was not asked/);
+    assert.match(compared, /Each model was given the attached image\.\n2 consult calls left\./);
+    assert.match(await kit.compareModels({ prompt: "Describe it", models: [GLM, LAGUNA] }), /^Need at least 2 usable models to compare that can read images\./);
+    assert.deepEqual(sent, [
+        { key: GLM, images: 1 }, { key: LAGUNA, images: 0 }, { key: GLM, images: 1 }, { key: "gemini-free::gemini-3.8-flash", images: 1 },
+    ]);
+    const plain = toolkit(FREE);
+    assert.match(await plain.kit.askModel({ model: LAGUNA, prompt: "Hi" }), /^Answer from nvidia-nim::poolside\/laguna-xs-2\.1 in/, "no attachment, no change");
 });
 
 console.log(`${checks} agent model tool checks passed`);

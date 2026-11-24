@@ -38,6 +38,8 @@ export function measuredFacts(model: ChatModel, row: CatalogueRow | undefined, s
     if (row?.probedAt && row.supportsTools === false) facts.push("Tool calls failed in testing");
     else if (model.supportsTools && !model.supportsSearch) facts.push("Forced tool calls (explicit Search) do not work on this route");
     if (row?.probedAt && row.supportsVision === false && row.inputs.some((input) => input.toLowerCase() === "image")) facts.push("Lists image input but failed the image test");
+    if (row?.traits?.video === true) facts.push(row.traits.videoSpeech ? "Reads video and hears its speech in testing" : "Reads video in testing, but not its speech");
+    else if (row?.traits?.video === false && row.inputs.some((input) => input.toLowerCase() === "video")) facts.push("Lists video input but failed the video test");
     if (speed.tier === "slow" && speed.firstAnswerMs !== null) {
         facts.push(speed.source === "calls"
             ? `Slow first answer: median ${seconds(speed.firstAnswerMs)} over ${speed.samples} calls in ${SPEED_WINDOW_DAYS} days`

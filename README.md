@@ -48,6 +48,28 @@ edited and deleted in place.
 - Photo search: photos saved through Capture, and vault photos indexed from Knowledge >
   Maintenance > Index photos (20 a run), are found by their image and their text. A cited photo
   shows as a thumbnail in web chat and is sent with the reply on Telegram and Discord
+- Video notes: a video under 7 MB on Capture, or one sent to Telegram with no caption (up to
+  20 MB), becomes notes (a title, a summary, key points and a transcript when the model can hear
+  it) from a model that passed the video test, free models first. Telegram adds a Save to Capture
+  button; a video sent with a caption is still answered as a question about it
+- Images: in chat and Agent mode the model can make a picture with `make_image` (square, portrait
+  or landscape) once an approved image model passed its test. It shows inline in web chat, arrives
+  as a photo on Telegram and as an attachment on Discord. `ask_model` and `compare_models` can send
+  the turn's attached photo to vision models, and Agent mode with a photo attached runs the agent
+- Spoken briefings: `/brief` (web, Telegram, Discord) or **Brief me** on the Today panel reads out
+  a short briefing of the next 24 hours: calendar, due and open tasks, new captures and Study
+  reviews. `/brief study` gives a Study recap instead. Web plays it whatever the voice setting
+  says; Telegram and Discord send audio when a voice is available, else text
+- Translation: `/translate <language> <text>`, or `/translate <language>` as a reply to a message,
+  in 27 languages and up to 8,000 characters; on Capture, **Translate notes** adds a translation
+  under the reviewed notes. An approved translation model takes English or Vietnamese text when it
+  lists both languages, one paragraph per call; otherwise the chat model translates. The reply
+  names the model
+- Privacy masking: before a request reaches a route that may train on it (the free Gemini key,
+  Kilo models that say so, OpenRouter and Agnes free models), emails, phone numbers, street
+  addresses, card numbers and the names you list become placeholders such as `[EMAIL_1]`. The
+  reply, tool calls and saved messages get the real details back. The switch and the names are on
+  the dashboard's Privacy panel
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - Projects: group conversations into collapsible sidebar sections, each with its own
   instructions injected into every chat inside it; extracted facts can be scoped to a
@@ -163,10 +185,10 @@ edited and deleted in place.
   always sends, whatever the window size
 - Reply to a message: quote any earlier message (yours or the assistant's) from the reply
   arrow next to its bubble; the quote is shown in the thread and given to the model as context
-- Slash commands: type `/` in the message bar for a drop-up of 29 ready-made commands
+- Slash commands: type `/` in the message bar for a drop-up of 31 ready-made commands
   (`/plan_day`, `/weekly_review`, `/remind`, `/history`, `/new_app`, `/update_app`,
   `/facts`, `/skill`, `/research`, `/code`, `/debug`, `/vault_save`, …) that expand into
-  full prompts - skill-backed ones force the agent loop
+  full prompts - skill-backed ones force the agent loop. `/brief` and `/translate` answer directly
 - To-dos: the agent keeps a to-do list you can tick off or skip in the Today panel, and it never
   reminds you about a closed one again. A skipped task is never reported as done. Pending
   undated tasks are surfaced once a day, at the end of the first reply: up to three titles
@@ -181,13 +203,14 @@ edited and deleted in place.
 - Study: `/study` turns saved passages into cards. A model drafts a recall, explain or
   worked-exercise question with a reference answer, **Get feedback** compares your answer
   with the reference, and FSRS schedules reviews under a daily limit
-- Capture inbox: `/capture` collects links, PDFs, passages, photos and audio recordings. Opening
+- Capture inbox: `/capture` collects links, PDFs, passages, photos, audio recordings and videos. Opening
   a link or PDF in Review reads its text into an editable Source text section. Pages the server
   can't read go through Tavily. A scanned PDF can be read page by page by a free page-reading
   model (**Read pages (free)**) or by Gemini on request (free or paid key, your pick each time).
   A photo is read the same way, with a short description from a free vision model when it holds
   little text. An audio recording of up to 2 hours is transcribed in 3-minute pieces and gets a
-  title and summary. You review the text and where each one will be saved before it is filed,
+  title and summary. A video becomes notes, and **Translate notes** adds a translation under the
+  reviewed text. You review the text and where each one will be saved before it is filed,
   and can keep saved documents for offline reading. On Android, sharing a link, photo or PDF to
   the installed app opens the inbox with it filled in, and in chat the assistant can save a link
   or passage with `capture_add`
@@ -254,7 +277,8 @@ edited and deleted in place.
   that returns identical vectors (marked Same space) takes over by itself when the main one fails
 - Admin dashboard: stats, model health, the model catalogue, a live personality/system-prompt
   editor, agent-run traces (status, duration, tokens, expandable step timeline), a fact-memory
-  editor and a skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
+  editor, a skills panel (approve/edit/delete agent-authored skill drafts) and a Privacy panel
+  (masking on free routes) at `/admin`
 - Self-authoring skills: after a novel multi-step task the agent can save its procedure
   as a draft skill; once approved in the admin panel it joins the skill index for future runs
 - Resilient replies: a provider response that stops at its length limit is resumed and stitched
@@ -347,6 +371,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `MODEL_LOOKUP_MAX_PER_RUN` | Optional. Profile lookups per daily check (default 4) |
 | `MODEL_TYPES_DISCOVERY` | Optional. `off` keeps the daily model check to chat models; embedding, speech and transcription models already listed are still tested. Default on |
 | `MEDIA_KINDS` | Optional. `off` keeps rerank, page reading, image, decision, live and translation models out of the daily check and out of every feature, which then uses its fallback. Default on |
+| `IMAGE_TOOLS` | Optional. `off` hides `make_image` from chat and Agent mode. Default on; it still needs an approved image model that passed its test |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require a switch on `/admin#models` or the migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini. Capture also uses them to read a page the server is blocked from or can't reach |
 | `CAPTURE_FETCH` | Optional. `off` stops Capture fetching links on the server; Review then asks you to paste the passage instead |
@@ -483,7 +508,8 @@ live and translate, and the model health purposes to match. It seeds seven rows:
 parse and image models (NIM never lists them, so they are never marked Missing), Gemini Decision 1
 on both keys and Gemini 3.8 Live on the free key, all approved, plus Riva Translate unapproved. It
 also adds `modality` and `asset_path` to `knowledge_chunks` for photo rows, and
-`replace_knowledge_chunks` now writes them. On an existing project, apply
+`replace_knowledge_chunks` now writes them. It widens `artifacts_kind_check` so `make_image` can
+save `image` artifacts. On an existing project, apply
 [`scripts/migrations/v7-model-types.sql`](scripts/migrations/v7-model-types.sql) first, then
 [`scripts/migrations/v8-media.sql`](scripts/migrations/v8-media.sql); it is safe to run again.
 Without it, the new kinds are skipped and each feature uses its fallback.
@@ -575,7 +601,7 @@ npm run dev
   short phrase such as "Just a minute" (picked from a small pool) while it works.
   With the speech-to-text service set up, the voice stage shows Transcribing while your
   words are read, and your message appears as text marked "Spoken".
-- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good; the ↷ button at the end of the row skips it instead (on a computer it shows when you hover or tab to the row).
+- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good; the ↷ button at the end of the row skips it instead (on a computer it shows when you hover or tab to the row). **Brief me** in the panel's header speaks a short briefing of the day; it turns into Stop while it plays.
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
   away so chat history fills the sidebar, and the choice is remembered.
 - In the history sidebar, **New project** creates a collapsible group: use the folder icon
@@ -599,6 +625,7 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
+| POST | `/api/brief` | A spoken briefing script for the Today panel (`study` for a Study recap); not saved to a conversation |
 | GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM, `X-Sample-Rate` gives its rate). Speaks with the on-box voice when set up, else the backup voice chosen on `/admin` (Gemini by default); `X-Model-Provider` says which. Free only uses the on-box voice, a free backup voice or the free Gemini key, 409 without any |
 | POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service and, in the transcription order chosen on `/admin`, an API model; 503 `{ fallback: true }` tells the client to send the audio instead |
 | GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
@@ -616,6 +643,8 @@ npm run dev
 | GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
 | POST | `/api/capture/parse-page` | One page or photo (PNG or JPEG, up to 2 MB, as the raw body) to Markdown through the page-reading model |
 | POST | `/api/capture/transcribe-piece` | One piece of a recording (up to 3 minutes of 16 kHz 16-bit mono PCM, as the raw body) to text |
+| POST | `/api/capture/video` | One video (MP4, MOV or WebM up to 7 MB, as the raw body) to notes, as server-sent events (`started`, a wait comment every 10 s, then `done` or `error`); nothing is stored |
+| POST | `/api/capture/translate` | Reviewed notes (up to 8,000 characters) and a language to a translation and the model credit; nothing is stored |
 | POST | `/api/capture/recording` | A title and summary for a transcribed recording; nothing is stored |
 | GET | `/api/capture/staged` | What the Android share target staged: the fields, or with `file=1` the shared file |
 | POST | `/capture/share` | Android share target (link, text, photo or PDF): stages it and opens Capture with a 303. Nothing is saved until you save it |
@@ -679,6 +708,7 @@ npm run dev
 | GET/POST | `/api/admin/reembed` | Active knowledge model and rows not yet on it / POST answers 410: switching moved to `/api/admin/embedding/switch` |
 | GET/POST | `/api/admin/embedding/switch` | Knowledge model, switch job progress and, with `providerId` and `modelId`, a preview with an estimate / start a switch (202; the job runs on the server) |
 | GET/PUT | `/api/admin/speech` | Backup voice and transcription order / save either (only approved models whose last test passed) |
+| GET/PUT | `/api/admin/privacy` | The masking switch and the names to mask / save both (`preferences.masking`) |
 | GET/PUT | `/api/admin/media` | The chosen and automatic model for each V8 kind (rerank, parse, image, decision, live, translate) / choose one, or `providerId: null` for the automatic pick |
 | GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
 | GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows of every kind (`?kind=` narrows), the knowledge model, the voice choices, the last 10 checks and each provider's rest end (`restingUntil`) / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
@@ -799,8 +829,8 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
 - V8 kinds: rerank, parse (page reading), image, decision, live and translate models each have
   a small test (rank 4 passages, read a test page, make an image, answer 3 questions, open a
   live session, translate a sentence) and a model choice on their tab (`/api/admin/media`,
-  `cron_state.media_models`). Rerank, page reading and decisions are used now; image, live and
-  translation models are only listed and tested, for features still to come. NIM's rerank, parse
+  `cron_state.media_models`). Rerank, page reading, decisions, image making and translation
+  use them now; live models are only listed and tested, for Live talk still to come. NIM's rerank, parse
   and image models are seeds, because NIM does not list them. `MEDIA_KINDS=off` turns all six off.
 - Rest: when Cloudflare answers that the free daily allowance is used up (HTTP 429, code 3036),
   the provider rests until 00:00 UTC; LlamaParse out of credits (HTTP 402) rests until the 1st of
@@ -819,7 +849,9 @@ background once it is more than 5 minutes old, so model lookups stay synchronous
   ones first, then retries of unclear results, then picker models last tested over 7 days ago.
   A test sends short streamed requests: a chat reply, an automatic tool call, a forced tool call
   (the Search toggle relies on it) and, when the list shows image input or says nothing about
-  inputs, a vision question. Three unclear results in a row (timeouts, 429) count as a failure;
+  inputs, a vision question, then a 6-second video clip (when the list shows video input, or after
+  a passed vision question when it lists none); the model detail says whether it read the clip
+  and heard its speech. Three unclear results in a row (timeouts, 429) count as a failure;
   HTTP 410 marks the model failed and Missing at once. Test requests appear in model health with
   the `probe` purpose.
 - Picker: a discovered model joins the picker once it passes (marked New) or once you approve
@@ -941,6 +973,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `search_history` | Semantic search over your own past messages across channels, with links that open the conversation |
 | `save_note` | Persist a note as an embedding for later recall |
 | `capture_add` | Save a link or passage to the Capture inbox and return a link to its Review (unattended tasks need approval) |
+| `make_image` | Make a picture (square, portrait or landscape) with the approved image model, saved as an image artifact; offered only when one passed its test |
 | `get_recent_conversations` | Summary of recent messages across channels |
 | `manage_calendar_event` | Create or delete a Google Calendar event |
 | `list_calendar_events` | List upcoming events within N hours |
@@ -971,7 +1004,7 @@ Agent runs additionally get `create_document` / `create_code_file` / `create_cod
 built-in or approved custom), `save_skill` (files a new draft skill for review),
 `run_subagents` (parallel workers on free fast models, picked by an optional purpose tag),
 `list_models` (the roster with tags, speed and reliability), `ask_model` and `compare_models`
-(short text-only questions to one or a few models, 6 calls per run) and `rate_workers`
+(short questions to one or a few models, with the turn's attached photo for vision models, 6 calls per run) and `rate_workers`
 (scores each worker's answer once per run, which feeds later picks).
 
 ## Shared MCP Server
@@ -1189,6 +1222,10 @@ since Discord reserves `/` for its own slash-command UI:
   `/model nvidia-nim nemotron-3-ultra` or `/model gemini gemini-3.8-flash`.
 - `/embed-model` names the knowledge model, which every channel shares. It is changed on
   `/admin#models`, because a switch re-embeds the whole store.
+- `/brief` (or `/brief study`) sends a spoken briefing: the text, plus audio when a voice is
+  available.
+- `/translate <language> <text>`, or `/translate <language>` as a reply to a message, translates
+  it and names the model that did.
 
 ### Files and agent mode on messaging
 
@@ -1512,7 +1549,7 @@ src/
 │   │   ├── page.tsx                    # Live council view: transcript, decision, pause and owner thread
 │   │   └── online-council-panel.tsx    # Start a council and pick each seat's model
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + model health, model catalogue (every model type, in folding sections), run-trace, memory, skills and agent-credential panels
+│   ├── admin/                          # Dashboard + model health, model catalogue (every model type, in folding sections), run-trace, memory, skills, agent-credential and privacy panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── agent/claim/route.ts        # Unauthenticated claim → per-agent key exchange (rate limited)
@@ -1531,7 +1568,7 @@ src/
 │       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint / model discovery
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue, knowledge model switch, voice and media model choices
+│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue, knowledge model switch, voice and media model choices, privacy
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
@@ -1556,6 +1593,11 @@ src/
 │   │   ├── media/                      # V8 kinds: request adapters, live sessions, per-kind choice and resolver
 │   │   ├── rerank.ts                   # Rerank with a time limit; keyword-rank.ts is the fallback
 │   │   ├── decisions.ts                # Yes/no, choice and score questions to a decision model; memory/gate.ts uses it
+│   │   ├── privacy/                    # Masking of personal details on routes that may train: patterns, route check, Gemini wrapper
+│   │   ├── brief.ts                    # Spoken briefings: facts, script and length cap; brief-sources.ts reads the facts
+│   │   ├── translate.ts                # Translation through a translation model or the chat route; languages.ts lists 27
+│   │   ├── direct-commands.ts          # /brief and /translate on every channel
+│   │   ├── tools/images.ts             # make_image
 │   │   ├── reply-sources.ts            # Records the sources each reply used
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models

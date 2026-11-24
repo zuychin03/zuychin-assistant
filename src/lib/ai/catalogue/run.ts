@@ -151,6 +151,13 @@ export interface TestSummary {
 }
 
 const keyOf = (row: Pick<CatalogueRow, "providerId" | "modelId">) => `${row.providerId}::${row.modelId}`;
+const listsInput = (row: Pick<CatalogueRow, "inputs">, input: string) => row.inputs.some((entry) => entry.toLowerCase() === input);
+
+/** The image and video steps a chat row gets. Listings name inputs capitalised ("Image"); a row with none listed is tried. */
+export function chatProbeChecks(row: Pick<CatalogueRow, "inputs">): Pick<ProbeTarget, "checkVision" | "checkVideo"> {
+    if (!row.inputs.length) return { checkVision: true, checkVideo: "after-vision" };
+    return { checkVision: listsInput(row, "image"), checkVideo: listsInput(row, "video") };
+}
 
 export function maxProbesFromEnv(raw = process.env.MODEL_DISCOVERY_MAX_PROBES): number {
     const value = Number(raw);
@@ -296,6 +303,7 @@ export function applyProbe(row: CatalogueRow, result: ProbeResult, at: string): 
             ...base, probeStatus: "passed", probeAttempts: 0,
             supportsTools: result.supportsTools ?? row.supportsTools, supportsSearch: result.supportsSearch ?? row.supportsSearch,
             supportsVision: result.supportsVision ?? row.supportsVision,
+            ...(result.supportsVideo !== null ? { traits: { ...row.traits, video: result.supportsVideo, videoSpeech: result.videoSpeech === true } } : {}),
             missingSince: listedAgain ? null : row.missingSince, notifiedMissingAt: listedAgain ? null : row.notifiedMissingAt,
         };
     }
@@ -630,11 +638,13 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
                     tally(entry, result.status);
                     continue;
                 }
-                const checkVision = !row.inputs.length || row.inputs.includes("image");
-                const result = await deps.probe({ provider, modelId: row.modelId, apiKey, checkVision }).catch((error): ProbeResult => {
+                const result = await deps.probe({ provider, modelId: row.modelId, apiKey, ...chatProbeChecks(row) }).catch((error): ProbeResult => {
                     console.error(`[ModelDiscovery] Probe crashed for ${keyOf(row)}:`, error instanceof Error ? error.message : error);
                     const step = { outcome: "transient" as const, httpStatus: null, ms: null, detail: "The probe crashed." };
-                    return { status: "inconclusive", retired: false, chatMs: null, supportsTools: null, supportsSearch: null, supportsVision: null, steps: { chat: step, tools: step, forced: step, vision: step } };
+                    return {
+                        status: "inconclusive", retired: false, chatMs: null, supportsTools: null, supportsSearch: null, supportsVision: null, supportsVideo: null, videoSpeech: null,
+                        steps: { chat: step, tools: step, forced: step, vision: step, video: step },
+                    };
                 });
                 if (await restIfQuota(provider, result.steps)) {
                     entry.deferred = (entry.deferred ?? 0) + rows.length - index;
@@ -889,8 +899,7 @@ export async function executeModelTest(runId: string, providerId: string, modelI
         if (!row) throw new Error("That model is not in the catalogue.");
         if (rowKind(row) !== "chat") return await testTypedModel(runId, provider, apiKey, row, read.rows, deps, startedMs);
 
-        const checkVision = !row.inputs.length || row.inputs.includes("image");
-        const { value: result, observations } = await collectModelObservations(() => deps.probe({ provider, modelId, apiKey, checkVision }));
+        const { value: result, observations } = await collectModelObservations(() => deps.probe({ provider, modelId, apiKey, ...chatProbeChecks(row) }));
         await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
         await restFromTest(provider, result.steps, read.rows, deps);
         const next = applyProbe(row, result, new Date(deps.now()).toISOString());

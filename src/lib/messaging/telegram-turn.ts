@@ -1,4 +1,15 @@
+import type { ReplyRef } from "@/lib/types";
+
 export interface TelegramCommand { search: boolean; thinking: boolean; agent: boolean; text: string }
+
+/** The message a /translate replies to (V8 F9); other replies keep today's behaviour and send no quote. */
+export function translateReplyRef(text: string, replied: Record<string, unknown> | undefined): ReplyRef | undefined {
+    if (!replied || !/^[/!]translate(?:@\S+)?(?=\s|$)/i.test(text.trim())) return undefined;
+    const content = typeof replied.text === "string" ? replied.text : typeof replied.caption === "string" ? replied.caption : "";
+    if (!content.trim()) return undefined;
+    const from = replied.from as Record<string, unknown> | undefined;
+    return { role: from?.is_bot === true ? "assistant" : "user", content: content.slice(0, 8000) };
+}
 
 const COMMAND = /^[/!](search|think|agent)(?:@\S+)?(?=\s|$)\s*([\s\S]*)/i;
 

@@ -13,13 +13,15 @@ import { blobBase64, photoTitle, preparePhoto } from "@/lib/capture/image-prep";
 import type { PdfPages } from "@/lib/capture/pdf-pages";
 import { audioFileSeconds, decodeRecording, RECORDING_ACCEPT, recordingBody, transcribeRecording } from "@/lib/capture/audio-pieces";
 import { CAPTURE_TEXT_MAX, durationLabel, RECORDING_MAX_FILE_BYTES, RECORDING_MAX_SECONDS } from "@/lib/voice/recording-limits";
+import { postVideo, VIDEO_ACCEPT, VIDEO_UPLOAD_MAX_BYTES } from "@/lib/capture/video-client";
+import { LANGUAGES, TRANSLATE_MAX_CHARS } from "@/lib/ai/languages";
 import type { OfflineDocument, OfflineState, OfflineToken } from "@/lib/offline/library";
 import { clearConfirmedOfflinePrivateData, clearOfflinePrivateData, offlineLibrary, OFFLINE_PRIVACY_EVENT } from "@/lib/offline/storage";
 import styles from "./capture.module.css";
 
-async function httpRequest(path: string, body?: unknown) {
+async function httpRequest(path: string, body?: unknown, timeoutMs = 60_000) {
     const response = await fetch(path, { method: body ? "POST" : "GET", cache: "no-store", headers: body ? { "Content-Type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60_000) });
+        body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs) });
     if (response.status === 401 || (response.redirected && new URL(response.url).pathname === "/login")) {
         await clearOfflinePrivateData(); throw new Error("Sign in again to use the capture inbox.");
     }
@@ -71,17 +73,18 @@ export default function CapturePage() {
     const [baseline, setBaseline] = useState<CaptureReview>(), [extract, setExtract] = useState<CaptureExtract>();
     const [sourceBusy, setSourceBusy] = useState<SourceActivity>(""), [sourceError, setSourceError] = useState("");
     const [ocrTiers, setOcrTiers] = useState<Record<OcrTier, boolean>>({ free: false, paid: false });
-    const [pageReader, setPageReader] = useState<string | null>(null), [pageProgress, setPageProgress] = useState("");
-    const [audioMode, setAudioMode] = useState(false), [audioProgress, setAudioProgress] = useState(""), [recording, setRecording] = useState<string | null>(null);
+    const [pageReader, setPageReader] = useState<string | null>(null), [pageProgress, setPageProgress] = useState(""), [videoReader, setVideoReader] = useState<string | null>(null);
+    const [translateTo, setTranslateTo] = useState("vi");
+    const [media, setMedia] = useState<"" | "audio" | "video">(""), [mediaProgress, setMediaProgress] = useState(""), [recording, setRecording] = useState<string | null>(null);
     const reviewHeading = useRef<HTMLHeadingElement>(null), readerHeading = useRef<HTMLHeadingElement>(null), sourceLine = useRef<HTMLParagraphElement>(null);
     const captureId = useRef<string | null>(null), active = useRef(true), locked = useRef(false), privacyRevision = useRef(0);
     const inboxRequest = useRef(0), selectedId = useRef<string | undefined>(undefined), reviewTarget = useRef<string | null>(null), sharedDraft = useRef<CaptureSource | null>(null);
-    const stagedShare = useRef<string | null>(null), shareError = useRef<string | null>(null), audioStop = useRef<AbortController | null>(null);
+    const stagedShare = useRef<string | null>(null), shareError = useRef<string | null>(null), mediaStop = useRef<AbortController | null>(null);
     useUnsavedChanges(() => Boolean(source.title.trim() || source.text.trim() || source.url?.trim() || source.pdf || source.image || note.trim()
         || (selected && !selected.receipt && review && JSON.stringify(review) !== JSON.stringify(baseline))));
-    const request = useCallback(async (path: string, body?: unknown) => {
+    const request = useCallback(async (path: string, body?: unknown, timeoutMs?: number) => {
         const revision = privacyRevision.current;
-        const result = await httpRequest(path, body);
+        const result = await httpRequest(path, body, timeoutMs);
         if (!active.current || revision !== privacyRevision.current) throw new Error("The account changed. Reopen the inbox.");
         return result;
     }, []);
@@ -101,6 +104,7 @@ export default function CapturePage() {
             setProfileId(inbox.profileId); setItems(inbox.items); setDocuments(inbox.documents ?? []);
             setOcrTiers({ free: inbox.ocr?.free === true, paid: inbox.ocr?.paid === true });
             setPageReader(typeof inbox.pageReader === "string" ? inbox.pageReader : null);
+            setVideoReader(typeof inbox.videoReader === "string" ? inbox.videoReader : null);
             setInboxLoaded(true); inboxRead = true;
             if (before) {
                 const identity = await offlineLibrary.bindProfile(inbox.profileId, before.epoch);
@@ -133,12 +137,12 @@ export default function CapturePage() {
             else if (failed) setError(SHARE_ERRORS[failed] ?? "The share could not be added. Try sharing again.");
         });
         const cleared = () => { privacyRevision.current++; setClearRequest(null); setOffline(undefined); setToken(undefined); setProfileId(undefined); setItems([]); setInboxLoaded(false); setInboxLoading(false); setInboxError(""); setDocuments([]); setSelected(undefined); setReview(undefined); setPreview(undefined); readCopy(undefined); setNote(""); setPdfUrl(undefined); setSource({ kind: "text", title: "", text: "" }); captureId.current = null;
-            selectedId.current = undefined; setBaseline(undefined); setExtract(undefined); setSourceBusy(""); setSourceError(""); setOcrTiers({ free: false, paid: false }); setPageReader(null); setPageProgress("");
-            audioStop.current?.abort(); setAudioMode(false); setAudioProgress(""); setRecording(null); };
+            selectedId.current = undefined; setBaseline(undefined); setExtract(undefined); setSourceBusy(""); setSourceError(""); setOcrTiers({ free: false, paid: false }); setPageReader(null); setPageProgress(""); setVideoReader(null);
+            mediaStop.current?.abort(); setMedia(""); setMediaProgress(""); setRecording(null); };
         window.addEventListener(OFFLINE_PRIVACY_EVENT, cleared);
         const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(OFFLINE_PRIVACY_EVENT) : null;
         if (channel) channel.onmessage = cleared;
-        return () => { active.current = false; audioStop.current?.abort(); window.removeEventListener(OFFLINE_PRIVACY_EVENT, cleared); channel?.close(); };
+        return () => { active.current = false; mediaStop.current?.abort(); window.removeEventListener(OFFLINE_PRIVACY_EVENT, cleared); channel?.close(); };
     }, [load, refreshOffline]);
     const applyExtract = useCallback((id: string, value: CaptureExtract) => {
         setExtract(value);
@@ -186,28 +190,37 @@ export default function CapturePage() {
         if (!value) throw new Error("Reconnect and sign in before enabling offline storage.");
         return value;
     };
+    // V8 F9: the translation goes under the reviewed notes, and Preview and Add work on the combined text.
+    async function translateNotes() {
+        const language = LANGUAGES.find((entry) => entry.code === translateTo);
+        if (!review?.text.trim() || !language) return;
+        const result = await request("/api/capture/translate", { text: review.text, target: language.code }, 110_000) as { text: string; credit: string };
+        setReview(current => current && { ...current, text: `${current.text.trimEnd()}\n\n## ${language.name} translation\n\n${result.text}` });
+        setPreview(undefined);
+        setNotice(`${result.credit} It is under your notes; check it before adding the capture.`);
+    }
     async function saveCapture() {
         captureId.current ??= crypto.randomUUID();
         await request("/api/capture", { action: "capture", profileId, id: captureId.current, source });
-        captureId.current = null; setSource({ kind: "text", title: "", text: "" }); setAudioMode(false); setRecording(null); await load(); setNotice("Saved to the inbox. Review the destination before adding it to knowledge.");
+        captureId.current = null; setSource({ kind: "text", title: "", text: "" }); setMedia(""); setRecording(null); await load(); setNotice("Saved to the inbox. Review the destination before adding it to knowledge.");
     }
     async function transcribeFile(file: File) {
         const revision = privacyRevision.current;
         const current = () => active.current && revision === privacyRevision.current;
         if (file.size > RECORDING_MAX_FILE_BYTES) throw new Error("Choose a recording no larger than 300 MB.");
-        setAudioProgress("Checking the recording…");
+        setMediaProgress("Checking the recording…");
         const length = await audioFileSeconds(file);
         if (length && length > RECORDING_MAX_SECONDS + 1) throw new Error("This recording is over 2 hours. Trim it or split it first.");
-        setAudioProgress("Decoding the recording…");
+        setMediaProgress("Decoding the recording…");
         const decoded = await decodeRecording(file);
         if (!current()) return;
         const controller = new AbortController();
-        audioStop.current = controller;
+        mediaStop.current = controller;
         const heard = await transcribeRecording(decoded, { signal: controller.signal,
-            onProgress: (done, total) => setAudioProgress(`Transcribing piece ${done + 1} of ${total} (${durationLabel(decoded.seconds)} in all)…`) }).finally(() => { audioStop.current = null; });
+            onProgress: (done, total) => setMediaProgress(`Transcribing piece ${done + 1} of ${total} (${durationLabel(decoded.seconds)} in all)…`) }).finally(() => { mediaStop.current = null; });
         if (!current()) return;
         if (!heard.text) throw new Error(heard.stopped ? "Stopped before any speech was transcribed." : heard.failed ?? "No speech was heard in this recording.");
-        setAudioProgress("Writing a title and summary…");
+        setMediaProgress("Writing a title and summary…");
         let summary: string | null = null, title = photoTitle(file.name), summaryError = "";
         try {
             const written = await request("/api/capture/recording", { name: file.name.slice(0, 200), seconds: decoded.seconds, transcript: heard.text.slice(0, CAPTURE_TEXT_MAX) });
@@ -225,6 +238,26 @@ export default function CapturePage() {
             + (summaryError ? ` The summary could not be written (${summaryError}), so only the transcript is below.` : "")
             + (body.cut ? ` The transcript was cut at ${CAPTURE_TEXT_MAX.toLocaleString("en-AU")} characters, the most a capture holds.` : "")
             + " Check it, then save it to the inbox.");
+    }
+    async function summariseVideo(file: File) {
+        const revision = privacyRevision.current;
+        const current = () => active.current && revision === privacyRevision.current;
+        if (file.size > VIDEO_UPLOAD_MAX_BYTES) throw new Error("Videos here can be up to 7 MB. Send longer ones to the Telegram bot, which takes up to 20 MB.");
+        const controller = new AbortController(), started = Date.now();
+        mediaStop.current = controller;
+        let model = "the video model";
+        const show = () => setMediaProgress(`Summarising ${file.name} with ${model}… ${Math.round((Date.now() - started) / 1000)} s`);
+        setMediaProgress(`Sending ${file.name}…`);
+        const tick = setInterval(show, 1000);
+        const notes = await postVideo(file, { signal: controller.signal, onStarted: name => { model = name; show(); } })
+            .catch((reason: unknown) => { throw controller.signal.aborted ? new Error("Stopped. Nothing was saved.") : reason; })
+            .finally(() => { clearInterval(tick); mediaStop.current = null; });
+        if (!current()) return;
+        // A second video replaces the first one's notes; anything typed before the first is kept.
+        const typed = recording ? "" : source.text.trim();
+        setSource(value => ({ ...value, kind: "text", title: (recording ? "" : value.title.trim()) || notes.title, text: [typed, notes.text].filter(Boolean).join("\n\n").slice(0, CAPTURE_TEXT_MAX) }));
+        setRecording(file.name); captureId.current = null;
+        setNotice(`Notes written by ${notes.model}. The video was not kept. Check the notes, then save them to the inbox.`);
     }
     function choose(item: CaptureItem) {
         if (selected?.id === item.id) { reviewHeading.current?.focus(); return; }
@@ -347,7 +380,7 @@ export default function CapturePage() {
             <section className={styles.section} aria-labelledby="new-capture"><h2 id="new-capture"><Inbox size={18} /> Add to the inbox</h2>
                 <form onSubmit={event => { event.preventDefault(); void action("capture", saveCapture); }}>
                     <div className={styles.captureFields}>
-                    <label>Capture type<Dropdown ariaLabel="Capture type" className={styles.dropdown} style={{ flex: "none", width: "100%" }} value={audioMode ? "audio" : source.kind} disabled={!!busy} onChange={value => { if (value === (audioMode ? "audio" : source.kind)) return; setAudioMode(value === "audio"); setRecording(null); setSource({ kind: value === "audio" ? "text" : value as CaptureSource["kind"], title: source.title, text: source.text }); captureId.current = null; }} options={[{ value: "text", label: "Passage or note" }, { value: "link", label: "Link" }, { value: "pdf", label: "PDF" }, { value: "image", label: "Photo" }, { value: "audio", label: "Audio recording" }]} /></label>
+                    <label>Capture type<Dropdown ariaLabel="Capture type" className={styles.dropdown} style={{ flex: "none", width: "100%" }} value={media || source.kind} disabled={!!busy} onChange={value => { if (value === (media || source.kind)) return; const next = value === "audio" || value === "video" ? value : ""; setMedia(next); setRecording(null); setSource({ kind: next ? "text" : value as CaptureSource["kind"], title: source.title, text: source.text }); captureId.current = null; }} options={[{ value: "text", label: "Passage or note" }, { value: "link", label: "Link" }, { value: "pdf", label: "PDF" }, { value: "image", label: "Photo" }, { value: "audio", label: "Audio recording" }, ...(videoReader || media === "video" ? [{ value: "video", label: "Video" }] : [])]} /></label>
                     <label>Title<input required maxLength={200} value={source.title} disabled={!!busy} onChange={event => setSource({ ...source, title: event.target.value })} /></label>
                     </div>
                     {source.kind === "link" && <><label>Source URL<input type="url" required value={source.url ?? ""} disabled={!!busy} onChange={event => setSource({ ...source, url: event.target.value })} /></label><p>The page text is fetched when you review it. Add your own notes below (optional).</p></>}
@@ -356,12 +389,16 @@ export default function CapturePage() {
                         {busy === "photo" && <p role="status">Resizing the photo…</p>}
                         {/* eslint-disable-next-line @next/next/no-img-element -- a data URL of the downscaled photo; next/image adds nothing here */}
                         {source.image && <div className={styles.photo}><img src={`data:image/jpeg;base64,${source.image.base64}`} alt="The photo to capture" /><p>{source.image.name} ready to capture ({Math.round(source.image.base64.length * 0.75 / 1024).toLocaleString("en-AU")} KB).</p></div>}</>}
-                    {audioMode && <><label>Audio recording (up to 2 hours)<input type="file" accept={RECORDING_ACCEPT} disabled={!!busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void action("audio", () => transcribeFile(file)); }} /></label>
+                    {media === "audio" && <><label>Audio recording (up to 2 hours)<input type="file" accept={RECORDING_ACCEPT} disabled={!!busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void action("audio", () => transcribeFile(file)); }} /></label>
                         <p>The browser cuts it into 3-minute pieces and sends each one to your transcription model, then a title and summary are written. Nothing is saved until you save it to the inbox.</p>
-                        {busy === "audio" && <div className={styles.audioStatus}><p role="status">{audioProgress}</p><button type="button" onClick={() => audioStop.current?.abort()}>Stop</button></div>}
+                        {busy === "audio" && <div className={styles.audioStatus}><p role="status">{mediaProgress}</p><button type="button" onClick={() => mediaStop.current?.abort()}>Stop</button></div>}
                         {recording && busy !== "audio" && <p>{recording} transcribed. Edit the text below if needed.</p>}</>}
-                    <label>{audioMode ? "Your notes, then the summary and transcript" : "Passage or notes"}<textarea rows={audioMode && recording ? 12 : 5} maxLength={120000} required={source.kind === "text"} value={source.text} disabled={!!busy} onChange={event => setSource({ ...source, text: event.target.value })} /></label>
-                    <button className={styles.primary} disabled={!!busy || !profileId || (source.kind === "pdf" && !source.pdf) || (source.kind === "image" && !source.image) || (audioMode && !recording)}>{busy === "capture" ? "Saving…" : "Save to inbox"}</button>
+                    {media === "video" && <><label>Video (up to 7 MB)<input type="file" accept={VIDEO_ACCEPT} disabled={!!busy || !videoReader} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void action("video", () => summariseVideo(file)); }} /></label>
+                        <p>{videoReader ? `${videoReader} writes a title, a summary, key points and a transcript of any speech. The video is not kept. Send longer videos to the Telegram bot (up to 20 MB).` : "No approved model can read video right now."}</p>
+                        {busy === "video" && <div className={styles.audioStatus}><p role="status">{mediaProgress}</p><button type="button" onClick={() => mediaStop.current?.abort()}>Stop</button></div>}
+                        {recording && busy !== "video" && <p>{recording} summarised. Edit the text below if needed.</p>}</>}
+                    <label>{media === "audio" ? "Your notes, then the summary and transcript" : media === "video" ? "Your notes, then the video notes" : "Passage or notes"}<textarea rows={media && recording ? 12 : 5} maxLength={120000} required={source.kind === "text"} value={source.text} disabled={!!busy} onChange={event => setSource({ ...source, text: event.target.value })} /></label>
+                    <button className={styles.primary} disabled={!!busy || !profileId || (source.kind === "pdf" && !source.pdf) || (source.kind === "image" && !source.image) || (!!media && !recording)}>{busy === "capture" ? "Saving…" : "Save to inbox"}</button>
                     {captureId.current && <button type="button" disabled={!!busy} onClick={() => { captureId.current = null; setNotice("A new capture ID will be used. The existing inbox entry is retained."); }}>Keep this as a separate capture</button>}
                 </form>
             </section>
@@ -382,6 +419,11 @@ export default function CapturePage() {
                 {!selected.receipt.indexed && <p>Search indexing had not finished when the inbox loaded. Reload to check. If it stays this way, use Reconcile in Knowledge.</p>}</> : <>
                 <div className={styles.columns}><label>Title<input value={review.title} disabled={!!busy} onChange={event => { setReview({ ...review, title: event.target.value }); setPreview(undefined); }} /></label><label>New Markdown path<input value={review.destination} disabled={!!busy} onChange={event => { setReview({ ...review, destination: event.target.value }); setPreview(undefined); }} /></label></div>
                 <label>Reviewed notes<textarea rows={6} value={review.text} disabled={!!busy} onChange={event => { setReview({ ...review, text: event.target.value }); setPreview(undefined); }} /></label>
+                <div className={styles.translate}>
+                    <Dropdown ariaLabel="Translate the notes into" className={styles.dropdown} style={{ flex: "none", width: "min(100%, 13rem)" }} value={translateTo} disabled={!!busy} onChange={setTranslateTo} options={LANGUAGES.map(language => ({ value: language.code, label: language.name }))} />
+                    <button type="button" disabled={!!busy || !review.text.trim() || review.text.length > TRANSLATE_MAX_CHARS} aria-describedby="translate-note" onClick={() => void action("translate", translateNotes)}>{busy === "translate" ? "Translating…" : "Translate notes"}</button>
+                    <p id="translate-note">{review.text.length > TRANSLATE_MAX_CHARS ? `Notes over ${TRANSLATE_MAX_CHARS.toLocaleString("en-AU")} characters can't be translated here.` : "The translation is added under the notes."}</p>
+                </div>
                 {readableCapture(selected) && <div className={styles.source}>
                     <h3 id="source-text">Source text</h3>
                     <p id="source-status" role="status" ref={sourceLine} tabIndex={-1} className={styles.status}>{sourceBusy === "pages" && pageProgress ? pageProgress : sourceStatus(selected, extract, sourceBusy)}</p>

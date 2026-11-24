@@ -315,7 +315,7 @@ function captureFixture() {
         refreshOffline: async () => undefined,
         request: async () => { throw new Error("Inbox unavailable"); },
     };
-    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy", "ocrTiers", "pageReader"]);
+    stateSetters(state, ["inboxLoading", "inboxLoaded", "inboxError", "items", "documents", "profileId", "token", "error", "notice", "busy", "ocrTiers", "pageReader", "videoReader", "translateTo"]);
     const actions = runInNewContext(extract("../src/app/capture/page.tsx", ["load", "action"]), state) as {
         load: () => Promise<void>; action: (name: string, run: () => Promise<void>) => Promise<void>;
     };

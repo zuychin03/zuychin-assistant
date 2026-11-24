@@ -7,6 +7,7 @@ import { captureDocuments } from "@/lib/capture/documents";
 import { ocrTiers } from "@/lib/capture/extract/ocr";
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { resolveModelOfKind } from "@/lib/ai/media/resolve";
+import { videoModels } from "@/lib/capture/video";
 import { VaultConflictError } from "@/lib/vault/github";
 import { sameOrigin } from "@/lib/auth/config";
 import { BodyTooLargeError, readTextCapped } from "@/lib/http/body";
@@ -26,7 +27,8 @@ export async function GET(req: NextRequest) {
         const freeOnly = effectiveFreeOnly(profile);
         const [items, documents, pageReader] = await Promise.all([listCaptures(profile.id), captureDocuments(profile.id),
             resolveModelOfKind("parse", { freeOnly }).catch(() => null)]);
-        return respond({ profileId: profile.id, items, documents, ocr: ocrTiers(freeOnly), pageReader: pageReader?.row.label ?? null });
+        return respond({ profileId: profile.id, items, documents, ocr: ocrTiers(freeOnly), pageReader: pageReader?.row.label ?? null,
+            videoReader: videoModels(freeOnly)[0]?.label ?? null });
     } catch (error) { return failure(error); }
 }
 export async function POST(req: NextRequest) {
