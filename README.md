@@ -24,9 +24,13 @@ edited and deleted in place.
   fallbacks use a discovered model only after you approve it in `/admin`; paid models are tested
   only when you press Test. Remove takes any model except the default out of every selectable
   list until you restore it, and a discovered model its provider has retired can be deleted.
-  Embedding, speech and transcription models are listed and tested the same way, under their own
-  tabs. The models in use are tested every day, and a notice goes out 30 and 7 days before a
-  provider retires one
+  Embedding, speech, transcription, rerank, page reading, image, decision, live voice and
+  translation models are listed and tested the same way, under their own tabs; for the last six
+  you can choose the model a feature uses, or leave it on the first tested, approved one. The
+  models in use are tested every day, and a notice goes out 30 and 7 days before a
+  provider retires one. Each tab folds into sections (needs attention and in use open; other
+  free, paid and removed models folded) with one line per model. Cloudflare Workers AI is listed
+  too; when its free daily allowance runs out it rests until the reset, with one notice
 - Model awareness: every chat model has purpose tags (research, coding, reasoning and more) and
   a speed measured from recent calls. A lookup on free sources drafts each model's profile, which
   you approve in `/admin` before the info modal or the agent uses it. Agent mode picks sub-agents
@@ -34,7 +38,16 @@ edited and deleted in place.
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
   partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup. Chat
   search embeds the message as a query, and every search reads its similarity cut-off from the
-  active embedding model, so a switch does not silently drop real matches
+  active embedding model, so a switch does not silently drop real matches. When a rerank model is
+  approved, chat recall puts memories and knowledge in order with it (1.5 second limit, keyword
+  ranking otherwise), and the reply details say which ranking ran
+- Decision model: a small model that answers yes/no and score questions (Gemini Decision 1 by
+  default) routes agent requests and decides whether a turn is worth remembering. Text a tool
+  fetched is checked for prompt injection, and a flagged turn skips the memory extractor. Each
+  question has a 3 second limit, and the old path runs when no decision model answers
+- Photo search: photos saved through Capture, and vault photos indexed from Knowledge >
+  Maintenance > Index photos (20 a run), are found by their image and their text. A cited photo
+  shows as a thumbnail in web chat and is sent with the reply on Telegram and Discord
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - Projects: group conversations into collapsible sidebar sections, each with its own
   instructions injected into every chat inside it; extracted facts can be scoped to a
@@ -78,7 +91,10 @@ edited and deleted in place.
   before. The transcription order on `/admin#models` can add an approved API model (Gemini,
   Groq Whisper or OpenRouter): on-box only (the default), on-box first, API first or API only;
   sending the audio stays the last step in every order. Telegram voice notes of up to 5 minutes are transcribed the same way, in 30-second
-  pieces, so any chat model can answer them; they fall back to audio on the same terms
+  pieces, so any chat model can answer them; they fall back to audio on the same terms. A longer
+  Telegram voice note or audio file comes back as a transcript with a Save to Capture button.
+  Discord voice messages are transcribed too: up to 5 minutes the transcript is your message, and
+  over 5 minutes the reply is the transcript
 - On-box speech out: with the optional `tts-service` running, replies are spoken by a small local
   model (tiny-voca, English) instead of Gemini TTS. First audio takes about half a second on a
   1 GB box, and the reply text never leaves the host. If the service is unset, busy, loading or
@@ -163,12 +179,16 @@ edited and deleted in place.
 - Study: `/study` turns saved passages into cards. A model drafts a recall, explain or
   worked-exercise question with a reference answer, **Get feedback** compares your answer
   with the reference, and FSRS schedules reviews under a daily limit
-- Capture inbox: `/capture` collects links, PDFs and passages. Opening a link or PDF in Review
-  reads its text into an editable Source text section. Pages the server can't read go through
-  Tavily, and a scanned PDF can be read by Gemini on request (free or paid key, your pick each
-  time). You review the text and where each one will be saved before it is filed, and can keep
-  saved documents for offline reading. On Android, sharing a link to the installed app opens the
-  inbox with it filled in, and in chat the assistant can save a link or passage with `capture_add`
+- Capture inbox: `/capture` collects links, PDFs, passages, photos and audio recordings. Opening
+  a link or PDF in Review reads its text into an editable Source text section. Pages the server
+  can't read go through Tavily. A scanned PDF can be read page by page by a free page-reading
+  model (**Read pages (free)**) or by Gemini on request (free or paid key, your pick each time).
+  A photo is read the same way, with a short description from a free vision model when it holds
+  little text. An audio recording of up to 2 hours is transcribed in 3-minute pieces and gets a
+  title and summary. You review the text and where each one will be saved before it is filed,
+  and can keep saved documents for offline reading. On Android, sharing a link, photo or PDF to
+  the installed app opens the inbox with it filled in, and in chat the assistant can save a link
+  or passage with `capture_add`
 - Tasks and approvals: `/tasks` lists scheduled tasks with their schedule, next run and run
   history. When an unattended task wants to change something (send or draft mail, edit the
   calendar, write to the vault, change to-dos or memories), the action waits for your
@@ -248,6 +268,7 @@ edited and deleted in place.
 | Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Nemotron, Gemma 4, GLM-5.3 Flash, Laguna XS) |
 | Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3.5 Embed 1B (2048d, default); others discovered on `/admin`, and an approved same-space route as the backup |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
+| Media models | NVIDIA NIM Nemotron 3.5 Rerank 8B and Nemotron 3.5 Parse, Gemini Decision 1 (both keys); others discovered on `/admin`. Scanned PDF pages are drawn in the browser with pdf.js |
 | Voice replies | Gemini TTS (`gemini-3.8-flash-lite-tts`), streamed PCM → WAV / Web Audio; or tiny-voca through a local `tts-service` (Python, onnxruntime), same PCM stream; a backup voice from any approved Gemini, OpenRouter or Groq speech model |
 | Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio; optional API transcription (Gemini, Groq Whisper, OpenRouter) |
 | Push | web-push (VAPID) + service worker (PWA) |
@@ -312,6 +333,8 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM chat and the default `nvidia/nemotron-3.5-embed-1b` knowledge embeddings |
 | `GROQ_API_KEY` | Groq free-tier key ([console.groq.com](https://console.groq.com)). Its free models are seeded unapproved: they join the picker once a test passes, and automatic routes wait for Approve. The free tier allows 8K tokens per minute |
 | `AGNES_API_KEY` | Agnes AI key ([platform.agnes-ai.com](https://platform.agnes-ai.com)), or save it on `/admin`. Its models come from discovery: they join the picker once a test passes, and automatic routes wait for Approve. Free at an "experience price" that may end; no data-use policy is published |
+| `CLOUDFLARE_AI_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Workers AI token (Account, Workers AI, Read and Edit) and the 32-character account id, or save both on `/admin`. The token cannot read its own account, so the id is needed too. Free plan: 10,000 neurons a day shared by every model, reset at 00:00 UTC. Models come from discovery and need a passing test, then Approve |
+| `LLAMA_CLOUD_API_KEY` | LlamaParse key (page to Markdown, 10,000 free credits a month), or save it on `/admin`. Its one catalogue row is a seed from `v8-free-providers.sql`, retested weekly |
 | `OPENCODE_API_KEY` | OpenCode Console key (paid credits). Replaces `OPENCODE_ZEN_API_KEY`. Metered; no built-in models. See [setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
 | `PROVIDER_KEYS_SECRET` | Dev only. 32 random bytes, base64 (`openssl rand -base64 32`), that encrypt provider keys saved on `/admin`. Production reads a systemd credential instead. Unset = saving keys is off and env keys work as before |
 | `PROVIDER_KEYS_SECRET_PREVIOUS` | Dev only, during a master key change: the old value, so saved keys are re-encrypted on start |
@@ -321,6 +344,7 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `MODEL_LOOKUP` | Optional. `off` skips profile lookups and the weekly retirement lookup for models in use in the daily model check. The Look up button in `/admin` still works |
 | `MODEL_LOOKUP_MAX_PER_RUN` | Optional. Profile lookups per daily check (default 4) |
 | `MODEL_TYPES_DISCOVERY` | Optional. `off` keeps the daily model check to chat models; embedding, speech and transcription models already listed are still tested. Default on |
+| `MEDIA_KINDS` | Optional. `off` keeps rerank, page reading, image, decision, live and translation models out of the daily check and out of every feature, which then uses its fallback. Default on |
 | `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require a switch on `/admin#models` or the migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini. Capture also uses them to read a page the server is blocked from or can't reach |
 | `CAPTURE_FETCH` | Optional. `off` stops Capture fetching links on the server; Review then asks you to paste the passage instead |
@@ -452,6 +476,22 @@ Gemini keys, and adds the `transcription` purpose to model health. On an existin
 run again. Without it, embeddings and speech run on the models in code, the daily check stays on
 chat models, and `/admin` says which file to apply.
 
+The `-- ===== V8 media =====` block widens the catalogue kinds to rerank, parse, image, decision,
+live and translate, and the model health purposes to match. It seeds seven rows: NIM's rerank,
+parse and image models (NIM never lists them, so they are never marked Missing), Gemini Decision 1
+on both keys and Gemini 3.8 Live on the free key, all approved, plus Riva Translate unapproved. It
+also adds `modality` and `asset_path` to `knowledge_chunks` for photo rows, and
+`replace_knowledge_chunks` now writes them. On an existing project, apply
+[`scripts/migrations/v7-model-types.sql`](scripts/migrations/v7-model-types.sql) first, then
+[`scripts/migrations/v8-media.sql`](scripts/migrations/v8-media.sql); it is safe to run again.
+Without it, the new kinds are skipped and each feature uses its fallback.
+
+The `-- ===== V8 free providers =====` block seeds LlamaParse's one row (`cost_effective`, kind
+`parse`, unapproved and untested). Cloudflare Workers AI needs no seed: its rows come from its model
+search. On an existing project, apply
+[`scripts/migrations/v8-media.sql`](scripts/migrations/v8-media.sql) first, then
+[`scripts/migrations/v8-free-providers.sql`](scripts/migrations/v8-free-providers.sql); it stops
+with a message if the media kinds are missing, and is safe to run again.
 
 ### Web authentication
 
@@ -562,10 +602,15 @@ npm run dev
 | GET/POST/PATCH | `/api/research/sources` | Read a source's saved text / add / edit a question's sources |
 | POST/DELETE | `/api/research/entries` | Save / delete a research note |
 | GET/POST | `/api/study` | Study report (`?view=due` returns only the reviewable count) / create, draft, edit, review, feedback and settings actions |
-| GET/POST | `/api/capture` | Capture inbox and saved documents / capture, read the source text (`extract`, with `ocr` for Gemini), preview a destination, ingest |
+| GET/POST | `/api/capture` | Capture inbox and saved documents / capture, read the source text (`extract`, with `ocr` for Gemini), store scanned pages read one by one (`pages`), preview a destination, ingest |
 | GET | `/api/capture/download` | A saved document's content for offline reading (`?documentId=`) |
-| GET | `/api/capture/original` | The original PDF of a capture (`?id=`) |
+| GET | `/api/capture/original` | The original PDF (download) or photo (opens in place) of a capture (`?id=`) |
 | GET | `/api/capture/session` | Current profile ID, which ties offline copies to the signed-in profile; they are cleared after sign-out |
+| POST | `/api/capture/parse-page` | One page or photo (PNG or JPEG, up to 2 MB, as the raw body) to Markdown through the page-reading model |
+| POST | `/api/capture/transcribe-piece` | One piece of a recording (up to 3 minutes of 16 kHz 16-bit mono PCM, as the raw body) to text |
+| POST | `/api/capture/recording` | A title and summary for a transcribed recording; nothing is stored |
+| GET | `/api/capture/staged` | What the Android share target staged: the fields, or with `file=1` the shared file |
+| POST | `/capture/share` | Android share target (link, text, photo or PDF): stages it and opens Capture with a 303. Nothing is saved until you save it |
 | GET/POST/PATCH/DELETE | `/api/tasks` | Scheduled tasks with runs and approvals / create / edit, pause or resume / delete |
 | POST | `/api/tasks/run` | Run a task now (202 when accepted, 409 while it is already running) |
 | GET / POST | `/api/tasks/approvals` | Read one approval (`?id=`) / approve or reject an action a scheduled task or a chat proposed. Session only |
@@ -611,6 +656,8 @@ npm run dev
 | GET | `/api/knowledge/events` | Lifecycle timeline (`?documentId=` for one document) |
 | GET/POST | `/api/knowledge/suggestions` | Maintenance findings (`?status=`) / scan, dismiss, merge |
 | GET/POST | `/api/knowledge/revisions` | A document's revision history and diffs / restore an earlier revision after previewing it |
+| GET/POST | `/api/knowledge/photos` | Vault photo index: indexed, waiting and too large / index up to 20 more after the reply (409 while a run is going) |
+| GET | `/api/knowledge/asset` | A saved photo for reply thumbnails (`?path=`, PNG or JPEG under `attachments/` only, checked by its bytes) |
 | GET/POST | `/api/knowledge/evidence` | A document at an exact commit / anchor a quoted passage in it |
 | POST | `/api/knowledge/sync` | Reconcile derived knowledge state with the vault repository |
 | POST | `/api/knowledge/import` | Obsidian ZIP import: a dry-run plan unless `dryRun=false` |
@@ -624,13 +671,14 @@ npm run dev
 | GET/POST | `/api/admin/reembed` | Active knowledge model and rows not yet on it / POST answers 410: switching moved to `/api/admin/embedding/switch` |
 | GET/POST | `/api/admin/embedding/switch` | Knowledge model, switch job progress and, with `providerId` and `modelId`, a preview with an estimate / start a switch (202; the job runs on the server) |
 | GET/PUT | `/api/admin/speech` | Backup voice and transcription order / save either (only approved models whose last test passed) |
+| GET/PUT | `/api/admin/media` | The chosen and automatic model for each V8 kind (rerank, parse, image, decision, live, translate) / choose one, or `providerId: null` for the automatic pick |
 | GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
-| GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows of every kind (`?kind=` narrows), the knowledge model, the voice choices and the last 10 checks / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
+| GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows of every kind (`?kind=` narrows), the knowledge model, the voice choices, the last 10 checks and each provider's rest end (`restingUntil`) / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
 | POST | `/api/admin/models/refresh` | Start a model check now (202; 409 while one runs) |
 | POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
 | POST | `/api/admin/models/lookup` | Draft one model's profile from free sources (202; 409 while a check runs) |
 | POST | `/api/admin/models/profile` | Approve a model with its profile and tags in one step, approve a built-in model's profile, or save tags |
-| GET/PUT/DELETE | `/api/admin/provider-keys` | Key status per provider (never the key) / save or replace a key / clear it. Session only; changes need the access password |
+| GET/PUT/DELETE | `/api/admin/provider-keys` | Key status per provider (never the key) / save or replace a key (Cloudflare also takes `accountId`) / clear it. Session only; changes need the access password |
 | POST | `/api/admin/provider-keys/test` | Check the active key for one provider |
 | GET/POST | `/api/admin/conversation-cleanup` | Cleanup recommendations / dismiss or review them |
 
@@ -640,8 +688,9 @@ public webhook, cron and headless-chat routes protect themselves with bearer cre
 `src/lib/auth/guard.ts` for the enforcement boundary.
 
 Every API route has a request size limit (`src/lib/http/limits.ts`): 64 KB for sign-in and
-other small routes, 1 MB by default, 2 MB for the Telegram and GitHub webhooks, 4 MB for MCP,
-vault pages, documents and export, and 10,000,000 bytes for chat and vault import. The proxy
+other small routes, 1 MB by default, 2 MB for the Telegram and GitHub webhooks and a Capture
+page image, 4 MB for MCP, vault pages, documents and export, 5,760,000 bytes for a recording
+piece, 9,500,000 for an Android share, and 10,000,000 bytes for chat and vault import. The proxy
 refuses a declared size over the limit with a 413 before any sign-in check, and each route reads
 through `src/lib/http/body.ts`, which counts bytes and stops at the limit. Every limit sits under
 Next's 10 MB `proxyClientMaxBodySize`, because over that Next silently passes on only the first
@@ -669,13 +718,15 @@ is not evidence that a model has retired.
 | Kilo | OpenAI-compatible | `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `inclusionai/ling-3.0-flash-vl:free`, `stepfun/step-3.7-flash:free`, `poolside/laguna-s-2.1:free` | Five usable free models; endpoints returning HTTP 404 are excluded. [Setup and live verification](scripts/KILO_SETUP.md) |
 | Groq | OpenAI-compatible | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` | Free tier (8K tokens per minute). Seeded as catalogue rows, not code models, so automatic routes wait for Approve. Requests drop `messages[].name` and send `max_completion_tokens` |
 | Agnes AI | OpenAI-compatible | From discovery (`agnes-3.0-flash` expected) | $0 at an early-user "experience price" with no end date, about 20 requests per minute; no published data-use policy. No built-in models: discovery adds them once a key is saved, and automatic routes wait for Approve. `agnes-2.0-flash` and `agnes-2.5-flash` (offline 30/11/2026) are retired |
+| Cloudflare Workers AI | OpenAI-compatible | From discovery (`@cf/meta/llama-3.3-70b-instruct-fp8-fast` and similar) | Free plan: 10,000 neurons a day shared by every model, reset at 00:00 UTC; Cloudflare does not train on inputs. The base URL holds the account id. Workers Paid models are skipped. Embedding, speech, transcription, rerank, decision, image and translation models are listed but not tested yet |
+| LlamaParse | REST (upload and poll) | `cost_effective` (seed row, kind `parse`) | 10,000 free credits a month, 3 a page. No model list: the tier is the model |
 | OpenCode Console | OpenAI-compatible | none until a key is set | Paid only (credits); metered. Discovery tracks paid Chat Completions models; each needs Test and Approve. Free models answer 403 outside OpenCode, so the old free ids are retired and saved choices of them fall back to the default. [Setup](scripts/OPENCODE_CONSOLE_SETUP.md) |
 | TokenRouter | OpenAI-compatible | `moonshotai/kimi-k3-free` | Retained but unavailable for the audited key; hidden and skipped by workers |
 
 How it works:
 
 - One OpenAI-compatible client ([`openai-compat.ts`](src/lib/ai/openai-compat.ts)) serves
-  OpenRouter, Kilo, NVIDIA NIM, Groq, Agnes AI, DeepSeek and OpenCode Console chat-completion models with
+  OpenRouter, Kilo, NVIDIA NIM, Groq, Agnes AI, Cloudflare Workers AI, DeepSeek and OpenCode Console chat-completion models with
   streamed responses. Gemini keeps its own native path.
 - Tool dispatch follows each model's declared capability. Some endpoints remain unverified
   under load; successful HTTP responses alone do not prove a tool was executed. If a model
@@ -731,9 +782,31 @@ and a status. If the catalogue cannot be read at start-up, the picker shows the 
 background once it is more than 5 minutes old, so model lookups stay synchronous.
 
 - Listing: the daily check lists Gemini (both keys), OpenRouter and Kilo (free models only),
-  NVIDIA NIM, DeepSeek, Groq, Agnes AI (no image or video models) and OpenCode Console (paid
-  Chat Completions models only, tested only when you press Test). TokenRouter is not listed. Saving a provider key on `/admin` starts
-  a check straight away.
+  NVIDIA NIM, DeepSeek, Groq, Agnes AI (no image or video models), Cloudflare Workers AI (its
+  model search under the account; Workers Paid, guard and LoRA models skipped; at most 3 tests a
+  check) and OpenCode Console (paid
+  Chat Completions models only, tested only when you press Test). TokenRouter is not listed.
+  LlamaParse has no list: its seed row is never marked Missing and is retested every 7 days.
+  Saving a provider key on `/admin` starts a check straight away.
+- V8 kinds: rerank, parse (page reading), image, decision, live and translate models each have
+  a small test (rank 4 passages, read a test page, make an image, answer 3 questions, open a
+  live session, translate a sentence) and a model choice on their tab (`/api/admin/media`,
+  `cron_state.media_models`). Rerank, page reading and decisions are used now; image, live and
+  translation models are only listed and tested, for features still to come. NIM's rerank, parse
+  and image models are seeds, because NIM does not list them. `MEDIA_KINDS=off` turns all six off.
+- Rest: when Cloudflare answers that the free daily allowance is used up (HTTP 429, code 3036),
+  the provider rests until 00:00 UTC; LlamaParse out of credits (HTTP 402) rests until the 1st of
+  next month (UTC, not yet seen live). One Discord notice in the system channel per rest names
+  what falls back. During a rest the list is still read, tests wait without changing any row, and
+  Test on `/admin` answers with the time the rest ends ([`src/lib/ai/provider-rest.ts`](src/lib/ai/provider-rest.ts)).
+- `/admin#models`: each tab folds into Needs attention and In use and approved (open), then
+  Other free models, Paid models and Removed (folded, with counts). A row is one line that opens
+  into the full card, and rows that need attention get a quick Approve or Test. A search or a
+  provider filter opens every section with a match. A model counts as New for 14 days after it is
+  first listed. Otherwise only approved, built-in or in-use models that fail or go missing need
+  attention, plus in-use models with a retirement date. Provider
+  problems (list check failed, resting, not available) show in the Last check box. Model health
+  folds the same way: Latest request failed, Used, and No requests recorded.
 - Testing: each check tests up to `MODEL_DISCOVERY_MAX_PROBES` free models per provider: new
   ones first, then retries of unclear results, then picker models last tested over 7 days ago.
   A test sends short streamed requests: a chat reply, an automatic tool call, a forced tool call
@@ -788,6 +861,9 @@ var. Changes apply on the next request, with no restart.
   notice to the Discord system channel naming the provider, never the key. The routes accept only
   a signed-in browser session, not the `CHAT_API_KEY` bearer token.
 - With auth on but no `ACCESS_PASSWORD` (passkey only), key changes are refused.
+- Cloudflare's token cannot read its own account, so its row has an Account id field. The id is
+  saved with the token in the same encrypted value; a new token alone keeps the saved id. Its key
+  check verifies the token, then runs one model search under the account id.
 
 What the encryption protects against:
 
@@ -1428,7 +1504,7 @@ src/
 │   │   ├── page.tsx                    # Live council view: transcript, decision, pause and owner thread
 │   │   └── online-council-panel.tsx    # Start a council and pick each seat's model
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + model health, model catalogue (chat, embedding, speech, transcription), run-trace, memory, skills and agent-credential panels
+│   ├── admin/                          # Dashboard + model health, model catalogue (every model type, in folding sections), run-trace, memory, skills and agent-credential panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── agent/claim/route.ts        # Unauthenticated claim → per-agent key exchange (rate limited)
@@ -1447,7 +1523,7 @@ src/
 │       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint / model discovery
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue, knowledge model switch, voice choices
+│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue, knowledge model switch, voice and media model choices
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
@@ -1465,9 +1541,13 @@ src/
 │   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible), same-space backups
 │   │   ├── embedding-switch*.ts        # Server job that re-embeds the store and activates a new knowledge model
 │   │   ├── embedding-cutoffs.ts        # Similarity cut-offs per embedding model
-│   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, Agnes, DeepSeek, OpenCode) + tool loop
+│   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, Agnes, Cloudflare, DeepSeek, OpenCode) + tool loop
 │   │   ├── groq.ts                     # Groq request quirks (field names, reasoning switches)
 │   │   ├── provider-keys/              # Encrypted provider keys: master key, AES-GCM, store, snapshot, key checks, admin actions
+│   │   ├── provider-rest.ts            # A provider whose free allowance is used up rests until its reset, with one notice
+│   │   ├── media/                      # V8 kinds: request adapters, live sessions, per-kind choice and resolver
+│   │   ├── rerank.ts                   # Rerank with a time limit; keyword-rank.ts is the fallback
+│   │   ├── decisions.ts                # Yes/no, choice and score questions to a decision model; memory/gate.ts uses it
 │   │   ├── reply-sources.ts            # Records the sources each reply used
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
@@ -1483,7 +1563,7 @@ src/
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
-│   ├── voice/                          # Speech-to-text client, API speech and transcription adapters, the "Spoken" input mode, Telegram voice-note decoding
+│   ├── voice/                          # Speech-to-text client, API speech and transcription adapters, the "Spoken" input mode, Telegram voice-note decoding, long recordings, Discord voice messages
 │   ├── tasks/                          # Scheduled tasks, runner, approvals, Telegram approval notices, ask-before-send for chats
 │   └── messaging/                      # Discord + Telegram + web-push services, channel conversations, notification router
 ├── components/
