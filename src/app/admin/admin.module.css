@@ -583,6 +583,47 @@
   border-top: 1px solid var(--line);
 }
 
+.dashboard :global(.list-section) {
+  min-width: 0;
+}
+
+/* Sticky inside the .scroll list, so the open section's name stays in view while its rows scroll. */
+.dashboard :global(.list-section-head) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dashboard :global(.list-section-head)::-webkit-details-marker {
+  display: none;
+}
+
+.dashboard :global(.list-section-head) > svg {
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.dashboard :global(.list-section)[open] > :global(.list-section-head) > svg {
+  transform: rotate(90deg);
+}
+
+.dashboard :global(.list-section-head):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
 .dashboard :global(.row-head) {
   display: flex;
   flex-wrap: wrap;
@@ -708,5 +749,6 @@
 @media (prefers-reduced-motion: reduce) {
   .dashboard svg {
     animation: none !important;
+    transition: none !important;
   }
 }

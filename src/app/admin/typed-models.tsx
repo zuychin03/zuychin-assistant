@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowRightLeft, AudioLines, Check, Database, FlaskConical, Mic, Pin, Trash2, Undo2 } from "lucide-react";
+import { ArrowRightLeft, AudioLines, Check, ChevronDown, ChevronRight, Database, FlaskConical, Mic, Pin, Trash2, Undo2 } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import type { CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import type { MediaKind, ModelKind } from "@/lib/ai/catalogue/sources";
@@ -46,6 +46,22 @@ const RETIRING_SOON_MS = 30 * 24 * 60 * 60 * 1000;
 const isNewTyped = (row: TypedRow) => row.origin === "discovered" && row.approvedAt === null && row.probeStatus === "passed" && !row.missingSince;
 const unhealthy = (row: TypedRow) => row.probeStatus === "failed" || !!row.missingSince || row.retired;
 
+/** The folding groups of /admin#models, in order. Only chat rows can be removed. */
+export type CatalogueSection = "attention" | "inuse" | "free" | "paid" | "removed";
+export const CATALOGUE_SECTIONS: readonly CatalogueSection[] = ["attention", "inuse", "free", "paid", "removed"];
+export const SECTION_TITLES: Record<CatalogueSection, string> = {
+    attention: "Needs attention", inuse: "In use and approved", free: "Other free models", paid: "Paid models", removed: "Removed",
+};
+// A model that passed but was left unapproved this long was passed over on purpose, so it stops asking for a look.
+const NEW_FOR_MS = 14 * 24 * 60 * 60 * 1000;
+export const listedRecently = (row: Pick<CatalogueRow, "firstSeenAt">, now: number) => now - new Date(row.firstSeenAt).getTime() < NEW_FOR_MS;
+
+export function typedSection(row: TypedRow, now: number): CatalogueSection {
+    if ((row.inUse && (unhealthy(row) || !!row.expiresAt)) || (row.approvedAt !== null && unhealthy(row)) || (isNewTyped(row) && listedRecently(row, now))) return "attention";
+    if (row.inUse || row.knowledge || row.approvedAt !== null) return "inuse";
+    return row.free ? "free" : "paid";
+}
+
 /** Lower sorts first: an in-use route that is failing or gone, one that is retiring, new passes, the rest in use, then approved, passed, untested. */
 export function typedRank(row: TypedRow): number {
     if (row.inUse && unhealthy(row)) return 0;
@@ -56,7 +72,6 @@ export function typedRank(row: TypedRow): number {
     if (row.probeStatus === "passed") return 5;
     return row.probeStatus === "untested" ? 6 : 7;
 }
-export const typedNeedsAttention = (row: TypedRow) => typedRank(row) <= 2;
 
 const usable = (row: TypedRow) => row.approvedAt !== null && row.probeStatus === "passed" && !row.missingSince && !row.retired;
 const voicesOf = (row: TypedRow) => row.traits?.voices ?? [];
@@ -168,10 +183,14 @@ function SwitchDialog({ row, busy, onStart, onCancel }: { row: TypedRow; busy: b
     );
 }
 
-export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, locked, busy, switchRunning, confirming, confirmingDelete, onTest, onApproval, onDelete, onCancel, onCancelDelete, onStartSwitch, onUseBackup, onUseTranscription, onUseMedia }: {
+export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, expanded, onExpand, quick, locked, busy, switchRunning, confirming, confirmingDelete, onTest, onApproval, onDelete, onCancel, onCancelDelete, onStartSwitch, onUseBackup, onUseTranscription, onUseMedia }: {
     row: TypedRow;
     providerLabel: string;
     voice: VoiceInfo;
+    expanded: boolean;
+    onExpand: (expanded: boolean) => void;
+    /** Offer the one button that clears its attention reason on the folded line. */
+    quick: boolean;
     /** The owner chose this row for its V8 kind. */
     mediaChosen?: boolean;
     locked: boolean;
@@ -199,7 +218,7 @@ export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, loc
     const expiry = expiryText(row);
     const [now] = useState(() => Date.now());
     const soon = !!row.expiresAt && new Date(row.expiresAt).getTime() - now < RETIRING_SOON_MS;
-    const statusPill = isNewTyped(row) ? <span className="pill">New</span>
+    const statusPill = isNewTyped(row) && listedRecently(row, now) ? <span className="pill">New</span>
         : row.probeStatus === "passed" ? <span className="pill" data-tone="success">Passed</span>
             : row.probeStatus === "failed" ? <span className="pill" data-tone="danger">Failed</span>
                 : row.probeStatus === "inconclusive" ? <span className="pill" data-tone="warning">Inconclusive</span>
@@ -207,49 +226,35 @@ export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, loc
     const embeddingBackup = row.kind === "embedding" && row.inUse && !row.knowledge;
     const canSwitch = row.kind === "embedding" && usable(row) && !row.inUse && !!row.dimension;
     const voiceChanged = isBackupVoice && voices.length > 0 && voiceName !== savedVoice;
+    const bodyId = `typed-${row.kind}-${row.providerId}-${row.modelId}`.replace(/[^a-zA-Z0-9-]/g, "-");
+    const testButton = <button type="button" className="btn" disabled={locked || busy} onClick={onTest} aria-label={`Test ${row.label}${row.free ? "" : ", a paid model"}`}>
+        <FlaskConical size={14} aria-hidden="true" />{row.free ? "Test" : "Test (paid)"}
+    </button>;
+    const quickAction = !quick || expanded ? null
+        : isNewTyped(row) && !row.knowledge ? <button type="button" className="btn" disabled={busy || row.retired} onClick={() => onApproval(true)} aria-label={`Approve ${row.label}`}><Check size={14} aria-hidden="true" />Approve</button>
+            : unhealthy(row) ? testButton : null;
 
     return (
         <div className="row" style={styles.row}>
-            <div style={styles.rowTop}>
-                <div style={styles.rowText}>
-                    <span className="row-title">{row.label}</span>
-                    <span className="meta" style={styles.id}>{row.modelId}</span>
+            <div style={styles.head}>
+                <button type="button" className="row-toggle" style={styles.toggle} aria-expanded={expanded} aria-controls={bodyId} onClick={() => onExpand(!expanded)}>
+                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                    <span style={styles.name}><span className="row-title">{row.label}</span> <span className="meta">{providerLabel}</span></span>
+                </button>
+                <div style={styles.pills}>
+                    <span className="pill">{row.free ? "Free" : "Paid"}</span>
+                    {statusPill}
+                    {row.knowledge && <span className="pill" data-tone="success"><Database size={12} aria-hidden="true" />Knowledge model</span>}
+                    {row.inUse && !row.knowledge && <span className="pill" data-tone="success">In use</span>}
+                    {(embeddingBackup || isBackupVoice) && <span className="pill">Backup</span>}
+                    {mediaChosen && <span className="pill" data-tone="success"><Pin size={12} aria-hidden="true" />Chosen</span>}
+                    {row.spaceOf && <span className="pill" title={`Gives the same vectors as ${row.spaceOf}`}>Same space</span>}
+                    {row.expiresAt && !row.retired && <span className="pill" data-tone={soon ? "warning" : undefined}>Retires {melbourneDate(row.expiresAt)}</span>}
+                    {row.retired ? <span className="pill" data-tone="danger">Gone</span> : row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
+                    {row.mayTrain === true && <span className="pill" data-tone="warning">May train</span>}
+                    {row.inCode ? <span className="pill">Built in</span> : row.approvedAt && <span className="pill" data-tone="success"><Check size={12} aria-hidden="true" />Approved</span>}
                 </div>
-                <div style={styles.actions}>
-                    <button type="button" className="btn" disabled={locked || busy} onClick={onTest} aria-label={`Test ${row.label}${row.free ? "" : ", a paid model"}`}>
-                        <FlaskConical size={14} aria-hidden="true" />{row.free ? "Test" : "Test (paid)"}
-                    </button>
-                    {!row.knowledge && (row.approvedAt
-                        ? <button type="button" className="btn" disabled={busy} onClick={() => onApproval(false)} aria-label={`Unapprove ${row.label}`}><Undo2 size={14} aria-hidden="true" />Unapprove</button>
-                        : <button type="button" className="btn" disabled={busy || row.retired} onClick={() => onApproval(true)} aria-label={`Approve ${row.label}`}><Check size={14} aria-hidden="true" />Approve</button>)}
-                    {canSwitch && <button type="button" className="btn" disabled={busy || switchRunning} aria-expanded={switching} onClick={() => setSwitching(!switching)}
-                        title={switchRunning ? "A switch is already running." : undefined}>
-                        <Database size={14} aria-hidden="true" />Switch knowledge to this
-                    </button>}
-                    {row.kind === "speech" && usable(row) && !isBackupVoice && <button type="button" className="btn" disabled={busy} onClick={() => onUseBackup(voices.length ? voiceName : null)}>
-                        <AudioLines size={14} aria-hidden="true" />Use as backup voice
-                    </button>}
-                    {row.kind === "transcription" && usable(row) && !isTranscriber && <button type="button" className="btn" disabled={busy} onClick={onUseTranscription}>
-                        <Mic size={14} aria-hidden="true" />Use for transcription
-                    </button>}
-                    {isMediaRow(row) && usable(row) && !mediaChosen && onUseMedia && <button type="button" className="btn" disabled={busy} onClick={onUseMedia}>
-                        <Pin size={14} aria-hidden="true" />{MEDIA_USE[row.kind]}
-                    </button>}
-                    {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
-                </div>
-            </div>
-            <div style={styles.pills}>
-                <span className="pill">{row.free ? "Free" : "Paid"}</span>
-                {statusPill}
-                {row.knowledge && <span className="pill" data-tone="success"><Database size={12} aria-hidden="true" />Knowledge model</span>}
-                {row.inUse && !row.knowledge && <span className="pill" data-tone="success">In use</span>}
-                {(embeddingBackup || isBackupVoice) && <span className="pill">Backup</span>}
-                {mediaChosen && <span className="pill" data-tone="success"><Pin size={12} aria-hidden="true" />Chosen</span>}
-                {row.spaceOf && <span className="pill" title={`Gives the same vectors as ${row.spaceOf}`}>Same space</span>}
-                {row.expiresAt && !row.retired && <span className="pill" data-tone={soon ? "warning" : undefined}>Retires {melbourneDate(row.expiresAt)}</span>}
-                {row.retired ? <span className="pill" data-tone="danger">Gone</span> : row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
-                {row.mayTrain === true && <span className="pill" data-tone="warning">May train</span>}
-                {row.inCode ? <span className="pill">Built in</span> : row.approvedAt && <span className="pill" data-tone="success"><Check size={12} aria-hidden="true" />Approved</span>}
+                {quickAction}
             </div>
             {confirming && <div className="notice" role="alert" style={styles.dialog}>
                 <span>This test sends a few short requests to a paid model, which costs a little. Run it?</span>
@@ -265,45 +270,70 @@ export function TypedEntry({ row, providerLabel, voice, mediaChosen = false, loc
                     <button type="button" className="btn" onClick={onCancelDelete}>Cancel</button>
                 </div>
             </div>}
-            {switching && canSwitch && <SwitchDialog row={row} busy={busy || switchRunning} onCancel={() => setSwitching(false)} onStart={(dimension) => { setSwitching(false); onStartSwitch(dimension); }} />}
-            <p className="meta" style={styles.line}>{facts(row)}.</p>
-            {row.kind === "speech" && voices.length > 0 && (isBackupVoice || usable(row)) && <div style={styles.voice}>
-                <label style={styles.voiceLabel}>
-                    <span>{isBackupVoice ? "Backup voice" : "Voice to use"}</span>
-                    <Dropdown ariaLabel={`Voice for ${row.label}`} className="field" style={styles.voiceSelect} value={voiceName} onChange={setVoiceName} disabled={busy}
-                        options={voices.map((name) => ({ value: name, label: name }))} />
-                </label>
-                {voiceChanged && <button type="button" className="btn" disabled={busy} onClick={() => onUseBackup(voiceName)}>Save voice</button>}
+            {expanded && <div id={bodyId} style={styles.body}>
+                <div style={styles.rowTop}>
+                    <span className="meta" style={styles.id}>{row.modelId}</span>
+                    <div style={styles.actions}>
+                        {testButton}
+                        {!row.knowledge && (row.approvedAt
+                            ? <button type="button" className="btn" disabled={busy} onClick={() => onApproval(false)} aria-label={`Unapprove ${row.label}`}><Undo2 size={14} aria-hidden="true" />Unapprove</button>
+                            : <button type="button" className="btn" disabled={busy || row.retired} onClick={() => onApproval(true)} aria-label={`Approve ${row.label}`}><Check size={14} aria-hidden="true" />Approve</button>)}
+                        {canSwitch && <button type="button" className="btn" disabled={busy || switchRunning} aria-expanded={switching} onClick={() => setSwitching(!switching)}
+                            title={switchRunning ? "A switch is already running." : undefined}>
+                            <Database size={14} aria-hidden="true" />Switch knowledge to this
+                        </button>}
+                        {row.kind === "speech" && usable(row) && !isBackupVoice && <button type="button" className="btn" disabled={busy} onClick={() => onUseBackup(voices.length ? voiceName : null)}>
+                            <AudioLines size={14} aria-hidden="true" />Use as backup voice
+                        </button>}
+                        {row.kind === "transcription" && usable(row) && !isTranscriber && <button type="button" className="btn" disabled={busy} onClick={onUseTranscription}>
+                            <Mic size={14} aria-hidden="true" />Use for transcription
+                        </button>}
+                        {isMediaRow(row) && usable(row) && !mediaChosen && onUseMedia && <button type="button" className="btn" disabled={busy} onClick={onUseMedia}>
+                            <Pin size={14} aria-hidden="true" />{MEDIA_USE[row.kind]}
+                        </button>}
+                        {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
+                    </div>
+                </div>
+                {switching && canSwitch && <SwitchDialog row={row} busy={busy || switchRunning} onCancel={() => setSwitching(false)} onStart={(dimension) => { setSwitching(false); onStartSwitch(dimension); }} />}
+                <p className="meta" style={styles.line}>{facts(row)}.</p>
+                {row.kind === "speech" && voices.length > 0 && (isBackupVoice || usable(row)) && <div style={styles.voice}>
+                    <label style={styles.voiceLabel}>
+                        <span>{isBackupVoice ? "Backup voice" : "Voice to use"}</span>
+                        <Dropdown ariaLabel={`Voice for ${row.label}`} className="field" style={styles.voiceSelect} value={voiceName} onChange={setVoiceName} disabled={busy}
+                            options={voices.map((name) => ({ value: name, label: name }))} />
+                    </label>
+                    {voiceChanged && <button type="button" className="btn" disabled={busy} onClick={() => onUseBackup(voiceName)}>Save voice</button>}
+                </div>}
+                <p className="meta" style={styles.line}>
+                    {row.probedAt
+                        ? `Tested ${melbourneTime(row.probedAt)}.`
+                        : row.missingSince ? "Not tested."
+                            : row.free ? "Not tested yet. The daily check tests it when its turn comes." : "Not tested. Paid models are tested only when you press Test."}
+                    {row.inUse && row.free ? " In use, so the daily check tests it every run." : ""}
+                    {row.missingSince ? ` Missing from the provider's list since ${melbourneTime(row.missingSince)}.` : ""}
+                    {expiry ? ` ${expiry}` : ""}
+                    {row.traits?.lookupUrl && <> <a href={row.traits.lookupUrl} target="_blank" rel="noopener noreferrer" style={styles.source}>Source</a></>}
+                </p>
+                <details style={styles.details}>
+                    <summary className="link-btn" style={styles.detailsToggle}>Details</summary>
+                    <dl className="facts" style={styles.facts}>
+                        <div><dt>Provider</dt><dd>{providerLabel}</dd></div>
+                        {row.spaceOf && <div><dt>Same space as</dt><dd style={styles.id}>{row.spaceOf}</dd></div>}
+                        <div><dt>First seen / last listed</dt><dd>{melbourneTime(row.firstSeenAt)} / {melbourneTime(row.lastSeenAt)}</dd></div>
+                        {row.expiryCheckedAt && <div><dt>Retirement checked</dt><dd>{melbourneTime(row.expiryCheckedAt)}</dd></div>}
+                    </dl>
+                    {stepList.length > 0 && <ul style={styles.steps}>
+                        {stepList.map((step) => (
+                            <li key={step.name} className="meta">
+                                <strong style={styles.term}>{STEP_LABELS[step.name] ?? step.name}:</strong> {OUTCOME_LABELS[step.outcome] ?? step.outcome}
+                                {step.httpStatus !== null ? `, HTTP ${step.httpStatus}` : ""}{step.ms !== null && step.outcome !== "skipped" ? `, ${duration(step.ms)}` : ""}
+                                {step.detail ? <span style={styles.stepDetail}>{step.detail}</span> : null}
+                            </li>
+                        ))}
+                    </ul>}
+                    {row.description && <p className="meta" style={styles.line}>{row.description}</p>}
+                </details>
             </div>}
-            <p className="meta" style={styles.line}>
-                {row.probedAt
-                    ? `Tested ${melbourneTime(row.probedAt)}.`
-                    : row.missingSince ? "Not tested."
-                        : row.free ? "Not tested yet. The daily check tests it when its turn comes." : "Not tested. Paid models are tested only when you press Test."}
-                {row.inUse && row.free ? " In use, so the daily check tests it every run." : ""}
-                {row.missingSince ? ` Missing from the provider's list since ${melbourneTime(row.missingSince)}.` : ""}
-                {expiry ? ` ${expiry}` : ""}
-                {row.traits?.lookupUrl && <> <a href={row.traits.lookupUrl} target="_blank" rel="noopener noreferrer" style={styles.source}>Source</a></>}
-            </p>
-            <details style={styles.details}>
-                <summary className="link-btn" style={styles.detailsToggle}>Details</summary>
-                <dl className="facts" style={styles.facts}>
-                    <div><dt>Provider</dt><dd>{providerLabel}</dd></div>
-                    {row.spaceOf && <div><dt>Same space as</dt><dd style={styles.id}>{row.spaceOf}</dd></div>}
-                    <div><dt>First seen / last listed</dt><dd>{melbourneTime(row.firstSeenAt)} / {melbourneTime(row.lastSeenAt)}</dd></div>
-                    {row.expiryCheckedAt && <div><dt>Retirement checked</dt><dd>{melbourneTime(row.expiryCheckedAt)}</dd></div>}
-                </dl>
-                {stepList.length > 0 && <ul style={styles.steps}>
-                    {stepList.map((step) => (
-                        <li key={step.name} className="meta">
-                            <strong style={styles.term}>{STEP_LABELS[step.name] ?? step.name}:</strong> {OUTCOME_LABELS[step.outcome] ?? step.outcome}
-                            {step.httpStatus !== null ? `, HTTP ${step.httpStatus}` : ""}{step.ms !== null && step.outcome !== "skipped" ? `, ${duration(step.ms)}` : ""}
-                            {step.detail ? <span style={styles.stepDetail}>{step.detail}</span> : null}
-                        </li>
-                    ))}
-                </ul>}
-                {row.description && <p className="meta" style={styles.line}>{row.description}</p>}
-            </details>
         </div>
     );
 }
@@ -386,9 +416,13 @@ export function TranscriptionStrip({ voice, label, busy, onOrder }: { voice: Voi
 }
 
 const styles: Record<string, React.CSSProperties> = {
-    row: { display: "flex", flexDirection: "column", gap: 6, padding: "12px 0" },
-    rowTop: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: "8px 12px" },
-    rowText: { display: "flex", flexDirection: "column", gap: 2, flex: "1 1 240px", minWidth: 0 },
+    row: { display: "flex", flexDirection: "column", gap: 6, padding: "8px 0" },
+    head: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px" },
+    toggle: { flex: "1 1 260px", width: "auto", minHeight: 32 },
+    name: { minWidth: 0, overflowWrap: "anywhere" },
+    // Lines the unfolded card up with the name, past the chevron and its gap.
+    body: { display: "flex", flexDirection: "column", gap: 6, marginTop: 2, paddingLeft: 22 },
+    rowTop: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px 12px" },
     id: { fontFamily: "var(--font-mono)", fontSize: 12, overflowWrap: "anywhere" },
     actions: { display: "flex", flexWrap: "wrap", gap: 8 },
     pills: { display: "flex", flexWrap: "wrap", gap: 6 },
@@ -399,8 +433,9 @@ const styles: Record<string, React.CSSProperties> = {
     sizeInput: { width: 140, padding: "0 10px", background: "var(--surface)" },
     voice: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 8 },
     voiceLabel: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "var(--muted)", minWidth: 0 },
-    voiceSelect: { minWidth: 180, padding: "0 10px", background: "var(--surface)" },
-    orderSelect: { width: "min(100%, 320px)", padding: "0 10px", background: "var(--surface)" },
+    // The Dropdown trigger defaults to flex: 1 1 180px, which becomes its height in a column label.
+    voiceSelect: { flex: "none", minWidth: 180, padding: "0 10px", background: "var(--surface)" },
+    orderSelect: { flex: "none", width: "min(100%, 320px)", padding: "0 10px", background: "var(--surface)" },
     strip: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 },
     track: { height: 6, borderRadius: 999, background: "var(--line)", overflow: "hidden" },
     fill: { height: "100%", background: "var(--accent)", transition: "width 300ms ease" },

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, ChevronDown, RefreshCw } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import type { ModelHealthEntry, ModelHealthReport } from "@/lib/ai/model-health";
+import { ListSection, useOpenSections } from "./list-section";
 
 const STATUS_LABELS = {
     success: "Succeeded", auth: "Authentication failed", rate_limit: "Rate limited", transient: "Temporary failure",
@@ -13,6 +14,17 @@ const STATUS_TONES: Partial<Record<keyof typeof STATUS_LABELS, string>> = {
     success: "success", auth: "danger", unavailable: "danger", retired: "danger", rate_limit: "warning", transient: "warning",
 };
 const CAPABILITY_LABELS = { streaming: "Streaming", tools: "Tool calls", vision: "Vision", grounding: "Grounding" };
+
+type HealthSection = "failing" | "used" | "unused";
+const HEALTH_SECTIONS: readonly HealthSection[] = ["failing", "used", "unused"];
+const HEALTH_TITLES: Record<HealthSection, string> = { failing: "Latest request failed", used: "Used", unused: "No requests recorded" };
+const FAILED: ReadonlySet<string> = new Set(["auth", "rate_limit", "transient", "unavailable", "retired"]);
+
+function healthSection(model: ModelHealthEntry): HealthSection {
+    if (!model.health) return "unused";
+    return FAILED.has(model.health.latestStatus) ? "failing" : "used";
+}
+const latestFirst = (a: ModelHealthEntry, b: ModelHealthEntry) => (b.health?.latestAt ?? "").localeCompare(a.health?.latestAt ?? "");
 
 function localTime(value: string | null): string {
     return value ? new Date(value).toLocaleString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "Not observed";
@@ -69,6 +81,7 @@ export default function ModelHealthPanel() {
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
     const [provider, setProvider] = useState("");
+    const sections = useOpenSections<HealthSection>(["failing", "used"]);
     const requestRef = useRef<AbortController | null>(null);
 
     const refresh = useCallback(async () => {
@@ -96,6 +109,11 @@ export default function ModelHealthPanel() {
     const models = (report?.models ?? []).filter(model => (!provider || model.providerId === provider)
         && (!needle || `${model.modelLabel} ${model.modelId} ${model.providerLabel} ${model.providerId}`.toLocaleLowerCase().includes(needle)));
     const failure = error ?? (!report?.storage.available ? report?.storage.message : null);
+    const recorded = report?.storage.available ?? false;
+    const grouped = HEALTH_SECTIONS
+        .map((id) => ({ id, models: models.filter((model) => healthSection(model) === id) }))
+        .map((section) => ({ ...section, models: section.id === "unused" ? section.models : [...section.models].sort(latestFirst) }))
+        .filter((section) => section.models.length > 0);
 
     return (
         <div>
@@ -122,7 +140,13 @@ export default function ModelHealthPanel() {
                 </div>
                 <p className="meta" role="status">{models.length} of {report.models.length} models shown. Times use your browser&apos;s local timezone. Loaded {localTime(report.generatedAt)}.</p>
                 <div className="list scroll" style={styles.list}>
-                    {models.map(model => <ModelRow key={`${model.providerId}:${model.modelId}`} model={model} storageAvailable={report.storage.available} />)}
+                    {grouped.map(({ id, models: sectionModels }) => (
+                        // Without stored records every route lands in one section, so it is named for what it holds.
+                        <ListSection key={id} title={recorded ? HEALTH_TITLES[id] : "All routes"} count={sectionModels.length}
+                            open={!!query.trim() || !!provider || !recorded || sections.isOpen("health", id)} onToggle={(open) => sections.toggle("health", id, open)}>
+                            {sectionModels.map(model => <ModelRow key={`${model.providerId}:${model.modelId}`} model={model} storageAvailable={report.storage.available} />)}
+                        </ListSection>
+                    ))}
                     {!models.length && <p className="empty">No models match these filters. Clear the search or select another provider.</p>}
                 </div>
             </>}

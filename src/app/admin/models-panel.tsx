@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, EyeOff, FlaskConical, Layers, Pencil, RefreshCw, RotateCcw, Search, Trash2, Undo2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, EyeOff, FlaskConical, Layers, Pencil, RefreshCw, RotateCcw, Search, Trash2, Undo2 } from "lucide-react";
 import { Dropdown } from "@/components/dropdown";
 import type { CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import type { DiscoveryRunRecord } from "@/lib/ai/catalogue/store";
@@ -11,11 +11,15 @@ import type { PurposeTag } from "@/lib/ai/models/tags";
 import type { MediaKind, ModelKind } from "@/lib/ai/catalogue/sources";
 import type { TranscriptionOrder } from "@/lib/ai/voice-choices";
 import { duration, keyOf, melbourneDate, melbourneTime, OUTCOME_LABELS, probeSteps, STEP_LABELS } from "./model-format";
-import { KIND_LABELS, KnowledgeStrip, MediaStrip, SpeechStrip, TranscriptionStrip, TypedEntry, isMediaKindName, isMediaRow, typedNeedsAttention, typedRank, type KnowledgeInfo, type MediaInfo, type SwitchJob, type TypedRow, type VoiceInfo } from "./typed-models";
+import { ListSection, useExpandedRows, useOpenSections } from "./list-section";
+import {
+    CATALOGUE_SECTIONS, KIND_LABELS, KnowledgeStrip, MediaStrip, SECTION_TITLES, SpeechStrip, TranscriptionStrip, TypedEntry, isMediaKindName, isMediaRow, listedRecently, typedRank, typedSection,
+    type CatalogueSection, type KnowledgeInfo, type MediaInfo, type SwitchJob, type TypedRow, type VoiceInfo,
+} from "./typed-models";
 
 type ModelRow = CatalogueRow & AdminModelInfo & { kind: "chat"; probeDetail: unknown; inCode: boolean; retired: boolean };
 type AnyRow = ModelRow | TypedRow;
-interface ProviderEntry { id: string; label: string; available: boolean; discovery: { include: string; pricing: string } | null }
+interface ProviderEntry { id: string; label: string; available: boolean; discovery: { include: string; pricing: string } | null; restingUntil?: string | null }
 interface TagEntry { tag: PurposeTag; label: string; meaning: string }
 interface CataloguePayload {
     storage: string;
@@ -30,16 +34,11 @@ interface CataloguePayload {
     rows: AnyRow[];
     runs: DiscoveryRunRecord[];
 }
-type Filter = "all" | "attention" | "review" | "picker" | "hidden" | "removed" | "inuse";
 interface Notice { tone?: "danger"; text: string }
 interface ProfileText { description: string; strengths: string; weaknesses: string }
 interface ProfileSave { tags?: PurposeTag[]; profile?: { description: string; strengths: string[]; weaknesses: string[]; developer: string | null; params: string | null; sources: { title: string; url: string }[] }; approveModel?: boolean }
 
-const FILTERS: { value: Filter; label: string }[] = [
-    { value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "review", label: "Profile to review" },
-    { value: "picker", label: "In the picker" }, { value: "hidden", label: "Not in the picker" }, { value: "removed", label: "Removed" },
-];
-const TYPED_FILTERS: { value: Filter; label: string }[] = [{ value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "inuse", label: "In use" }];
+const OPEN_BY_DEFAULT: readonly CatalogueSection[] = ["attention", "inuse"];
 const KINDS = Object.keys(KIND_LABELS) as ModelKind[];
 const TYPES_MIGRATION = "scripts/migrations/v7-model-types.sql";
 const MEDIA_MIGRATION = "scripts/migrations/v8-media.sql";
@@ -69,6 +68,16 @@ function rank(row: ModelRow): number {
     return row.probeStatus === "untested" ? 5 : 6;
 }
 
+/** New passes and drafts ask for a look while recent; a route in use asks when it fails or goes missing. */
+function chatSection(row: ModelRow, now: number): CatalogueSection {
+    if (row.removedAt) return "removed";
+    const used = row.inCode || row.approvedAt !== null;
+    const recent = listedRecently(row, now);
+    if ((isNew(row) && recent) || (draftReady(row) && (used || recent)) || (used && (!!row.missingSince || row.probeStatus === "failed"))) return "attention";
+    if (used) return "inuse";
+    return row.free ? "free" : "paid";
+}
+
 function speedText(speed: ModelSpeed): string {
     if (speed.firstAnswerMs === null) return "Speed not measured yet.";
     const tier = speed.tier.charAt(0).toUpperCase() + speed.tier.slice(1);
@@ -87,6 +96,13 @@ function runSummary(run: DiscoveryRunRecord): string {
     const took = typeof summary.durationMs === "number" ? ` in ${duration(summary.durationMs)}` : "";
     const drafted = count("drafted") ? `, ${count("drafted")} profiles drafted` : "";
     return `Finished${took}: ${count("added")} added, ${count("passed")} passed, ${count("newlyMissing")} newly missing, ${count("failedRetests")} failed a re-test${drafted}.`;
+}
+
+/** "11:00" while the provider's free allowance is used up and its tests wait for the reset. */
+function restingTime(entry: ProviderEntry, now: number): string | null {
+    const until = entry.restingUntil ? new Date(entry.restingUntil) : null;
+    if (!until || Number.isNaN(until.getTime()) || until.getTime() <= now) return null;
+    return until.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function listingFailed(run: DiscoveryRunRecord | undefined, providerId: string): boolean {
@@ -177,8 +193,13 @@ function ProfileBlock({ row, tagList, open, onToggle, selected, setSelected, tex
     );
 }
 
-function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, confirmingDelete, onTest, onLookup, onApprove, onUnapprove, onSave, onCancel, onRemove, onDelete, onCancelDelete }: {
+function ModelEntry({ row, providerLabel, expanded, onExpand, quick, tagList, profilesReady, locked, busy, confirming, confirmingDelete, onTest, onLookup, onApprove, onUnapprove, onSave, onCancel, onRemove, onDelete, onCancelDelete }: {
     row: ModelRow;
+    providerLabel: string;
+    expanded: boolean;
+    onExpand: (expanded: boolean) => void;
+    /** Offer the one button that clears its attention reason on the folded line. */
+    quick: boolean;
     tagList: TagEntry[];
     profilesReady: boolean;
     locked: boolean;
@@ -202,8 +223,9 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, con
     const [text, setText] = useState<ProfileText>(() => ({ description: base?.description ?? "", strengths: base?.strengths.join("\n") ?? "", weaknesses: base?.weaknesses.join("\n") ?? "" }));
     const [editing, setEditing] = useState(false);
     const [open, setOpen] = useState(() => draftReady(row));
+    const [now] = useState(() => Date.now());
     const stepList = probeSteps(row.probeDetail);
-    const statusPill = isNew(row) ? <span className="pill">New</span>
+    const statusPill = isNew(row) && listedRecently(row, now) ? <span className="pill">New</span>
         : row.probeStatus === "passed" ? <span className="pill" data-tone="success">Passed</span>
             : row.probeStatus === "failed" ? <span className="pill" data-tone="danger">Failed</span>
                 : row.probeStatus === "inconclusive" ? <span className="pill" data-tone="warning">Inconclusive</span>
@@ -223,41 +245,33 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, con
     };
     const approve = () => {
         if (!profilesReady) { onApprove(null); return; }
-        if (!selected.length) { setOpen(true); onApprove({ approveModel: true }); return; }
+        if (!selected.length) { setOpen(true); onExpand(true); onApprove({ approveModel: true }); return; }
         onApprove({ tags: selected, approveModel: true, ...(draft || editing ? { profile: profilePayload() } : {}) });
     };
 
+    const bodyId = `model-${keyOf(row).replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const testButton = <button type="button" className="btn" disabled={locked || busy} onClick={onTest} aria-label={`Test ${row.label}${row.free ? "" : ", a paid model"}`}>
+        <FlaskConical size={14} aria-hidden="true" />{row.free ? "Test" : "Test (paid)"}
+    </button>;
+    const approveButton = <button type="button" className="btn" disabled={busy} onClick={approve} aria-label={`Approve ${row.label}${draft ? " with its profile and tags" : ""}`}><Check size={14} aria-hidden="true" />Approve</button>;
+    const quickAction = !quick || expanded || row.removedAt ? null : isNew(row) ? approveButton : row.probeStatus === "failed" ? testButton : null;
+
     return (
         <div className="row" style={styles.row}>
-            <div style={styles.rowTop}>
-                <div style={styles.rowText}>
-                    <span className="row-title">{row.label}</span>
-                    <span className="meta" style={styles.id}>{row.modelId}</span>
+            <div style={styles.head}>
+                <button type="button" className="row-toggle" style={styles.toggle} aria-expanded={expanded} aria-controls={bodyId} onClick={() => onExpand(!expanded)}>
+                    {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                    <span style={styles.name}><span className="row-title">{row.label}</span> <span className="meta">{providerLabel}</span></span>
+                </button>
+                <div style={styles.pills}>
+                    <span className="pill">{row.free ? "Free" : "Paid"}</span>
+                    {statusPill}
+                    {row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
+                    {row.inCode ? <span className="pill">Built in</span> : row.approvedAt && <span className="pill" data-tone="success"><Check size={12} aria-hidden="true" />Approved</span>}
+                    {profilePill}
+                    {row.removedAt && <span className="pill" data-tone="warning">Removed</span>}
                 </div>
-                <div style={styles.actions}>
-                    <button type="button" className="btn" disabled={locked || busy} onClick={onTest} aria-label={`Test ${row.label}${row.free ? "" : ", a paid model"}`}>
-                        <FlaskConical size={14} aria-hidden="true" />{row.free ? "Test" : "Test (paid)"}
-                    </button>
-                    {profilesReady && !row.removedAt && <button type="button" className="btn" disabled={locked || busy || row.profile?.draftStatus === "pending"} onClick={onLookup} aria-label={`${lookedUp ? "Look up again" : "Look up"} ${row.label}`}>
-                        <Search size={14} aria-hidden="true" />{lookedUp ? "Look up again" : "Look up"}
-                    </button>}
-                    {!row.inCode && !row.removedAt && (row.approvedAt
-                        ? <button type="button" className="btn" disabled={busy} onClick={onUnapprove} aria-label={`Unapprove ${row.label}`}><Undo2 size={14} aria-hidden="true" />Unapprove</button>
-                        : <button type="button" className="btn" disabled={busy} onClick={approve} aria-label={`Approve ${row.label}${draft ? " with its profile and tags" : ""}`}><Check size={14} aria-hidden="true" />Approve</button>)}
-                    {profilesReady && (row.removedAt
-                        ? <button type="button" className="btn" disabled={busy} onClick={() => onRemove(false)} aria-label={`Restore ${row.label} to the model list`}><RotateCcw size={14} aria-hidden="true" />Restore</button>
-                        : <button type="button" className="btn" disabled={busy || row.removeBlocked !== null} onClick={() => onRemove(true)} title={row.removeBlocked ?? undefined}
-                            aria-label={row.removeBlocked ? `Remove ${row.label}: ${row.removeBlocked}` : `Remove ${row.label} from the model list`}><EyeOff size={14} aria-hidden="true" />Remove</button>)}
-                    {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
-                </div>
-            </div>
-            <div style={styles.pills}>
-                <span className="pill">{row.free ? "Free" : "Paid"}</span>
-                {statusPill}
-                {row.missingSince && <span className="pill" data-tone="danger">Missing</span>}
-                {row.inCode ? <span className="pill">Built in</span> : row.approvedAt && <span className="pill" data-tone="success"><Check size={12} aria-hidden="true" />Approved</span>}
-                {profilePill}
-                {row.removedAt && <span className="pill" data-tone="warning">Removed</span>}
+                {quickAction}
             </div>
             {confirming && <div className="notice" role="alert" style={styles.confirm}>
                 <span>This test sends a few short requests to a paid model, which costs a little. Run it?</span>
@@ -269,46 +283,65 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, con
                 <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete}>Delete for good</button>
                 <button type="button" className="btn" onClick={onCancelDelete}>Cancel</button>
             </div>}
-            {row.removedAt && <p className="meta" style={styles.line}>
-                Removed from the model list on {melbourneDate(row.removedAt)}. It stays out of the picker, /model and worker picks until you restore it.
-                {row.missingSince ? row.deletable ? " Its provider no longer lists it, so you can delete it." : " Its provider no longer lists it. Built-in models are deleted by a code change in providers.ts." : ""}
-            </p>}
-            <p className="meta" style={styles.line}>
-                {row.probedAt
-                    ? `Tested ${melbourneTime(row.probedAt)}${row.probeChatMs !== null ? `, first answer in ${duration(row.probeChatMs)}` : ""}.`
-                    : row.missingSince ? "Not tested."
-                        : row.free ? "Not tested yet. The daily check tests it when its turn comes." : "Not tested. Paid models are tested only when you press Test."}
-                {row.missingSince ? ` Missing from the provider's list since ${melbourneTime(row.missingSince)}.` : ""}
-            </p>
-            <p className="meta" style={styles.line}>
-                <strong style={styles.term}>Good for:</strong> {tagNames.length ? tagNames.join(", ") : "No tags yet"}. <strong style={styles.term}>Speed:</strong> {speedText(row.speed)}
-                {row.feedback && row.feedback.useful + row.feedback.notUseful > 0 ? ` Sub-agent ratings: ${row.feedback.useful} useful, ${row.feedback.notUseful} not useful (30 days).` : ""}
-            </p>
-            {profilesReady && <ProfileBlock row={row} tagList={tagList} open={open} onToggle={setOpen} selected={selected} setSelected={setSelected}
-                text={text} setText={setText} editing={editing} setEditing={setEditing} busy={busy}
-                onSaveTags={() => onSave({ tags: selected }, "tags saved")}
-                onApproveProfile={() => onSave({ tags: selected, profile: profilePayload() }, "profile approved")} />}
-            <details style={styles.details}>
-                <summary className="link-btn" style={styles.detailsToggle}>Details</summary>
-                <dl className="facts" style={styles.facts}>
-                    <div><dt>Tool calls</dt><dd>{yesNo(row.supportsTools)}</dd></div>
-                    <div><dt>Forced tool call (Search)</dt><dd>{yesNo(row.supportsSearch)}</dd></div>
-                    <div><dt>Vision</dt><dd>{yesNo(row.supportsVision)}</dd></div>
-                    <div><dt>Context / max output</dt><dd>{tokens(row.contextTokens)} / {tokens(row.maxOutputTokens)}</dd></div>
-                    <div><dt>Inputs listed</dt><dd>{row.inputs.length ? row.inputs.join(", ") : "Not listed"}</dd></div>
-                    <div><dt>First seen / last listed</dt><dd>{melbourneTime(row.firstSeenAt)} / {melbourneTime(row.lastSeenAt)}</dd></div>
-                </dl>
-                {stepList.length > 0 && <ul style={styles.steps}>
-                    {stepList.map((step) => (
-                        <li key={step.name} className="meta">
-                            <strong style={styles.stepName}>{STEP_LABELS[step.name] ?? step.name}:</strong> {OUTCOME_LABELS[step.outcome] ?? step.outcome}
-                            {step.httpStatus !== null ? `, HTTP ${step.httpStatus}` : ""}{step.ms !== null && step.outcome !== "skipped" ? `, ${duration(step.ms)}` : ""}
-                            {step.detail ? <span style={styles.stepDetail}>{step.detail}</span> : null}
-                        </li>
-                    ))}
-                </ul>}
-                {row.description && <p className="meta" style={styles.line}>{row.description}</p>}
-            </details>
+            {expanded && <div id={bodyId} style={styles.body}>
+                <div style={styles.rowTop}>
+                    <span className="meta" style={styles.id}>{row.modelId}</span>
+                    <div style={styles.actions}>
+                        {testButton}
+                        {profilesReady && !row.removedAt && <button type="button" className="btn" disabled={locked || busy || row.profile?.draftStatus === "pending"} onClick={onLookup} aria-label={`${lookedUp ? "Look up again" : "Look up"} ${row.label}`}>
+                            <Search size={14} aria-hidden="true" />{lookedUp ? "Look up again" : "Look up"}
+                        </button>}
+                        {!row.inCode && !row.removedAt && (row.approvedAt
+                            ? <button type="button" className="btn" disabled={busy} onClick={onUnapprove} aria-label={`Unapprove ${row.label}`}><Undo2 size={14} aria-hidden="true" />Unapprove</button>
+                            : approveButton)}
+                        {profilesReady && (row.removedAt
+                            ? <button type="button" className="btn" disabled={busy} onClick={() => onRemove(false)} aria-label={`Restore ${row.label} to the model list`}><RotateCcw size={14} aria-hidden="true" />Restore</button>
+                            : <button type="button" className="btn" disabled={busy || row.removeBlocked !== null} onClick={() => onRemove(true)} title={row.removeBlocked ?? undefined}
+                                aria-label={row.removeBlocked ? `Remove ${row.label}: ${row.removeBlocked}` : `Remove ${row.label} from the model list`}><EyeOff size={14} aria-hidden="true" />Remove</button>)}
+                        {row.deletable && <button type="button" className="btn" data-tone="danger" disabled={busy} onClick={onDelete} aria-label={`Delete ${row.label} for good`}><Trash2 size={14} aria-hidden="true" />Delete</button>}
+                    </div>
+                </div>
+                {row.removedAt && <p className="meta" style={styles.line}>
+                    Removed from the model list on {melbourneDate(row.removedAt)}. It stays out of the picker, /model and worker picks until you restore it.
+                    {row.missingSince ? row.deletable ? " Its provider no longer lists it, so you can delete it." : " Its provider no longer lists it. Built-in models are deleted by a code change in providers.ts." : ""}
+                </p>}
+                <p className="meta" style={styles.line}>
+                    {row.probedAt
+                        ? `Tested ${melbourneTime(row.probedAt)}${row.probeChatMs !== null ? `, first answer in ${duration(row.probeChatMs)}` : ""}.`
+                        : row.missingSince ? "Not tested."
+                            : row.free ? "Not tested yet. The daily check tests it when its turn comes." : "Not tested. Paid models are tested only when you press Test."}
+                    {row.missingSince ? ` Missing from the provider's list since ${melbourneTime(row.missingSince)}.` : ""}
+                </p>
+                <p className="meta" style={styles.line}>
+                    <strong style={styles.term}>Good for:</strong> {tagNames.length ? tagNames.join(", ") : "No tags yet"}. <strong style={styles.term}>Speed:</strong> {speedText(row.speed)}
+                    {row.feedback && row.feedback.useful + row.feedback.notUseful > 0 ? ` Sub-agent ratings: ${row.feedback.useful} useful, ${row.feedback.notUseful} not useful (30 days).` : ""}
+                </p>
+                {profilesReady && <ProfileBlock row={row} tagList={tagList} open={open} onToggle={setOpen} selected={selected} setSelected={setSelected}
+                    text={text} setText={setText} editing={editing} setEditing={setEditing} busy={busy}
+                    onSaveTags={() => onSave({ tags: selected }, "tags saved")}
+                    onApproveProfile={() => onSave({ tags: selected, profile: profilePayload() }, "profile approved")} />}
+                <details style={styles.details}>
+                    <summary className="link-btn" style={styles.detailsToggle}>Details</summary>
+                    <dl className="facts" style={styles.facts}>
+                        <div><dt>Tool calls</dt><dd>{yesNo(row.supportsTools)}</dd></div>
+                        <div><dt>Forced tool call (Search)</dt><dd>{yesNo(row.supportsSearch)}</dd></div>
+                        <div><dt>Vision</dt><dd>{yesNo(row.supportsVision)}</dd></div>
+                        <div><dt>Context / max output</dt><dd>{tokens(row.contextTokens)} / {tokens(row.maxOutputTokens)}</dd></div>
+                        <div><dt>Inputs listed</dt><dd>{row.inputs.length ? row.inputs.join(", ") : "Not listed"}</dd></div>
+                        <div><dt>First seen / last listed</dt><dd>{melbourneTime(row.firstSeenAt)} / {melbourneTime(row.lastSeenAt)}</dd></div>
+                    </dl>
+                    {stepList.length > 0 && <ul style={styles.steps}>
+                        {stepList.map((step) => (
+                            <li key={step.name} className="meta">
+                                <strong style={styles.stepName}>{STEP_LABELS[step.name] ?? step.name}:</strong> {OUTCOME_LABELS[step.outcome] ?? step.outcome}
+                                {step.httpStatus !== null ? `, HTTP ${step.httpStatus}` : ""}{step.ms !== null && step.outcome !== "skipped" ? `, ${duration(step.ms)}` : ""}
+                                {step.detail ? <span style={styles.stepDetail}>{step.detail}</span> : null}
+                            </li>
+                        ))}
+                    </ul>}
+                    {row.description && <p className="meta" style={styles.line}>{row.description}</p>}
+                </details>
+            </div>}
         </div>
     );
 }
@@ -320,7 +353,6 @@ export default function ModelsPanel() {
     const [notice, setNotice] = useState<Notice | null>(null);
     const [query, setQuery] = useState("");
     const [provider, setProvider] = useState("");
-    const [filter, setFilter] = useState<Filter>("all");
     const [busyKey, setBusyKey] = useState<string | null>(null);
     const [confirmKey, setConfirmKey] = useState<string | null>(null);
     const [deleteKey, setDeleteKey] = useState<string | null>(null);
@@ -328,6 +360,9 @@ export default function ModelsPanel() {
     const [kind, setKind] = useState<ModelKind>("chat");
     const [switchJob, setSwitchJob] = useState<SwitchJob | null>(null);
     const [voiceBusy, setVoiceBusy] = useState(false);
+    const [now] = useState(() => Date.now());
+    const sections = useOpenSections(OPEN_BY_DEFAULT);
+    const rowsOpen = useExpandedRows();
     const requestRef = useRef<AbortController | null>(null);
     const jobStatusRef = useRef<SwitchJob["status"] | null>(null);
 
@@ -369,7 +404,7 @@ export default function ModelsPanel() {
         const error = typeof summary.error === "string" ? summary.error : "no reason was recorded.";
         if (run.status === "failed") setNotice({ tone: "danger", text: `The ${pending.kind === "lookup" ? "lookup" : "test"} of ${pending.label} could not run: ${error}` });
         else if (pending.kind === "lookup") setNotice(summary.status === "ready" ? { text: `A profile draft for ${pending.label} is ready to review.` } : { tone: "danger", text: `The lookup of ${pending.label} found nothing usable: ${error}` });
-        else setNotice({ text: `${pending.label} test finished: ${summary.status === "passed" ? "passed" : summary.status === "failed" ? "failed" : "no clear result, so it will be retried"}.` });
+        else setNotice({ text: `The test of ${pending.label} finished:${summary.status === "passed" ? "passed" : summary.status === "failed" ? "failed" : "no clear result, so it will be retried"}.` });
         setPending(null);
     }, [data, pending]);
 
@@ -403,7 +438,8 @@ export default function ModelsPanel() {
     const rows = allRows.filter((row): row is ModelRow => row.kind === "chat" && !row.retired);
     const typedRows = allRows.filter((row): row is TypedRow => row.kind !== "chat");
     const providerLabels = new Map((data?.providers ?? []).map((entry) => [entry.id, entry.label]));
-    const nameOf = (row: AnyRow) => `${providerLabels.get(row.providerId) ?? row.providerId} ${row.label}`;
+    // Labels often start with the provider's own name ("Gemini 3.8 Flash" on "Google Gemini"), so the provider goes last.
+    const nameOf = (row: AnyRow) => `${row.label} on ${providerLabels.get(row.providerId) ?? row.providerId}`;
     const findTyped = (rowKind: ModelKind, providerId: string | null | undefined, modelId: string | null | undefined) =>
         typedRows.find((row) => row.kind === rowKind && row.providerId === providerId && row.modelId === modelId);
 
@@ -449,7 +485,7 @@ export default function ModelsPanel() {
         setNotice(null);
         const result = await send("/api/admin/models", "PATCH", { providerId: row.providerId, modelId: row.modelId, removed });
         setNotice(result.ok
-            ? { text: removed ? `${nameOf(row)} is removed from the model list. Chats and channels that had it selected use the default model now. Show Removed to restore it.` : `${nameOf(row)} is back in the model list.` }
+            ? { text: removed ? `${nameOf(row)} is removed from the model list. Chats and channels that had it selected use the default model now. Open Removed at the end of the list to restore it.` : `${nameOf(row)} is back in the model list.` }
             : { tone: "danger", text: result.error ?? "The change could not be saved." });
         await load();
         setBusyKey(null);
@@ -477,7 +513,7 @@ export default function ModelsPanel() {
 
     const chooseBackup = (row: TypedRow, voiceName: string | null) => {
         void saveVoice({ backup: { providerId: row.providerId, modelId: row.modelId, voice: voiceName } },
-            `${nameOf(row)}${voiceName ? ` (${voiceName})` : ""} is the backup voice now. It speaks when the on-box voice is off or fails.`);
+            `${nameOf(row)} is the backup voice now${voiceName ? `, with the voice ${voiceName}` : ""}. It speaks when the on-box voice is off or fails.`);
     };
 
     const chooseTranscription = (row: TypedRow) => {
@@ -516,8 +552,6 @@ export default function ModelsPanel() {
     const chooseKind = (next: ModelKind) => {
         setKind(next);
         setProvider("");
-        if (next !== "chat" && !TYPED_FILTERS.some((entry) => entry.value === filter)) setFilter("all");
-        if (next === "chat" && filter === "inuse") setFilter("all");
     };
 
     const saveProfile = async (row: ModelRow, save: ProfileSave, done: string) => {
@@ -535,20 +569,20 @@ export default function ModelsPanel() {
 
     const profilesReady = data?.profileStorage === "ok";
     const needle = query.trim().toLocaleLowerCase();
-    const visible = rows.filter((row) => (!provider || row.providerId === provider)
-        && (filter === "removed" ? !!row.removedAt : !row.removedAt
-            && (filter === "all" || (filter === "attention" ? rank(row) <= 3 : filter === "review" ? draftReady(row) : filter === "picker" ? inPicker(row) : !inPicker(row))))
-        && (!needle || `${row.label} ${row.modelId} ${providerLabels.get(row.providerId) ?? row.providerId}`.toLocaleLowerCase().includes(needle)));
-    const groups = (data?.providers ?? [])
-        .map((entry) => ({ entry, rows: visible.filter((row) => row.providerId === entry.id).sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)) }))
-        .filter((group) => group.rows.length > 0);
+    // A search or a provider filter opens every section with a match.
+    const forceOpen = !!needle || !!provider;
+    const providerOrder = new Map((data?.providers ?? []).map((entry, index) => [entry.id, index]));
+    const matches = (row: AnyRow) => (!provider || row.providerId === provider)
+        && (!needle || `${row.label} ${row.modelId} ${providerLabels.get(row.providerId) ?? row.providerId}`.toLocaleLowerCase().includes(needle));
+    const ordered = <T extends AnyRow>(list: T[], rankOf: (row: T) => number) => list.sort((a, b) => rankOf(a) - rankOf(b)
+        || (providerOrder.get(a.providerId) ?? providerOrder.size) - (providerOrder.get(b.providerId) ?? providerOrder.size) || a.label.localeCompare(b.label));
+    const chatSections = CATALOGUE_SECTIONS
+        .map((id) => ({ id, rows: ordered(rows.filter((row) => matches(row) && chatSection(row, now) === id), rank) }))
+        .filter((section) => section.rows.length > 0);
     const ofKind = typedRows.filter((row) => row.kind === kind);
-    const typedVisible = ofKind.filter((row) => (!provider || row.providerId === provider)
-        && (filter === "attention" ? typedNeedsAttention(row) : filter === "inuse" ? row.inUse : true)
-        && (!needle || `${row.label} ${row.modelId} ${providerLabels.get(row.providerId) ?? row.providerId}`.toLocaleLowerCase().includes(needle)));
-    const typedGroups = (data?.providers ?? [])
-        .map((entry) => ({ entry, rows: typedVisible.filter((row) => row.providerId === entry.id).sort((a, b) => typedRank(a) - typedRank(b) || a.label.localeCompare(b.label)) }))
-        .filter((group) => group.rows.length > 0);
+    const typedSections = CATALOGUE_SECTIONS
+        .map((id) => ({ id, rows: ordered(ofKind.filter((row) => matches(row) && typedSection(row, now) === id), typedRank) }))
+        .filter((section) => section.rows.length > 0);
     const counts = Object.fromEntries(KINDS.map((entry) => [entry, entry === "chat" ? rows.length : 0])) as Record<ModelKind, number>;
     for (const row of typedRows) counts[row.kind]++;
     const media = data?.media;
@@ -563,7 +597,15 @@ export default function ModelsPanel() {
     const backupRow = findTyped("speech", voice?.speech?.providerId, voice?.speech?.modelId);
     const transcriberRow = findTyped("transcription", voice?.transcription.providerId, voice?.transcription.modelId);
     const lastCheck = data?.runs.find((run) => run.id !== pending?.runId && run.summary.kind !== "test" && run.summary.kind !== "lookup");
-    const attentionCount = rows.filter((row) => rank(row) <= 3).length;
+    const attentionCount = rows.filter((row) => chatSection(row, now) === "attention").length;
+    const providerIssues = (data?.providers ?? []).filter((entry) => kindRows.some((row) => row.providerId === entry.id)).flatMap((entry) => {
+        const resting = restingTime(entry, now);
+        return [
+            listingFailed(lastCheck, entry.id) && <span key={`${entry.id}-list`} className="pill" data-tone="danger">{entry.label}: list check failed</span>,
+            resting && <span key={`${entry.id}-rest`} className="pill" data-tone="warning" title="Its free allowance is used up. Tests and calls use other routes until then.">{entry.label}: resting until {resting}</span>,
+            !entry.available && <span key={`${entry.id}-off`} className="pill">{entry.label}: not available</span>,
+        ].filter(Boolean);
+    });
     const reviewCount = rows.filter(draftReady).length;
     const removedCount = rows.filter((row) => row.removedAt).length;
 
@@ -599,6 +641,7 @@ export default function ModelsPanel() {
                     {!profilesReady && <p className="meta" style={styles.runLine}>Profiles and purpose tags need {PROFILE_MIGRATION}. Until it is applied, tags are read off the built-in notes and Approve works as before.</p>}
                     {!typesStored && <p className="meta" style={styles.runLine}>Embedding, speech and transcription models need {TYPES_MIGRATION}. Until it is applied, only chat models are listed.</p>}
                     {typesStored && data.settings.types?.enabled === false && <p className="meta" style={styles.runLine}>Discovery of embedding, speech and transcription models is off (MODEL_TYPES_DISCOVERY=off). Models already listed are still tested.</p>}
+                    {providerIssues.length > 0 && <div style={styles.issues}>{providerIssues}</div>}
                 </div>
                 {showKinds && <div role="group" aria-label="Model type" style={styles.kinds}>
                     {KINDS.map((entry) => (
@@ -616,23 +659,17 @@ export default function ModelsPanel() {
                     <label style={styles.filter}><span>Find a model</span><input className="field" style={styles.input} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model or provider" /></label>
                     <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model catalogue provider" className="field" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider}
                         options={[{ value: "", label: "All providers" }, ...data.providers.filter((entry) => kindRows.some((row) => row.providerId === entry.id)).map((entry) => ({ value: entry.id, label: entry.label }))]} /></label>
-                    <label style={styles.filter}><span>Show</span><Dropdown ariaLabel="Model catalogue filter" className="field" style={{ ...styles.input, flex: "none" }} value={filter} onChange={(value) => setFilter(value as Filter)}
-                        options={kind !== "chat" ? TYPED_FILTERS : profilesReady ? FILTERS : FILTERS.filter((entry) => entry.value !== "review" && entry.value !== "removed")} /></label>
                 </div>
                 {kind === "chat" ? <div className="list scroll" style={styles.list}>
-                    {groups.map(({ entry, rows: providerRows }) => (
-                        <section key={entry.id} aria-labelledby={`catalogue-${entry.id}`} style={styles.group}>
-                            <h3 id={`catalogue-${entry.id}`} style={styles.groupHead}>
-                                {entry.label}
-                                <span className="meta">{providerRows.length} shown</span>
-                                {listingFailed(lastCheck, entry.id) && <span className="pill" data-tone="danger">List check failed</span>}
-                                {!entry.available && <span className="pill">Not available</span>}
-                            </h3>
-                            {providerRows.map((row) => {
+                    {chatSections.map(({ id, rows: sectionRows }) => (
+                        <ListSection key={`chat:${id}`} title={SECTION_TITLES[id]} count={sectionRows.length} open={forceOpen || sections.isOpen("chat", id)} onToggle={(open) => sections.toggle("chat", id, open)}>
+                            {sectionRows.map((row) => {
                                 const key = keyOf(row);
                                 // Remounts when the stored profile changes, so the chips and text start from the saved state.
                                 const version = `${key}|${row.tags.join(",")}|${row.profile?.draftedAt ?? ""}|${row.profile?.approvedAt ?? ""}|${row.profile?.draftStatus ?? ""}`;
-                                return <ModelEntry key={version} row={row} tagList={data.tags} profilesReady={profilesReady} locked={running} busy={busyKey === key || pending?.key === key}
+                                return <ModelEntry key={version} row={row} providerLabel={providerLabels.get(row.providerId) ?? row.providerId}
+                                    expanded={rowsOpen.isExpanded(`chat|${key}`)} onExpand={(open) => rowsOpen.setExpanded(`chat|${key}`, open)} quick={id === "attention"}
+                                    tagList={data.tags} profilesReady={profilesReady} locked={running} busy={busyKey === key || pending?.key === key}
                                     confirming={confirmKey === key} confirmingDelete={deleteKey === key}
                                     onTest={() => { void test(row); }} onLookup={() => { void startRun(row, "lookup"); }}
                                     onApprove={(save) => { void (save ? saveProfile(row, save, save.profile ? "approved with its profile and tags" : "approved with its tags") : setApproval(row, true)); }}
@@ -640,23 +677,20 @@ export default function ModelsPanel() {
                                     onSave={(save, done) => { void saveProfile(row, save, done); }} onCancel={() => setConfirmKey(null)}
                                     onRemove={(removed) => { void setRemoved(row, removed); }} onDelete={() => { void remove(row); }} onCancelDelete={() => setDeleteKey(null)} />;
                             })}
-                        </section>
+                        </ListSection>
                     ))}
-                    {!groups.length && <p className="empty">{rows.length ? "No models match these filters. Clear the search or choose another filter." : "The catalogue is empty. Press Check now to list each provider's models."}</p>}
+                    {!chatSections.length && <p className="empty">{rows.length ? "No models match this search. Clear it or choose another provider." : "The catalogue is empty. Press Check now to list each provider's models."}</p>}
                 </div> : <div className="list scroll" style={styles.list}>
-                    {typedGroups.map(({ entry, rows: providerRows }) => (
-                        <section key={entry.id} aria-labelledby={`catalogue-${kind}-${entry.id}`} style={styles.group}>
-                            <h3 id={`catalogue-${kind}-${entry.id}`} style={styles.groupHead}>
-                                {entry.label}
-                                <span className="meta">{providerRows.length} shown</span>
-                                {!entry.available && <span className="pill">Not available</span>}
-                            </h3>
-                            {providerRows.map((row) => {
+                    {typedSections.map(({ id, rows: sectionRows }) => (
+                        <ListSection key={`${kind}:${id}`} title={SECTION_TITLES[id]} count={sectionRows.length} open={forceOpen || sections.isOpen(kind, id)} onToggle={(open) => sections.toggle(kind, id, open)}>
+                            {sectionRows.map((row) => {
                                 const key = keyOf(row);
                                 const chosenVoice = voice?.speech?.providerId === row.providerId && voice.speech.modelId === row.modelId ? voice.speech.voice ?? "" : "";
                                 const mediaChoice = isMediaRow(row) ? media?.choices[row.kind] : undefined;
                                 const mediaChosen = mediaChoice?.providerId === row.providerId && mediaChoice.modelId === row.modelId;
-                                return <TypedEntry key={`${key}|${chosenVoice}`} row={row} providerLabel={entry.label} voice={voice ?? { speech: null, transcription: { order: "local", providerId: null, modelId: null }, defaultSpeechModel: "" }}
+                                return <TypedEntry key={`${key}|${chosenVoice}`} row={row} providerLabel={providerLabels.get(row.providerId) ?? row.providerId}
+                                    voice={voice ?? { speech: null, transcription: { order: "local", providerId: null, modelId: null }, defaultSpeechModel: "" }}
+                                    expanded={rowsOpen.isExpanded(`${kind}|${key}`)} onExpand={(open) => rowsOpen.setExpanded(`${kind}|${key}`, open)} quick={id === "attention"}
                                     mediaChosen={mediaChosen} onUseMedia={isMediaRow(row) && media?.enabled ? () => chooseMedia(row.kind, row) : undefined}
                                     locked={running} busy={busyKey === key || pending?.key === key || voiceBusy} switchRunning={switchJob?.status === "running"}
                                     confirming={confirmKey === key} confirmingDelete={deleteKey === key}
@@ -665,9 +699,9 @@ export default function ModelsPanel() {
                                     onStartSwitch={(dimension) => { void startSwitch(row, dimension); }}
                                     onUseBackup={(voiceName) => chooseBackup(row, voiceName)} onUseTranscription={() => chooseTranscription(row)} />;
                             })}
-                        </section>
+                        </ListSection>
                     ))}
-                    {!typedGroups.length && <p className="empty">{ofKind.length ? "No models match these filters. Clear the search or choose another filter."
+                    {!typedSections.length && <p className="empty">{ofKind.length ? "No models match this search. Clear it or choose another provider."
                         : !typesStored ? `Apply ${TYPES_MIGRATION}, then press Check now.`
                             : isMediaKindName(kind) && !media?.stored ? `Apply ${MEDIA_MIGRATION}, then press Check now.` : `No ${KIND_LABELS[kind].toLocaleLowerCase()} models yet. Press Check now to list them.`}</p>}
                 </div>}
@@ -686,12 +720,15 @@ const styles: Record<string, React.CSSProperties> = {
     kindCount: { marginLeft: 6, color: "var(--faint)", fontVariantNumeric: "tabular-nums" },
     filter: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 200px", minWidth: 0, fontSize: 13, color: "var(--muted)" },
     input: { width: "100%", padding: "0 10px", background: "var(--surface)" },
+    issues: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 },
     list: { marginTop: 4, maxHeight: 640, scrollbarGutter: "stable" },
-    group: { marginTop: 14 },
-    groupHead: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 4, fontSize: 13.5, fontWeight: 650, color: "var(--ink)" },
-    row: { display: "flex", flexDirection: "column", gap: 6, padding: "12px 0" },
-    rowTop: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: "8px 12px" },
-    rowText: { display: "flex", flexDirection: "column", gap: 2, flex: "1 1 240px", minWidth: 0 },
+    row: { display: "flex", flexDirection: "column", gap: 6, padding: "8px 0" },
+    head: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px" },
+    toggle: { flex: "1 1 260px", width: "auto", minHeight: 32 },
+    name: { minWidth: 0, overflowWrap: "anywhere" },
+    // Lines the unfolded card up with the name, past the chevron and its gap.
+    body: { display: "flex", flexDirection: "column", gap: 6, marginTop: 2, paddingLeft: 22 },
+    rowTop: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px 12px" },
     id: { fontFamily: "var(--font-mono)", fontSize: 12, overflowWrap: "anywhere" },
     actions: { display: "flex", flexWrap: "wrap", gap: 8 },
     pills: { display: "flex", flexWrap: "wrap", gap: 6 },
