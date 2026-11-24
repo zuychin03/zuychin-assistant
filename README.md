@@ -128,8 +128,8 @@ edited and deleted in place.
   searches your own past messages across channels, with links that jump to the conversation
 - Today panel: a collapsible panel beside the chat (docked on wide screens, a sheet on phones)
   draws the day to time scale with a now line, then what's coming up, what's due, other
-  to-dos and scheduled tasks. Ticking a to-do completes it, and Skip beside the tick closes it as
-  not done. Chat starters come from the same
+  to-dos and scheduled tasks. Ticking a to-do completes it, and Skip at the end of the row closes it
+  as not done. Chat starters come from the same
   day: the next event, the most urgent to-do and the study cards due today
 - Reply sources: each reply records the facts, memories, vault pages and tools it used, and
   the chat shows them as a small chart with a numbered list and a link into the Cosmos
@@ -575,7 +575,7 @@ npm run dev
   short phrase such as "Just a minute" (picked from a small pool) while it works.
   With the speech-to-text service set up, the voice stage shows Transcribing while your
   words are read, and your message appears as text marked "Spoken".
-- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good; the ↷ button beside the tick skips it instead.
+- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good; the ↷ button at the end of the row skips it instead (on a computer it shows when you hover or tab to the row).
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
   away so chat history fills the sidebar, and the choice is remembered.
 - In the history sidebar, **New project** creates a collapsible group: use the folder icon

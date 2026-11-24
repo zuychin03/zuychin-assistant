@@ -153,12 +153,12 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
         }
     }
 
-    const closeButtons = (todo: TodoItem) => <>
+    const tickButton = (todo: TodoItem) =>
         <button type="button" className={styles.check} onClick={() => void close(todo, "done")} disabled={closing[todo.id] === "done"} aria-busy={!!closing[todo.id] || undefined}
-            aria-label={`Mark “${todo.title}” as done`} title="Mark as done"><Check size={12} aria-hidden="true" /></button>
+            aria-label={`Mark “${todo.title}” as done`} title="Mark as done"><Check size={12} aria-hidden="true" /></button>;
+    const skipButton = (todo: TodoItem) =>
         <button type="button" className={styles.skip} onClick={() => void close(todo, "skipped")} disabled={closing[todo.id] === "skipped"} aria-busy={!!closing[todo.id] || undefined}
-            aria-label={`Skip “${todo.title}”`} title="Skip, not done"><Redo2 size={13} aria-hidden="true" /></button>
-    </>;
+            aria-label={`Skip “${todo.title}”`} title="Skip, not done"><Redo2 size={14} aria-hidden="true" /></button>;
 
     const day = useMemo(() => {
         const events = today?.events ?? [];
@@ -265,12 +265,13 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
                                 const due = todo.dueDate ? parseDue(todo.dueDate) : null;
                                 const status = due ? dueState(due, now) : null;
                                 return <li key={todo.id} className={styles.row}>
-                                    {closeButtons(todo)}
+                                    {tickButton(todo)}
                                     <span className={styles.rowMain}>
                                         <span className={styles.rowTitle}>{todo.title}</span>
                                         {status && <span className={styles.rowMeta} data-tone={status.tone}>{status.label}</span>}
                                     </span>
                                     {due && <time className={styles.rowDate}>{dayLabel(due)}</time>}
+                                    {skipButton(todo)}
                                 </li>;
                             })}
                         </ul>}
@@ -279,9 +280,10 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
                     {today.todos.length > 0 && <section className={styles.section} aria-labelledby={`${id}-todo`}>
                         <h3 id={`${id}-todo`}>To-do</h3>
                         <ul className={styles.list}>{today.todos.map((todo) => <li key={todo.id} className={styles.row}>
-                            {closeButtons(todo)}
+                            {tickButton(todo)}
                             <span className={styles.rowMain}><span className={styles.rowTitle}>{todo.title}</span></span>
                             {todo.dueDate && <time className={styles.rowDate}>{dayLabel(parseDue(todo.dueDate))}</time>}
+                            {skipButton(todo)}
                         </li>)}</ul>
                     </section>}
 

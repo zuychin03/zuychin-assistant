@@ -418,42 +418,49 @@
     cursor: wait;
 }
 
-/* Sits close to the tick and stays muted, so it reads as the lesser action. */
+/* A compact icon button at the row's end; negative margins keep the row at its text height. */
 .skip {
     display: grid;
     flex: none;
     place-items: center;
-    width: 18px;
-    height: 18px;
-    margin: 1px 0 0 -4px;
+    width: 24px;
+    height: 24px;
+    margin: -3px -4px -3px -2px;
     padding: 0;
     border: 0;
-    border-radius: 50%;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--muted);
     cursor: pointer;
 }
 
-.skip:hover:not(:disabled) {
-    color: var(--ink);
+.skip:hover:not(:disabled),
+.skip:disabled {
     background: var(--hover);
+    color: var(--ink);
 }
 
 .skip:disabled {
-    color: var(--ink);
     cursor: wait;
+}
+
+/* With a mouse the row stays quiet until it is hovered or focused. */
+@media (hover: hover) and (pointer: fine) {
+    .skip { opacity: 0; transition: opacity 0.12s ease; }
+    .row:hover .skip, .row:focus-within .skip, .skip:disabled { opacity: 1; }
 }
 
 @media (pointer: coarse) {
     .iconButton { width: 44px; height: 44px; }
     .row { padding: 9px 0; }
     .check, .skip { position: relative; }
-    .check::after { content: ""; position: absolute; inset: -13px -4px -13px -13px; }
-    .skip::after { content: ""; position: absolute; inset: -13px -13px -13px -4px; }
+    .check::after { content: ""; position: absolute; inset: -13px; }
+    .skip::after { content: ""; position: absolute; inset: -10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
     .panel[data-variant="sheet"], .scrim { animation: none; }
+    .skip { transition: none; }
 }
 
 .toggle {
