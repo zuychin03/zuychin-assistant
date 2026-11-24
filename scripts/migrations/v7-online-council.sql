@@ -9,6 +9,6 @@ end $$;
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription'));
 
 commit;

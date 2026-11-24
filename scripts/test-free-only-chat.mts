@@ -107,8 +107,12 @@ await check("turn freezes policy for deferred extraction, title and bot voice de
     flipPolicyOnReply = true; const result = await ragChat(base); assert.equal(prefs.freeOnly, false);
     assert.equal(result.freeOnly, true); assert.equal(modelCalls().length, 1);
 });
-for (const message of ["/model gemini gemini-3.8-flash", "/embed-model gemini gemini-embedding-2"]) await check("bot refuses " + message, async () => {
-    await assert.rejects(ragChat({ message, channel: "telegram" }), /Free only/); assert.equal(writes().length, 0); assert(!calls.some((c) => c.method === "PATCH"));
+await check("bot refuses /model gemini gemini-3.8-flash", async () => {
+    await assert.rejects(ragChat({ message: "/model gemini gemini-3.8-flash", channel: "telegram" }), /Free only/); assert.equal(writes().length, 0); assert(!calls.some((c) => c.method === "PATCH"));
+});
+await check("bot /embed-model only points to the dashboard and changes nothing", async () => {
+    const result = await ragChat({ message: "/embed-model gemini gemini-embedding-2", channel: "telegram" });
+    assert.match(result.reply, /changed on the dashboard/); assert.equal(writes().length, 0); assert(!calls.some((c) => c.method === "PATCH")); assert.equal(modelCalls().length, 0);
 });
 await check("bot model listing captures free policy", async () => { assert.equal((await ragChat({ message: "/model", channel: "telegram" })).freeOnly, true); });
 await check("agent lead on compatible selection uses free Gemini key", async () => { await ragChat({ ...base, ...nim, agent: true }); assert.equal(modelCalls()[0].key, "fixture-free"); });

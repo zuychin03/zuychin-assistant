@@ -10,9 +10,15 @@ const seen: Seen[] = [];
 let reply: () => Response = () => Response.json({ text: "PRIVATE SPOKEN WORDS", audioSec: 2, decodeMs: 90, model: "moonshine-tiny-en" });
 let health: () => Response = () => Response.json({ ok: true, model: "moonshine-tiny-en", loaded: true, busy: false, waiting: 0 });
 let speakerWakes = 0;
+let apiReply: () => Response = () => Response.json({ candidates: [{ content: { parts: [{ text: "PRIVATE API WORDS" }] } }] });
+const apiCalls: { url: URL; body: string }[] = [];
 globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : undefined;
     const url = new URL(request?.url ?? String(input));
+    if (url.hostname === "generativelanguage.googleapis.com") {
+        apiCalls.push({ url, body: String(init?.body) });
+        return apiReply();
+    }
     // The speech service is only configured for the warm-up's speaker checks.
     if (url.host === "127.0.0.1:3011" && url.pathname === "/health") {
         speakerWakes += 1;
@@ -122,7 +128,66 @@ try {
         delete process.env.TTS_SERVICE_URL;
         delete process.env.TTS_SERVICE_TOKEN;
     }
+
+    // API transcription in the owner's order (chosen on /admin), with the on-box service as the other step.
+    const { setVoiceChoicesForTests } = await import("../src/lib/ai/voice-choices");
+    const { setCatalogueSnapshotForTests } = await import("../src/lib/ai/catalogue/snapshot");
+    process.env.GEMINI_FREE_API_KEY = "fixture-free";
+    const transcribeRow = (approved: boolean) => ({
+        providerId: "gemini-free", modelId: "gemini-3.5-transcribe", origin: "discovered" as const, label: "Gemini 3.5 Transcribe", shortName: "gemini-3.5-transcribe-free",
+        description: null, developer: null, free: true, metered: false, mayTrain: true, contextTokens: null, maxOutputTokens: null, inputs: ["audio"],
+        listedTools: null, listedStructured: null, listedThinking: null, probeStatus: "passed" as const, probeAttempts: 0, probedAt: "2026-11-24T00:00:00.000Z", probeChatMs: 2900,
+        supportsTools: null, supportsSearch: null, supportsVision: null, supportsThinking: null, supportsStructured: null,
+        firstSeenAt: "2026-11-24T00:00:00.000Z", lastSeenAt: "2026-11-24T00:00:00.000Z", missedChecks: 0, missingSince: null, notifiedMissingAt: null,
+        approvedAt: approved ? "2026-11-24T00:00:00.000Z" : null, kind: "transcription" as const, traits: { accuracy: 1 },
+    });
+    const choose = (order: "local" | "local-first" | "api-first" | "api") => setVoiceChoicesForTests({ speech: null, transcription: { order, providerId: "gemini-free", modelId: "gemini-3.5-transcribe" } });
+    setCatalogueSnapshotForTests([transcribeRow(true)]);
+    reply = () => Response.json({ text: "PRIVATE SPOKEN WORDS", audioSec: 2, decodeMs: 90, model: "moonshine-tiny-en" });
+    try {
+        choose("api-first");
+        const localBefore = seen.length;
+        const viaApi = await json(await POST(req(pcm(32000))));
+        assert.equal(viaApi.status, 200);
+        assert.equal(viaApi.body.text, "PRIVATE API WORDS");
+        assert.equal(viaApi.body.engine, "api");
+        assert.equal(seen.length, localBefore, "api-first never waits for the box when the API answers");
+        const inline = (JSON.parse(apiCalls[0].body) as { contents: { parts: { inlineData?: { mimeType: string; data: string } }[] }[] }).contents[0].parts[0].inlineData!;
+        const wav = Buffer.from(inline.data, "base64");
+        assert.equal(inline.mimeType, "audio/wav");
+        assert.equal(wav.subarray(0, 4).toString(), "RIFF");
+        assert.equal(wav.readUInt32LE(24), 16000);
+        assert.equal(wav.length, 44 + 32000);
+
+        choose("local-first");
+        reply = () => Response.json({ error: "busy" }, { status: 503 });
+        const busyBox = await json(await POST(req(pcm(32000))));
+        assert.equal(busyBox.body.engine, "api", "a busy box hands the turn to the API model");
+        assert.equal(seen.length, localBefore + 1);
+
+        choose("api-first");
+        apiReply = () => Response.json({ error: { message: "overloaded" } }, { status: 503 });
+        reply = () => Response.json({ text: "PRIVATE SPOKEN WORDS", audioSec: 2, decodeMs: 90, model: "moonshine-tiny-en" });
+        const apiDown = await json(await POST(req(pcm(32000))));
+        assert.equal(apiDown.body.engine, "local", "a failed API call falls to the box");
+
+        choose("api");
+        const apiOnly = await json(await POST(req(pcm(32000))));
+        assert.deepEqual(apiOnly, { status: 503, body: { fallback: true, reason: "unavailable" } }, "API only never uses the box");
+        assert.equal(seen.length, localBefore + 2);
+
+        setCatalogueSnapshotForTests([transcribeRow(false)]);
+        apiReply = () => Response.json({ candidates: [{ content: { parts: [{ text: "PRIVATE API WORDS" }] } }] });
+        const callsBefore = apiCalls.length;
+        assert.deepEqual(await json(await POST(req(pcm(32000)))), { status: 503, body: { fallback: true, reason: "unconfigured" } }, "an unapproved model is never used");
+        assert.equal(apiCalls.length, callsBefore);
+        assert.ok(logs.filter((line) => line.includes("voice_transcribe")).every((line) => !line.includes("PRIVATE")), "logs carry no transcript text");
+    } finally {
+        choose("local");
+        setCatalogueSnapshotForTests([]);
+        delete process.env.GEMINI_FREE_API_KEY;
+    }
 } finally {
     console.log = log;
 }
-console.log("Voice routes: auth, same origin, content type, size and PCM checks, transcript success, fallback mapping, private logs, config-only status and warm-up passed offline.");
+console.log("Voice routes: auth, same origin, content type, size and PCM checks, transcript success, fallback mapping, private logs, config-only status, warm-up and API transcription orders passed offline.");

@@ -1,7 +1,7 @@
 import { getCronState, setCronState } from "@/lib/cron-state";
 
 // Runtime override for the knowledge store's embedding partition, set by the
-// admin re-embed flow (/api/admin/reembed) AFTER a full migration finishes.
+// switch job (/api/admin/embedding/switch) AFTER a full re-embed finishes.
 // Kept in cron_state so it survives deploys without an env change; the cache
 // makes getEmbeddingRef() stay synchronous. Async entry points (chat, tools,
 // MCP, crons) must await refreshEmbeddingOverride() before resolving refs so
@@ -10,11 +10,33 @@ import { getCronState, setCronState } from "@/lib/cron-state";
 const STATE_KEY = "knowledge_embedding";
 const TTL_MS = 60_000;
 
-let cached: string | null = null;
+/** `model` is the partition id; `providerId` picks the primary route when several serve it. */
+export interface EmbeddingSetting {
+    model: string;
+    providerId?: string;
+    dimension?: number;
+}
+
+let cached: EmbeddingSetting | null = null;
 let loadedAt = 0;
 let lastReadSucceeded = false;
 
+export function parseEmbeddingSetting(raw: unknown): EmbeddingSetting | null {
+    if (!raw || typeof raw !== "object") return null;
+    const { model, providerId, dimension } = raw as Record<string, unknown>;
+    if (typeof model !== "string" || !model.trim()) return null;
+    return {
+        model,
+        ...(typeof providerId === "string" && providerId ? { providerId } : {}),
+        ...(typeof dimension === "number" && Number.isInteger(dimension) && dimension > 0 ? { dimension } : {}),
+    };
+}
+
 export function cachedEmbeddingOverride(): string | null {
+    return cached?.model ?? null;
+}
+
+export function cachedEmbeddingSetting(): EmbeddingSetting | null {
     return cached;
 }
 
@@ -22,8 +44,7 @@ export function cachedEmbeddingOverride(): string | null {
 export async function refreshEmbeddingOverride(signal?: AbortSignal, strict = false): Promise<void> {
     if (loadedAt && Date.now() - loadedAt < TTL_MS && (!strict || lastReadSucceeded)) return;
     try {
-        const state = await getCronState<{ model?: string }>(STATE_KEY, signal);
-        cached = state?.model ?? null;
+        cached = parseEmbeddingSetting(await getCronState<Record<string, unknown>>(STATE_KEY, signal));
         lastReadSucceeded = true;
     } catch {
         lastReadSucceeded = false;
@@ -32,9 +53,10 @@ export async function refreshEmbeddingOverride(signal?: AbortSignal, strict = fa
     loadedAt = Date.now();
 }
 
-export async function setEmbeddingOverride(model: string, signal?: AbortSignal): Promise<void> {
-    await setCronState(STATE_KEY, { model }, signal);
-    cached = model;
+export async function setEmbeddingOverride(model: string, signal?: AbortSignal, route: Omit<EmbeddingSetting, "model"> = {}): Promise<void> {
+    const setting: EmbeddingSetting = { model, ...route };
+    await setCronState(STATE_KEY, { ...setting }, signal);
+    cached = setting;
     lastReadSucceeded = true;
     loadedAt = Date.now();
 }

@@ -1,8 +1,9 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { listProvidersPublic } from "@/lib/ai/providers";
+import { DEFAULT_SPEECH_MODEL } from "@/lib/ai/catalogue/in-use";
 import type { ModelCallObservation } from "@/lib/ai/model-observations";
 
-const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech", "study", "probe", "lookup", "consult", "council"] as const;
+const PURPOSES = ["chat", "embedding", "routing", "worker", "orchestration", "compaction", "continuation", "extraction", "summary", "title", "search", "speech", "study", "probe", "lookup", "consult", "council", "transcription"] as const;
 const STATUSES = ["success", "auth", "rate_limit", "transient", "unavailable", "retired", "aborted", "unknown"] as const;
 const ERROR_CLASSES = ["http", "abort", "timeout", "transport", "unknown"] as const;
 const CAPABILITIES = ["streaming", "tools", "vision", "grounding"] as const;
@@ -53,7 +54,7 @@ export interface ModelHealthEntry {
     providerLabel: string;
     modelId: string;
     modelLabel: string;
-    kind: "chat" | "embedding" | "speech" | "historical";
+    kind: "chat" | "embedding" | "speech" | "transcription" | "historical";
     catalogue: "current" | "unavailable" | "historical";
     configured: boolean;
     unavailableReason: string | null;
@@ -129,8 +130,11 @@ function catalogue(): ModelHealthEntry[] {
         ...provider.chatModels.map(model => ({ model, kind: "chat" as const, unavailable: null as string | null })),
         ...provider.unavailableChatModels.map(model => ({ model, kind: "chat" as const, unavailable: model.reason })),
         ...provider.embeddingModels.map(model => ({ model, kind: "embedding" as const, unavailable: null as string | null })),
-        ...(provider.id === "gemini" ? [{ model: { id: process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview", label: "Gemini speech", free: false },
-            kind: "speech" as const, unavailable: null as string | null }] : []),
+        ...provider.speechModels.map(model => ({ model, kind: "speech" as const, unavailable: null as string | null })),
+        ...provider.transcriptionModels.map(model => ({ model, kind: "transcription" as const, unavailable: null as string | null })),
+        // The default voice speaks before the catalogue lists it (no v7-model-types.sql yet).
+        ...((provider.id === "gemini" || provider.id === "gemini-free") && !provider.speechModels.some(model => model.id === DEFAULT_SPEECH_MODEL())
+            ? [{ model: { id: DEFAULT_SPEECH_MODEL(), label: "Gemini speech", free: provider.id === "gemini-free" }, kind: "speech" as const, unavailable: null as string | null }] : []),
     ].map(({ model, kind, unavailable }) => ({
         providerId: provider.id, providerLabel: provider.label, modelId: model.id, modelLabel: model.label,
         kind, catalogue: unavailable ? "unavailable" as const : "current" as const,

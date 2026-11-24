@@ -30,8 +30,10 @@ import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelListing, formatPurposePicks } from "@/lib/ai/models/command";
 import { isPurposeTag, PURPOSE_TAGS } from "@/lib/ai/models/tags";
-import { resolveChat, resolveModelKey, isRetiredChatModel, resolveMessagingDefault, resolvePaidChat, resolveMessagingEmbedding, resolveEmbeddingKey, resolveChatByName, availableChatModels, resolveEmbeddingByName, availableEmbeddingModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
+import { resolveChat, resolveModelKey, isRetiredChatModel, resolveMessagingDefault, resolvePaidChat, resolveChatByName, availableChatModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
+import { ownerLink } from "@/lib/public-url";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { openaiCompatChat } from "@/lib/ai/openai-compat";
 import { currentDateTimeContext, APP_TIMEZONE } from "@/lib/datetime";
@@ -46,11 +48,9 @@ import { createActivityRecorder } from "@/lib/ai/agent/activity";
 import type { Message, MessageChannel, FileAttachment, ArtifactDescriptor, CouncilProposal, ReplyRef } from "@/lib/types";
 
 const RAG_CONFIG = {
-    matchThreshold: 0.72,
     matchCount: 5,
     maxContextItems: 3,
     factCount: 6,
-    deduplicationThreshold: 0.95,
     maxToolRounds: 8,
 };
 
@@ -174,7 +174,7 @@ async function isDuplicateEmbedding(
     try {
         const dupes = await searchEmbeddings({
             queryEmbedding,
-            matchThreshold: RAG_CONFIG.deduplicationThreshold,
+            matchThreshold: similarityCutoffs(embRef.model).duplicate,
             matchCount: 1,
             userId,
             embeddingModel: embRef.model.id,
@@ -190,11 +190,6 @@ export type Profile = Awaited<ReturnType<typeof getDefaultProfile>>;
 function getStoredChannelModel(profile: Profile, channel: MessageChannel): string | undefined {
     const prefs = profile?.preferences as { channelModels?: Record<string, string> } | null | undefined;
     return prefs?.channelModels?.[channel];
-}
-
-function getStoredChannelEmbedding(profile: Profile, channel: MessageChannel): string | undefined {
-    const prefs = profile?.preferences as { channelEmbeddings?: Record<string, string> } | null | undefined;
-    return prefs?.channelEmbeddings?.[channel];
 }
 
 async function saveChannelChoice(
@@ -235,14 +230,6 @@ function resolveChatForRequest(
     return resolveChat();
 }
 
-function formatEmbeddingListing(
-    groups: { provider: string; providerId: string; models: { name: string; label: string; status?: "new" | "missing" }[] }[]
-): string {
-    return groups
-        .map((g) => `${g.provider} (${g.providerId})\n` + g.models.map((m) => `  • ${m.name} - ${m.label}${m.status ? ` (${m.status})` : ""}`).join("\n"))
-        .join("\n");
-}
-
 async function handleModelCommand(message: string, channel: MessageChannel, profile: Profile, freeOnly = false): Promise<string> {
     const arg = message.trim().replace(/^[/!]model(?:@\S+)?\s*/i, "").trim();
     const current = resolveChatForRequest(channel, undefined, undefined, profile, false, freeOnly);
@@ -273,31 +260,16 @@ async function handleModelCommand(message: string, channel: MessageChannel, prof
     return `Model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}.`;
 }
 
-async function handleEmbedModelCommand(message: string, channel: MessageChannel, profile: Profile, freeOnly = false): Promise<string> {
+// Every channel shares one knowledge partition; changing it re-embeds the store, so it lives on the dashboard.
+async function handleEmbedModelCommand(message: string, channel: MessageChannel): Promise<string> {
     const arg = message.trim().replace(/^[/!]embed-model(?:@\S+)?\s*/i, "").trim();
-    const current = resolveEmbeddingKey(getStoredChannelEmbedding(profile, channel)) ?? resolveMessagingEmbedding();
-    const usage = `Usage: /embed-model <provider> <model>\n\nAvailable embedding models:\n${formatEmbeddingListing(availableEmbeddingModels(freeOnly))}`;
-
-    if (!arg || arg.toLowerCase() === "list") {
-        return `Current embedding model on ${channel}: ${current.model.label} (${current.provider.label}).\n\n${usage}`;
-    }
-
-    const parts = arg.split(/\s+/);
-    if (parts.length < 2) {
-        return `Please specify both a provider and a model.\n\n${usage}`;
-    }
-
-    const resolved = resolveEmbeddingByName(parts[0], parts[1]);
-    if (!resolved) {
-        return `Unknown or unavailable embedding model "${arg}".\n\n${usage}`;
-    }
-
-    if (freeOnly) assertFreeModel(resolved);
-    const saved = await saveChannelChoice(profile, channel, "channelEmbeddings", `${resolved.provider.id}::${resolved.model.id}`);
-    if (!saved) {
-        return "Couldn't save the embedding choice. Please try again later.";
-    }
-    return `Embedding model set to ${resolved.model.label} (${resolved.provider.label}) for ${channel}. Note: the knowledge store now uses a single shared embedding partition, so this choice no longer affects how memories are stored or recalled.`;
+    await refreshEmbeddingOverride().catch(() => {});
+    const current = getEmbeddingRef();
+    const line = `Knowledge model: ${current.model.label} (${current.provider.label}), shared by every channel including ${channel}.`;
+    const link = ownerLink("/admin#models");
+    const where = link.startsWith("http") ? `the dashboard (${link})` : "the dashboard, Models panel";
+    if (!arg || arg.toLowerCase() === "list") return `${line}\nTo change it, use ${where}. The switch re-embeds the knowledge store.`;
+    return `The knowledge model is changed on ${where} now, because a switch re-embeds the whole store.\n\n${line}`;
 }
 
 function startOfTodayUtc(): Date {
@@ -400,17 +372,20 @@ export async function buildRagContext(params: {
     const sysPrompt = profile?.systemPrompt ??
         "You are Zuychin, a helpful personal AI assistant.";
 
-    // Project lookup runs alongside the embed call: the project's id scopes
-    // the fact search below and its instructions join the prompt. One query
-    // vector serves message search, fact search, and the message save - all
-    // three live in the same default partition. If the embedding provider is
-    // down the turn continues on recent history alone rather than failing.
-    const [queryEmbedding, project] = await Promise.all([
-        embedText(embRef, message, "passage", params.signal).catch((err): null => {
-            params.signal?.throwIfAborted();
-            console.warn("[RAG] Query embed failed, continuing without vector recall:", err);
-            return null;
-        }),
+    // Project lookup runs alongside the embed calls: the project's id scopes
+    // the fact search below and its instructions join the prompt. Search uses
+    // a query vector (on 3.5 1B it ranks the right note first 52/60 times, a
+    // passage vector 37/60); the saved message keeps a passage vector like the
+    // rest of the store. If the embedding provider is down the turn continues
+    // on recent history alone rather than failing.
+    const embedOrNull = (inputType: "query" | "passage") => embedText(embRef, message, inputType, params.signal).catch((err): null => {
+        params.signal?.throwIfAborted();
+        console.warn(`[RAG] ${inputType === "query" ? "Query" : "Message"} embed failed, continuing without it:`, err);
+        return null;
+    });
+    const [queryEmbedding, messageEmbedding, project] = await Promise.all([
+        embedOrNull("query"),
+        embedOrNull("passage"),
         conversationId ? getConversationProject(conversationId, true) : Promise.resolve(null),
     ]);
 
@@ -418,7 +393,7 @@ export async function buildRagContext(params: {
         queryEmbedding
             ? searchEmbeddings({
                 queryEmbedding,
-                matchThreshold: RAG_CONFIG.matchThreshold,
+                matchThreshold: similarityCutoffs(embRef.model).chatNotes,
                 matchCount: RAG_CONFIG.matchCount,
                 userId: profile?.id,
                 embeddingModel: embRef.model.id,
@@ -441,7 +416,7 @@ export async function buildRagContext(params: {
                 queryEmbedding,
                 userId: profile?.id,
                 projectId: project?.id,
-                matchThreshold: 0.35,
+                matchThreshold: similarityCutoffs(embRef.model).chatMemories,
                 matchCount: RAG_CONFIG.factCount + 4,
             })
             : Promise.resolve([]),
@@ -479,10 +454,10 @@ export async function buildRagContext(params: {
     const { historySection, recentMessages } = conversationContext;
 
     params.signal?.throwIfAborted();
-    if (queryEmbedding && !(await isDuplicateEmbedding(queryEmbedding, embRef, profile?.id))) {
+    if (messageEmbedding && !(await isDuplicateEmbedding(messageEmbedding, embRef, profile?.id))) {
         storeEmbedding({
             content: message,
-            embedding: queryEmbedding,
+            embedding: messageEmbedding,
             embeddingModel: embRef.model.id,
             metadata: {
                 source: "user_message",
@@ -650,7 +625,7 @@ async function runRagChat(params: RagChatParams, onEvent?: AgentEventSink, onBac
     if (channel !== "web") {
         const trimmed = message.trim();
         if (/^[/!]embed-model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
-            return { reply: await handleEmbedModelCommand(message, channel, profile, freeOnly), messageId: "", artifacts: [], freeOnly };
+            return { reply: await handleEmbedModelCommand(message, channel), messageId: "", artifacts: [], freeOnly };
         }
         if (/^[/!]model(?:@\S+)?(?:\s|$)/i.test(trimmed)) {
             return { reply: await handleModelCommand(message, channel, profile, freeOnly), messageId: "", artifacts: [], freeOnly };

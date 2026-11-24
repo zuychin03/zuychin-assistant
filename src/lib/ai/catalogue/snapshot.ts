@@ -1,7 +1,32 @@
 import type { ProfileRecord } from "@/lib/ai/models/profiles";
+import type { ModelKind } from "@/lib/ai/catalogue/sources";
 
 export type CatalogueOrigin = "seed" | "discovered";
 export type ProbeStatus = "untested" | "passed" | "failed" | "inconclusive";
+export type ExpiresSource = "listing" | "lookup" | "gone";
+
+/** Probe and listing facts for non-chat rows; every field is optional and absent means unknown. */
+export interface ModelTraits {
+    voices?: string[];
+    defaultVoice?: string;
+    /** Response audio, e.g. "pcm" or "wav", with its sample rate and channel count. */
+    audioFormat?: string;
+    sampleRate?: number;
+    channels?: number;
+    firstAudioMs?: number;
+    /** Seconds of audio from the speech probe's fixed sentence. */
+    audioSec?: number;
+    needsInputType?: boolean;
+    /** The route takes input_type (or a Gemini task type), so query and passage calls can differ. */
+    acceptsInputType?: boolean;
+    asymmetric?: boolean;
+    truncatable?: boolean;
+    batch?: boolean;
+    /** Share of the transcription clip's words heard in order, 0 to 1. */
+    accuracy?: number;
+    familyId?: string;
+    lookupUrl?: string;
+}
 
 export interface CatalogueRow {
     providerId: string;
@@ -35,6 +60,20 @@ export interface CatalogueRow {
     missingSince: string | null;
     notifiedMissingAt: string | null;
     approvedAt: string | null;
+    /** Absent on rows read before v7-model-types.sql, which are all chat rows. */
+    kind?: ModelKind;
+    dimension?: number | null;
+    expiresAt?: string | null;
+    expiresSource?: ExpiresSource | null;
+    notifiedExpiryDays?: number | null;
+    expiryCheckedAt?: string | null;
+    /** Knowledge partition id this embedding route reproduces. */
+    spaceOf?: string | null;
+    traits?: ModelTraits;
+}
+
+export function rowKind(row: Pick<CatalogueRow, "kind">): ModelKind {
+    return row.kind ?? "chat";
 }
 
 export type CatalogueStorage = "empty" | "ok" | "migration_required" | "unavailable";
@@ -43,7 +82,10 @@ export interface CatalogueSnapshot {
     version: number;
     loadedAt: number;
     storage: CatalogueStorage;
+    /** Chat rows only, so every chat-model path keeps its meaning. */
     rows: readonly CatalogueRow[];
+    /** Embedding, speech and transcription rows. */
+    typedRows: readonly CatalogueRow[];
     /** Purpose tags and profiles; empty with its own storage state until v7-model-awareness.sql is applied. */
     profiles: readonly ProfileRecord[];
     profileStorage: CatalogueStorage;
@@ -61,8 +103,12 @@ interface State {
 
 function state(): State {
     const holder = globalThis as typeof globalThis & { [KEY]?: State };
-    holder[KEY] ??= { snapshot: { version: 0, loadedAt: 0, storage: "empty", rows: [], profiles: [], profileStorage: "empty" }, refreshing: null, autoRefresh: false };
+    holder[KEY] ??= { snapshot: { version: 0, loadedAt: 0, storage: "empty", rows: [], typedRows: [], profiles: [], profileStorage: "empty" }, refreshing: null, autoRefresh: false };
     return holder[KEY];
+}
+
+function split(rows: readonly CatalogueRow[]): { rows: CatalogueRow[]; typedRows: CatalogueRow[] } {
+    return { rows: rows.filter((row) => rowKind(row) === "chat"), typedRows: rows.filter((row) => rowKind(row) !== "chat") };
 }
 
 /** Current catalogue, never awaited. With auto refresh on, a stale snapshot starts a background reload. */
@@ -87,7 +133,7 @@ export async function refreshCatalogueSnapshot(): Promise<CatalogueSnapshot> {
                     ? { profiles: profiles.profiles, profileStorage: "ok" as const }
                     : { profiles: current.snapshot.profiles, profileStorage: profiles.reason };
                 current.snapshot = result.ok
-                    ? { version: current.snapshot.version + 1, loadedAt: Date.now(), storage: "ok", rows: result.rows, ...profileState }
+                    ? { version: current.snapshot.version + 1, loadedAt: Date.now(), storage: "ok", ...split(result.rows), ...profileState }
                     : { ...current.snapshot, ...profileState, loadedAt: Date.now(), storage: result.reason };
             } catch (error) {
                 console.error("[ModelCatalogue] Refresh failed:", error instanceof Error ? error.message : error);
@@ -107,5 +153,5 @@ export function enableCatalogueRefresh(): void {
 
 export function setCatalogueSnapshotForTests(rows: readonly CatalogueRow[], storage: CatalogueStorage = "ok", profiles: readonly ProfileRecord[] = []): void {
     const current = state();
-    current.snapshot = { version: current.snapshot.version + 1, loadedAt: Date.now(), storage, rows, profiles, profileStorage: storage };
+    current.snapshot = { version: current.snapshot.version + 1, loadedAt: Date.now(), storage, ...split(rows), profiles, profileStorage: storage };
 }

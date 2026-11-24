@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 
 export type MemoryCategory =
@@ -190,12 +191,13 @@ export async function searchMemories(params: {
     matchThreshold?: number;
     matchCount?: number;
 }): Promise<MemoryHit[]> {
+    const memoryRef = await memoryEmbeddingRef();
     const { data, error } = await supabase.rpc("match_memories", {
         query_embedding: JSON.stringify(params.queryEmbedding),
-        match_threshold: params.matchThreshold ?? 0.5,
+        match_threshold: params.matchThreshold ?? similarityCutoffs(memoryRef.model).chatMemories,
         match_count: params.matchCount ?? 8,
         filter_user_id: params.userId ?? null,
-        filter_model: (await memoryEmbeddingRef()).model.id,
+        filter_model: memoryRef.model.id,
         filter_project: params.projectId ?? null,
     });
 

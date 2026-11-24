@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase";
 import { embedText, getEmbeddingRef, type EmbedInputType, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { indexKnowledgeDocument, recallKnowledge } from "@/lib/knowledge/store";
 import type { KnowledgeScoreBreakdown } from "@/lib/knowledge/types";
 import { firstHitPerPage } from "./page-hits";
@@ -162,7 +163,7 @@ export async function searchVaultPages(params: {
 
     const { data, error } = await supabase.rpc("match_vault_pages", {
         query_embedding: JSON.stringify(embedding),
-        match_threshold: params.matchThreshold ?? 0.5,
+        match_threshold: params.matchThreshold ?? similarityCutoffs(params.embRef.model).vaultLink,
         match_count: params.matchCount ?? 8,
         filter_model: params.embRef.model.id,
     });

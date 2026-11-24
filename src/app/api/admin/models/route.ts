@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { PROVIDERS, isProviderAvailable, removalBlockedReason, retiredChatModelIds } from "@/lib/ai/providers";
 import { catalogueModelRef } from "@/lib/ai/catalogue/rows";
-import { deleteRetiredModel, listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval, type StorageFailure } from "@/lib/ai/catalogue/store";
-import { refreshCatalogueSnapshot } from "@/lib/ai/catalogue/snapshot";
+import { catalogueTypesAvailable, deleteRetiredModel, listDiscoveryRuns, readCatalogueAdmin, setCatalogueApproval, type StorageFailure } from "@/lib/ai/catalogue/store";
+import { refreshCatalogueSnapshot, rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { MODEL_KINDS, typesDiscoveryEnabled } from "@/lib/ai/catalogue/sources";
+import { DEFAULT_SPEECH_MODEL, inUseRoutes } from "@/lib/ai/catalogue/in-use";
+import { getEmbeddingRef } from "@/lib/ai/embeddings";
+import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
+import { readVoiceChoices } from "@/lib/ai/voice-choices";
 import { discoveryEnabled, lookupEnabled, maxLookupsFromEnv, maxProbesFromEnv, startFailure } from "@/lib/ai/catalogue/run";
 import { readModelStats, readProfiles, setModelRemoved } from "@/lib/ai/models/store";
 import { statsKey } from "@/lib/ai/models/stats";
@@ -23,27 +28,53 @@ function removalFailure(reason: StorageFailure) {
 export async function GET(req: NextRequest) {
     const denied = await requireChatAuth(req);
     if (denied) return denied;
-    const [catalogue, runs, profiles, stats] = await Promise.all([readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats()]);
+    const [catalogue, runs, profiles, stats, choices] = await Promise.all([
+        readCatalogueAdmin(), listDiscoveryRuns(10), readProfiles(), readModelStats(), readVoiceChoices(true), refreshEmbeddingOverride().catch(() => {}),
+    ]);
     if (!catalogue.ok) {
         return NextResponse.json({ storage: catalogue.reason, error: startFailure(catalogue.reason).error }, { status: 503, headers: NO_STORE });
     }
+    const wanted = req.nextUrl.searchParams.get("kind");
+    const kind = MODEL_KINDS.find((entry) => entry === wanted) ?? null;
+    let knowledge: { partitionId: string; providerId: string; modelId: string; label: string; dimension: number } | null = null;
+    try {
+        const ref = getEmbeddingRef();
+        knowledge = { partitionId: ref.model.id, providerId: ref.provider.id, modelId: ref.model.apiId ?? ref.model.id, label: ref.model.label, dimension: ref.model.dimension };
+    } catch { /* an unknown saved partition shows as none */ }
+    const inUse = inUseRoutes({ embedding: knowledge, speech: choices.speech, transcription: choices.transcription }, catalogue.rows);
+    const pinnedEmbeddings = new Set(PROVIDERS.flatMap((provider) => provider.embeddingModels.map((model) => statsKey(provider.id, model.id))));
+    const typedRow = (row: CatalogueRow & { probeDetail: unknown }) => {
+        const key = statsKey(row.providerId, row.modelId);
+        return {
+            ...row, kind: rowKind(row), inCode: pinnedEmbeddings.has(key), retired: row.expiresSource === "gone",
+            inUse: inUse.keys.has(key), knowledge: !!knowledge && key === statsKey(knowledge.providerId, knowledge.modelId),
+            deletable: !pinnedEmbeddings.has(key) && row.origin === "discovered" && row.missingSince !== null,
+        };
+    };
     const codeModels = new Map(PROVIDERS.map((provider) => [provider.id, new Map(provider.chatModels.map((model) => [model.id, model]))]));
     const profileByKey = new Map((profiles.ok ? profiles.profiles : []).map((entry) => [statsKey(entry.providerId, entry.modelId), entry]));
     return NextResponse.json({
         storage: "ok",
         profileStorage: profiles.ok ? "ok" : profiles.reason,
         statsStorage: stats.ok ? "ok" : stats.reason,
-        settings: { enabled: discoveryEnabled(), maxProbes: maxProbesFromEnv(), lookups: lookupEnabled() ? maxLookupsFromEnv() : 0 },
+        settings: {
+            enabled: discoveryEnabled(), maxProbes: maxProbesFromEnv(), lookups: lookupEnabled() ? maxLookupsFromEnv() : 0,
+            types: { enabled: typesDiscoveryEnabled(), stored: catalogueTypesAvailable() !== false },
+        },
+        knowledge,
+        voice: { speech: choices.speech, transcription: choices.transcription, defaultSpeechModel: DEFAULT_SPEECH_MODEL() },
         tags: PURPOSE_TAGS.map((tag) => ({ tag, ...TAG_INFO[tag] })),
         providers: PROVIDERS.map((provider) => ({
             id: provider.id, label: provider.label, available: isProviderAvailable(provider),
             discovery: provider.discovery ? { include: provider.discovery.include, pricing: provider.discovery.pricing } : null,
         })),
-        rows: catalogue.rows.map((row) => {
+        rows: catalogue.rows.filter((row) => !kind || rowKind(row) === kind).map((row) => {
+            if (rowKind(row) !== "chat") return typedRow(row);
             const code = codeModels.get(row.providerId)?.get(row.modelId);
             const key = statsKey(row.providerId, row.modelId);
             return {
                 ...row,
+                kind: "chat" as const,
                 inCode: code !== undefined,
                 retired: retiredChatModelIds(row.providerId).has(row.modelId),
                 ...adminModelInfo(row, rowModel(row, code), profileByKey.get(key), stats.ok ? stats.speed.get(key) : undefined, stats.ok ? stats.feedback.get(key) : undefined, code !== undefined),
@@ -90,7 +121,7 @@ export async function DELETE(req: NextRequest) {
     try { input = await readJsonCapped(req); } catch (error) { if (error instanceof BodyTooLargeError) return bodyFailure(error)!; }
     const ref = catalogueModelRef(input);
     if (!ref) return NextResponse.json({ error: "Send providerId and modelId." }, { status: 400 });
-    if (PROVIDERS.some((provider) => provider.id === ref.providerId && provider.chatModels.some((model) => model.id === ref.modelId))) {
+    if (PROVIDERS.some((provider) => provider.id === ref.providerId && [...provider.chatModels, ...provider.embeddingModels].some((model) => model.id === ref.modelId))) {
         return NextResponse.json({ error: "Built-in models live in providers.ts, so deleting one is a code change. Remove it from the list instead." }, { status: 400 });
     }
     const result = await deleteRetiredModel(ref.providerId, ref.modelId);

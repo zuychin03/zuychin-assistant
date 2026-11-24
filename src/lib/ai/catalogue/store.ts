@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
-import { CATALOGUE_COLUMNS, catalogueRowFromDb, catalogueRowToDb, catalogueStorageFailure } from "@/lib/ai/catalogue/rows";
-import type { CatalogueRow, CatalogueStorage } from "@/lib/ai/catalogue/snapshot";
+import { CATALOGUE_COLUMNS, LEGACY_CATALOGUE_COLUMNS, catalogueRowFromDb, catalogueRowToDb, catalogueStorageFailure, missingColumn } from "@/lib/ai/catalogue/rows";
+import { rowKind, type CatalogueRow, type CatalogueStorage } from "@/lib/ai/catalogue/snapshot";
 
 const READ_TIMEOUT_MS = 5000;
 const WRITE_TIMEOUT_MS = 15_000;
@@ -21,11 +21,32 @@ export interface DiscoveryRunRecord {
     summary: Record<string, unknown>;
 }
 
+// Null until a read or write shows whether v7-model-types.sql is applied.
+let typesColumns: boolean | null = null;
+
+/** False once a query showed the model types columns are missing; non-chat rows are then never written. */
+export function catalogueTypesAvailable(): boolean | null {
+    return typesColumns;
+}
+
+async function selectCatalogue(extra = "") {
+    const run = (columns: string) => supabaseAdmin.from("model_catalogue").select(`${columns}${extra}`)
+        .order("provider_id").order("model_id")
+        .abortSignal(AbortSignal.timeout(READ_TIMEOUT_MS));
+    if (typesColumns !== false) {
+        const result = await run(CATALOGUE_COLUMNS);
+        if (!result.error || !missingColumn(result.error)) {
+            if (!result.error) typesColumns = true;
+            return result;
+        }
+        typesColumns = false;
+    }
+    return run(LEGACY_CATALOGUE_COLUMNS);
+}
+
 export async function readCatalogueRows(): Promise<{ ok: true; rows: CatalogueRow[] } | { ok: false; reason: StorageFailure }> {
     try {
-        const { data, error } = await supabaseAdmin.from("model_catalogue").select(CATALOGUE_COLUMNS)
-            .order("provider_id").order("model_id")
-            .abortSignal(AbortSignal.timeout(READ_TIMEOUT_MS));
+        const { data, error } = await selectCatalogue();
         if (error) return { ok: false, reason: catalogueStorageFailure(error) };
         if (!Array.isArray(data)) return { ok: false, reason: "unavailable" };
         return { ok: true, rows: data.map(catalogueRowFromDb).filter((row): row is CatalogueRow => row !== null) };
@@ -42,9 +63,7 @@ export interface SavedRow {
 
 export async function readCatalogueAdmin(): Promise<{ ok: true; rows: (CatalogueRow & { probeDetail: unknown })[] } | { ok: false; reason: StorageFailure }> {
     try {
-        const { data, error } = await supabaseAdmin.from("model_catalogue").select(`${CATALOGUE_COLUMNS}, probe_detail`)
-            .order("provider_id").order("model_id")
-            .abortSignal(AbortSignal.timeout(READ_TIMEOUT_MS));
+        const { data, error } = await selectCatalogue(", probe_detail");
         if (error) return { ok: false, reason: catalogueStorageFailure(error) };
         if (!Array.isArray(data)) return { ok: false, reason: "unavailable" };
         const rows = data.flatMap((raw) => {
@@ -60,11 +79,22 @@ export async function readCatalogueAdmin(): Promise<{ ok: true; rows: (Catalogue
 export async function saveCatalogueRows(rows: readonly SavedRow[], now: string): Promise<void> {
     // An upsert batch takes the union of its rows' keys and nulls the gaps, so rows with and without probe detail go separately.
     const groups = [rows.filter((entry) => entry.probeDetail !== undefined), rows.filter((entry) => entry.probeDetail === undefined)];
+    const upsert = (chunk: readonly SavedRow[], types: boolean) => supabaseAdmin.from("model_catalogue")
+        .upsert(chunk.map(({ row, probeDetail }) => catalogueRowToDb(row, now, probeDetail, types)), { onConflict: "provider_id,model_id" })
+        .abortSignal(AbortSignal.timeout(WRITE_TIMEOUT_MS));
     for (const group of groups) {
         for (let start = 0; start < group.length; start += SAVE_CHUNK) {
-            const chunk = group.slice(start, start + SAVE_CHUNK).map(({ row, probeDetail }) => catalogueRowToDb(row, now, probeDetail));
-            const { error } = await supabaseAdmin.from("model_catalogue").upsert(chunk, { onConflict: "provider_id,model_id" })
-                .abortSignal(AbortSignal.timeout(WRITE_TIMEOUT_MS));
+            const chunk = group.slice(start, start + SAVE_CHUNK);
+            if (typesColumns !== false) {
+                const { error } = await upsert(chunk, true);
+                if (!error) { typesColumns = true; continue; }
+                if (!missingColumn(error)) throw new Error(`Saving the model catalogue failed: ${error.message}`);
+                typesColumns = false;
+            }
+            // Without the kind column a non-chat row would be stored as a chat row.
+            const chat = chunk.filter(({ row }) => rowKind(row) === "chat");
+            if (!chat.length) continue;
+            const { error } = await upsert(chat, false);
             if (error) throw new Error(`Saving the model catalogue failed: ${error.message}`);
         }
     }

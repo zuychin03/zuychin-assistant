@@ -2,7 +2,7 @@
 // Writes nothing and never prints a key. Usage: npx tsx scripts/model-discovery-dry-run.mts [providerId...]
 import fs from "node:fs";
 import { PROVIDERS, getProviderApiKey, retiredChatModelIds } from "../src/lib/ai/providers";
-import { listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName } from "../src/lib/ai/catalogue/sources";
+import { NON_CHAT_KINDS, listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName } from "../src/lib/ai/catalogue/sources";
 import { refreshProviderKeys } from "../src/lib/ai/provider-keys/snapshot";
 
 if (fs.existsSync(".env.local")) process.loadEnvFile(".env.local");
@@ -42,5 +42,12 @@ for (const provider of PROVIDERS) {
     if (paidNew.length) {
         console.log(`  new paid models (${paidNew.length}), listed as Untested, probed only on Test:`);
         for (const model of paidNew) console.log(`    ${model.modelId}  name=${model.name}  label="${model.label}"`);
+    }
+    for (const kind of NON_CHAT_KINDS) {
+        const listed = listing.models.filter((model) => model.kind === kind);
+        if (!listed.length) continue;
+        const kept = selectDiscoverable(listing.models, discovery, new Set(), kind);
+        console.log(`  ${kind}: listed ${listed.length}, tracked ${kept.length}${discovery.kinds?.[kind] ? "" : " (kind not configured)"}`);
+        for (const model of kept) console.log(`    ${model.modelId}  ${model.free ? "free" : "paid"}${model.expiresAt ? `  expires ${model.expiresAt.slice(0, 10)}` : ""}${model.voices.length ? `  voices ${model.voices.length}` : ""}`);
     }
 }

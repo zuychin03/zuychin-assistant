@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { assessDataRoute } from "../src/lib/ai/data-policy";
+import { geminiTtsModel } from "../src/lib/ai/speech-model";
 import { withModelObservationCollector, withModelDataClasses, configureModelDataPolicy, observeGeminiClient, beginModelObservation, beginExternalServiceObservation, type ModelCallObservation, type ExternalServiceObservation, type ObservedGeminiClient } from "../src/lib/ai/model-observations";
 import { makeReplyTrace, mergeReplyTrace } from "../src/lib/ai/reply-trace";
 
@@ -12,7 +13,7 @@ const partition = assessDataRoute({ providerId: "nvidia-nim", modelId: "nvidia/n
 assert.equal(partition.allowed, true); assert.equal(partition.rule, "shared_embedding_partition");
 assert.equal(assessDataRoute({ ...paid, providerId: "jev", classes: ["personal"] }).allowed, false);
 assert.equal(assessDataRoute({ ...paid, classes: ["personal"] }).retention, "not_verified");
-const speech = { modelId: process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview", purpose: "speech", classes: ["personal"] as ["personal"] };
+const speech = { modelId: geminiTtsModel(), purpose: "speech", classes: ["personal"] as ["personal"] };
 assert.equal(assessDataRoute({ ...speech, providerId: "gemini" }).tier, "paid");
 assert.equal(assessDataRoute({ ...speech, providerId: "gemini", freeOnly: true }).allowed, false);
 assert.equal(assessDataRoute({ ...speech, providerId: "gemini-free", freeOnly: true }).tier, "free");

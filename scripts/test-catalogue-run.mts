@@ -27,6 +27,9 @@ type ListingResult = import("../src/lib/ai/catalogue/sources").ListingResult;
 type ProbeResult = import("../src/lib/ai/catalogue/probe").ProbeResult;
 type ProbeTarget = import("../src/lib/ai/catalogue/probe").ProbeTarget;
 type SavedRow = import("../src/lib/ai/catalogue/store").SavedRow;
+type TypedProbeTarget = import("../src/lib/ai/catalogue/probe-typed").TypedProbeTarget;
+type TypedProbeResult = import("../src/lib/ai/catalogue/probe-typed").TypedProbeResult;
+type ExpiryLookupOutcome = import("../src/lib/ai/catalogue/run").ExpiryLookupOutcome;
 
 const DAY = 24 * 60 * 60_000;
 const START = Date.parse("2026-11-20T04:10:00.000Z");
@@ -43,6 +46,7 @@ function listed(modelId: string, free = true): ListedModel {
     return {
         modelId, label: `Label ${modelId}`, description: null, developer: null, free, contextTokens: 128000, maxOutputTokens: 8192,
         inputs: ["text"], listedTools: true, listedStructured: null, listedThinking: null, mayTrain: null, chat: true,
+        kind: "chat", expiresAt: null, voices: [], familyId: modelId,
     };
 }
 
@@ -427,6 +431,153 @@ try {
         const missing = await executeModelTest("run-1", "acme", "acme/nope", h.deps);
         assert.equal(missing, null);
         assert.equal(h.finished[1].status, "failed");
+    });
+
+    const typedAcme: ProviderConfig = {
+        ...acme, chatModels: [],
+        discovery: { source: "openai-list", include: "all", pricing: "listed", kinds: { embedding: { include: "all" }, speech: { include: "all" } } },
+        embeddingModels: [{ id: "acme/embed-primary", label: "Primary", name: "embed-primary", free: true, dimension: 4 }],
+    };
+    const typedListed = (modelId: string, kind: "embedding" | "speech", familyId: string, expiresAt: string | null = null): ListedModel =>
+        ({ ...listed(modelId), chat: false, kind, familyId, expiresAt });
+    const typedListing = (...extra: ListedModel[]): ListingResult => ({ ok: true, models: [
+        typedListed("acme/embed-primary", "embedding", "embed"), typedListed("acme/embed-copy", "embedding", "embed"),
+        typedListed("acme/embed-other", "embedding", "other"), typedListed("acme/voice-new", "speech", "voice-new"), ...extra,
+    ] });
+    const primaryRow = (extra: Partial<CatalogueRow> = {}) => row({ providerId: "acme", modelId: "acme/embed-primary", origin: "seed", kind: "embedding", dimension: 4, approvedAt: iso(START - 30 * DAY), traits: { familyId: "embed" }, ...extra });
+    const voiceRow = (extra: Partial<CatalogueRow> = {}) => row({ providerId: "acme", modelId: "acme/voice-used", kind: "speech", approvedAt: iso(START - 9 * DAY), traits: { familyId: "voice-used" }, ...extra });
+    const inUse = { embedding: { partitionId: "acme/embed-primary", providerId: "acme", modelId: "acme/embed-primary" }, keys: new Set(["acme::acme/embed-primary", "acme::acme/voice-used"]) };
+    const vectors = { passages: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]], queries: [[1, 0, 0, 0], [0, 0, 1, 0]] };
+    function typed(h: Harness, options: { probe?: (target: TypedProbeTarget) => TypedProbeResult; types?: boolean; lookups?: { calls: string[]; outcome: ExpiryLookupOutcome } } = {}) {
+        const calls: { key: string; reference: boolean }[] = [];
+        h.deps.typesEnabled = () => options.types ?? true;
+        h.deps.inUse = async () => inUse;
+        h.deps.probeTyped = async (target) => {
+            calls.push({ key: `${target.provider.id}::${target.modelId}`, reference: !!target.reference });
+            if (options.probe) return options.probe(target);
+            const space = target.reference ? { outcome: "pass" as const, httpStatus: null, ms: null, detail: null } : { outcome: "skipped" as const, httpStatus: null, ms: null, detail: null };
+            return {
+                status: "passed", retired: false, retiredAt: null, ms: 300, dimension: target.kind === "embedding" ? 4 : null,
+                spaceOf: target.reference?.partitionId ?? null, traits: target.kind === "embedding" ? { batch: true } : { sampleRate: 24000 },
+                steps: { main: { outcome: "pass", httpStatus: 200, ms: 300, detail: null }, ...(target.kind === "embedding" ? { space } : {}) },
+                vectors: target.kind === "embedding" ? vectors : null,
+            };
+        };
+        if (options.lookups) {
+            const lookups = options.lookups;
+            h.deps.expiryLookups = { maxPerRun: 6, lookup: async (_provider, entry) => { lookups.calls.push(`${entry.providerId}::${entry.modelId}`); return lookups.outcome; } };
+        }
+        return calls;
+    }
+
+    await check("typed rows: listed by kind, in-use models tested first and outside the cap, the knowledge model is the same-space reference", async () => {
+        const h = harness({ providers: [typedAcme], rows: [primaryRow(), voiceRow()], listings: { acme: typedListing(typedListed("acme/voice-used", "speech", "voice-used")) }, maxProbes: 2 });
+        const calls = typed(h);
+        const summary = await h.run();
+        assert.deepEqual(calls.map((call) => call.key), ["acme::acme/embed-primary", "acme::acme/voice-used", "acme::acme/embed-copy", "acme::acme/embed-other"]);
+        assert.deepEqual(calls.map((call) => call.reference), [false, false, true, false], "only the same family gets the reference");
+        assert.deepEqual(h.probed, [], "no chat probe");
+        assert.equal(h.db.get("acme::acme/embed-copy")!.spaceOf, "acme/embed-primary");
+        assert.equal(h.db.get("acme::acme/embed-other")!.spaceOf, null);
+        assert.equal(h.db.get("acme::acme/voice-new")!.kind, "speech");
+        assert.equal(h.db.get("acme::acme/voice-new")!.probeStatus, "untested");
+        assert.equal(summary.providers.acme.deferred, 1);
+        assert.equal(summary.providers.acme.probed, 4);
+        assert.match(h.notifications[0], /New embedding models passed their tests/);
+    });
+
+    await check("typed rows stay out of the run when types are off", async () => {
+        const h = harness({ providers: [typedAcme], rows: [primaryRow()], listings: { acme: typedListing() } });
+        const calls = typed(h, { types: false });
+        const summary = await h.run();
+        assert.deepEqual(calls, []);
+        assert.deepEqual(summary.added, []);
+        assert.equal(summary.providers.acme.tracked, 0);
+    });
+
+    await check("a failed listing still tests the in-use models and marks nothing missing", async () => {
+        const h = harness({ providers: [typedAcme], rows: [primaryRow(), voiceRow()], listings: { acme: { ok: false, status: 503, error: "busy" } } });
+        const calls = typed(h);
+        await h.run();
+        assert.deepEqual(calls.map((call) => call.key), ["acme::acme/embed-primary", "acme::acme/voice-used"]);
+        assert.equal(h.db.get("acme::acme/voice-used")!.missedChecks, 0);
+        assert.equal(h.db.get("acme::acme/voice-used")!.missingSince, null);
+    });
+
+    await check("an in-use model gets one notice at 30 days and one more at 7", async () => {
+        const expires = iso(START + 20 * DAY);
+        const listing = () => typedListing(typedListed("acme/voice-used", "speech", "voice-used", expires));
+        const runAt = async (now: number, rows: CatalogueRow[]) => {
+            const h = harness({ providers: [typedAcme], rows, listings: { acme: listing() }, now });
+            typed(h);
+            const summary = await h.run();
+            return { h, summary, retiring: h.notifications.some((text) => /In use and retiring/.test(text)) };
+        };
+        const first = await runAt(START, [primaryRow(), voiceRow()]);
+        assert.ok(first.retiring);
+        assert.match(first.h.notifications.join("\n"), /retires 10\/12\/2026 \(20 days\), from the provider's model list/);
+        assert.equal(first.h.db.get("acme::acme/voice-used")!.notifiedExpiryDays, 30);
+        assert.deepEqual(first.summary.retiring, ["acme::acme/voice-used"]);
+        const again = await runAt(START + DAY, [...first.h.db.values()]);
+        assert.ok(!again.retiring, "no repeat inside the same window");
+        const week = await runAt(START + 15 * DAY, [...again.h.db.values()]);
+        assert.ok(week.retiring);
+        assert.equal(week.h.db.get("acme::acme/voice-used")!.notifiedExpiryDays, 7);
+        const last = await runAt(START + 16 * DAY, [...week.h.db.values()]);
+        assert.ok(!last.retiring);
+    });
+
+    await check("the weekly lookup checks in-use models only, once a week, and a listing date outranks it", async () => {
+        const lookups = { calls: [] as string[], outcome: { ok: true, date: "2026-12-30T00:00:00.000Z", url: "https://docs.invalid/deprecations" } as ExpiryLookupOutcome };
+        const other = row({ providerId: "acme", modelId: "acme/embed-other", kind: "embedding", approvedAt: iso(START - DAY) });
+        const first = harness({ providers: [typedAcme], rows: [primaryRow(), voiceRow(), other], listings: { acme: typedListing(typedListed("acme/voice-used", "speech", "voice-used", iso(START + 60 * DAY))) } });
+        typed(first, { lookups });
+        const summary = await first.run();
+        assert.deepEqual(lookups.calls.sort(), ["acme::acme/embed-primary", "acme::acme/voice-used"]);
+        assert.deepEqual(summary.expiryChecked?.sort(), ["acme::acme/embed-primary", "acme::acme/voice-used"]);
+        const primary = first.db.get("acme::acme/embed-primary")!;
+        assert.equal(primary.expiresSource, "lookup");
+        assert.equal(primary.expiresAt, "2026-12-30T00:00:00.000Z");
+        assert.equal(primary.traits?.lookupUrl, "https://docs.invalid/deprecations");
+        assert.equal(first.db.get("acme::acme/voice-used")!.expiresSource, "listing", "the listing date stays");
+        lookups.calls.length = 0;
+        const sameWeek = harness({ providers: [typedAcme], rows: [...first.db.values()], listings: { acme: typedListing() }, now: START + 3 * DAY });
+        typed(sameWeek, { lookups });
+        await sameWeek.run();
+        assert.deepEqual(lookups.calls, []);
+        const nextWeek = harness({ providers: [typedAcme], rows: [...sameWeek.db.values()], listings: { acme: typedListing() }, now: START + 8 * DAY });
+        typed(nextWeek, { lookups });
+        await nextWeek.run();
+        assert.deepEqual(lookups.calls.sort(), ["acme::acme/embed-primary", "acme::acme/voice-used"]);
+    });
+
+    await check("a 410 on the knowledge model marks it gone with its date and names the approved backup", async () => {
+        const copy = row({ providerId: "acme", modelId: "acme/embed-copy", kind: "embedding", dimension: 4, spaceOf: "acme/embed-primary", approvedAt: iso(START - 2 * DAY), traits: { familyId: "embed" } });
+        const h = harness({ providers: [typedAcme], rows: [primaryRow(), copy], listings: { acme: typedListing() } });
+        typed(h, {
+            probe: (target): TypedProbeResult => target.modelId === "acme/embed-primary"
+                ? { status: "failed", retired: true, retiredAt: "2026-11-19T09:00:00.000Z", ms: null, dimension: null, spaceOf: null, traits: {}, steps: { typed: { outcome: "fail", httpStatus: 410, ms: 80, detail: "gone" } }, vectors: null }
+                : { status: "passed", retired: false, retiredAt: null, ms: 300, dimension: 4, spaceOf: null, traits: {}, steps: {}, vectors },
+        });
+        const summary = await h.run();
+        const gone = h.db.get("acme::acme/embed-primary")!;
+        assert.equal(gone.expiresSource, "gone");
+        assert.equal(gone.expiresAt, "2026-11-19T09:00:00.000Z");
+        assert.ok(gone.missingSince);
+        assert.deepEqual(summary.inUseFailing, ["acme::acme/embed-primary"]);
+        assert.match(h.notifications[0], /In use and failing its daily test[\s\S]*backup `embed-copy` serves the knowledge store/);
+        assert.match(h.notifications[0], /In use and retiring[\s\S]*retired on 19\/11\/2026, from the provider's 410 reply/);
+    });
+
+    await check("Test on an embedding row probes the knowledge model first for the same-space check", async () => {
+        const copy = row({ providerId: "acme", modelId: "acme/embed-copy", kind: "embedding", probeStatus: "untested", probedAt: null, traits: { familyId: "embed" } });
+        const h = harness({ providers: [typedAcme], rows: [primaryRow(), copy] });
+        const calls = typed(h);
+        const summary = await executeModelTest("run-1", "acme", "acme/embed-copy", h.deps);
+        assert.equal(summary?.modelKind, "embedding");
+        assert.equal(summary?.status, "passed");
+        assert.deepEqual(calls, [{ key: "acme::acme/embed-primary", reference: false }, { key: "acme::acme/embed-copy", reference: true }]);
+        assert.equal(h.db.get("acme::acme/embed-copy")!.spaceOf, "acme/embed-primary");
     });
 
     await check("the message stays short when many models change", () => {

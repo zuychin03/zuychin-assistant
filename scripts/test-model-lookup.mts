@@ -236,7 +236,7 @@ try {
         const events: string[] = [], looked: string[] = [], notifications: string[] = [], saves: DraftSave[][] = [], finished: { status: string; summary: Record<string, unknown> }[] = [];
         const deps: DiscoveryDeps = {
             providers: [acme], apiKey: () => "fixture-key",
-            list: async () => ({ ok: true, models: options.rows.map((entry) => ({ modelId: entry.modelId, label: entry.label, description: null, developer: null, free: true, contextTokens: 128000, maxOutputTokens: 8192, inputs: ["text"], listedTools: true, listedStructured: null, listedThinking: null, mayTrain: null, chat: true })) }),
+            list: async () => ({ ok: true, models: options.rows.map((entry) => ({ modelId: entry.modelId, label: entry.label, description: null, developer: null, free: true, contextTokens: 128000, maxOutputTokens: 8192, inputs: ["text"], listedTools: true, listedStructured: null, listedThinking: null, mayTrain: null, chat: true, kind: "chat" as const, expiresAt: null, voices: [], familyId: entry.modelId })) }),
             probe: async () => { throw new Error("no probe expected"); },
             readRows: async () => ({ ok: true, rows: [...db.values()] }),
             saveRows: async (rows) => { events.push("saveRows"); for (const entry of rows) db.set(`${entry.row.providerId}::${entry.row.modelId}`, entry.row); },

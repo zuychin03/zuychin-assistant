@@ -244,7 +244,6 @@ export default function Home() {
   const sttAvailableRef = useRef(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   // status: "confirm" shows the warning buttons; anything else is progress text.
-  const [embedModal, setEmbedModal] = useState<{ target: string; status: string } | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [knowledgeOnly, setKnowledgeOnly] = useState(false);
@@ -528,7 +527,7 @@ export default function Home() {
       setProvidersLoaded(true);
       setProvidersLoading(false);
 
-      // Embedding selection follows the server's active knowledge partition.
+      // The knowledge model line shows the server's active partition.
       try {
         const activeRes = await fetch("/api/admin/reembed");
         const active = activeRes.ok ? (await activeRes.json()).active : null;
@@ -555,39 +554,6 @@ export default function Home() {
     setChatSel(val);
     localStorage.setItem("zuychin-chat-model", val);
   };
-  // Switching the embedding model re-embeds the whole knowledge store, so it
-  // goes through a confirm modal + chunked /api/admin/reembed loop; embedSel
-  // only flips once the server has fully migrated.
-  const handleEmbedSelChange = (val: string) => {
-    if (val === embedSel) return;
-    setEmbedModal({ target: val, status: "confirm" });
-  };
-
-  const runReembed = async (target: string) => {
-    setEmbedModal({ target, status: "Starting…" });
-    try {
-      for (let round = 0; round < 100; round++) {
-        const res = await fetch("/api/admin/reembed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error ?? `Re-embed failed (${res.status})`);
-        if (data.done) {
-          setEmbedSel(target);
-          setEmbedModal(null);
-          return;
-        }
-        setEmbedModal({ target, status: `Re-embedding… ${data.remaining} rows left` });
-      }
-      throw new Error("Still not finished after many rounds - confirm again to resume.");
-    } catch (err) {
-      setEmbedModal(null);
-      alert(`Embedding switch failed: ${err instanceof Error ? err.message : err}\n\nProgress is kept - confirming again resumes where it stopped.`);
-    }
-  };
-
   useEffect(() => {
     try {
       const saved = localStorage.getItem("zuychin-gen-params");
@@ -1700,23 +1666,13 @@ export default function Home() {
                 Auto uses the selected model&apos;s provider default. Ceiling is {maxTokenCeiling.toLocaleString()} for {currentChatModel?.label ?? "this model"}.
               </p>
             </>}
-            {providers.some((p) => p.embeddingModels.length > 0) && (
+            {embedSel && (
               <div style={styles.settingsEmbedRow}>
-                <span style={styles.settingsEmbedLabel}>Embedding</span>
-                <SelectMenu
-                  wide
-                  compact
-                  ariaLabel="Embedding model"
-                  icon={<Database size={14} aria-hidden="true" />}
-                  value={embedSel}
-                  onChange={handleEmbedSelChange}
-                  groups={providers
-                    .filter((p) => p.embeddingModels.length > 0)
-                    .map((p) => ({
-                      label: p.label,
-                      options: p.embeddingModels.map((m) => ({ value: m.id, label: m.label })),
-                    }))}
-                />
+                <span style={styles.settingsEmbedLabel}>Knowledge model</span>
+                <span style={styles.settingsNote}>
+                  <Database size={14} aria-hidden="true" /> {providers.flatMap((p) => p.embeddingModels).find((m) => m.id === embedSel)?.label ?? embedSel}.{" "}
+                  <a href="/admin#models">Change it on the dashboard.</a>
+                </span>
               </div>
             )}
           </GenerationSettings>
@@ -1763,17 +1719,6 @@ export default function Home() {
           model={currentChatModel}
           providerLabel={currentChatProvider?.label ?? ""}
           onClose={() => setModelInfoOpen(false)}
-        />
-      )}
-
-      {embedModal && (
-        <ConfirmModal
-          title="Switch embedding model?"
-          body={`This re-embeds the ENTIRE knowledge store - every message, note, document and remembered fact - with ${providers.flatMap((p) => p.embeddingModels).find((m) => m.id === embedModal.target)?.label ?? embedModal.target}. It runs in batches, can take a few minutes and uses embedding API quota. Keep this tab open until it finishes.`}
-          confirmLabel="Re-embed everything"
-          busyText={embedModal.status === "confirm" ? undefined : embedModal.status}
-          onConfirm={() => void runReembed(embedModal.target)}
-          onCancel={() => setEmbedModal(null)}
         />
       )}
 

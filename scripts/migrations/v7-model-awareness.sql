@@ -65,7 +65,7 @@ create policy model_feedback_service_access on public.model_feedback
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription'));
 
 -- Successful calls in the window; tokens per second counts output after the first answer, from complete usage only.
 create or replace function public.assistant_model_speed(p_days integer default 14)

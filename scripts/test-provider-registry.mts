@@ -19,7 +19,6 @@ import {
     resolveEmbeddingByName,
     resolveEmbeddingKey,
     resolveMessagingDefault,
-    resolveMessagingEmbedding,
     resolveModelKey,
     resolveWorkerChain,
     retiredChatModelIds,
@@ -234,10 +233,8 @@ try {
         assert.equal(resolveChat().model.id, DEFAULT_CHAT.modelId);
         assert.equal(resolveMessagingDefault().provider.id, "nvidia-nim");
         assert.equal(resolveMessagingDefault().model.id, "nvidia/nemotron-3-ultra-550b-a55b");
-        assert.equal(resolveMessagingEmbedding().model.id, DEFAULT_EMBEDDING.modelId);
         delete process.env.NVIDIA_NIM_API_KEY;
         assert.equal(resolveMessagingDefault().model.id, "gemini-3.8-flash");
-        assert.equal(resolveMessagingEmbedding().model.id, "gemini-embedding-2");
         assert.ok(resolveWorkerChain(true).every((w) => ["openrouter", "kilo"].includes(w.provider.id)));
         process.env.NVIDIA_NIM_API_KEY = "registry-test-key";
         assert.equal(WORKER_GEMINI_FALLBACK.complex, "gemini-3.8-flash");

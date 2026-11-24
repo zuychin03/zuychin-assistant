@@ -10,6 +10,7 @@ import {
 import { addBacklink, appendLog, today, toWikilink } from "@/lib/vault/ingest";
 import { withVaultLock } from "@/lib/vault/lock";
 import { getEmbeddingRef } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { parseFrontmatter } from "@/lib/knowledge/markdown";
 import { clusterNodes, pageRank, type Adjacency } from "@/lib/vault/graph-analysis";
 import {
@@ -24,12 +25,9 @@ import type {
 
 export type { GraphCluster, GraphEdge, GraphNode, LinkSuggestion, NodeHealth, VaultGraph };
 
-// Doc<->doc cosine below this is noise (see LINK_THRESHOLD rationale in ingest.ts).
-const SUGGEST_THRESHOLD = 0.5;
 const MAX_SUGGESTIONS = 15;
-// Per-page candidates are reviewed one at a time, so a looser bar is useful there
-// than for the graph-wide overlay.
-const PAGE_SUGGEST_THRESHOLD = 0.35;
+// Per-page candidates are reviewed one at a time, so the model's pageSuggest cut-off is looser
+// than its vaultSuggest one for the graph-wide overlay.
 const MAX_PAGE_SUGGESTIONS = 8;
 const STALE_DAYS = 180;
 
@@ -180,12 +178,13 @@ async function suggestLinks(
     if (!model) return [];
 
     const vecs = (await listVaultEmbeddings(model)).filter((v) => nodeIds.has(v.path));
+    const threshold = similarityCutoffs(model).vaultSuggest;
     const out: LinkSuggestion[] = [];
     for (let i = 0; i < vecs.length; i++) {
         for (let j = i + 1; j < vecs.length; j++) {
             if (linked.has(edgeKey(vecs[i].path, vecs[j].path))) continue;
             const sim = cosine(vecs[i].embedding, vecs[j].embedding);
-            if (sim >= SUGGEST_THRESHOLD) {
+            if (sim >= threshold) {
                 out.push({ source: vecs[i].path, target: vecs[j].path, similarity: sim });
             }
         }
@@ -335,7 +334,7 @@ export async function suggestLinksForPage(path: string): Promise<LinkSuggestion[
     return vectors
         .filter((v) => v.path !== path && v.path.startsWith("wiki/") && !linked.has(v.path))
         .map((v) => ({ source: path, target: v.path, similarity: cosine(own.embedding, v.embedding) }))
-        .filter((s) => s.similarity >= PAGE_SUGGEST_THRESHOLD)
+        .filter((s) => s.similarity >= similarityCutoffs(model).pageSuggest)
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, MAX_PAGE_SUGGESTIONS);
 }

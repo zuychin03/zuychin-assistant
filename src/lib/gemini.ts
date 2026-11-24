@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { PAID_CHAT } from "@/lib/ai/providers";
 import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
+import { geminiTtsModel } from "@/lib/ai/speech-model";
 
 const clients = new Map<string, GoogleGenAI>();
 
@@ -45,4 +46,4 @@ export function cutShortAtMaxTokens(candidate: { finishReason?: unknown } | null
 
 // TTS requires a dedicated model; the chat model cannot emit audio. Preview
 // ids churn, so the env override is the escape hatch.
-export const TTS_MODEL = process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview";
+export const TTS_MODEL = geminiTtsModel();

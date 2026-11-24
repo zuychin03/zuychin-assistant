@@ -1,6 +1,6 @@
 import { getModelMeta } from "@/lib/ai/model-meta";
 import { uniqueShortName, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
-import { catalogueSnapshot, type CatalogueOrigin, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { catalogueSnapshot, rowKind, type CatalogueOrigin, type CatalogueRow, type ExpiresSource } from "@/lib/ai/catalogue/snapshot";
 import { statsKey, statsSnapshot } from "@/lib/ai/models/stats";
 import { modelView, resolveSpeed, resolveTags } from "@/lib/ai/models/view";
 import { removedModelKeys } from "@/lib/ai/models/profiles";
@@ -50,6 +50,47 @@ export interface EmbeddingModel {
     dimension: number;
     // Still resolves by id for stored vectors and overrides, but is never offered or picked by name.
     retired?: boolean;
+    /** Sent to the API when `id` names a reduced-dimension partition (`<model id>@<dimension>`). */
+    apiId?: string;
+    /** Send input_type on OpenAI-shaped routes. NIM always gets it; Gemini gets a task type. */
+    inputType?: boolean;
+    /** An array of inputs returns one vector per input, in order (probed). */
+    batch?: boolean;
+    /** Knowledge partition id this route reproduces exactly (probed, then approved). */
+    spaceOf?: string | null;
+    catalogue?: TypedModelCatalogue;
+}
+
+/** Present when the stored catalogue has a row for an embedding, speech or transcription model. */
+export interface TypedModelCatalogue {
+    origin: "code" | CatalogueOrigin;
+    approved: boolean;
+    status: "new" | "missing" | "failing" | null;
+    /** Per embedding call, first audio, or the transcript, from the last probe. */
+    probeMs: number | null;
+    expiresAt: string | null;
+    expiresSource: ExpiresSource | null;
+}
+
+export interface SpeechModel {
+    id: string;
+    label: string;
+    free: boolean;
+    voices: string[];
+    defaultVoice?: string;
+    sampleRate?: number;
+    /** "pcm" or "wav", from the probe. */
+    audioFormat?: string;
+    catalogue: TypedModelCatalogue;
+}
+
+export interface TranscriptionModel {
+    id: string;
+    label: string;
+    free: boolean;
+    /** Share of the probe clip's words heard in order. */
+    accuracy?: number;
+    catalogue: TypedModelCatalogue;
 }
 
 export interface ProviderConfig {
@@ -67,6 +108,9 @@ export interface ProviderConfig {
     discovery?: ProviderDiscovery;
     chatModels: ChatModel[];
     embeddingModels: EmbeddingModel[];
+    /** Catalogue rows only (none in code); absent until merged. */
+    speechModels?: SpeechModel[];
+    transcriptionModels?: TranscriptionModel[];
 }
 
 // Pins and audited quirks only. Every other chat model comes from the catalogue (catalogue/snapshot.ts),
@@ -77,7 +121,7 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini",
         kind: "gemini",
         apiKeyEnv: "GEMINI_API_KEY",
-        discovery: { source: "gemini", include: "all", pricing: "all-paid" },
+        discovery: { source: "gemini", include: "all", pricing: "all-paid", kinds: { speech: { include: "all" }, transcription: { include: "all" } } },
         chatModels: [
             { free: false, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", name: "gemini-3.8-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: false, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", name: "gemini-3.5-flash-lite", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -92,7 +136,7 @@ export const PROVIDERS: ProviderConfig[] = [
         label: "Google Gemini (free)",
         kind: "gemini",
         apiKeyEnv: "GEMINI_FREE_API_KEY",
-        discovery: { source: "gemini", include: "all", pricing: "all-free", nameSuffix: "-free" },
+        discovery: { source: "gemini", include: "all", pricing: "all-free", nameSuffix: "-free", kinds: { embedding: { include: "all" }, speech: { include: "all" }, transcription: { include: "all" } } },
         chatModels: [
             { free: true, id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (free)", name: "gemini-3.8-flash-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
             { free: true, id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (free)", name: "gemini-3.5-flash-lite-free", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 65536 },
@@ -109,7 +153,7 @@ export const PROVIDERS: ProviderConfig[] = [
             "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://zuychin.app",
             "X-Title": process.env.OPENROUTER_APP_NAME || "Zuychin Assistant",
         },
-        discovery: { source: "openrouter", include: "free", pricing: "listed" },
+        discovery: { source: "openrouter", include: "free", pricing: "listed", kinds: { embedding: { include: "free" }, speech: { include: "all" }, transcription: { include: "all" } } },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3.5-lightning:free", label: "Nemotron 3.5 Lightning (free)", name: "nemotron-3.5-lightning", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, maxOutputTokens: 65536 },
         ],
@@ -134,7 +178,7 @@ export const PROVIDERS: ProviderConfig[] = [
         kind: "openai-compatible",
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKeyEnv: "NVIDIA_NIM_API_KEY",
-        discovery: { source: "openai-list", include: "all", pricing: "all-free" },
+        discovery: { source: "openai-list", include: "all", pricing: "all-free", kinds: { embedding: { include: "all" } } },
         chatModels: [
             { free: true, id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra (free)", name: "nemotron-3-ultra", supportsTools: true, supportsVision: false, supportsThinking: true, supportsSearch: true, supportsStructuredOutput: true, maxOutputTokens: 131072 },
             { free: true, id: "z-ai/glm-5.3-flash", label: "GLM-5.3 Flash (free)", name: "glm-5.3-flash", supportsTools: true, supportsVision: true, supportsThinking: true, supportsSearch: true },
@@ -156,7 +200,7 @@ export const PROVIDERS: ProviderConfig[] = [
         baseUrl: "https://api.groq.com/openai/v1",
         apiKeyEnv: "GROQ_API_KEY",
         requestTokenLimit: 8000,
-        discovery: { source: "openai-list", include: "all", pricing: "all-free" },
+        discovery: { source: "openai-list", include: "all", pricing: "all-free", kinds: { speech: { include: "all" }, transcription: { include: "all" } } },
         chatModels: [],
         embeddingModels: [],
     },
@@ -320,7 +364,7 @@ function canonicalChatModelId(providerId: string, modelId?: string): string | un
     if (!modelId) return modelId;
     return LEGACY_CHAT_MODELS[providerId]?.[modelId] ?? modelId;
 }
-// Changing the embedding space requires scripts/reembed-knowledge.ts.
+// Changing the embedding space re-embeds the store: the switch job on /admin#models, or scripts/reembed-knowledge.ts.
 export const DEFAULT_EMBEDDING = { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b" };
 
 // An approved discovered model counts as Fast for worker recruitment when its chat probe finished within this.
@@ -349,10 +393,75 @@ function chatModelFromRow(row: CatalogueRow, name: string): ChatModel {
     };
 }
 
+function typedCatalogue(row: CatalogueRow, origin: TypedModelCatalogue["origin"], approved: boolean): TypedModelCatalogue {
+    return {
+        origin, approved,
+        status: row.missingSince ? "missing" : row.probeStatus === "failed" ? "failing" : approved ? null : "new",
+        probeMs: row.probeChatMs, expiresAt: row.expiresAt ?? null, expiresSource: row.expiresSource ?? null,
+    };
+}
+
+/** A 410 from the provider; code and catalogue then agree the model can embed nothing new. */
+function rowGone(row: CatalogueRow): boolean {
+    return row.expiresSource === "gone";
+}
+
+function joins(row: CatalogueRow): boolean {
+    return row.approvedAt !== null || row.probeStatus === "passed";
+}
+
+function mergeTyped(provider: ProviderConfig, own: readonly CatalogueRow[]): Pick<ProviderConfig, "embeddingModels" | "speechModels" | "transcriptionModels"> {
+    const byId = new Map(own.filter((row) => rowKind(row) === "embedding").map((row) => [row.modelId, row]));
+    const embeddingModels: EmbeddingModel[] = provider.embeddingModels.map((model) => {
+        const row = byId.get(model.id);
+        if (!row) return model;
+        const traits = row.traits ?? {};
+        return {
+            ...model,
+            ...(rowGone(row) ? { retired: true } : {}),
+            ...(model.inputType === undefined && traits.acceptsInputType !== undefined ? { inputType: traits.acceptsInputType } : {}),
+            ...(traits.batch !== undefined ? { batch: traits.batch } : {}),
+            spaceOf: row.spaceOf ?? null,
+            catalogue: typedCatalogue(row, "code", true),
+        };
+    });
+    const taken = new Set(embeddingModels.map((model) => model.name));
+    const codeIds = new Set(embeddingModels.map((model) => model.id));
+    for (const row of [...byId.values()].sort((a, b) => a.label.localeCompare(b.label))) {
+        if (codeIds.has(row.modelId) || !joins(row) || !row.dimension) continue;
+        const name = uniqueShortName(row.shortName, taken);
+        taken.add(name);
+        const traits = row.traits ?? {};
+        embeddingModels.push({
+            id: row.modelId, label: row.label, name, free: row.free, dimension: row.dimension,
+            ...(rowGone(row) ? { retired: true } : {}),
+            inputType: traits.acceptsInputType ?? false, batch: traits.batch ?? false, spaceOf: row.spaceOf ?? null,
+            catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
+        });
+    }
+    const typed = (kind: "speech" | "transcription") => own.filter((row) => rowKind(row) === kind && joins(row) && !rowGone(row)).sort((a, b) => a.label.localeCompare(b.label));
+    const speechModels: SpeechModel[] = typed("speech").map((row) => ({
+        id: row.modelId, label: row.label, free: row.free, voices: row.traits?.voices ?? [],
+        ...(row.traits?.defaultVoice ? { defaultVoice: row.traits.defaultVoice } : {}),
+        ...(row.traits?.sampleRate ? { sampleRate: row.traits.sampleRate } : {}),
+        ...(row.traits?.audioFormat ? { audioFormat: row.traits.audioFormat } : {}),
+        catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
+    }));
+    const transcriptionModels: TranscriptionModel[] = typed("transcription").map((row) => ({
+        id: row.modelId, label: row.label, free: row.free,
+        ...(row.traits?.accuracy !== undefined ? { accuracy: row.traits.accuracy } : {}),
+        catalogue: typedCatalogue(row, row.origin, row.approvedAt !== null),
+    }));
+    return { embeddingModels, speechModels, transcriptionModels };
+}
+
 /** Code entries win field by field; rows add discovered models and status. Untested or failed rows stay out unless approved. */
-export function mergeCatalogue(config: readonly ProviderConfig[], rows: readonly CatalogueRow[], removed: ReadonlySet<string> = new Set()): ProviderConfig[] {
-    if (!rows.length) return [...config];
-    return config.map((provider) => {
+export function mergeCatalogue(config: readonly ProviderConfig[], allRows: readonly CatalogueRow[], removed: ReadonlySet<string> = new Set()): ProviderConfig[] {
+    if (!allRows.length) return [...config];
+    const rows = allRows.filter((row) => rowKind(row) === "chat");
+    return config.map((base) => {
+        const typedRows = allRows.filter((row) => row.providerId === base.id && rowKind(row) !== "chat");
+        const provider = typedRows.length ? { ...base, ...mergeTyped(base, typedRows) } : base;
         const own = rows.filter((row) => row.providerId === provider.id);
         if (!own.length) return provider;
         const byId = new Map(own.map((row) => [row.modelId, row]));
@@ -394,7 +503,7 @@ let mergedProviders: { version: number; list: ProviderConfig[] } | null = null;
 export function providers(): ProviderConfig[] {
     const snapshot = catalogueSnapshot();
     if (mergedProviders?.version !== snapshot.version) {
-        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, snapshot.rows, removedModelKeys(snapshot.profiles)) };
+        mergedProviders = { version: snapshot.version, list: mergeCatalogue(PROVIDERS, [...snapshot.rows, ...snapshot.typedRows], removedModelKeys(snapshot.profiles)) };
     }
     return mergedProviders.list;
 }
@@ -611,22 +720,38 @@ export interface ResolvedEmbedding {
     model: EmbeddingModel;
 }
 
-export function resolveEmbedding(modelId?: string): ResolvedEmbedding {
-    const wanted = modelId ?? (process.env.KNOWLEDGE_EMBEDDING_MODEL?.trim() || undefined);
-    for (const provider of providers()) {
-        const model = provider.embeddingModels.find((m) => m.id === wanted);
-        if (model) return { provider, model };
-    }
-    if (wanted !== undefined) throw new Error(`Unknown embedding model: ${wanted}. Select a supported model and re-embed the knowledge store before switching.`);
-    const g = getProvider(DEFAULT_EMBEDDING.providerId)!;
-    const model = g.embeddingModels.find((m) => m.id === DEFAULT_EMBEDDING.modelId) ?? g.embeddingModels[0]!;
-    return { provider: g, model };
+const PARTITION_DIMENSION = /^(.+)@(\d{1,5})$/;
+
+/** `<model id>@<dimension>` names a reduced-dimension partition; a bare id is the model at its native dimension. */
+export function parsePartitionId(partitionId: string): { modelId: string; dimension: number | null } {
+    const match = PARTITION_DIMENSION.exec(partitionId);
+    return match ? { modelId: match[1], dimension: Number(match[2]) } : { modelId: partitionId, dimension: null };
 }
 
-export const MESSAGING_EMBEDDING_CHAIN: { providerId: string; modelId: string }[] = [
-    { providerId: "nvidia-nim", modelId: "nvidia/nemotron-3.5-embed-1b" },
-    { providerId: "gemini", modelId: "gemini-embedding-2" },
-];
+export function partitionIdFor(modelId: string, dimension: number | null | undefined, nativeDimension: number): string {
+    return dimension && dimension !== nativeDimension ? `${modelId}@${dimension}` : modelId;
+}
+
+/** Resolves a knowledge partition id to a route; `providerId` is preferred when it serves that model. */
+export function resolveEmbedding(partitionId?: string, providerId?: string): ResolvedEmbedding {
+    const wanted = partitionId ?? (process.env.KNOWLEDGE_EMBEDDING_MODEL?.trim() || undefined);
+    if (wanted === undefined) {
+        const g = getProvider(DEFAULT_EMBEDDING.providerId)!;
+        const model = g.embeddingModels.find((m) => m.id === DEFAULT_EMBEDDING.modelId) ?? g.embeddingModels[0]!;
+        return { provider: g, model };
+    }
+    const { modelId, dimension } = parsePartitionId(wanted);
+    const list = providers();
+    const ordered = providerId ? [...list.filter((p) => p.id === providerId), ...list.filter((p) => p.id !== providerId)] : list;
+    for (const provider of ordered) {
+        const model = provider.embeddingModels.find((m) => m.id === modelId);
+        if (!model) continue;
+        if (!dimension) return { provider, model };
+        // An explicit size names its own partition, even at the model's native size (two providers can share an id).
+        return { provider, model: { ...model, id: wanted, apiId: model.id, name: `${model.name}@${dimension}`, label: `${model.label}, ${dimension}d`, dimension } };
+    }
+    throw new Error(`Unknown embedding model: ${wanted}. Switch the knowledge model on the dashboard, which re-embeds the store.`);
+}
 
 export function resolveEmbeddingByName(providerArg: string, modelArg: string): ResolvedEmbedding | null {
     const provider = findAvailableProvider(providerArg);
@@ -655,16 +780,6 @@ export function resolveEmbeddingKey(key?: string | null): ResolvedEmbedding | nu
     if (!provider || !isProviderAvailable(provider)) return null;
     const model = provider.embeddingModels.find((m) => m.id === key.slice(idx + 2));
     return model ? { provider, model } : null;
-}
-
-export function resolveMessagingEmbedding(): ResolvedEmbedding {
-    for (const c of MESSAGING_EMBEDDING_CHAIN) {
-        const provider = getProvider(c.providerId);
-        if (!provider || !isProviderAvailable(provider)) continue;
-        const model = provider.embeddingModels.find((m) => m.id === c.modelId);
-        if (model) return { provider, model };
-    }
-    return resolveEmbedding();
 }
 
 export function listProvidersPublic() {
@@ -709,6 +824,11 @@ export function listProvidersPublic() {
             free: m.free === true,
             dimension: m.dimension,
             meta: getModelMeta(m.id),
+            origin: m.catalogue?.origin ?? "code",
+            status: m.catalogue?.status ?? null,
+            spaceOf: m.spaceOf ?? null,
         })),
+        speechModels: (p.speechModels ?? []).map((m) => ({ id: m.id, label: m.label, free: m.free, voices: m.voices, approved: m.catalogue.approved, status: m.catalogue.status })),
+        transcriptionModels: (p.transcriptionModels ?? []).map((m) => ({ id: m.id, label: m.label, free: m.free, approved: m.catalogue.approved, status: m.catalogue.status })),
     }));
 }

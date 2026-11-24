@@ -1,6 +1,7 @@
 import { effectiveFreeOnly } from "@/lib/ai/model-policy";
 import { NextRequest, NextResponse } from "next/server";
 import { synthesizeSpeech, speechStream, getVoicePrefs, planSpeech, FULL_TTS_CHARS } from "@/lib/ai/tts";
+import { readVoiceChoices } from "@/lib/ai/voice-choices";
 import { getDefaultProfile } from "@/lib/db";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
@@ -53,8 +54,9 @@ export async function POST(req: NextRequest) {
         const profile = await getDefaultProfile();
         userProfileId = profile?.id;
         freeOnly = effectiveFreeOnly(profile, requestedFreeOnly);
+        await readVoiceChoices();
         const plan = planSpeech(getVoicePrefs(profile?.preferences), { freeOnly, voiceName });
-        if (!plan.local && !plan.gemini) {
+        if (!plan.local && !plan.api) {
             return freeOnly
                 ? NextResponse.json({ error: "Free only: voice synthesis has no eligible free route." }, { status: 409 })
                 : NextResponse.json({ error: "The on-box voice is not available." }, { status: 503 });

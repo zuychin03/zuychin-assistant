@@ -660,6 +660,7 @@ import {
     addTodo, listTodos, updateTodoStatus, deleteTodo,
 } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { runWebSearch } from "@/lib/ai/web-search";
 import { APP_TIMEZONE } from "@/lib/datetime";
@@ -834,7 +835,7 @@ async function executeSearchKnowledge(query: string, embRef: ResolvedEmbedding, 
             embeddingModel: embRef.model.id,
         }) ?? await searchEmbeddings({
             queryEmbedding: embedding,
-            matchThreshold: 0.6,
+            matchThreshold: similarityCutoffs(embRef.model).toolNotes,
             matchCount: 5,
             embeddingModel: embRef.model.id,
         });
@@ -864,7 +865,7 @@ async function executeSearchHistory(query: string, embRef: ResolvedEmbedding, ct
             embeddingModel: embRef.model.id,
         }) ?? await searchEmbeddings({
             queryEmbedding: embedding,
-            matchThreshold: 0.5,
+            matchThreshold: similarityCutoffs(embRef.model).toolHistory,
             matchCount: 20,
             embeddingModel: embRef.model.id,
         });

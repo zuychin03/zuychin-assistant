@@ -1,4 +1,4 @@
-import type { CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import { cleanLine, familyKey, profileFromJson, PROFILE_LIMITS, type ModelProfile, type ProfileDraft, type ProfileRecord } from "@/lib/ai/models/profiles";
 import { gateTags, PURPOSE_TAGS, TAG_INFO, type PurposeTag, type TagCapabilities } from "@/lib/ai/models/tags";
 
@@ -288,7 +288,8 @@ export function lookupQueue(rows: readonly CatalogueRow[], profiles: readonly Pr
     const byKey = new Map(profiles.map((profile) => [`${profile.providerId}::${profile.modelId}`, profile]));
     const out: LookupCandidate[] = [];
     for (const row of rows) {
-        if (row.missingSince || !usable(row)) continue;
+        // Profiles and purpose tags describe chat models only.
+        if (row.missingSince || !usable(row) || rowKind(row) !== "chat") continue;
         const code = inCode(row);
         if (!code && row.approvedAt === null && row.probeStatus !== "passed") continue;
         const profile = byKey.get(`${row.providerId}::${row.modelId}`);

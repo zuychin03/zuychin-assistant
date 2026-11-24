@@ -1,4 +1,5 @@
 import { getProvider } from "@/lib/ai/providers";
+import { geminiTtsModel } from "@/lib/ai/speech-model";
 export const MODEL_DATA_CLASSES = ["personal", "knowledge", "public_search", "unattended"] as const;
 export type ModelDataClass = typeof MODEL_DATA_CLASSES[number];
 export interface DataRouteAssessment {
@@ -14,9 +15,12 @@ export const DATA_ROUTE_RULES = {
 } as const;
 export function assessDataRoute(input: { providerId: string; modelId: string; purpose: string; classes: ModelDataClass[]; freeOnly?: boolean }): DataRouteAssessment {
     const provider = getProvider(input.providerId);
-    const speech = input.purpose === "speech" && (input.providerId === "gemini" || input.providerId === "gemini-free")
-        && input.modelId === (process.env.GEMINI_TTS_MODEL ?? "gemini-3.1-flash-tts-preview");
-    const model = speech ? { free: input.providerId === "gemini-free" } : provider && [...provider.chatModels, ...provider.embeddingModels].find(candidate => candidate.id === input.modelId);
+    const listed = provider && [...provider.chatModels, ...provider.embeddingModels, ...(provider.speechModels ?? []), ...(provider.transcriptionModels ?? [])]
+        .find(candidate => candidate.id === input.modelId);
+    // The default voice works before the catalogue lists it (no v7-model-types.sql yet).
+    const defaultSpeech = !listed && input.purpose === "speech" && (input.providerId === "gemini" || input.providerId === "gemini-free")
+        && input.modelId === geminiTtsModel();
+    const model = listed ?? (defaultSpeech ? { free: input.providerId === "gemini-free" } : undefined);
     const tier = model?.free === true ? "free" : model?.free === false ? "paid" : "unknown";
     const scheduled = input.classes.includes("unattended"), embedding = input.purpose === "embedding";
     const rule = scheduled ? embedding ? "shared_embedding_partition" : "scheduled_generation" : input.classes.length ? "interactive" : "unclassified";

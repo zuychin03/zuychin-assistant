@@ -114,20 +114,20 @@ const plans = (envVars: Record<string, string | undefined>) => ({
 });
 {
     const up = plans(env), down = plans({});
-    assert.equal(up.auto.local, "M2"); assert.equal(up.auto.gemini?.route.providerId, "gemini"); assert.equal(up.auto.gemini?.voiceName, "Kore");
-    assert.equal(up.gemini.local, null); assert.equal(up.gemini.gemini?.route.providerId, "gemini");
-    assert.equal(up.local.local, "M2"); assert.equal(up.local.gemini, null);
-    assert.equal(down.auto.local, null); assert.notEqual(down.auto.gemini, null);
-    assert.deepEqual(down.local, { local: null, gemini: null });
+    assert.equal(up.auto.local, "M2"); assert.equal(up.auto.api?.route.providerId, "gemini"); assert.equal(up.auto.api?.voiceName, "Kore");
+    assert.equal(up.gemini.local, null); assert.equal(up.gemini.api?.route.providerId, "gemini");
+    assert.equal(up.local.local, "M2"); assert.equal(up.local.api, null);
+    assert.equal(down.auto.local, null); assert.notEqual(down.auto.api, null);
+    assert.deepEqual(down.local, { local: null, api: null });
     assert.equal(planSpeech(prefs({ localVoice: "F2" }), { freeOnly: false, env }).local, "F2");
-    assert.equal(planSpeech(prefs(), { freeOnly: false, voiceName: "Puck", env }).gemini?.voiceName, "Puck");
+    assert.equal(planSpeech(prefs(), { freeOnly: false, voiceName: "Puck", env }).api?.voiceName, "Puck");
 
     // Free only: the free key is the only Gemini route, and on-box speech needs no key.
-    assert.deepEqual(planSpeech(prefs(), { freeOnly: true, env }), { local: "M2", gemini: null });
+    assert.deepEqual(planSpeech(prefs(), { freeOnly: true, env }), { local: "M2", api: null });
     process.env.GEMINI_FREE_API_KEY = "fixture-free";
     const free = planSpeech(prefs(), { freeOnly: true, env });
-    assert.equal(free.local, "M2"); assert.equal(free.gemini?.route.providerId, "gemini-free");
-    assert.deepEqual(planSpeech(prefs(), { freeOnly: true, geminiFree: false, env }), { local: "M2", gemini: null });
+    assert.equal(free.local, "M2"); assert.equal(free.api?.route.providerId, "gemini-free");
+    assert.deepEqual(planSpeech(prefs(), { freeOnly: true, geminiFree: false, env }), { local: "M2", api: null });
     assert.deepEqual(planSpeech(prefs(), { freeOnly: true, env: {} }).local, null);
     delete process.env.GEMINI_FREE_API_KEY;
 
@@ -140,7 +140,7 @@ const plans = (envVars: Record<string, string | undefined>) => ({
     assert.equal(reply({}, { audioTurn: false, freeOnly: false }), null);
     assert.notEqual(reply({}, { audioTurn: true, freeOnly: false }), null);
     assert.notEqual(reply({ replyWithVoice: "always" }, { audioTurn: false, freeOnly: false }), null);
-    assert.deepEqual(reply({ replyWithVoice: "always" }, { audioTurn: false, freeOnly: true }), { local: "M2", gemini: null });
+    assert.deepEqual(reply({ replyWithVoice: "always" }, { audioTurn: false, freeOnly: true }), { local: "M2", api: null });
     assert.equal(reply({ replyWithVoice: "always" }, { audioTurn: false, freeOnly: true }, {}), null);
     assert.equal(reply({ replyWithVoice: "always", speechEngine: "gemini" }, { audioTurn: false, freeOnly: true }), null);
 }
@@ -192,7 +192,7 @@ const before = spokenBodies.length;
 out = await providers(planSpeech(prefs({ speechEngine: "gemini" }), { freeOnly: false }));
 assert.deepEqual([...new Set(out.map((c) => c.provider))], ["gemini"]); assert.equal(spokenBodies.length, before, "a forced Gemini voice never calls the service");
 await assert.rejects(providers(auto, "   "), /Nothing to speak/);
-await assert.rejects(providers({ local: null, gemini: null }), /No speech route/);
+await assert.rejects(providers({ local: null, api: null }), /No speech route/);
 const aborted = new AbortController(); aborted.abort();
 await assert.rejects(drain(speechStream("Hello.", auto, 500, aborted.signal)), { name: "AbortError" });
 assert.equal(geminiCalls, 3, "an abort never falls back, and only the forced Gemini request called Gemini again");

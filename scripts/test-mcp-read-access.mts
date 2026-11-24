@@ -27,6 +27,7 @@ const dependencies: Record<string, unknown> = {
     "@/lib/agents/scopes": scopes,
     "@/lib/ai/embeddings": { getEmbeddingRef: boundary("getEmbeddingRef", { model: { id: "fixture" } }), embedText: boundary("embedText", [0.1]) },
     "@/lib/ai/embedding-override": { refreshEmbeddingOverride: boundary("refreshEmbeddingOverride", undefined) },
+    "@/lib/ai/embedding-cutoffs": { similarityCutoffs: () => ({ toolNotes: 0.4 }) },
     "@/lib/db": {
         hybridSearchKnowledge: boundary("hybridSearchKnowledge", [{ id: "note-fixture", content: "private knowledge fixture", metadata: {} }]),
         searchEmbeddings: boundary("searchEmbeddings", []),

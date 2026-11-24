@@ -1,6 +1,7 @@
 import { ai, MODEL } from "@/lib/gemini";
 import { Type } from "@google/genai";
 import { embedText } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { observeGeminiClient } from "@/lib/ai/model-observations";
 import {
     searchMemories, insertMemory, updateMemoryFact, deleteMemory, reinforceMemory,
@@ -9,8 +10,6 @@ import {
 
 const CATEGORIES: MemoryCategory[] = ["identity", "preference", "relationship", "project", "routine", "fact", "other"];
 const MAX_OPS = 4;
-// Low threshold on purpose: we want near-misses as consolidation candidates.
-const CANDIDATE_THRESHOLD = 0.35;
 const CANDIDATE_COUNT = 8;
 // Work/study observations enter as invisible candidates; everything else is a
 // personal-life fact that must meet the explicit-statement bar in the prompt.
@@ -53,7 +52,8 @@ export async function extractMemories(params: {
             queryEmbedding,
             userId: userProfileId,
             projectId,
-            matchThreshold: CANDIDATE_THRESHOLD,
+            // Low on purpose: near-misses are consolidation candidates.
+            matchThreshold: similarityCutoffs(embRef.model).memoryMerge,
             matchCount: CANDIDATE_COUNT,
         });
 

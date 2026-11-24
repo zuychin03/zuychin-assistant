@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-    assertCasSafe, type MigrationItem, type MigrationRow, type MigrationStore, type MigrationTable,
+    MIGRATION_TABLES, assertCasSafe, type MigrationItem, type MigrationRow, type MigrationStore, type MigrationTable,
 } from "./embedding-migration.ts";
 
 const PROJECTIONS: Record<MigrationTable, string> = {
@@ -56,4 +56,18 @@ export function createMigrationStore(
             if (error) throw new Error("Verified vectors are saved, but runtime activation failed. Rerun to retry activation.");
         },
     };
+}
+
+/** Rows per table not yet on the target partition, from head counts (cheap enough to poll). */
+export async function countPendingRows(sb: SupabaseClient, target: string, signal?: AbortSignal): Promise<Record<MigrationTable, number>> {
+    const counts = await Promise.all(MIGRATION_TABLES.map(async (table) => {
+        let query = sb.from(table)
+            .select("id", { count: "exact", head: true })
+            .or(`embedding.is.null,embedding_model.is.null,embedding_model.neq.${target}`);
+        if (signal) query = query.abortSignal(signal);
+        const { count, error } = await query;
+        if (error || count === null) throw new Error("Embedding migration status is unavailable.");
+        return [table, count] as const;
+    }));
+    return Object.fromEntries(counts) as Record<MigrationTable, number>;
 }

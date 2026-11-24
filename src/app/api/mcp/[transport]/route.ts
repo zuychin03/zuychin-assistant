@@ -3,6 +3,7 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { embedText, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import {
     hybridSearchKnowledge, searchEmbeddings, storeEmbedding, getRecentMessages,
@@ -80,7 +81,7 @@ const handler = createMcpHandler(
                         })) ??
                         (await searchEmbeddings({
                             queryEmbedding: embedding,
-                            matchThreshold: 0.6,
+                            matchThreshold: similarityCutoffs(embRef.model).toolNotes,
                             matchCount,
                             embeddingModel: embRef.model.id,
                         }));

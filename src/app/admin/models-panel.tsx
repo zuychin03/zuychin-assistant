@@ -8,21 +8,28 @@ import type { DiscoveryRunRecord } from "@/lib/ai/catalogue/store";
 import type { AdminModelInfo } from "@/lib/ai/models/admin-view";
 import type { ModelSpeed } from "@/lib/ai/models/stats";
 import type { PurposeTag } from "@/lib/ai/models/tags";
+import type { ModelKind } from "@/lib/ai/catalogue/sources";
+import type { TranscriptionOrder } from "@/lib/ai/voice-choices";
+import { duration, keyOf, melbourneDate, melbourneTime, OUTCOME_LABELS, probeSteps, STEP_LABELS } from "./model-format";
+import { KIND_LABELS, KnowledgeStrip, SpeechStrip, TranscriptionStrip, TypedEntry, typedNeedsAttention, typedRank, type KnowledgeInfo, type SwitchJob, type TypedRow, type VoiceInfo } from "./typed-models";
 
-type ModelRow = CatalogueRow & AdminModelInfo & { probeDetail: unknown; inCode: boolean; retired: boolean };
+type ModelRow = CatalogueRow & AdminModelInfo & { kind: "chat"; probeDetail: unknown; inCode: boolean; retired: boolean };
+type AnyRow = ModelRow | TypedRow;
 interface ProviderEntry { id: string; label: string; available: boolean; discovery: { include: string; pricing: string } | null }
 interface TagEntry { tag: PurposeTag; label: string; meaning: string }
 interface CataloguePayload {
     storage: string;
     profileStorage: string;
     statsStorage: string;
-    settings: { enabled: boolean; maxProbes: number; lookups: number };
+    settings: { enabled: boolean; maxProbes: number; lookups: number; types?: { enabled: boolean; stored: boolean } };
+    knowledge?: KnowledgeInfo | null;
+    voice?: VoiceInfo;
     tags: TagEntry[];
     providers: ProviderEntry[];
-    rows: ModelRow[];
+    rows: AnyRow[];
     runs: DiscoveryRunRecord[];
 }
-type Filter = "all" | "attention" | "review" | "picker" | "hidden" | "removed";
+type Filter = "all" | "attention" | "review" | "picker" | "hidden" | "removed" | "inuse";
 interface Notice { tone?: "danger"; text: string }
 interface ProfileText { description: string; strengths: string; weaknesses: string }
 interface ProfileSave { tags?: PurposeTag[]; profile?: { description: string; strengths: string[]; weaknesses: string[]; developer: string | null; params: string | null; sources: { title: string; url: string }[] }; approveModel?: boolean }
@@ -31,23 +38,12 @@ const FILTERS: { value: Filter; label: string }[] = [
     { value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "review", label: "Profile to review" },
     { value: "picker", label: "In the picker" }, { value: "hidden", label: "Not in the picker" }, { value: "removed", label: "Removed" },
 ];
+const TYPED_FILTERS: { value: Filter; label: string }[] = [{ value: "all", label: "All models" }, { value: "attention", label: "Needs attention" }, { value: "inuse", label: "In use" }];
+const KINDS: readonly ModelKind[] = ["chat", "embedding", "speech", "transcription"];
+const TYPES_MIGRATION = "scripts/migrations/v7-model-types.sql";
 const POLL_MS = 4000;
-const STEP_LABELS: Record<string, string> = { chat: "Chat", tools: "Tool call", forced: "Forced tool call", vision: "Vision" };
-const OUTCOME_LABELS: Record<string, string> = { pass: "Passed", fail: "Failed", transient: "No clear result", skipped: "Skipped" };
 const PROFILE_MIGRATION = "scripts/migrations/v7-model-awareness.sql";
 
-const keyOf = (row: Pick<CatalogueRow, "providerId" | "modelId">) => `${row.providerId}::${row.modelId}`;
-
-function melbourneTime(value: string | null): string {
-    return value ? new Date(value).toLocaleString("en-AU", { timeZone: "Australia/Melbourne", day: "2-digit", month: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit" }) : "Never";
-}
-function melbourneDate(value: string): string {
-    return new Date(value).toLocaleDateString("en-AU", { timeZone: "Australia/Melbourne", day: "2-digit", month: "2-digit", year: "numeric" });
-}
-function duration(ms: number | null): string {
-    if (ms === null) return "Not measured";
-    return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
-}
 function tokens(value: number | null): string {
     if (value === null) return "Unknown";
     return value >= 1000 ? `${Math.round(value / 1000).toLocaleString()}K` : value.toLocaleString();
@@ -79,21 +75,6 @@ function speedText(speed: ModelSpeed): string {
     if (speed.tokensPerSecond !== null) parts.push(`${Math.round(speed.tokensPerSecond)} tokens/s`);
     if (speed.successRate !== null) parts.push(`${Math.round(speed.successRate * 100)}% of ${speed.calls} calls succeeded`);
     return `${tier}: ${parts.join(", ")}, last 14 days.`;
-}
-
-function steps(detail: unknown): { name: string; outcome: string; httpStatus: number | null; ms: number | null; detail: string | null }[] {
-    const raw = detail !== null && typeof detail === "object" ? (detail as { steps?: unknown }).steps : null;
-    if (!raw || typeof raw !== "object") return [];
-    return Object.entries(raw as Record<string, unknown>).flatMap(([name, value]) => {
-        if (!value || typeof value !== "object") return [];
-        const step = value as Record<string, unknown>;
-        return [{
-            name, outcome: typeof step.outcome === "string" ? step.outcome : "unknown",
-            httpStatus: typeof step.httpStatus === "number" ? step.httpStatus : null,
-            ms: typeof step.ms === "number" ? step.ms : null,
-            detail: typeof step.detail === "string" ? step.detail : null,
-        }];
-    });
 }
 
 function runSummary(run: DiscoveryRunRecord): string {
@@ -219,7 +200,7 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, con
     const [text, setText] = useState<ProfileText>(() => ({ description: base?.description ?? "", strengths: base?.strengths.join("\n") ?? "", weaknesses: base?.weaknesses.join("\n") ?? "" }));
     const [editing, setEditing] = useState(false);
     const [open, setOpen] = useState(() => draftReady(row));
-    const probeSteps = steps(row.probeDetail);
+    const stepList = probeSteps(row.probeDetail);
     const statusPill = isNew(row) ? <span className="pill">New</span>
         : row.probeStatus === "passed" ? <span className="pill" data-tone="success">Passed</span>
             : row.probeStatus === "failed" ? <span className="pill" data-tone="danger">Failed</span>
@@ -315,8 +296,8 @@ function ModelEntry({ row, tagList, profilesReady, locked, busy, confirming, con
                     <div><dt>Inputs listed</dt><dd>{row.inputs.length ? row.inputs.join(", ") : "Not listed"}</dd></div>
                     <div><dt>First seen / last listed</dt><dd>{melbourneTime(row.firstSeenAt)} / {melbourneTime(row.lastSeenAt)}</dd></div>
                 </dl>
-                {probeSteps.length > 0 && <ul style={styles.steps}>
-                    {probeSteps.map((step) => (
+                {stepList.length > 0 && <ul style={styles.steps}>
+                    {stepList.map((step) => (
                         <li key={step.name} className="meta">
                             <strong style={styles.stepName}>{STEP_LABELS[step.name] ?? step.name}:</strong> {OUTCOME_LABELS[step.outcome] ?? step.outcome}
                             {step.httpStatus !== null ? `, HTTP ${step.httpStatus}` : ""}{step.ms !== null && step.outcome !== "skipped" ? `, ${duration(step.ms)}` : ""}
@@ -342,7 +323,11 @@ export default function ModelsPanel() {
     const [confirmKey, setConfirmKey] = useState<string | null>(null);
     const [deleteKey, setDeleteKey] = useState<string | null>(null);
     const [pending, setPending] = useState<{ key: string; label: string; runId: string; kind: "test" | "lookup" } | null>(null);
+    const [kind, setKind] = useState<ModelKind>("chat");
+    const [switchJob, setSwitchJob] = useState<SwitchJob | null>(null);
+    const [voiceBusy, setVoiceBusy] = useState(false);
     const requestRef = useRef<AbortController | null>(null);
+    const jobStatusRef = useRef<SwitchJob["status"] | null>(null);
 
     const load = useCallback(async () => {
         requestRef.current?.abort();
@@ -386,15 +371,39 @@ export default function ModelsPanel() {
         setPending(null);
     }, [data, pending]);
 
-    const send = async (url: string, method: "POST" | "PATCH" | "DELETE", body?: object) => {
+    const loadSwitch = useCallback(async () => {
+        try {
+            const response = await fetch("/api/admin/embedding/switch", { cache: "no-store" });
+            const body = await response.json().catch(() => null) as { job?: SwitchJob | null } | null;
+            if (!response.ok || !body) return;
+            const job = body.job ?? null;
+            // The catalogue shows the new knowledge model once a running job ends.
+            if (jobStatusRef.current === "running" && job?.status !== "running") void load();
+            jobStatusRef.current = job?.status ?? null;
+            setSwitchJob(job);
+        } catch { /* the strip keeps its last state */ }
+    }, [load]);
+
+    useEffect(() => { if (kind === "embedding") void loadSwitch(); }, [kind, loadSwitch]);
+    useEffect(() => {
+        if (switchJob?.status !== "running") return;
+        const timer = window.setTimeout(() => { void loadSwitch(); }, POLL_MS);
+        return () => window.clearTimeout(timer);
+    }, [switchJob, loadSwitch]);
+
+    const send = async (url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body?: object) => {
         const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
         const payload = await response.json().catch(() => ({})) as { error?: string; runId?: string };
         return { ok: response.ok, error: payload.error, runId: payload.runId };
     };
 
-    const rows = (data?.rows ?? []).filter((row) => !row.retired);
+    const allRows = data?.rows ?? [];
+    const rows = allRows.filter((row): row is ModelRow => row.kind === "chat" && !row.retired);
+    const typedRows = allRows.filter((row): row is TypedRow => row.kind !== "chat");
     const providerLabels = new Map((data?.providers ?? []).map((entry) => [entry.id, entry.label]));
-    const nameOf = (row: ModelRow) => `${providerLabels.get(row.providerId) ?? row.providerId} ${row.label}`;
+    const nameOf = (row: AnyRow) => `${providerLabels.get(row.providerId) ?? row.providerId} ${row.label}`;
+    const findTyped = (rowKind: ModelKind, providerId: string | null | undefined, modelId: string | null | undefined) =>
+        typedRows.find((row) => row.kind === rowKind && row.providerId === providerId && row.modelId === modelId);
 
     const checkNow = async () => {
         setNotice(null);
@@ -403,7 +412,7 @@ export default function ModelsPanel() {
         await load();
     };
 
-    const startRun = async (row: ModelRow, kind: "test" | "lookup") => {
+    const startRun = async (row: AnyRow, kind: "test" | "lookup") => {
         const key = keyOf(row);
         setBusyKey(key);
         setNotice(null);
@@ -416,18 +425,18 @@ export default function ModelsPanel() {
         setBusyKey(null);
     };
 
-    const test = async (row: ModelRow) => {
+    const test = async (row: AnyRow) => {
         if (!row.free && confirmKey !== keyOf(row)) { setConfirmKey(keyOf(row)); return; }
         setConfirmKey(null);
         await startRun(row, "test");
     };
 
-    const setApproval = async (row: ModelRow, approved: boolean) => {
+    const setApproval = async (row: AnyRow, approved: boolean) => {
         setBusyKey(keyOf(row));
         setNotice(null);
         const result = await send("/api/admin/models", "PATCH", { providerId: row.providerId, modelId: row.modelId, approved });
         setNotice(result.ok
-            ? { text: approved ? `${nameOf(row)} is approved for automatic routes.` : `${nameOf(row)} is no longer used by automatic routes. It stays in the picker while its test passes, and its profile is kept.` }
+            ? { text: approved ? `${nameOf(row)} is approved for automatic routes.` : row.kind === "chat" ? `${nameOf(row)} is no longer used by automatic routes. It stays in the picker while its test passes, and its profile is kept.` : `${nameOf(row)} is no longer approved, so no automatic route uses it.` }
             : { tone: "danger", text: result.error ?? "The change could not be saved." });
         await load();
         setBusyKey(null);
@@ -444,7 +453,7 @@ export default function ModelsPanel() {
         setBusyKey(null);
     };
 
-    const remove = async (row: ModelRow) => {
+    const remove = async (row: AnyRow) => {
         if (deleteKey !== keyOf(row)) { setDeleteKey(keyOf(row)); return; }
         setDeleteKey(null);
         setBusyKey(keyOf(row));
@@ -453,6 +462,48 @@ export default function ModelsPanel() {
         setNotice(result.ok ? { text: `${nameOf(row)} is deleted.` } : { tone: "danger", text: result.error ?? "The model could not be deleted." });
         await load();
         setBusyKey(null);
+    };
+
+    const saveVoice = async (body: object, done: string) => {
+        setVoiceBusy(true);
+        setNotice(null);
+        const result = await send("/api/admin/speech", "PUT", body);
+        setNotice(result.ok ? { text: done } : { tone: "danger", text: result.error ?? "The choice could not be saved." });
+        await load();
+        setVoiceBusy(false);
+    };
+
+    const chooseBackup = (row: TypedRow, voiceName: string | null) => {
+        void saveVoice({ backup: { providerId: row.providerId, modelId: row.modelId, voice: voiceName } },
+            `${nameOf(row)}${voiceName ? ` (${voiceName})` : ""} is the backup voice now. It speaks when the on-box voice is off or fails.`);
+    };
+
+    const chooseTranscription = (row: TypedRow) => {
+        const current = data?.voice?.transcription.order ?? "local";
+        const order: TranscriptionOrder = current === "local" ? "local-first" : current;
+        void saveVoice({ transcription: { order, providerId: row.providerId, modelId: row.modelId } },
+            `${nameOf(row)} transcribes now${current === "local" ? ", after the on-box service. Change the order at the top of this list" : ""}.`);
+    };
+
+    const setOrder = (order: TranscriptionOrder) => {
+        const choice = data?.voice?.transcription;
+        void saveVoice({ transcription: { order, providerId: choice?.providerId ?? null, modelId: choice?.modelId ?? null } }, "The transcription order is saved.");
+    };
+
+    const startSwitch = async (row: TypedRow, dimension: number) => {
+        setBusyKey(keyOf(row));
+        setNotice(null);
+        const result = await send("/api/admin/embedding/switch", "POST", { providerId: row.providerId, modelId: row.modelId, dimension });
+        setNotice(result.ok ? { text: `Switching the knowledge store to ${nameOf(row)}. Progress shows at the top of this list.` } : { tone: "danger", text: result.error ?? "The switch could not start." });
+        await loadSwitch();
+        setBusyKey(null);
+    };
+
+    const chooseKind = (next: ModelKind) => {
+        setKind(next);
+        setProvider("");
+        if (next !== "chat" && !TYPED_FILTERS.some((entry) => entry.value === filter)) setFilter("all");
+        if (next === "chat" && filter === "inuse") setFilter("all");
     };
 
     const saveProfile = async (row: ModelRow, save: ProfileSave, done: string) => {
@@ -477,6 +528,23 @@ export default function ModelsPanel() {
     const groups = (data?.providers ?? [])
         .map((entry) => ({ entry, rows: visible.filter((row) => row.providerId === entry.id).sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)) }))
         .filter((group) => group.rows.length > 0);
+    const ofKind = typedRows.filter((row) => row.kind === kind);
+    const typedVisible = ofKind.filter((row) => (!provider || row.providerId === provider)
+        && (filter === "attention" ? typedNeedsAttention(row) : filter === "inuse" ? row.inUse : true)
+        && (!needle || `${row.label} ${row.modelId} ${providerLabels.get(row.providerId) ?? row.providerId}`.toLocaleLowerCase().includes(needle)));
+    const typedGroups = (data?.providers ?? [])
+        .map((entry) => ({ entry, rows: typedVisible.filter((row) => row.providerId === entry.id).sort((a, b) => typedRank(a) - typedRank(b) || a.label.localeCompare(b.label)) }))
+        .filter((group) => group.rows.length > 0);
+    const counts: Record<ModelKind, number> = { chat: rows.length, embedding: 0, speech: 0, transcription: 0 };
+    for (const row of typedRows) counts[row.kind]++;
+    const typesStored = data?.settings.types?.stored !== false;
+    const showKinds = typesStored || typedRows.length > 0;
+    const kindRows: AnyRow[] = kind === "chat" ? rows : ofKind;
+    const voice = data?.voice;
+    const knowledge = data?.knowledge ?? null;
+    const jobRow = switchJob ? findTyped("embedding", switchJob.providerId, switchJob.modelId) : undefined;
+    const backupRow = findTyped("speech", voice?.speech?.providerId, voice?.speech?.modelId);
+    const transcriberRow = findTyped("transcription", voice?.transcription.providerId, voice?.transcription.modelId);
     const lastCheck = data?.runs.find((run) => run.id !== pending?.runId && run.summary.kind !== "test" && run.summary.kind !== "lookup");
     const attentionCount = rows.filter((row) => rank(row) <= 3).length;
     const reviewCount = rows.filter(draftReady).length;
@@ -488,7 +556,7 @@ export default function ModelsPanel() {
                 <Layers size={16} aria-hidden="true" />
                 <div className="panel-heading">
                     <h2>Model catalogue</h2>
-                    <p>Models the daily check found and tested. Tested free models join the picker; approve one, with its profile and purpose tags, to let worker runs and fallbacks use it.</p>
+                    <p>Chat, embedding, speech and transcription models the daily check found and tested. Tested free chat models join the picker; approve a model to let automatic routes use it.</p>
                 </div>
                 <button type="button" className="btn" onClick={() => { void checkNow(); }} disabled={running || !data} aria-label="Check providers now">
                     <RefreshCw size={15} className={running ? "animate-spin" : undefined} aria-hidden="true" />
@@ -512,15 +580,28 @@ export default function ModelsPanel() {
                         {profilesReady ? data.settings.lookups ? `, and up to ${data.settings.lookups} profiles are drafted.` : ". Daily profile lookups are off (MODEL_LOOKUP=off); Look up still works." : "."}
                     </p>
                     {!profilesReady && <p className="meta" style={styles.runLine}>Profiles and purpose tags need {PROFILE_MIGRATION}. Until it is applied, tags are read off the built-in notes and Approve works as before.</p>}
+                    {!typesStored && <p className="meta" style={styles.runLine}>Embedding, speech and transcription models need {TYPES_MIGRATION}. Until it is applied, only chat models are listed.</p>}
+                    {typesStored && data.settings.types?.enabled === false && <p className="meta" style={styles.runLine}>Discovery of embedding, speech and transcription models is off (MODEL_TYPES_DISCOVERY=off). Models already listed are still tested.</p>}
                 </div>
+                {showKinds && <div role="group" aria-label="Model type" style={styles.kinds}>
+                    {KINDS.map((entry) => (
+                        <button key={entry} type="button" className="chip" aria-pressed={kind === entry} onClick={() => chooseKind(entry)}>
+                            {KIND_LABELS[entry]}<span style={styles.kindCount}>{counts[entry]}</span>
+                        </button>
+                    ))}
+                </div>}
+                {kind === "embedding" && <KnowledgeStrip knowledge={knowledge} providerLabel={knowledge ? providerLabels.get(knowledge.providerId) ?? knowledge.providerId : ""} job={switchJob} jobLabel={jobRow ? nameOf(jobRow) : null} />}
+                {kind === "speech" && voice && <SpeechStrip voice={voice} label={backupRow ? nameOf(backupRow) : null} busy={voiceBusy}
+                    onUseDefault={() => { void saveVoice({ backup: null }, "The backup voice is the default Gemini voice again."); }} />}
+                {kind === "transcription" && voice && <TranscriptionStrip voice={voice} label={transcriberRow ? nameOf(transcriberRow) : null} busy={voiceBusy} onOrder={setOrder} />}
                 <div style={styles.filters}>
                     <label style={styles.filter}><span>Find a model</span><input className="field" style={styles.input} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model or provider" /></label>
                     <label style={styles.filter}><span>Provider</span><Dropdown ariaLabel="Model catalogue provider" className="field" style={{ ...styles.input, flex: "none" }} value={provider} onChange={setProvider}
-                        options={[{ value: "", label: "All providers" }, ...data.providers.filter((entry) => rows.some((row) => row.providerId === entry.id)).map((entry) => ({ value: entry.id, label: entry.label }))]} /></label>
+                        options={[{ value: "", label: "All providers" }, ...data.providers.filter((entry) => kindRows.some((row) => row.providerId === entry.id)).map((entry) => ({ value: entry.id, label: entry.label }))]} /></label>
                     <label style={styles.filter}><span>Show</span><Dropdown ariaLabel="Model catalogue filter" className="field" style={{ ...styles.input, flex: "none" }} value={filter} onChange={(value) => setFilter(value as Filter)}
-                        options={profilesReady ? FILTERS : FILTERS.filter((entry) => entry.value !== "review" && entry.value !== "removed")} /></label>
+                        options={kind !== "chat" ? TYPED_FILTERS : profilesReady ? FILTERS : FILTERS.filter((entry) => entry.value !== "review" && entry.value !== "removed")} /></label>
                 </div>
-                <div className="list scroll" style={styles.list}>
+                {kind === "chat" ? <div className="list scroll" style={styles.list}>
                     {groups.map(({ entry, rows: providerRows }) => (
                         <section key={entry.id} aria-labelledby={`catalogue-${entry.id}`} style={styles.group}>
                             <h3 id={`catalogue-${entry.id}`} style={styles.groupHead}>
@@ -544,7 +625,30 @@ export default function ModelsPanel() {
                         </section>
                     ))}
                     {!groups.length && <p className="empty">{rows.length ? "No models match these filters. Clear the search or choose another filter." : "The catalogue is empty. Press Check now to list each provider's models."}</p>}
-                </div>
+                </div> : <div className="list scroll" style={styles.list}>
+                    {typedGroups.map(({ entry, rows: providerRows }) => (
+                        <section key={entry.id} aria-labelledby={`catalogue-${kind}-${entry.id}`} style={styles.group}>
+                            <h3 id={`catalogue-${kind}-${entry.id}`} style={styles.groupHead}>
+                                {entry.label}
+                                <span className="meta">{providerRows.length} shown</span>
+                                {!entry.available && <span className="pill">Not available</span>}
+                            </h3>
+                            {providerRows.map((row) => {
+                                const key = keyOf(row);
+                                const chosenVoice = voice?.speech?.providerId === row.providerId && voice.speech.modelId === row.modelId ? voice.speech.voice ?? "" : "";
+                                return <TypedEntry key={`${key}|${chosenVoice}`} row={row} providerLabel={entry.label} voice={voice ?? { speech: null, transcription: { order: "local", providerId: null, modelId: null }, defaultSpeechModel: "" }}
+                                    locked={running} busy={busyKey === key || pending?.key === key || voiceBusy} switchRunning={switchJob?.status === "running"}
+                                    confirming={confirmKey === key} confirmingDelete={deleteKey === key}
+                                    onTest={() => { void test(row); }} onApproval={(approved) => { void setApproval(row, approved); }}
+                                    onDelete={() => { void remove(row); }} onCancel={() => setConfirmKey(null)} onCancelDelete={() => setDeleteKey(null)}
+                                    onStartSwitch={(dimension) => { void startSwitch(row, dimension); }}
+                                    onUseBackup={(voiceName) => chooseBackup(row, voiceName)} onUseTranscription={() => chooseTranscription(row)} />;
+                            })}
+                        </section>
+                    ))}
+                    {!typedGroups.length && <p className="empty">{ofKind.length ? "No models match these filters. Clear the search or choose another filter."
+                        : !typesStored ? `Apply ${TYPES_MIGRATION}, then press Check now.` : `No ${KIND_LABELS[kind].toLocaleLowerCase()} models yet. Press Check now to list them.`}</p>}
+                </div>}
             </>}
         </div>
     );
@@ -556,6 +660,8 @@ const styles: Record<string, React.CSSProperties> = {
     runLine: { margin: "2px 0" },
     runLabel: { color: "var(--ink)", fontWeight: 600 },
     filters: { display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 10 },
+    kinds: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 },
+    kindCount: { marginLeft: 6, color: "var(--faint)", fontVariantNumeric: "tabular-nums" },
     filter: { display: "flex", flexDirection: "column", gap: 6, flex: "1 1 200px", minWidth: 0, fontSize: 13, color: "var(--muted)" },
     input: { width: "100%", padding: "0 10px", background: "var(--surface)" },
     list: { marginTop: 4, maxHeight: 640, scrollbarGutter: "stable" },

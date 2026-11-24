@@ -22,7 +22,7 @@ alter table public.study_reviews add column if not exists feedback_id uuid refer
 
 alter table public.model_call_observations drop constraint if exists model_call_observations_purpose_check;
 alter table public.model_call_observations add constraint model_call_observations_purpose_check
-  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council'));
+  check (purpose in ('chat', 'embedding', 'routing', 'worker', 'orchestration', 'compaction', 'continuation', 'extraction', 'summary', 'title', 'search', 'speech', 'study', 'probe', 'lookup', 'consult', 'council', 'transcription'));
 
 create or replace function public.assistant_study_feedback(p_user_id uuid,p_body jsonb)
 returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$

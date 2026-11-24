@@ -23,13 +23,18 @@ edited and deleted in place.
   drops off its provider's list twice is marked Missing but stays selectable. Worker runs and
   fallbacks use a discovered model only after you approve it in `/admin`; paid models are tested
   only when you press Test. Remove takes any model except the default out of every selectable
-  list until you restore it, and a discovered model its provider has retired can be deleted
+  list until you restore it, and a discovered model its provider has retired can be deleted.
+  Embedding, speech and transcription models are listed and tested the same way, under their own
+  tabs. The models in use are tested every day, and a notice goes out 30 and 7 days before a
+  provider retires one
 - Model awareness: every chat model has purpose tags (research, coding, reasoning and more) and
   a speed measured from recent calls. A lookup on free sources drafts each model's profile, which
   you approve in `/admin` before the info modal or the agent uses it. Agent mode picks sub-agents
   by purpose, can ask or compare models directly, and rates the workers it used
 - RAG memory: a model-aware pgvector store. Each embedding model keeps its own memory
-  partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup
+  partition (Gemini 768-dim, Nemotron 2048-dim), with rerank, summarization and dedup. Chat
+  search embeds the message as a query, and every search reads its similarity cut-off from the
+  active embedding model, so a switch does not silently drop real matches
 - Chat history: conversation sidebar with auto-titling and full CRUD
 - Projects: group conversations into collapsible sidebar sections, each with its own
   instructions injected into every chat inside it; extracted facts can be scoped to a
@@ -70,13 +75,16 @@ edited and deleted in place.
   ready (or after 15 seconds), so the first turn is not slowed. The on-box voice starts loading
   next, while you speak: the box's small CPU loads the two faster one after the other.
   If the service is unset, busy or fails, the turn falls back to sending the audio to Gemini as
-  before. Telegram voice notes of up to 5 minutes are transcribed the same way, in 30-second
+  before. The transcription order on `/admin#models` can add an approved API model (Gemini,
+  Groq Whisper or OpenRouter): on-box only (the default), on-box first, API first or API only;
+  sending the audio stays the last step in every order. Telegram voice notes of up to 5 minutes are transcribed the same way, in 30-second
   pieces, so any chat model can answer them; they fall back to audio on the same terms
 - On-box speech out: with the optional `tts-service` running, replies are spoken by a small local
   model (tiny-voca, English) instead of Gemini TTS. First audio takes about half a second on a
   1 GB box, and the reply text never leaves the host. If the service is unset, busy, loading or
-  cannot read the text (not English), the same request falls back to Gemini before any audio
-  plays. Telegram voice replies follow the same rules. Discord gets a `reply.wav` attachment when
+  cannot read the text (not English), the same request falls back to the backup voice before any
+  audio plays: any approved speech model chosen on `/admin#models` (Gemini, OpenRouter or Groq),
+  or Gemini when none is chosen. Telegram voice replies follow the same rules. Discord gets a `reply.wav` attachment when
   the saved voice preference is "always". The `voice` preference takes `speechEngine` (`auto`,
   `gemini` or `local`) and `localVoice` (`M2` or `F2`). In Free only, the local voice needs no
   Gemini key
@@ -218,9 +226,10 @@ edited and deleted in place.
   initiative decisions, the nightly run review, the daily model check and proactive check-ins
 - Export: every long reply gets a collapsed **Generate ▾** menu for a DOCX / PDF / MD
   download; whole conversations export to PDF or DOCX (Markdown-aware)
-- Live embedding switcher: changing the embedding model in settings (behind a confirm
-  modal) re-embeds the entire knowledge store in resumable batches and flips the active
-  partition at runtime - no script run or redeploy needed
+- Knowledge model switch: **Switch knowledge to this** on `/admin#models` re-embeds the whole
+  knowledge store in a server job that shows its progress, pauses on a daily quota and resumes
+  later, then makes the new model active. No script run or redeploy is needed. An approved route
+  that returns identical vectors (marked Same space) takes over by itself when the main one fails
 - Admin dashboard: stats, model health, the model catalogue, a live personality/system-prompt
   editor, agent-run traces (status, duration, tokens, expandable step timeline), a fact-memory
   editor and a skills panel (approve/edit/delete agent-authored skill drafts) at `/admin`
@@ -237,10 +246,10 @@ edited and deleted in place.
 |-------|------------|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4 |
 | Chat models | Gemini 3.8 Flash / 3.5 Flash-Lite, DeepSeek V4.1 Flash / V4 Pro, OpenRouter (Nemotron, Laguna, Gemma 4), NVIDIA NIM (Nemotron, Gemma 4, GLM-5.3 Flash, Laguna XS) |
-| Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3.5 Embed 1B (2048d, default) |
+| Embeddings | Stable Gemini Embedding 2 (768d), NVIDIA NIM Nemotron 3.5 Embed 1B (2048d, default); others discovered on `/admin`, and an approved same-space route as the backup |
 | Grounding | Google Search, Google Maps, URL context (Gemini path only) |
-| Voice replies | Gemini TTS (`gemini-3.1-flash-tts-preview`), streamed PCM → WAV / Web Audio; or tiny-voca through a local `tts-service` (Python, onnxruntime), same PCM stream |
-| Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio |
+| Voice replies | Gemini TTS (`gemini-3.8-flash-lite-tts`), streamed PCM → WAV / Web Audio; or tiny-voca through a local `tts-service` (Python, onnxruntime), same PCM stream; a backup voice from any approved Gemini, OpenRouter or Groq speech model |
+| Voice input | Moonshine tiny (English) through `sherpa-onnx-node` in a local `stt-service`; the browser converts recordings to 16 kHz PCM with Web Audio; optional API transcription (Gemini, Groq Whisper, OpenRouter) |
 | Push | web-push (VAPID) + service worker (PWA) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | 3D graph | 3d-force-graph (three.js + d3-force-3d), three (sprite stars, planet bodies, bloom), HTML label overlay |
@@ -309,9 +318,10 @@ Model-provider configuration (missing keys and explicitly unavailable providers 
 | `TOKENROUTER_API_KEY` | Retained configuration; unavailable because the configured key had no usable free endpoint in the 23/09/2026 audit |
 | `MODEL_DISCOVERY` | Optional. `off` makes the daily model check return 204 and do nothing; the app keeps using the stored catalogue and the models in code. Check now in `/admin` still works |
 | `MODEL_DISCOVERY_MAX_PROBES` | Optional. Free models tested per provider in each check, a whole number from 0 to 50 (default 10) |
-| `MODEL_LOOKUP` | Optional. `off` skips profile lookups in the daily model check. The Look up button in `/admin` still works |
+| `MODEL_LOOKUP` | Optional. `off` skips profile lookups and the weekly retirement lookup for models in use in the daily model check. The Look up button in `/admin` still works |
 | `MODEL_LOOKUP_MAX_PER_RUN` | Optional. Profile lookups per daily check (default 4) |
-| `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require the explicit migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
+| `MODEL_TYPES_DISCOVERY` | Optional. `off` keeps the daily model check to chat models; embedding, speech and transcription models already listed are still tested. Default on |
+| `KNOWLEDGE_EMBEDDING_MODEL` | Optional registered model ID. Existing vectors require a switch on `/admin#models` or the migration below; changing this value alone does not migrate them. A saved runtime override takes precedence |
 | `TAVILY_API_KEY` / `TAVILY_API_KEY_DEEP` | Web search for the non-Gemini models ([tavily.com](https://tavily.com), free tier). The first serves quick lookups and the second thorough ones; each borrows the other's credits when its own run out, and Gemini grounding covers the rest. With neither set, every search goes to Gemini. Capture also uses them to read a page the server is blocked from or can't reach |
 | `CAPTURE_FETCH` | Optional. `off` stops Capture fetching links on the server; Review then asks you to paste the passage instead |
 
@@ -338,7 +348,7 @@ Optional auth, integrations, channels and cron:
 | `CRON_SECRET` | Bearer token required by the cron endpoints |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web-push key pair (`npx web-push generate-vapid-keys`); either unset = push disabled |
 | `VAPID_SUBJECT` | Your `mailto:` contact for the push service, e.g. `mailto:you@example.com`. Required: push stays disabled without it |
-| `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.1-flash-tts-preview`) |
+| `GEMINI_TTS_MODEL` | Optional override of the voice-reply TTS model (default `gemini-3.8-flash-lite-tts`) |
 | `STT_SERVICE_URL` / `STT_SERVICE_TOKEN` | On-box speech-to-text service, for example `http://127.0.0.1:3010`, and its bearer token (the service's `STT_TOKEN`). Either unset = voice turns send the audio to Gemini, and voice stays off in Free only. See [Speech-to-text service](#speech-to-text-service-optional) |
 | `TTS_SERVICE_URL` / `TTS_SERVICE_TOKEN` | On-box text-to-speech service, for example `http://127.0.0.1:3011`, and its bearer token (the service's `TTS_TOKEN`). Either unset = replies are spoken by Gemini. See [Text-to-speech service](#text-to-speech-service-optional) |
 | `NEXT_PUBLIC_BASE_URL` | Address other machines reach this install on. Agent claims use it instead of the page they were minted from, so one copied on localhost still points somewhere a remote agent can reach. Falls back to `VERCEL_URL`, then the current origin |
@@ -432,6 +442,16 @@ The `-- ===== Council owner notes =====` block creates `council_owner_notes`, le
 coding-agent campaigns. The `-- ===== V7 local Council cleanup =====` block at the end drops it again,
 with the other local-only council tables (see the council section).
 
+The `-- ===== V7 model types =====` block adds a `kind` (chat, embedding, speech or
+transcription) and typed columns to `model_catalogue`: dimension, retirement date and its source,
+the route it shares vectors with (`space_of`) and `traits` (voices, formats, batch size and
+similar). It seeds the two built-in embedding models and the default Gemini speech model on both
+Gemini keys, and adds the `transcription` purpose to model health. On an existing project, dump
+`model_catalogue` and `cron_state` first, then run
+[`scripts/migrations/v7-model-types.sql`](scripts/migrations/v7-model-types.sql); it is safe to
+run again. Without it, embeddings and speech run on the models in code, the daily check stays on
+chat models, and `/admin` says which file to apply.
+
 
 ### Web authentication
 
@@ -494,7 +514,8 @@ npm run dev
   workspace: **Library** (its Cosmos link opens the 3D vault view), Research, Study, Capture,
   Tasks and Dashboard.
 - **Generation settings**, beside the model picker, holds the Agent mode, Free only and
-  Knowledge only switches, temperature / top-p / max-tokens and the embedding model picker.
+  Knowledge only switches and temperature / top-p / max-tokens. It also names the knowledge
+  (embedding) model, with a link to change it on the dashboard.
   Agent mode forces the multi-step agent loop for every message (off = auto-detect); on
   wide screens the top bar has the same switch.
 - Type `/` in the message bar to open the slash-command drop-up (arrow keys / Tab / Enter
@@ -530,8 +551,8 @@ npm run dev
 | GET/POST/PUT/DELETE | `/api/projects` | Project list / create / rename + edit instructions / delete (chats drop to Ungrouped) |
 | GET/PATCH/DELETE | `/api/todos` | Notes checklist: list / set status / delete |
 | GET | `/api/today` | Today panel and chat starters: next-48 h events, due and pending todos |
-| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM). Speaks with the on-box voice when set up, else Gemini; `X-Model-Provider` says which. Free only uses the on-box voice or the free Gemini key, 409 without either |
-| POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service; 503 `{ fallback: true }` tells the client to send the audio instead |
+| GET/POST | `/api/tts` | Voice-reply prefs / synthesize speech (`stream: true` streams raw PCM, `X-Sample-Rate` gives its rate). Speaks with the on-box voice when set up, else the backup voice chosen on `/admin` (Gemini by default); `X-Model-Provider` says which. Free only uses the on-box voice, a free backup voice or the free Gemini key, 409 without any |
+| POST | `/api/voice/transcribe` | 16 kHz 16-bit PCM (60 s or less) to text through the speech-to-text service and, in the transcription order chosen on `/admin`, an API model; 503 `{ fallback: true }` tells the client to send the audio instead |
 | GET | `/api/voice/status` | Whether the speech-to-text service is set up (config only, so a page load never starts it) |
 | POST | `/api/voice/warm` | Start the speech-to-text and text-to-speech services and their models as a voice chat begins; returns `{ available, loaded }` for speech-to-text. The voice is started only once speech-to-text is no longer loading. The page polls it and opens the mic once speech-to-text has loaded |
 | POST/DELETE | `/api/push/subscribe` | Register / remove a web-push subscription |
@@ -600,9 +621,11 @@ npm run dev
 | GET | `/api/admin/runs` | Agent-run traces (list, or `?id=` for the full event timeline) |
 | GET/POST/PUT/DELETE | `/api/admin/memories` | List / add / edit / delete extracted memory facts |
 | GET/PUT/DELETE | `/api/admin/skills` | List custom + built-in skills, approve/edit drafts, delete |
-| GET/POST | `/api/admin/reembed` | Re-embed progress / migrate the knowledge store to another embedding model (batched, resumable) |
+| GET/POST | `/api/admin/reembed` | Active knowledge model and rows not yet on it / POST answers 410: switching moved to `/api/admin/embedding/switch` |
+| GET/POST | `/api/admin/embedding/switch` | Knowledge model, switch job progress and, with `providerId` and `modelId`, a preview with an estimate / start a switch (202; the job runs on the server) |
+| GET/PUT | `/api/admin/speech` | Backup voice and transcription order / save either (only approved models whose last test passed) |
 | GET | `/api/admin/model-health` | Each model's recent results, latency and failure kinds |
-| GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows and the last 10 checks / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
+| GET/PATCH/DELETE | `/api/admin/models` | Model catalogue rows of every kind (`?kind=` narrows), the knowledge model, the voice choices and the last 10 checks / approve or unapprove a model, or remove or restore it (`removed`) / delete a discovered model its provider no longer lists |
 | POST | `/api/admin/models/refresh` | Start a model check now (202; 409 while one runs) |
 | POST | `/api/admin/models/test` | Test one catalogue model, paid ones included (202; 409 while a check runs) |
 | POST | `/api/admin/models/lookup` | Draft one model's profile from free sources (202; 409 while a check runs) |
@@ -627,7 +650,7 @@ Next's 10 MB `proxyClientMaxBodySize`, because over that Next silently passes on
 ## Providers & Models
 
 The chat model is chosen per message from the header dropdown (saved in `localStorage`).
-Generation settings include the embedding migration selector and hyperparameters. Providers
+Generation settings hold the hyperparameters and name the knowledge model. Providers
 need a configured key and must not carry an unavailable reason. The default web chat model
 is Gemini 3.5 Flash-Lite; messaging uses the separate chain below. Provider settings, the pinned
 models and audited quirks live in [`src/lib/ai/providers.ts`](src/lib/ai/providers.ts); every other
@@ -679,11 +702,23 @@ How it works:
   the provider reject the whole call instead of quietly truncating.
 - Embeddings are model-aware: each embedding model writes and reads its own partition of the
   vector store, because vectors from different models (and dimensions) aren't comparable.
-  The CLI and `/api/admin/reembed` share migration logic covering all five vector-bearing
-  tables and activate the target only after a fresh verification pass. The admin route
-  processes up to 20 rows per request with four concurrent preparations and reports failures
-  instead of presenting an unavailable count as zero. Removed embedding IDs fail explicitly
-  instead of silently interpreting old vectors as a new model's partition.
+  A model used at a reduced size gets its own partition, `<model>@<dimension>`.
+  The CLI and the switch job on `/admin#models` share migration logic covering all five
+  vector-bearing tables and activate the target only after a fresh verification pass. The job
+  sends up to 32 texts per call, two calls at a time, backs off on a 429 and pauses on a daily
+  quota or 5 failed batches in a row; the daily model check or the next `/admin` visit resumes
+  it. Removed embedding IDs fail explicitly instead of silently interpreting old vectors as a
+  new model's partition.
+- Backups: on a 410, 404, server error or timeout, the knowledge model falls back to an
+  approved route that returns identical vectors (Same space, proven by a test), with one
+  Discord notice a day at most. A 429 or NVIDIA's 422 content screen never falls back; a
+  screened batch is retried text by text.
+- Similarity cut-offs live per embedding model in
+  [`src/lib/ai/embedding-cutoffs.ts`](src/lib/ai/embedding-cutoffs.ts), because each model
+  spreads its scores differently. After a switch, measure the new model on the live store
+  (read only) and add its values:
+  `npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/measure-embedding-cutoffs.ts`.
+  An unmeasured model uses Nemotron 3.5 Embed 1B's values.
 
 ### Model catalogue
 
@@ -781,9 +816,11 @@ re-entering each saved key.
 
 ### Migrating knowledge embeddings
 
-Supported targets are `nvidia/nemotron-3.5-embed-1b` (2048d, default) and
-`gemini-embedding-2` (768d). Run a read-only plan first, using the environment that owns the
-store and the target provider's key:
+The usual way to change the knowledge model is **Switch knowledge to this** on `/admin#models`,
+which runs the same migration as a server job. The script below stays for manual use. Targets
+are registered model IDs, or `<model>@<dimension>` for a reduced size; `--provider <id>` picks
+the route when more than one provider serves the model. Run a read-only plan first, using the
+environment that owns the store and the target provider's key:
 
 ```powershell
 npx tsx --tsconfig tsconfig.json --env-file=.env.local scripts/reembed-knowledge.ts --model nvidia/nemotron-3.5-embed-1b --concurrency 6
@@ -1066,8 +1103,8 @@ since Discord reserves `/` for its own slash-command UI:
   purpose with the command to switch to each. Free only narrows it to free models.
 - `/model <provider> <model>` switches and remembers the choice, e.g.
   `/model nvidia-nim nemotron-3-ultra` or `/model gemini gemini-3.8-flash`.
-- `/embed-model` lists the embedding models; `/embed-model <provider> <model>` switches which
-  memory partition the channel uses (memories are stored per embedding model).
+- `/embed-model` names the knowledge model, which every channel shares. It is changed on
+  `/admin#models`, because a switch re-embeds the whole store.
 
 ### Files and agent mode on messaging
 
@@ -1391,7 +1428,7 @@ src/
 │   │   ├── page.tsx                    # Live council view: transcript, decision, pause and owner thread
 │   │   └── online-council-panel.tsx    # Start a council and pick each seat's model
 │   ├── login/page.tsx                  # Login page
-│   ├── admin/                          # Dashboard + model health, model catalogue, run-trace, memory, skills and agent-credential panels
+│   ├── admin/                          # Dashboard + model health, model catalogue (chat, embedding, speech, transcription), run-trace, memory, skills and agent-credential panels
 │   └── api/
 │       ├── auth/                       # Login/logout + Google OAuth callback
 │       ├── agent/claim/route.ts        # Unauthenticated claim → per-agent key exchange (rate limited)
@@ -1410,7 +1447,7 @@ src/
 │       ├── cron/                       # Briefing / reminders / scheduled tasks / email triggers / initiative / run review / proactive / vault lint / model discovery
 │       ├── vault/                      # health, graph data, page CRUD, link create/delete
 │       ├── artifacts/[id]/route.ts     # Download generated files
-│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue
+│       └── admin/                      # Status, personality, run traces, memories, skills, model health, model catalogue, knowledge model switch, voice choices
 ├── lib/
 │   ├── gemini.ts                       # Gemini client + model id
 │   ├── supabase.ts                     # Supabase client
@@ -1425,7 +1462,9 @@ src/
 │   │   ├── providers.ts                # Provider + chat/embedding model registry, merged with the catalogue
 │   │   ├── catalogue/                  # Model discovery: provider lists, tests, stored catalogue, daily check
 │   │   ├── models/                     # Model awareness: tags, speed, roster, lookups, profiles, model_status, /model text
-│   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible)
+│   │   ├── embeddings.ts               # Embedding dispatcher (Gemini / OpenAI-compatible), same-space backups
+│   │   ├── embedding-switch*.ts        # Server job that re-embeds the store and activates a new knowledge model
+│   │   ├── embedding-cutoffs.ts        # Similarity cut-offs per embedding model
 │   │   ├── openai-compat.ts            # OpenAI-compatible client (OpenRouter, Kilo, NIM, Groq, Agnes, DeepSeek, OpenCode) + tool loop
 │   │   ├── groq.ts                     # Groq request quirks (field names, reasoning switches)
 │   │   ├── provider-keys/              # Encrypted provider keys: master key, AES-GCM, store, snapshot, key checks, admin actions
@@ -1433,7 +1472,8 @@ src/
 │   │   ├── rag-service.ts              # RAG pipeline; branches on provider + grounding fallback
 │   │   ├── web-search.ts               # Real-time web search (Tavily) for non-Gemini models
 │   │   ├── mcp-service.ts              # MCP tool definitions + executors
-│   │   ├── tts.ts                      # Gemini TTS pipeline (streamed PCM → WAV)
+│   │   ├── tts.ts                      # Speech plan: on-box voice, then the backup voice or Gemini (streamed PCM → WAV)
+│   │   ├── voice-choices.ts            # Owner's backup voice and transcription order
 │   │   ├── initiative-store.ts         # Initiative decision log + send gates + feedback
 │   │   ├── embedding-override.ts       # Runtime knowledge-store partition override
 │   │   ├── agent/                      # Intent router, orchestrator, sub-agent workers
@@ -1443,7 +1483,7 @@ src/
 │   ├── vault/                          # Second brain: GitHub client, ingest, lint, graph ops, page index
 │   ├── artifacts/                      # Generated-file storage (documents, code, zips)
 │   ├── integrations/                   # Google Calendar + Gmail
-│   ├── voice/                          # Speech-to-text client, the "Spoken" input mode, Telegram voice-note decoding
+│   ├── voice/                          # Speech-to-text client, API speech and transcription adapters, the "Spoken" input mode, Telegram voice-note decoding
 │   ├── tasks/                          # Scheduled tasks, runner, approvals, Telegram approval notices, ask-before-send for chats
 │   └── messaging/                      # Discord + Telegram + web-push services, channel conversations, notification router
 ├── components/

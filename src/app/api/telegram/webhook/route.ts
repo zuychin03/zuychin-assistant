@@ -6,6 +6,7 @@ import { sendTelegramMessage, sendTelegramChatAction, sendTelegramDocument, down
 import { setInitiativeFeedback } from "@/lib/ai/initiative-store";
 import { getArtifact } from "@/lib/artifacts/store";
 import { replyVoicePlan, synthesizeSpeech, observeSpeech } from "@/lib/ai/tts";
+import { readVoiceChoices } from "@/lib/ai/voice-choices";
 import { getDefaultProfile } from "@/lib/db";
 import { allowedTelegramChats, allowedTelegramSenders, telegramSecretMatches, telegramSenderAllowed, updateChatId } from "@/lib/messaging/telegram-access";
 import { claimChannelUpdate } from "@/lib/messaging/channel-updates";
@@ -54,7 +55,7 @@ function getMimeType(filePath: string): string {
 async function maybeSendVoiceReply(chatId: number, reply: string, audioTurn: boolean, freeOnly = false) {
     if (!reply) return;
     try {
-        const profile = await getDefaultProfile();
+        const [profile] = await Promise.all([getDefaultProfile(), readVoiceChoices()]);
         const plan = replyVoicePlan(profile?.preferences, { audioTurn, freeOnly: effectiveFreeOnly(profile, freeOnly) });
         if (!plan) return;
 
@@ -249,8 +250,14 @@ async function answerMessage(chatId: number, command: TelegramCommand, conversat
         }
     }
 
-    // A transcript lets any model answer; Gemini hears the audio only when the box cannot transcribe it.
-    const note = voiceBytes ? await transcribeVoiceNote(voiceBytes, typeof voice?.duration === "number" ? voice.duration : undefined) : null;
+    // A transcript lets any model answer; Gemini hears the audio only when no transcription step works.
+    let note: Awaited<ReturnType<typeof transcribeVoiceNote>> | null = null;
+    if (voiceBytes) {
+        const [voiceProfile] = await Promise.all([getDefaultProfile().catch(() => null), readVoiceChoices()]);
+        // Without the profile, Free only is assumed so a paid model never hears the note by mistake.
+        const voiceFreeOnly = voiceProfile ? effectiveFreeOnly(voiceProfile) : true;
+        note = await transcribeVoiceNote(voiceBytes, typeof voice?.duration === "number" ? voice.duration : undefined, { freeOnly: voiceFreeOnly });
+    }
     if (note && !note.ok) console.log(`[Telegram] Voice note not transcribed (${note.reason}); sending the audio instead.`);
     const spoken = note?.ok ? note.text : null;
     const fallback = file ? (voiceBytes ? VOICE_NOTE_FALLBACK_TEXT : `[Sent ${file.name}]`) : "";

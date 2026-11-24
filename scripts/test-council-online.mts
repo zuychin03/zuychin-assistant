@@ -502,7 +502,7 @@ test("migration: re-runnable, after or before model awareness, and setup lists c
     assert.ok(!online.includes("\r"), "LF line endings");
     const setup = await read("../supabase-setup.sql");
     const lastPurposes = setup.slice(setup.lastIndexOf("model_call_observations_purpose_check\n"));
-    assert.match(lastPurposes.split("\n")[1], /'consult', 'council'\)\);$/);
+    assert.match(lastPurposes.split("\n")[1], /'consult', 'council'(, '[a-z]+')*\)\);$/);
     // A migration that rewrites the purpose check with a shorter list fails on re-run once later purposes have rows.
     const { readdir } = await import("node:fs/promises");
     const health = await read("../src/lib/ai/model-health.ts");

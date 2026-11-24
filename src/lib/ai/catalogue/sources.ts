@@ -2,6 +2,11 @@ import type { ProviderConfig } from "@/lib/ai/providers";
 
 export type DiscoverySource = "openrouter" | "kilo" | "gemini" | "openai-list" | "opencode";
 
+export type ModelKind = "chat" | "embedding" | "speech" | "transcription";
+export type NonChatKind = Exclude<ModelKind, "chat">;
+export const MODEL_KINDS: readonly ModelKind[] = ["chat", "embedding", "speech", "transcription"];
+export const NON_CHAT_KINDS: readonly NonChatKind[] = ["embedding", "speech", "transcription"];
+
 export interface ProviderDiscovery {
     source: DiscoverySource;
     /** "free" keeps only models the list marks as free; aggregator paid catalogues run to 400+ entries. */
@@ -11,6 +16,8 @@ export interface ProviderDiscovery {
     nameSuffix?: string;
     /** Ids the list carries that are not chat models and that the shared filters miss. */
     exclude?: RegExp;
+    /** Non-chat kinds this provider tracks; a kind left out is never stored. */
+    kinds?: Partial<Record<NonChatKind, { include: "free" | "all" }>>;
 }
 
 export interface ListedModel {
@@ -28,6 +35,14 @@ export interface ListedModel {
     mayTrain: boolean | null;
     /** Text-out chat model by the list's own description, before any probe. */
     chat: boolean;
+    /** What the list says the model does; null for kinds the app never uses (image, video, rerank, live audio). */
+    kind: ModelKind | null;
+    /** Retirement date the list publishes (OpenRouter `expiration_date`), as an ISO timestamp. */
+    expiresAt: string | null;
+    /** Voice ids the list publishes for a speech model. */
+    voices: string[];
+    /** The model behind a route (OpenRouter `hugging_face_id`, else the id without vendor and `:free`), for same-space checks. */
+    familyId: string;
 }
 
 export type ListingResult =
@@ -41,6 +56,13 @@ const MAX_DESCRIPTION = 400;
 const ROUTER_IDS = /^(openrouter|kilo-auto)\//;
 const GEMINI_NON_CHAT = /(tts|image|imagen|veo|lyria|embedding|aqa|live|native-audio|robotics|computer-use|nano-banana|transcribe|deep-research|antigravity|customtools|-latest$)/;
 const OPENAI_LIST_NON_CHAT = /(embed|rerank|guard|safety|reward|parse|retriever|nvclip|detector|whisper|orpheus|tts|playai)/;
+const OPENAI_LIST_EMBEDDING = /embed/;
+const OPENAI_LIST_NOT_EMBEDDING = /(rerank|clip)/;
+const OPENAI_LIST_SPEECH = /(tts|orpheus|playai)/;
+const OPENAI_LIST_TRANSCRIPTION = /(whisper|transcri|parakeet|canary|(^|[-/])asr([-/]|$))/;
+const GEMINI_SPEECH = /-tts(-|$)/;
+const GEMINI_TRANSCRIPTION = /transcribe/;
+const GEMINI_LIVE = /(live|native-audio)/;
 
 function record(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -64,6 +86,27 @@ function description(value: unknown): string | null {
 function vendorFromId(id: string): string | null {
     const slash = id.indexOf("/");
     return slash > 0 ? id.slice(0, slash) : null;
+}
+
+/** "nvidia/nemotron-3.5-embed-1b:free" and "nvidia/nemotron-3.5-embed-1b" -> "nemotron-3.5-embed-1b". */
+export function familyFromId(id: string): string {
+    return id.slice(id.lastIndexOf("/") + 1).replace(/:free$/, "").replace(/-free$/, "").toLowerCase();
+}
+
+/** A listed date ("2026-11-30" or a full timestamp) as an ISO timestamp, or null. */
+function listedDate(value: unknown): string | null {
+    const raw = text(value);
+    if (!raw) return null;
+    const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00Z` : raw);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function openAiListKind(id: string, chat: boolean): ModelKind | null {
+    if (chat) return "chat";
+    if (OPENAI_LIST_EMBEDDING.test(id) && !OPENAI_LIST_NOT_EMBEDDING.test(id)) return "embedding";
+    if (OPENAI_LIST_TRANSCRIPTION.test(id)) return "transcription";
+    if (OPENAI_LIST_SPEECH.test(id)) return "speech";
+    return null;
 }
 
 /** Strips "Vendor: " and a trailing "(free)", then re-adds "(free)" when it applies. */
@@ -98,6 +141,9 @@ function aggregatorModel(entry: Record<string, unknown>, free: boolean, mayTrain
     const params = strings(entry.supported_parameters);
     const top = record(entry.top_provider);
     const name = text(entry.name);
+    const chat = !ROUTER_IDS.test(id) && outputs.length === 1 && outputs[0] === "text" && (inputs.length === 0 || inputs.includes("text"));
+    const only = outputs.length === 1 ? outputs[0] : null;
+    const kind: ModelKind | null = chat ? "chat" : only === "embeddings" ? "embedding" : only === "speech" ? "speech" : only === "transcription" ? "transcription" : null;
     return {
         modelId: id,
         label: cleanLabel(name ?? labelFromId(id), free),
@@ -111,7 +157,11 @@ function aggregatorModel(entry: Record<string, unknown>, free: boolean, mayTrain
         listedStructured: params.includes("structured_outputs"),
         listedThinking: params.includes("reasoning"),
         mayTrain,
-        chat: !ROUTER_IDS.test(id) && outputs.length === 1 && outputs[0] === "text" && (inputs.length === 0 || inputs.includes("text")),
+        chat,
+        kind,
+        expiresAt: listedDate(entry.expiration_date),
+        voices: strings(entry.supported_voices),
+        familyId: (text(entry.hugging_face_id) ? familyFromId(text(entry.hugging_face_id)!) : familyFromId(id)),
     };
 }
 
@@ -138,6 +188,12 @@ export function parseGeminiModels(raw: unknown, free: boolean): ListedModel[] {
         const id = text(entry.name)?.replace(/^models\//, "");
         if (!id) return [];
         const methods = strings(entry.supportedGenerationMethods);
+        const chat = methods.includes("generateContent") && !GEMINI_NON_CHAT.test(id);
+        const generates = methods.includes("generateContent") && !GEMINI_LIVE.test(id);
+        const kind: ModelKind | null = chat ? "chat"
+            : methods.includes("embedContent") ? "embedding"
+                : generates && GEMINI_SPEECH.test(id) ? "speech"
+                    : generates && GEMINI_TRANSCRIPTION.test(id) ? "transcription" : null;
         return [{
             modelId: id,
             label: cleanLabel(text(entry.displayName) ?? labelFromId(id), free),
@@ -145,13 +201,18 @@ export function parseGeminiModels(raw: unknown, free: boolean): ListedModel[] {
             developer: "Google",
             free,
             contextTokens: count(entry.inputTokenLimit),
-            maxOutputTokens: count(entry.outputTokenLimit),
+            // Embedding models list an output limit of 1.
+            maxOutputTokens: kind === "embedding" ? null : count(entry.outputTokenLimit),
             inputs: [],
             listedTools: null,
             listedStructured: null,
             listedThinking: typeof entry.thinking === "boolean" ? entry.thinking : null,
             mayTrain: null,
-            chat: methods.includes("generateContent") && !GEMINI_NON_CHAT.test(id),
+            chat,
+            kind,
+            expiresAt: null,
+            voices: [],
+            familyId: familyFromId(id),
         }];
     });
 }
@@ -163,6 +224,7 @@ export function parseOpenAiModelList(raw: unknown, free: boolean): ListedModel[]
         const id = text(entry.id);
         if (!id) return [];
         const outputs = strings(entry.output_modalities);
+        const chat = entry.active !== false && !OPENAI_LIST_NON_CHAT.test(id) && (outputs.length === 0 || outputs.includes("text"));
         return [{
             modelId: id,
             label: cleanLabel(text(entry.name) ?? labelFromId(id), free),
@@ -176,7 +238,11 @@ export function parseOpenAiModelList(raw: unknown, free: boolean): ListedModel[]
             listedStructured: null,
             listedThinking: entry.effort !== undefined ? true : null,
             mayTrain: null,
-            chat: entry.active !== false && !OPENAI_LIST_NON_CHAT.test(id) && (outputs.length === 0 || outputs.includes("text")),
+            chat,
+            kind: entry.active === false ? null : openAiListKind(id, chat),
+            expiresAt: null,
+            voices: [],
+            familyId: familyFromId(id),
         }];
     });
 }
@@ -207,6 +273,9 @@ export function parseOpenCodeModels(raw: unknown): ListedModel[] {
         const outputs = strings(modalities.output);
         const tools = record(capabilities.tools).supported;
         const reasoning = record(capabilities.reasoning).supported;
+        const chat = !free && entry.type === "chat" && "chat-completions" in record(entry.api)
+            && typeof inputPrice === "number" && typeof outputPrice === "number"
+            && outputs.length === 1 && outputs[0] === "text";
         return [{
             modelId: id,
             label: cleanLabel(text(entry.name) ?? labelFromId(id), free),
@@ -220,9 +289,11 @@ export function parseOpenCodeModels(raw: unknown): ListedModel[] {
             listedStructured: typeof capabilities.structured_output === "boolean" ? capabilities.structured_output : null,
             listedThinking: typeof reasoning === "boolean" ? reasoning : null,
             mayTrain: null,
-            chat: !free && entry.type === "chat" && "chat-completions" in record(entry.api)
-                && typeof inputPrice === "number" && typeof outputPrice === "number"
-                && outputs.length === 1 && outputs[0] === "text",
+            chat,
+            kind: chat ? "chat" : null,
+            expiresAt: null,
+            voices: [],
+            familyId: familyFromId(id),
         }];
     });
 }
@@ -238,15 +309,28 @@ export function parseListing(discovery: ProviderDiscovery, raw: unknown): Listed
     }
 }
 
-/** Chat models this provider should track. `retiredIds` are legacy aliases, which must keep resolving to their replacement. */
-export function selectDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set()): ListedModel[] {
+/** Models of one kind this provider should track (chat by default). `retiredIds` are legacy chat aliases, which must keep resolving to their replacement. */
+export function selectDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set(), kind: ModelKind = "chat"): ListedModel[] {
+    const include = kind === "chat" ? discovery.include : discovery.kinds?.[kind]?.include;
+    if (!include) return [];
     const seen = new Set<string>();
     return models.filter((model) => {
-        if (!model.chat || retiredIds.has(model.modelId) || seen.has(model.modelId) || discovery.exclude?.test(model.modelId)) return false;
-        if (discovery.include === "free" && !model.free) return false;
+        if (model.kind !== kind || seen.has(model.modelId)) return false;
+        if (kind === "chat" && (!model.chat || retiredIds.has(model.modelId) || discovery.exclude?.test(model.modelId))) return false;
+        if (include === "free" && !model.free) return false;
         seen.add(model.modelId);
         return true;
     });
+}
+
+/** Every model this provider tracks, all configured kinds together. */
+export function selectAllDiscoverable(models: readonly ListedModel[], discovery: ProviderDiscovery, retiredIds: ReadonlySet<string> = new Set(), typesEnabled = true): ListedModel[] {
+    const kinds: readonly ModelKind[] = typesEnabled ? MODEL_KINDS : ["chat"];
+    return kinds.flatMap((kind) => selectDiscoverable(models, discovery, retiredIds, kind));
+}
+
+export function typesDiscoveryEnabled(raw = process.env.MODEL_TYPES_DISCOVERY): boolean {
+    return raw?.trim().toLowerCase() !== "off";
 }
 
 async function getJson(url: string, headers: Record<string, string>, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
@@ -286,7 +370,9 @@ export async function listProviderModels(
             return { ok: true, models: parseListing(discovery, { models: entries }) };
         }
         if (!provider.baseUrl) return { ok: false, status: null, error: "Provider has no base URL." };
-        const { status, body } = await getJson(`${provider.baseUrl}/models`, { Authorization: `Bearer ${apiKey}`, ...provider.extraHeaders }, fetchImpl, options.signal);
+        // Without the filter OpenRouter lists text-output models only.
+        const query = discovery.source === "openrouter" ? "?output_modalities=all" : "";
+        const { status, body } = await getJson(`${provider.baseUrl}/models${query}`, { Authorization: `Bearer ${apiKey}`, ...provider.extraHeaders }, fetchImpl, options.signal);
         if (status !== 200) return listingError(status, body, `HTTP ${status}`);
         if (!Array.isArray(record(body).data)) return listingError(status, body, "The model list has no data array.");
         return { ok: true, models: parseListing(discovery, body) };

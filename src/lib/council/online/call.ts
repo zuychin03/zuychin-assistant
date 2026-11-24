@@ -1,6 +1,7 @@
 import { ThinkingLevel } from "@google/genai";
 import { geminiClient } from "@/lib/gemini";
-import { cappedMaxTokens, getProviderApiKey, resolveMessagingEmbedding, type ResolvedChat } from "@/lib/ai/providers";
+import { cappedMaxTokens, getProviderApiKey, type ResolvedChat } from "@/lib/ai/providers";
+import { getEmbeddingRef } from "@/lib/ai/embeddings";
 import { classifyModelError, collectModelObservations, configureModelDataPolicy, observeGeminiClient } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import type { ModelDataClass } from "@/lib/ai/data-policy";
@@ -37,7 +38,7 @@ async function generate(resolved: ResolvedChat, system: string, user: string, ma
         model: { ...resolved.model, supportsTools: false },
         systemText: system,
         userText: user,
-        embRef: resolveMessagingEmbedding(),
+        embRef: getEmbeddingRef(),
         genParams: { maxTokens: tokens },
         signal,
     });

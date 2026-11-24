@@ -1,9 +1,13 @@
 import { ai, geminiClient, TTS_MODEL } from "@/lib/gemini";
 import { stripMarkdown } from "@/lib/speech";
 import { providerKeyOrEnv } from "@/lib/ai/provider-keys/snapshot";
-import { observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
+import { beginModelObservation, observeGeminiClient, withModelObservationCollector, configureModelDataPolicy, type ModelCallObservation } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
 import { isLocalVoice, LOCAL_SPEECH_MODEL, streamLocalSpeech, ttsConfigured, type LocalVoice } from "@/lib/voice/tts-client";
+import { getProvider, getProviderApiKey, isProviderAvailable } from "@/lib/ai/providers";
+import { cachedVoiceChoices, type SpeechBackupChoice } from "@/lib/ai/voice-choices";
+import { apiSpeechStream, defaultVoice, knownVoices } from "@/lib/voice/api-speech";
+import { pcmToWav } from "@/lib/voice/audio";
 
 export async function observeSpeech<T>(userProfileId: string | undefined, run: () => Promise<T>): Promise<T> {
     const calls: ModelCallObservation[] = [];
@@ -11,7 +15,8 @@ export async function observeSpeech<T>(userProfileId: string | undefined, run: (
     finally { await persistModelObservations(calls, { userProfileId }); }
 }
 
-// "auto" speaks with the on-box voice when it is up and falls back to Gemini; "gemini" and "local" force one.
+// "auto" speaks with the on-box voice when it is up and falls back to the API voice; "gemini" (the saved name is kept)
+// forces the API voice, which is the backup chosen on /admin or Gemini by default; "local" forces the on-box voice.
 export type SpeechEngine = "auto" | "gemini" | "local";
 const SPEECH_ENGINES: readonly SpeechEngine[] = ["auto", "gemini", "local"];
 
@@ -46,8 +51,8 @@ export function getVoicePrefs(preferences: unknown): VoicePrefs {
 // default stays lead-only: the Telegram webhook shares its 60s with the chat
 // generation itself. The timeout is a safety net below the budget so cleanup
 // runs before Vercel's hard kill.
-// Which Gemini project speaks. Free only replies use the free key so they never spend the paid quota.
-export type SpeechRoute = { providerId: "gemini" | "gemini-free"; apiKey?: string };
+// Which provider key speaks. Free only replies use a free route so they never spend the paid quota.
+export type SpeechRoute = { providerId: string; apiKey?: string };
 export const PAID_SPEECH: SpeechRoute = { providerId: "gemini" };
 export function freeSpeechRoute(): SpeechRoute | null {
     const apiKey = providerKeyOrEnv("gemini-free", "GEMINI_FREE_API_KEY");
@@ -58,28 +63,60 @@ export const LEAD_TTS_CHARS = 500;
 export const FULL_TTS_CHARS = 1800;
 const TTS_TIMEOUT_MS = 55_000;
 
-// What may speak a reply: the on-box voice, Gemini, or both (local first). Both null means nothing is eligible.
+export type ApiSpeechPlan = {
+    route: SpeechRoute;
+    modelId: string;
+    voiceName: string | undefined;
+    engine: "gemini-generate" | "openai-speech";
+    /** The format the probe found on an OpenAI-shaped route. */
+    format?: "pcm" | "wav";
+};
+
+// What may speak a reply: the on-box voice, the API voice, or both (local first). Both null means nothing is eligible.
 export type SpeechPlan = {
     local: LocalVoice | null;
-    gemini: { route: SpeechRoute; voiceName: string } | null;
+    api: ApiSpeechPlan | null;
 };
 
 type PlanOptions = {
     freeOnly: boolean;
     voiceName?: string;
-    // Telegram and Discord never use the Gemini free key; in Free only they speak only with the on-box voice.
+    // Telegram and Discord never use a free API voice; in Free only they speak only with the on-box voice.
     geminiFree?: boolean;
     env?: Record<string, string | undefined>;
+    /** The /admin backup voice; defaults to the cached choice (callers refresh it with readVoiceChoices). */
+    backup?: SpeechBackupChoice | null;
 };
+
+/** The chosen backup voice while it stays approved, passing and keyed. The profile's voice wins when the model has it. */
+function backupPlan(choice: SpeechBackupChoice, voiceName: string): { plan: ApiSpeechPlan; free: boolean } | null {
+    const provider = getProvider(choice.providerId);
+    const apiKey = provider && isProviderAvailable(provider) ? getProviderApiKey(provider) : undefined;
+    const model = provider?.speechModels?.find((entry) => entry.id === choice.modelId);
+    if (!provider || !apiKey || !model || !model.catalogue.approved || model.catalogue.status) return null;
+    const voices = knownVoices(provider, model.id, model.voices);
+    const voice = voices.includes(voiceName) ? voiceName : choice.voice ?? defaultVoice(provider, model.id, model.voices);
+    const format = model.audioFormat === "pcm" || model.audioFormat === "wav" ? model.audioFormat : undefined;
+    return {
+        plan: { route: { providerId: provider.id, apiKey }, modelId: model.id, voiceName: voice, engine: provider.kind === "gemini" ? "gemini-generate" : "openai-speech", ...(format ? { format } : {}) },
+        free: model.free,
+    };
+}
 
 export function planSpeech(prefs: VoicePrefs, options: PlanOptions): SpeechPlan {
     const local = prefs.speechEngine !== "gemini" && ttsConfigured(options.env) ? prefs.localVoice : null;
-    let gemini: SpeechPlan["gemini"] = null;
-    if (prefs.speechEngine !== "local") {
-        const route = options.freeOnly ? (options.geminiFree === false ? null : freeSpeechRoute()) : PAID_SPEECH;
-        if (route) gemini = { route, voiceName: options.voiceName ?? prefs.voiceName };
+    if (prefs.speechEngine === "local") return { local, api: null };
+    const voiceName = options.voiceName ?? prefs.voiceName;
+    const choice = options.backup !== undefined ? options.backup : cachedVoiceChoices().speech;
+    const chosen = choice ? backupPlan(choice, voiceName) : null;
+    const geminiDefault = (route: SpeechRoute): ApiSpeechPlan => ({ route, modelId: TTS_MODEL, voiceName, engine: "gemini-generate" });
+    if (options.freeOnly) {
+        if (options.geminiFree === false) return { local, api: null };
+        if (chosen?.free) return { local, api: chosen.plan };
+        const route = freeSpeechRoute();
+        return { local, api: route ? geminiDefault(route) : null };
     }
-    return { local, gemini };
+    return { local, api: chosen ? chosen.plan : geminiDefault(PAID_SPEECH) };
 }
 
 // Plan for a reply sent over Telegram or Discord, or null when the saved preference says to stay silent.
@@ -88,7 +125,7 @@ export function replyVoicePlan(preferences: unknown, options: { audioTurn: boole
     if (prefs.replyWithVoice === "off") return null;
     if (prefs.replyWithVoice === "onVoiceInput" && !options.audioTurn) return null;
     const plan = planSpeech(prefs, { freeOnly: options.freeOnly, geminiFree: false });
-    return plan.local || plan.gemini ? plan : null;
+    return plan.local || plan.api ? plan : null;
 }
 
 // Truncate on a sentence boundary where possible, else a word boundary, so
@@ -102,24 +139,6 @@ function clampForSpeech(text: string, max: number): string {
     return (wordEnd > 0 ? cut.slice(0, wordEnd) : cut).trim();
 }
 
-function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
-    const header = Buffer.alloc(44);
-    header.write("RIFF", 0);
-    header.writeUInt32LE(36 + pcm.length, 4);
-    header.write("WAVE", 8);
-    header.write("fmt ", 12);
-    header.writeUInt32LE(16, 16);
-    header.writeUInt16LE(1, 20);
-    header.writeUInt16LE(channels, 22);
-    header.writeUInt32LE(sampleRate, 24);
-    header.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28);
-    header.writeUInt16LE(channels * (bitsPerSample / 8), 32);
-    header.writeUInt16LE(bitsPerSample, 34);
-    header.write("data", 36);
-    header.writeUInt32LE(pcm.length, 40);
-    return Buffer.concat([header, pcm]);
-}
-
 /**
  * Streams raw 16-bit PCM mono chunks ("audio/L16;...;rate=24000") as the TTS
  * model generates them. Measured: first chunk ~2.4s in, generation ~2.3x
@@ -129,11 +148,12 @@ async function* geminiSpeechStream(
     spoken: string,
     voiceName: string,
     route: SpeechRoute,
+    modelId: string,
     signal?: AbortSignal,
 ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const client = route.apiKey ? geminiClient(route.apiKey) : ai;
     const stream = await observeGeminiClient(client, { providerId: route.providerId, purpose: "speech" }).models.generateContentStream({
-        model: TTS_MODEL,
+        model: modelId,
         contents: [{ role: "user", parts: [{ text: spoken }] }],
         config: {
             responseModalities: ["AUDIO"],
@@ -154,8 +174,32 @@ async function* geminiSpeechStream(
 
 export type SpeechChunk = { pcm: Buffer; sampleRate: number; provider: string; model: string };
 
+/** OpenAI-shaped /audio/speech (OpenRouter, Groq): PCM, or WAV parsed for its rate. Each chunk keeps its own rate. */
+async function* openAiSpeech(spoken: string, plan: ApiSpeechPlan, signal?: AbortSignal): AsyncGenerator<SpeechChunk> {
+    const provider = getProvider(plan.route.providerId);
+    if (!provider || !plan.route.apiKey) throw new Error("The backup voice is unavailable.");
+    const observation = beginModelObservation({ providerId: provider.id, modelId: plan.modelId, purpose: "speech" });
+    let started = false, finished = false;
+    try {
+        const route = { provider, modelId: plan.modelId, apiKey: plan.route.apiKey, ...(plan.voiceName ? { voice: plan.voiceName } : {}), ...(plan.format ? { format: plan.format } : {}) };
+        for await (const chunk of apiSpeechStream(route, spoken, { signal, timeoutMs: TTS_TIMEOUT_MS })) {
+            if (!started) observation.firstAnswer();
+            started = true;
+            yield { pcm: chunk.pcm, sampleRate: chunk.sampleRate, provider: provider.id, model: plan.modelId };
+        }
+        finished = true;
+        observation.finish();
+    } catch (error) {
+        finished = true;
+        observation.finish({ error, ...(signal?.aborted ? { status: "aborted" as const } : {}) });
+        throw error;
+    } finally {
+        if (!finished) observation.finish({ status: "aborted" });
+    }
+}
+
 /**
- * Speaks with the plan: the on-box voice first, then Gemini if the on-box voice fails before any audio.
+ * Speaks with the plan: the on-box voice first, then the API voice if the on-box voice fails before any audio.
  * Once audio has started it is never switched mid-reply; a later failure ends the stream with an error.
  * Logs carry engine, sizes and timings only, never text.
  */
@@ -177,12 +221,16 @@ export async function* speechStream(text: string, plan: SpeechPlan, maxChars: nu
             signal?.throwIfAborted();
             const reason = (error as { reason?: unknown })?.reason;
             console.warn(JSON.stringify({ event: "voice_speak", engine: "local", ok: false, chars: spoken.length, started: firstMs !== undefined, reason: typeof reason === "string" ? reason : "error", ms: Math.round(performance.now() - started) }));
-            if (firstMs !== undefined || !plan.gemini) throw error;
+            if (firstMs !== undefined || !plan.api) throw error;
         }
     }
-    if (!plan.gemini) throw new Error("No speech route is available.");
-    const { route, voiceName } = plan.gemini;
-    for await (const chunk of geminiSpeechStream(spoken, voiceName, route, signal)) yield { ...chunk, provider: route.providerId, model: TTS_MODEL };
+    if (!plan.api) throw new Error("No speech route is available.");
+    const api = plan.api;
+    if (api.engine === "openai-speech") {
+        yield* openAiSpeech(spoken, api, signal);
+        return;
+    }
+    for await (const chunk of geminiSpeechStream(spoken, api.voiceName ?? DEFAULT_VOICE_PREFS.voiceName, api.route, api.modelId, signal)) yield { ...chunk, provider: api.route.providerId, model: api.modelId };
 }
 
 // Aggregates the stream into one WAV (Telegram and Discord need a whole file). Local audio streams per

@@ -1,15 +1,41 @@
-import type { CatalogueRow, CatalogueStorage, ProbeStatus } from "@/lib/ai/catalogue/snapshot";
+import type { CatalogueRow, CatalogueStorage, ExpiresSource, ModelTraits, ProbeStatus } from "@/lib/ai/catalogue/snapshot";
+import { MODEL_KINDS, type ModelKind } from "@/lib/ai/catalogue/sources";
 
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,199}$/;
 const PROBE_STATUSES: readonly ProbeStatus[] = ["untested", "passed", "failed", "inconclusive"];
+const EXPIRES_SOURCES: readonly ExpiresSource[] = ["listing", "lookup", "gone"];
 
-export const CATALOGUE_COLUMNS = [
+export const LEGACY_CATALOGUE_COLUMNS = [
     "provider_id", "model_id", "origin", "label", "short_name", "description", "developer", "free", "metered", "may_train",
     "context_tokens", "max_output_tokens", "inputs", "listed_tools", "listed_structured", "listed_thinking",
     "probe_status", "probe_attempts", "probed_at", "probe_chat_ms",
     "supports_tools", "supports_search", "supports_vision", "supports_thinking", "supports_structured",
     "first_seen_at", "last_seen_at", "missed_checks", "missing_since", "notified_missing_at", "approved_at",
 ].join(", ");
+
+// Added by v7-model-types.sql; reads fall back to the legacy list until it is applied.
+export const TYPES_COLUMNS = "kind, dimension, expires_at, expires_source, notified_expiry_days, expiry_checked_at, space_of, traits";
+export const CATALOGUE_COLUMNS = `${LEGACY_CATALOGUE_COLUMNS}, ${TYPES_COLUMNS}`;
+
+/** PostgREST and Postgres codes for a column the database does not have yet. */
+export function missingColumn(error: unknown): boolean {
+    const code = record(error).code;
+    return code === "42703" || code === "PGRST204";
+}
+
+const TRAIT_STRINGS = ["defaultVoice", "audioFormat", "familyId", "lookupUrl"] as const;
+const TRAIT_NUMBERS = ["sampleRate", "channels", "firstAudioMs", "audioSec", "accuracy"] as const;
+const TRAIT_FLAGS = ["needsInputType", "acceptsInputType", "asymmetric", "truncatable", "batch"] as const;
+
+export function traitsFromDb(raw: unknown): ModelTraits {
+    const value = record(raw);
+    const traits: ModelTraits = {};
+    if (Array.isArray(value.voices)) traits.voices = value.voices.filter((entry): entry is string => typeof entry === "string").slice(0, 300);
+    for (const key of TRAIT_STRINGS) if (typeof value[key] === "string" && value[key]) traits[key] = (value[key] as string).slice(0, 500);
+    for (const key of TRAIT_NUMBERS) if (typeof value[key] === "number" && Number.isFinite(value[key])) traits[key] = value[key] as number;
+    for (const key of TRAIT_FLAGS) if (typeof value[key] === "boolean") traits[key] = value[key] as boolean;
+    return traits;
+}
 
 function record(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -47,6 +73,22 @@ export function catalogueRowFromDb(raw: unknown): CatalogueRow | null {
         supportsThinking: flag(row.supports_thinking), supportsStructured: flag(row.supports_structured),
         firstSeenAt, lastSeenAt: stamp(row.last_seen_at), missedChecks: whole(row.missed_checks) ?? 0,
         missingSince: stamp(row.missing_since), notifiedMissingAt: stamp(row.notified_missing_at), approvedAt: stamp(row.approved_at),
+        ...("kind" in row ? typesFromDb(row) : {}),
+    };
+}
+
+function typesFromDb(row: Record<string, unknown>): Partial<CatalogueRow> {
+    const kind: ModelKind = MODEL_KINDS.includes(row.kind as ModelKind) ? row.kind as ModelKind : "chat";
+    const notified = typeof row.notified_expiry_days === "number" && Number.isSafeInteger(row.notified_expiry_days) && row.notified_expiry_days >= 0 ? row.notified_expiry_days : null;
+    return {
+        kind,
+        dimension: whole(row.dimension),
+        expiresAt: stamp(row.expires_at),
+        expiresSource: EXPIRES_SOURCES.includes(row.expires_source as ExpiresSource) ? row.expires_source as ExpiresSource : null,
+        notifiedExpiryDays: notified,
+        expiryCheckedAt: stamp(row.expiry_checked_at),
+        spaceOf: typeof row.space_of === "string" && ID.test(row.space_of) ? row.space_of : null,
+        traits: traitsFromDb(row.traits),
     };
 }
 
@@ -54,9 +96,14 @@ export function catalogueRowFromDb(raw: unknown): CatalogueRow | null {
  * Columns the discovery run owns. `approved_at` is left out so a run never overwrites an approval made meanwhile,
  * and `probe_detail` is written only when a probe ran.
  */
-export function catalogueRowToDb(row: CatalogueRow, now: string, probeDetail?: unknown): Record<string, unknown> {
+export function catalogueRowToDb(row: CatalogueRow, now: string, probeDetail?: unknown, typesColumns = true): Record<string, unknown> {
     return {
         ...(probeDetail === undefined ? {} : { probe_detail: probeDetail }),
+        ...(typesColumns ? {
+            kind: row.kind ?? "chat", dimension: row.dimension ?? null, expires_at: row.expiresAt ?? null, expires_source: row.expiresSource ?? null,
+            notified_expiry_days: row.notifiedExpiryDays ?? null, expiry_checked_at: row.expiryCheckedAt ?? null,
+            space_of: row.spaceOf ?? null, traits: row.traits ?? {},
+        } : {}),
         provider_id: row.providerId, model_id: row.modelId, origin: row.origin, label: row.label, short_name: row.shortName,
         description: row.description, developer: row.developer, free: row.free, metered: row.metered, may_train: row.mayTrain,
         context_tokens: row.contextTokens, max_output_tokens: row.maxOutputTokens, inputs: row.inputs,

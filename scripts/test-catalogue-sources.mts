@@ -165,7 +165,7 @@ await check("listing: OpenAI-style providers send the bearer key and extra heade
     const openrouter = getProvider("openrouter")!;
     const result = await listProviderModels(openrouter, openrouter.discovery!, "test-key", { fetchImpl: stubFetch(() => ({ status: 200, body: fixture("openrouter") }), calls) });
     assert.ok(result.ok);
-    assert.equal(calls[0].url, "https://openrouter.ai/api/v1/models");
+    assert.equal(calls[0].url, "https://openrouter.ai/api/v1/models?output_modalities=all");
     assert.equal(calls[0].headers.Authorization, "Bearer test-key");
     assert.ok(calls[0].headers["X-Title"]);
 });

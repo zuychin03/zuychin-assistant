@@ -8,13 +8,11 @@ import {
 import { searchVaultPages, upsertVaultPage, type VaultPageHit } from "@/lib/vault/store";
 import { withVaultLock } from "@/lib/vault/lock";
 import type { ResolvedEmbedding } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { knowledgeService } from "@/lib/knowledge/service";
 
 // Auto-link proposal: pgvector proposes generously, the LLM curator selects
-// (agents.md INGEST step 3). Measured doc↔doc cosines (Nemotron embeddings):
-// same topic 0.7–0.8, related cross-topic 0.45–0.6, unrelated <0.4; the
-// threshold only cuts noise.
-const LINK_THRESHOLD = 0.4;
+// (agents.md INGEST step 3); the model's vaultLink cut-off only cuts noise.
 const MAX_LINK_CANDIDATES = 6;
 
 export const VAULT_CATEGORIES = ["sources", "concepts", "entities", "synthesis"] as const;
@@ -298,7 +296,7 @@ export async function ingestToVault(params: {
             await searchVaultPages({
                 query: `${params.title}\n\n${params.content.slice(0, 4000)}`,
                 embRef: params.embRef,
-                matchThreshold: LINK_THRESHOLD,
+                matchThreshold: similarityCutoffs(params.embRef.model).vaultLink,
                 matchCount: MAX_LINK_CANDIDATES + 1,
                 inputType: "passage",
             })

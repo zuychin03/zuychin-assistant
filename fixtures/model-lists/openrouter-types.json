@@ -1,0 +1,460 @@
+{
+  "data": [
+    {
+      "id": "nvidia/nemotron-3.5-lightning:free",
+      "canonical_slug": "nvidia/nemotron-3.5-lightning-20260807",
+      "hugging_face_id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "name": "NVIDIA: Nemotron 3.5 Lightning (free)",
+      "created": 1786452751,
+      "description": "NVIDIA Nemotron 3.5 Lightning is an open mixture-of-experts model from NVIDIA, with 3B active parameters out of 30B tota",
+      "context_length": 1000000,
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 1000000,
+        "max_completion_tokens": 65536,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "include_reasoning",
+        "max_tokens",
+        "reasoning",
+        "seed",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/chat/completions",
+        "/api/v1/completions",
+        "/api/v1/messages",
+        "/api/v1/responses"
+      ],
+      "reasoning": {
+        "mandatory": false
+      }
+    },
+    {
+      "id": "nvidia/nemotron-3.5-embed-1b:free",
+      "canonical_slug": "nvidia/nemotron-3.5-embed-1b-20261021",
+      "hugging_face_id": null,
+      "name": "NVIDIA: Nemotron 3.5 Embed 1B (free)",
+      "created": 1792591670,
+      "description": "Nemotron 3.5 Embed 1B is a multimodal embedding model from NVIDIA for multilingual retrieval over text and document page",
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text+image->embeddings",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": 29491,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/embeddings"
+      ]
+    },
+    {
+      "id": "nvidia/nemotron-3-embed-1b:free",
+      "canonical_slug": "nvidia/nemotron-3-embed-1b-20260716",
+      "hugging_face_id": null,
+      "name": "NVIDIA: Nemotron 3 Embed 1B (free)",
+      "created": 1784203294,
+      "description": "NVIDIA Nemotron 3 Embed 1B is an open text embedding model from NVIDIA, optimized for high-throughput, low-latency retri",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text->embeddings",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 3686,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "top_k": null,
+        "frequency_penalty": null,
+        "presence_penalty": null,
+        "repetition_penalty": null
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/embeddings"
+      ]
+    },
+    {
+      "id": "openai/text-embedding-3-small",
+      "canonical_slug": "openai/text-embedding-3-small",
+      "hugging_face_id": "",
+      "name": "OpenAI: Text Embedding 3 Small",
+      "created": 1761857455,
+      "description": "text-embedding-3-small is OpenAI's improved, more performant version of the ada embedding model. Embeddings are a numeri",
+      "context_length": 8192,
+      "architecture": {
+        "modality": "text->embeddings",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "embeddings"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000002",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 8192,
+        "max_completion_tokens": 7372,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/embeddings"
+      ]
+    },
+    {
+      "id": "heygen/heygen-voice-1-turbo:free",
+      "canonical_slug": "heygen/heygen-voice-1-turbo-20261009",
+      "hugging_face_id": null,
+      "name": "HeyGen: HeyGen Voice Turbo (free)",
+      "created": 1793030422,
+      "description": "HeyGen Voice Turbo is a lower-latency version of HeyGen Voice, HeyGen's text-to-speech model. It has the same 10 default",
+      "context_length": 0,
+      "architecture": {
+        "modality": "text->speech",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "speech"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 0,
+        "max_completion_tokens": 0,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": [
+        "nadine",
+        "tabitha",
+        "bram",
+        "gareth",
+        "noelle",
+        "meredith",
+        "sabrina",
+        "lucian",
+        "weston",
+        "vincent"
+      ],
+      "knowledge_cutoff": null,
+      "expiration_date": "2026-11-30",
+      "endpoints": [
+        "/api/v1/audio/speech"
+      ]
+    },
+    {
+      "id": "fish-audio/s2.1-pro-free:free",
+      "canonical_slug": "fish-audio/s2.1-pro-free-20260729",
+      "hugging_face_id": null,
+      "name": "Fish Audio: S2.1 Pro Free (free)",
+      "created": 1785353733,
+      "description": "S2.1 Pro Free is the no-cost variant of Fish Audio S2.1 Pro, intended for testing, prototyping, and low-volume applicati",
+      "context_length": 0,
+      "architecture": {
+        "modality": "text->speech",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "speech"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 0,
+        "max_completion_tokens": 0,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/audio/speech"
+      ]
+    },
+    {
+      "id": "google/gemini-3.8-flash-tts",
+      "canonical_slug": "google/gemini-3.8-flash-tts-20260922",
+      "hugging_face_id": null,
+      "name": "Google: Gemini 3.8 Flash TTS",
+      "created": 1790200266,
+      "description": "Gemini 3.8 Flash TTS is a text-to-speech model from Google and the successor to [Gemini 3.1 Flash TTS Preview](https://o",
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text->speech",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "speech"
+        ],
+        "tokenizer": "Gemini",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000005",
+        "completion": "0.000009"
+      },
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": 16384,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": [
+        "Zephyr",
+        "Puck",
+        "Charon",
+        "Kore",
+        "Fenrir",
+        "Leda",
+        "Orus",
+        "Aoede",
+        "Callirrhoe",
+        "Autonoe",
+        "Enceladus",
+        "Iapetus",
+        "Umbriel",
+        "Algieba",
+        "Despina",
+        "Erinome",
+        "Algenib",
+        "Rasalgethi",
+        "Laomedeia",
+        "Achernar",
+        "Alnilam",
+        "Schedar",
+        "Gacrux",
+        "Pulcherrima",
+        "Achird",
+        "Zubenelgenubi",
+        "Vindemiatrix",
+        "Sadachbia",
+        "Sadaltager",
+        "Sulafat"
+      ],
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/audio/speech"
+      ]
+    },
+    {
+      "id": "openai/whisper-large-v3-turbo",
+      "canonical_slug": "openai/whisper-large-v3-turbo",
+      "hugging_face_id": "openai/whisper-large-v3-turbo",
+      "name": "OpenAI: Whisper Large V3 Turbo",
+      "created": 1777642266,
+      "description": "Whisper Large V3 Turbo is an optimized version of OpenAI's Whisper Large V3 speech recognition model, designed for speed",
+      "context_length": 0,
+      "architecture": {
+        "modality": "audio->transcription",
+        "input_modalities": [
+          "audio"
+        ],
+        "output_modalities": [
+          "transcription"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000333",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 0,
+        "max_completion_tokens": 0,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/audio/transcriptions"
+      ]
+    },
+    {
+      "id": "cohere/rerank-5-fast",
+      "canonical_slug": "cohere/rerank-5-fast-20261028",
+      "hugging_face_id": null,
+      "name": "Cohere: Rerank 5 Fast",
+      "created": 1793738329,
+      "description": "Rerank 5 Fast is the low-latency tier of Cohere's Rerank 5 family of reranking models. It scores and reorders candidate ",
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text->rerank",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "rerank"
+        ],
+        "tokenizer": "Cohere",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      },
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": 29491,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/rerank"
+      ]
+    },
+    {
+      "id": "microsoft/mai-image-2.7-flash",
+      "canonical_slug": "microsoft/mai-image-2.7-flash-20261117",
+      "hugging_face_id": null,
+      "name": "Microsoft AI: MAI-Image-2.7 Flash",
+      "created": 1794938265,
+      "description": "MAI-Image-2.7 Flash is the lower-latency, lower-cost member of the [MAI-Image-2.7](/microsoft/mai-image-2.7) family from",
+      "context_length": 4096,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000175",
+        "completion": "0",
+        "image_token": "0.00001",
+        "image_output": "0.00001"
+      },
+      "top_provider": {
+        "context_length": 4096,
+        "max_completion_tokens": 1024,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_completion_tokens",
+        "max_tokens",
+        "temperature"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    }
+  ]
+}

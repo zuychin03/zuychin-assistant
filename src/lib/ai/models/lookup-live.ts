@@ -91,7 +91,7 @@ async function draftWithCompat(provider: ProviderConfig, modelId: string, reques
     }
 }
 
-async function draft(request: DraftRequest): Promise<{ json: unknown; model: string } | null> {
+export async function draft(request: DraftRequest): Promise<{ json: unknown; model: string } | null> {
     for (const step of LOOKUP_DRAFT_CHAIN) {
         const provider = getProvider(step.providerId);
         if (!provider || !isProviderAvailable(provider)) continue;

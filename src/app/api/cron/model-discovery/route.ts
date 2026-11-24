@@ -15,7 +15,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: failure.error }, { status: failure.status });
         }
         after(async () => {
+            // A knowledge model switch paused on a daily quota, or cut off by a restart, picks up alongside the run.
+            const resumed = import("@/lib/ai/embedding-switch-live").then(async ({ runSwitchLive, switchToResume }) => {
+                const resume = await switchToResume();
+                if (resume) await runSwitchLive(resume);
+            }).catch((error) => console.error("[EmbeddingSwitch] Resume failed:", error instanceof Error ? error.message : error));
             const summary = await executeDiscovery(started.runId, "cron", deps);
+            await resumed;
             if (summary) console.log(`[ModelDiscovery] Done in ${summary.durationMs} ms: added ${summary.added.length}, passed ${summary.passed.length}, newly missing ${summary.newlyMissing.length}, notified ${summary.notified}`);
         });
         return NextResponse.json({ accepted: true, runId: started.runId }, { status: 202 });

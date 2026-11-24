@@ -1,7 +1,10 @@
 import { PROVIDERS, getProviderApiKey, retiredChatModelIds, type ProviderConfig } from "@/lib/ai/providers";
-import { listProviderModels, selectDiscoverable, shortNameFor, uniqueShortName, type ListedModel, type ListingResult, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
+import { familyFromId, listProviderModels, selectAllDiscoverable, selectDiscoverable, shortNameFor, typesDiscoveryEnabled, uniqueShortName, type ListedModel, type ListingResult, type ModelKind, type NonChatKind, type ProviderDiscovery } from "@/lib/ai/catalogue/sources";
 import { probeModel, type ProbeResult, type ProbeTarget } from "@/lib/ai/catalogue/probe";
-import { catalogueSnapshot, refreshCatalogueSnapshot, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
+import { probeTypedModel, type TypedProbeResult, type TypedProbeTarget } from "@/lib/ai/catalogue/probe-typed";
+import type { SpaceReference } from "@/lib/ai/catalogue/probe-embedding";
+import type { InUse } from "@/lib/ai/catalogue/in-use";
+import { catalogueSnapshot, refreshCatalogueSnapshot, rowKind, type CatalogueRow } from "@/lib/ai/catalogue/snapshot";
 import { collectModelObservations } from "@/lib/ai/model-observations";
 import type { DiscoveryTrigger, SavedRow, StartRunResult, StorageFailure } from "@/lib/ai/catalogue/store";
 import { findSibling, lookupQueue, siblingDraft, type LookupOutcome } from "@/lib/ai/models/lookup";
@@ -19,6 +22,11 @@ const DEFAULT_MAX_LOOKUPS = 4;
 const LOOKUP_BUDGET_MS = 5 * 60_000;
 // No lookup starts after this, so a slow one still ends inside the 30-minute stale-lock window.
 const LOOKUP_STOP_MS = 24 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+// One notice when an in-use model is this many days or fewer from its retirement date, then one more.
+const EXPIRY_NOTICE_DAYS = [30, 7] as const;
+const EXPIRY_CHECK_AFTER_MS = 7 * DAY_MS;
+const MAX_EXPIRY_LOOKUPS = 6;
 
 export interface DraftSave {
     providerId: string;
@@ -59,6 +67,21 @@ export interface DiscoveryDeps {
     lookups?: RunLookups;
     /** Keys the owner removed: still tracked for Missing, never tested or announced. */
     removedKeys?(): ReadonlySet<string>;
+    /** Embedding, speech and transcription probes. Absent: those rows are listed but never tested. */
+    probeTyped?(target: TypedProbeTarget): Promise<TypedProbeResult>;
+    /** Read after readRows. False keeps the run to chat rows (MODEL_TYPES_DISCOVERY=off, or v7-model-types.sql not applied). */
+    typesEnabled?(): boolean;
+    /** Routes the app uses now; their free rows are tested on every run, outside the cap. */
+    inUse?(rows: readonly CatalogueRow[]): Promise<InUse>;
+    /** Weekly retirement lookup for in-use non-chat models. Absent: none. */
+    expiryLookups?: ExpiryLookups;
+}
+
+export type ExpiryLookupOutcome = { ok: true; date: string | null; url: string | null } | { ok: false; error: string };
+
+export interface ExpiryLookups {
+    maxPerRun: number;
+    lookup(provider: ProviderConfig, row: CatalogueRow): Promise<ExpiryLookupOutcome>;
 }
 
 export type ListingState = "ok" | "failed" | "no_key" | "unavailable";
@@ -95,12 +118,18 @@ export interface RunSummary {
     drafted: string[];
     draftFailed: string[];
     lookupsDeferred: number;
+    /** In-use models that got a retirement notice this run. */
+    retiring?: string[];
+    /** In-use models whose daily test failed this run. */
+    inUseFailing?: string[];
+    expiryChecked?: string[];
 }
 
 export interface TestSummary {
     kind: "test";
     providerId: string;
     modelId: string;
+    modelKind?: ModelKind;
     status: CatalogueRow["probeStatus"];
     retired: boolean;
     chatMs: number | null;
@@ -137,7 +166,24 @@ export function startFailure(reason: "busy" | StorageFailure): { status: number;
     return { status: 503, error: "The model catalogue is unavailable. Please retry." };
 }
 
+const sameInstant = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null) || (!!a && !!b && Date.parse(a) === Date.parse(b));
+
+/** Voices, family and the listing's expiry date for non-chat rows. A 410 date is kept; a lookup date gives way to the listing's. */
+function typedListing(row: CatalogueRow, listed: ListedModel): Partial<CatalogueRow> {
+    if (rowKind(row) === "chat") return {};
+    const voices = listed.voices.length ? listed.voices : row.traits?.voices;
+    const sameTraits = row.traits?.familyId === listed.familyId && JSON.stringify(row.traits?.voices ?? null) === JSON.stringify(voices ?? null);
+    const traits = sameTraits ? row.traits : { ...row.traits, ...(voices ? { voices } : {}), familyId: listed.familyId };
+    if (row.expiresSource === "gone") return { traits };
+    if (listed.expiresAt) return { traits, expiresAt: sameInstant(row.expiresAt, listed.expiresAt) ? row.expiresAt : listed.expiresAt, expiresSource: "listing" };
+    return row.expiresSource === "listing" ? { traits, expiresAt: null, expiresSource: null, notifiedExpiryDays: null } : { traits };
+}
+
 function metadataFrom(row: CatalogueRow, listed: ListedModel, provider: ProviderConfig): CatalogueRow {
+    return { ...listingMetadata(row, listed, provider), ...typedListing(row, listed) };
+}
+
+function listingMetadata(row: CatalogueRow, listed: ListedModel, provider: ProviderConfig): CatalogueRow {
     if (row.origin === "seed") {
         // Seed rows carry the code's names and audited limits; the listing only fills gaps.
         return {
@@ -166,7 +212,64 @@ function newRow(provider: ProviderConfig, listed: ListedModel, shortName: string
         probeStatus: "untested", probeAttempts: 0, probedAt: null, probeChatMs: null,
         supportsTools: null, supportsSearch: null, supportsVision: null, supportsThinking: null, supportsStructured: null,
         firstSeenAt: now, lastSeenAt: now, missedChecks: 0, missingSince: null, notifiedMissingAt: null, approvedAt: null,
+        ...(listed.kind && listed.kind !== "chat" ? {
+            kind: listed.kind, dimension: null, expiresAt: null, expiresSource: null, notifiedExpiryDays: null, expiryCheckedAt: null, spaceOf: null, traits: {},
+        } : {}),
     }, listed, provider);
+}
+
+/** Folds an embedding, speech or transcription probe into a row. A 410 marks it gone with the date from the reply. */
+export function applyTypedProbe(row: CatalogueRow, result: TypedProbeResult, at: string): CatalogueRow {
+    const base: CatalogueRow = { ...row, probedAt: at, probeChatMs: result.ms ?? row.probeChatMs };
+    if (result.status === "passed") {
+        const listedAgain = row.missedChecks === 0;
+        const space = result.steps.space?.outcome;
+        return {
+            ...base, probeStatus: "passed", probeAttempts: 0,
+            dimension: result.dimension ?? row.dimension ?? null,
+            traits: { ...row.traits, ...result.traits },
+            // A skipped same-space step keeps the earlier proof.
+            spaceOf: space === "pass" ? result.spaceOf : space === "fail" ? null : row.spaceOf ?? null,
+            ...(row.expiresSource === "gone" ? { expiresAt: null, expiresSource: null, notifiedExpiryDays: null } : {}),
+            missingSince: listedAgain ? null : row.missingSince, notifiedMissingAt: listedAgain ? null : row.notifiedMissingAt,
+        };
+    }
+    if (result.status === "failed") {
+        return {
+            ...base, probeStatus: "failed", probeAttempts: 0,
+            missingSince: result.retired ? row.missingSince ?? at : row.missingSince,
+            ...(result.retired ? { expiresAt: result.retiredAt ?? at, expiresSource: "gone" as const } : {}),
+        };
+    }
+    const attempts = row.probeAttempts + 1;
+    const probeStatus = attempts >= MAX_INCONCLUSIVE ? "failed" : row.probeStatus === "passed" ? "passed" : "inconclusive";
+    return { ...base, probeAttempts: attempts, probeStatus };
+}
+
+function typedCrash(error: unknown, key: string): TypedProbeResult {
+    console.error(`[ModelDiscovery] Probe crashed for ${key}:`, error instanceof Error ? error.message : error);
+    return { status: "inconclusive", retired: false, retiredAt: null, ms: null, dimension: null, spaceOf: null, traits: {}, steps: { probe: { outcome: "transient", httpStatus: null, ms: null, detail: "The probe crashed." } } };
+}
+
+const familyOf = (row: CatalogueRow) => row.traits?.familyId ?? familyFromId(row.modelId);
+
+/** Days until an in-use model's retirement date, rounded up; null without a date. */
+export function daysUntil(expiresAt: string | null | undefined, nowMs: number): number | null {
+    const ms = expiresAt ? Date.parse(expiresAt) : NaN;
+    return Number.isFinite(ms) ? Math.ceil((ms - nowMs) / DAY_MS) : null;
+}
+
+/** The notice threshold due now (30, then 7), or null when this row was already told. */
+export function expiryNoticeDue(row: Pick<CatalogueRow, "expiresAt" | "notifiedExpiryDays">, nowMs: number): number | null {
+    const days = daysUntil(row.expiresAt, nowMs);
+    if (days === null) return null;
+    const threshold = [...EXPIRY_NOTICE_DAYS].reverse().find((limit) => days <= limit);
+    if (threshold === undefined) return null;
+    return row.notifiedExpiryDays === null || row.notifiedExpiryDays === undefined || row.notifiedExpiryDays > threshold ? threshold : null;
+}
+
+function auDay(iso: string): string {
+    return new Date(iso).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
 }
 
 /** Folds one probe into a row. Three inconclusive probes in a row count as a failure; one does not demote a passed model. */
@@ -217,9 +320,17 @@ function section(title: string, lines: readonly string[]): string[] {
     return [`${title} (${lines.length}):`, ...shown];
 }
 
-export function discoveryMessage(parts: { passed: string[]; missing: string[]; failedRetests: string[]; listingFailed: string[]; drafted?: string[] }, reviewLink: string): string | null {
+const KIND_NAMES: Record<NonChatKind, string> = { embedding: "embedding", speech: "speech", transcription: "transcription" };
+
+export function discoveryMessage(parts: {
+    passed: string[]; missing: string[]; failedRetests: string[]; listingFailed: string[]; drafted?: string[];
+    retiring?: string[]; inUseFailing?: string[]; passedByKind?: Partial<Record<NonChatKind, string[]>>;
+}, reviewLink: string): string | null {
     const body = [
+        ...section("In use and retiring", parts.retiring ?? []),
+        ...section("In use and failing its daily test", parts.inUseFailing ?? []),
         ...section("New models passed their tests, not yet approved for automatic routes", parts.passed),
+        ...(Object.keys(KIND_NAMES) as NonChatKind[]).flatMap((kind) => section(`New ${KIND_NAMES[kind]} models passed their tests, not yet approved`, parts.passedByKind?.[kind] ?? [])),
         ...section("Missing from the provider's list, still selectable", parts.missing),
         ...section("Approved models that failed a re-test", parts.failedRetests),
         ...section("Provider list failed twice in a row", parts.listingFailed),
@@ -262,12 +373,21 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     const before = new Map(read.rows.map((row) => [keyOf(row), row]));
     const after = new Map(before);
     const removed = deps.removedKeys?.() ?? new Set<string>();
+    const typesOn = deps.typesEnabled?.() === true;
+    const typedProbes = typesOn && !!deps.probeTyped;
+    const inUse = typesOn && deps.inUse ? await deps.inUse(read.rows).catch((error) => {
+        console.error("[ModelDiscovery] Could not read the models in use:", error instanceof Error ? error.message : error);
+        return null;
+    }) : null;
+    const inUseKeys = inUse?.keys ?? new Set<string>();
     const summary: RunSummary = {
         kind: "run", trigger, providers: {}, added: [], passed: [], newlyMissing: [], failedRetests: [],
         notified: false, budgetReached: false, durationMs: 0, drafted: [], draftFailed: [], lookupsDeferred: 0,
     };
     const listingFailed: string[] = [];
     const probeQueues: { provider: ProviderConfig; apiKey: string; rows: CatalogueRow[]; entry: ProviderRunSummary }[] = [];
+    // Providers with a key; in-use models are tested even when their list failed.
+    const keyed = new Map<string, { provider: ProviderConfig; apiKey: string }>();
 
     const listed = await Promise.all(deps.providers.map(async (provider): Promise<ProviderListing | null> => {
         const discovery = provider.discovery;
@@ -286,6 +406,7 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
             continue;
         }
         const { provider, discovery, apiKey, result } = item;
+        keyed.set(provider.id, { provider, apiKey });
         // An empty list is treated as a failed one, so a provider hiccup never marks every model missing.
         if (!result.ok || !result.models.length) {
             const failures = previousFailures(earlier, provider.id) + 1;
@@ -296,9 +417,9 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         }
 
         const retired = retiredChatModelIds(provider.id);
-        const codeIds = new Set(provider.chatModels.map((model) => model.id));
+        const codeIds = codeModelIds(provider);
         const listing = new Map(result.models.map((model) => [model.modelId, model]));
-        const tracked = selectDiscoverable(result.models, discovery, retired);
+        const tracked = typesOn ? selectAllDiscoverable(result.models, discovery, retired) : selectDiscoverable(result.models, discovery, retired);
         const entry: ProviderRunSummary = { listing: "ok", listingFailures: 0, listed: result.models.length, tracked: tracked.length, added: 0, missing: 0 };
         summary.providers[provider.id] = entry;
 
@@ -332,8 +453,9 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
             entry.added = (entry.added ?? 0) + 1;
         }
 
+        // In-use models are tested in their own pass below, outside the cap.
         const queue = [...after.values()]
-            .filter((row) => row.providerId === provider.id && !retired.has(row.modelId) && !removed.has(keyOf(row)))
+            .filter((row) => row.providerId === provider.id && (rowKind(row) === "chat" || typedProbes) && !inUseKeys.has(keyOf(row)) && !retired.has(row.modelId) && !removed.has(keyOf(row)))
             .map((row) => ({ row, priority: probePriority(row, codeIds.has(row.modelId), listing.has(row.modelId), startedMs) }))
             .filter((item): item is { row: CatalogueRow; priority: number } => item.priority !== null)
             .sort((a, b) => a.priority - b.priority
@@ -345,46 +467,99 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     }
 
     const probeDetails = new Map<string, unknown>();
-    const { observations } = await collectModelObservations(() => Promise.all(probeQueues.map(async ({ provider, apiKey, rows, entry }) => {
-        const counts = { probed: 0, passed: 0, failed: 0, inconclusive: 0 };
-        Object.assign(entry, counts);
-        for (const [index, row] of rows.entries()) {
-            if (deps.now() - startedMs >= deps.runBudgetMs) {
-                summary.budgetReached = true;
-                entry.deferred = (entry.deferred ?? 0) + rows.length - index;
-                break;
+    const atNow = () => new Date(deps.now()).toISOString();
+    const primaryKey = inUse?.embedding ? `${inUse.embedding.providerId}::${inUse.embedding.modelId}` : null;
+    let reference: SpaceReference | undefined;
+    let referenceFamily: string | null = null;
+    const referenceFor = (row: CatalogueRow) => reference && rowKind(row) === "embedding" && familyOf(row) === referenceFamily && keyOf(row) !== primaryKey ? reference : undefined;
+    const tally = (entry: ProviderRunSummary | undefined, status: "passed" | "failed" | "inconclusive") => {
+        if (!entry) return;
+        entry.probed = (entry.probed ?? 0) + 1;
+        entry[status] = (entry[status] ?? 0) + 1;
+    };
+    const typedProbe = async (provider: ProviderConfig, apiKey: string, row: CatalogueRow): Promise<TypedProbeResult> => {
+        const result = await deps.probeTyped!({
+            kind: rowKind(row) as NonChatKind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices, reference: referenceFor(row),
+        }).catch((error) => typedCrash(error, keyOf(row)));
+        const next = applyTypedProbe(after.get(keyOf(row)) ?? row, result, atNow());
+        after.set(keyOf(next), next);
+        probeDetails.set(keyOf(next), { retired: result.retired, retiredAt: result.retiredAt, steps: result.steps });
+        return result;
+    };
+
+    const { observations } = await collectModelObservations(async () => {
+        // In-use pass: the knowledge model first, so its vectors are the same-space reference for the rest.
+        if (typedProbes && inUse) {
+            const targets = [...after.values()]
+                .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && row.free && !removed.has(keyOf(row)) && keyed.has(row.providerId))
+                .sort((a, b) => Number(keyOf(b) === primaryKey) - Number(keyOf(a) === primaryKey));
+            for (const row of targets) {
+                if (deps.now() - startedMs >= deps.runBudgetMs) {
+                    summary.budgetReached = true;
+                    break;
+                }
+                const { provider, apiKey } = keyed.get(row.providerId)!;
+                const result = await typedProbe(provider, apiKey, row);
+                tally(summary.providers[provider.id], result.status);
+                if (keyOf(row) === primaryKey && result.vectors) {
+                    reference = { partitionId: inUse.embedding!.modelId, ...result.vectors };
+                    referenceFamily = familyOf(row);
+                }
             }
-            const checkVision = !row.inputs.length || row.inputs.includes("image");
-            const result = await deps.probe({ provider, modelId: row.modelId, apiKey, checkVision }).catch((error): ProbeResult => {
-                console.error(`[ModelDiscovery] Probe crashed for ${keyOf(row)}:`, error instanceof Error ? error.message : error);
-                const step = { outcome: "transient" as const, httpStatus: null, ms: null, detail: "The probe crashed." };
-                return { status: "inconclusive", retired: false, chatMs: null, supportsTools: null, supportsSearch: null, supportsVision: null, steps: { chat: step, tools: step, forced: step, vision: step } };
-            });
-            const next = applyProbe(after.get(keyOf(row)) ?? row, result, new Date(deps.now()).toISOString());
-            after.set(keyOf(next), next);
-            probeDetails.set(keyOf(next), { retired: result.retired, steps: result.steps });
-            counts.probed += 1;
-            counts[result.status === "passed" ? "passed" : result.status === "failed" ? "failed" : "inconclusive"] += 1;
-            Object.assign(entry, counts);
         }
-    })));
+        await Promise.all(probeQueues.map(async ({ provider, apiKey, rows, entry }) => {
+            entry.probed ??= 0;
+            entry.passed ??= 0;
+            entry.failed ??= 0;
+            entry.inconclusive ??= 0;
+            for (const [index, row] of rows.entries()) {
+                if (deps.now() - startedMs >= deps.runBudgetMs) {
+                    summary.budgetReached = true;
+                    entry.deferred = (entry.deferred ?? 0) + rows.length - index;
+                    break;
+                }
+                if (rowKind(row) !== "chat") {
+                    tally(entry, (await typedProbe(provider, apiKey, row)).status);
+                    continue;
+                }
+                const checkVision = !row.inputs.length || row.inputs.includes("image");
+                const result = await deps.probe({ provider, modelId: row.modelId, apiKey, checkVision }).catch((error): ProbeResult => {
+                    console.error(`[ModelDiscovery] Probe crashed for ${keyOf(row)}:`, error instanceof Error ? error.message : error);
+                    const step = { outcome: "transient" as const, httpStatus: null, ms: null, detail: "The probe crashed." };
+                    return { status: "inconclusive", retired: false, chatMs: null, supportsTools: null, supportsSearch: null, supportsVision: null, steps: { chat: step, tools: step, forced: step, vision: step } };
+                });
+                const next = applyProbe(after.get(keyOf(row)) ?? row, result, atNow());
+                after.set(keyOf(next), next);
+                probeDetails.set(keyOf(next), { retired: result.retired, steps: result.steps });
+                tally(entry, result.status);
+            }
+        }));
+    });
     await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
 
-    const passedLines: string[] = [], missingLines: string[] = [], failedLines: string[] = [], missingKeys: string[] = [];
+    const passedLines: string[] = [], missingLines: string[] = [], failedLines: string[] = [], missingKeys: string[] = [], inUseFailingLines: string[] = [];
+    const passedByKind: Partial<Record<NonChatKind, string[]>> = {};
     for (const provider of deps.providers) {
-        const codeIds = new Set(provider.chatModels.map((model) => model.id));
+        const codeIds = codeModelIds(provider);
         const retired = retiredChatModelIds(provider.id);
         for (const row of after.values()) {
             if (row.providerId !== provider.id || retired.has(row.modelId) || removed.has(keyOf(row))) continue;
             const old = before.get(keyOf(row));
             const inCode = codeIds.has(row.modelId);
+            const kind = rowKind(row);
             if (old?.probeStatus !== "passed" && row.probeStatus === "passed" && row.origin === "discovered" && row.approvedAt === null) {
                 summary.passed.push(keyOf(row));
-                passedLines.push(describe(provider, row));
+                if (kind === "chat") passedLines.push(describe(provider, row));
+                else (passedByKind[kind] ??= []).push(describe(provider, row));
             }
-            if (old && old.probeStatus !== "failed" && row.probeStatus === "failed" && (inCode || row.approvedAt !== null)) {
-                summary.failedRetests.push(keyOf(row));
-                failedLines.push(describe(provider, row));
+            if (old && old.probeStatus !== "failed" && row.probeStatus === "failed") {
+                if (inUseKeys.has(keyOf(row))) {
+                    (summary.inUseFailing ??= []).push(keyOf(row));
+                    inUseFailingLines.push(`${describe(provider, row)}${keyOf(row) === primaryKey ? backupNote(after, inUse!.embedding!.modelId, primaryKey) : ""}`);
+                } else if (inCode || row.approvedAt !== null) {
+                    summary.failedRetests.push(keyOf(row));
+                    failedLines.push(describe(provider, row));
+                }
             }
             if (row.missingSince !== null && row.notifiedMissingAt === null && inPicker(row, inCode)) {
                 missingKeys.push(keyOf(row));
@@ -400,16 +575,23 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
         const row = after.get(keyOf(entry));
         return provider && row ? [describe(provider, row)] : [];
     });
+    if (inUse && deps.expiryLookups) await checkExpiry(deps, deps.expiryLookups, after, inUseKeys, summary, startedMs);
+    const retiring = inUse ? retiringNotices(deps, after, inUseKeys) : [];
 
-    const message = discoveryMessage({ passed: passedLines, missing: missingLines, failedRetests: failedLines, listingFailed, drafted: draftedLines }, deps.reviewLink);
+    const message = discoveryMessage({
+        passed: passedLines, missing: missingLines, failedRetests: failedLines, listingFailed, drafted: draftedLines,
+        retiring: retiring.map((notice) => notice.line), inUseFailing: inUseFailingLines, passedByKind,
+    }, deps.reviewLink);
     if (message) {
         summary.notified = await deps.notify(message).catch((error) => {
             console.error("[ModelDiscovery] Notification failed:", error instanceof Error ? error.message : error);
             return false;
         });
-        // Undelivered missing notices are retried by the next run.
+        // Undelivered missing and retirement notices are retried by the next run.
         if (summary.notified) {
             for (const key of missingKeys) after.set(key, { ...after.get(key)!, notifiedMissingAt: now });
+            for (const notice of retiring) after.set(notice.key, { ...after.get(notice.key)!, notifiedExpiryDays: notice.threshold });
+            if (retiring.length) summary.retiring = retiring.map((notice) => notice.key);
         }
     }
 
@@ -424,6 +606,73 @@ async function discover(runId: string, trigger: DiscoveryTrigger, deps: Discover
     await deps.refreshSnapshot().catch((error) => console.error("[ModelDiscovery] Snapshot refresh failed:", error instanceof Error ? error.message : error));
     summary.durationMs = deps.now() - startedMs;
     return summary;
+}
+
+function codeModelIds(provider: ProviderConfig): Set<string> {
+    return new Set([...provider.chatModels.map((model) => model.id), ...provider.embeddingModels.map((model) => model.id)]);
+}
+
+function backupNote(rows: ReadonlyMap<string, CatalogueRow>, partitionModelId: string, primaryKey: string): string {
+    const backups = [...rows.values()].filter((row) => rowKind(row) === "embedding" && row.approvedAt !== null && row.spaceOf === partitionModelId
+        && row.probeStatus === "passed" && !row.missingSince && keyOf(row) !== primaryKey);
+    return backups.length ? `; backup ${backups.map((row) => `\`${row.shortName}\``).join(", ")} serves the knowledge store` : "; no same-space backup is approved";
+}
+
+/** Weekly: each in-use non-chat model's provider docs, for a stated retirement date. Within the lookup switch and time limit. */
+async function checkExpiry(deps: DiscoveryDeps, lookups: ExpiryLookups, after: Map<string, CatalogueRow>, inUseKeys: ReadonlySet<string>, summary: RunSummary, startedMs: number): Promise<void> {
+    const providers = new Map(deps.providers.map((provider) => [provider.id, provider]));
+    const due = [...after.values()]
+        .filter((row) => inUseKeys.has(keyOf(row)) && rowKind(row) !== "chat" && providers.has(row.providerId)
+            && (!row.expiryCheckedAt || deps.now() - Date.parse(row.expiryCheckedAt) > EXPIRY_CHECK_AFTER_MS))
+        .sort((a, b) => (a.expiryCheckedAt ?? "").localeCompare(b.expiryCheckedAt ?? ""))
+        .slice(0, Math.min(lookups.maxPerRun, MAX_EXPIRY_LOOKUPS));
+    if (!due.length) return;
+    const checked: string[] = [];
+    const { observations } = await collectModelObservations(async () => {
+        for (const row of due) {
+            if (deps.now() - startedMs >= LOOKUP_STOP_MS) break;
+            const outcome = await lookups.lookup(providers.get(row.providerId)!, row).catch((error): ExpiryLookupOutcome => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+            if (!outcome.ok) {
+                console.warn(`[ModelDiscovery] Retirement lookup failed for ${keyOf(row)}: ${outcome.error.slice(0, 200)}`);
+                continue;
+            }
+            const current = after.get(keyOf(row))!;
+            // The provider's own list and a 410 outrank a web page.
+            const authoritative = current.expiresSource === "listing" || current.expiresSource === "gone";
+            const dated = authoritative ? {}
+                : outcome.date ? { expiresAt: sameInstant(current.expiresAt, outcome.date) ? current.expiresAt : outcome.date, expiresSource: "lookup" as const }
+                    : current.expiresSource === "lookup" ? { expiresAt: null, expiresSource: null, notifiedExpiryDays: null } : {};
+            after.set(keyOf(row), {
+                ...current, expiryCheckedAt: new Date(deps.now()).toISOString(), ...dated,
+                ...(outcome.url && current.traits?.lookupUrl !== outcome.url ? { traits: { ...current.traits, lookupUrl: outcome.url } } : {}),
+            });
+            checked.push(keyOf(row));
+        }
+    }, ["public_search"]);
+    summary.expiryChecked = checked;
+    await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store lookup observations:", error instanceof Error ? error.message : error));
+}
+
+/** In-use models due a retirement notice. A date moved past 30 days clears the earlier notice so a new one can follow. */
+function retiringNotices(deps: DiscoveryDeps, after: Map<string, CatalogueRow>, inUseKeys: ReadonlySet<string>): { key: string; threshold: number; line: string }[] {
+    const providers = new Map(deps.providers.map((provider) => [provider.id, provider]));
+    const out: { key: string; threshold: number; line: string }[] = [];
+    for (const row of after.values()) {
+        const key = keyOf(row), provider = providers.get(row.providerId);
+        if (!inUseKeys.has(key) || rowKind(row) === "chat" || !provider) continue;
+        const days = daysUntil(row.expiresAt, deps.now());
+        if ((days === null || days > EXPIRY_NOTICE_DAYS[0]) && row.notifiedExpiryDays !== null && row.notifiedExpiryDays !== undefined) {
+            after.set(key, { ...row, notifiedExpiryDays: null });
+            continue;
+        }
+        const threshold = expiryNoticeDue(row, deps.now());
+        if (threshold === null || days === null) continue;
+        const when = days <= 0 ? `retired on ${auDay(row.expiresAt!)}` : `retires ${auDay(row.expiresAt!)} (${days} day${days === 1 ? "" : "s"})`;
+        const source = row.expiresSource === "lookup" ? `, from ${row.traits?.lookupUrl ?? "a web lookup"}`
+            : row.expiresSource === "gone" ? ", from the provider's 410 reply" : row.expiresSource === "listing" ? ", from the provider's model list" : "";
+        out.push({ key, threshold, line: `${describe(provider, row)} ${when}${source}` });
+    }
+    return out;
 }
 
 /** Drafts profiles in memory: routes with an approved sibling profile copy it, the rest are looked up within the cap and budget. */
@@ -523,6 +772,7 @@ export async function executeModelTest(runId: string, providerId: string, modelI
         if (!read.ok) throw new Error(`The model catalogue is ${read.reason === "migration_required" ? "not set up" : "unavailable"}.`);
         const row = read.rows.find((entry) => entry.providerId === providerId && entry.modelId === modelId);
         if (!row) throw new Error("That model is not in the catalogue.");
+        if (rowKind(row) !== "chat") return await testTypedModel(runId, provider, apiKey, row, read.rows, deps, startedMs);
 
         const checkVision = !row.inputs.length || row.inputs.includes("image");
         const { value: result, observations } = await collectModelObservations(() => deps.probe({ provider, modelId, apiKey, checkVision }));
@@ -540,6 +790,48 @@ export async function executeModelTest(runId: string, providerId: string, modelI
             .catch((finishError) => console.error("[ModelDiscovery] Could not finish the run row:", finishError instanceof Error ? finishError.message : finishError));
         return null;
     }
+}
+
+/** The same-space reference: the knowledge model's vectors, when the target shares its family and is not it. */
+async function referenceForTest(row: CatalogueRow, rows: readonly CatalogueRow[], deps: DiscoveryDeps): Promise<SpaceReference | undefined> {
+    const active = deps.inUse ? (await deps.inUse(rows).catch(() => null))?.embedding : null;
+    if (!active || (active.providerId === row.providerId && active.modelId === row.modelId)) return undefined;
+    const primaryRow = rows.find((entry) => entry.providerId === active.providerId && entry.modelId === active.modelId);
+    const provider = deps.providers.find((entry) => entry.id === active.providerId);
+    const apiKey = provider ? deps.apiKey(provider) : undefined;
+    if (!provider || !apiKey || familyOf(row) !== (primaryRow ? familyOf(primaryRow) : familyFromId(active.modelId))) return undefined;
+    const result = await deps.probeTyped!({ kind: "embedding", provider, modelId: active.modelId, apiKey }).catch(() => null);
+    return result?.vectors ? { partitionId: active.modelId, ...result.vectors } : undefined;
+}
+
+async function testTypedModel(runId: string, provider: ProviderConfig, apiKey: string, row: CatalogueRow, rows: readonly CatalogueRow[], deps: DiscoveryDeps, startedMs: number): Promise<TestSummary> {
+    if (!deps.probeTyped) throw new Error("Embedding, speech and transcription tests are not configured.");
+    const kind = rowKind(row) as NonChatKind;
+    const { value: result, observations } = await collectModelObservations(async () => deps.probeTyped!({
+        kind, provider, modelId: row.modelId, apiKey, listedVoices: row.traits?.voices,
+        reference: kind === "embedding" ? await referenceForTest(row, rows, deps) : undefined,
+    }));
+    await deps.persistObservations(observations).catch((error) => console.error("[ModelDiscovery] Could not store probe observations:", error instanceof Error ? error.message : error));
+    const next = applyTypedProbe(row, result, new Date(deps.now()).toISOString());
+    await deps.saveRows([{ row: next, probeDetail: { retired: result.retired, retiredAt: result.retiredAt, steps: result.steps } }], new Date(deps.now()).toISOString());
+    await deps.refreshSnapshot().catch((error) => console.error("[ModelDiscovery] Snapshot refresh failed:", error instanceof Error ? error.message : error));
+    const summary: TestSummary = { kind: "test", providerId: row.providerId, modelId: row.modelId, modelKind: kind, status: next.probeStatus, retired: result.retired, chatMs: result.ms };
+    await deps.finishRun(runId, "done", { ...summary, durationMs: deps.now() - startedMs });
+    return summary;
+}
+
+/** Routes in use now: the knowledge model and its approved backups, the voice and the transcription model. */
+async function liveInUse(rows: readonly CatalogueRow[]): Promise<InUse> {
+    const [{ refreshEmbeddingOverride }, { getEmbeddingRef }, { readVoiceChoices }, { inUseRoutes }] = await Promise.all([
+        import("@/lib/ai/embedding-override"), import("@/lib/ai/embeddings"), import("@/lib/ai/voice-choices"), import("@/lib/ai/catalogue/in-use"),
+    ]);
+    await refreshEmbeddingOverride();
+    const ref = getEmbeddingRef();
+    const choices = await readVoiceChoices();
+    return inUseRoutes({
+        embedding: { partitionId: ref.model.id, providerId: ref.provider.id, modelId: ref.model.apiId ?? ref.model.id },
+        speech: choices.speech, transcription: choices.transcription,
+    }, rows);
 }
 
 /** Real dependencies. Imported lazily so this module loads without Supabase or messaging configuration. */
@@ -566,6 +858,16 @@ export async function liveDiscoveryDeps(): Promise<DiscoveryDeps> {
         runBudgetMs: RUN_BUDGET_MS,
         reviewLink: publicUrl.ownerLink("/admin#models"),
         removedKeys: () => removedModelKeys(catalogueSnapshot().profiles),
+        probeTyped: (target) => probeTypedModel(target),
+        typesEnabled: () => typesDiscoveryEnabled() && store.catalogueTypesAvailable() === true,
+        inUse: liveInUse,
+        expiryLookups: lookupEnabled() ? {
+            maxPerRun: MAX_EXPIRY_LOOKUPS,
+            lookup: async (provider, row) => {
+                const retirement = await import("@/lib/ai/models/retirement-lookup");
+                return retirement.lookupRetirement({ providerId: provider.id, providerLabel: provider.label, modelId: row.modelId, label: row.label }, retirement.liveRetirementDeps());
+            },
+        } : undefined,
         lookups: {
             maxPerRun: lookupEnabled() ? maxLookupsFromEnv() : 0,
             budgetMs: LOOKUP_BUDGET_MS,

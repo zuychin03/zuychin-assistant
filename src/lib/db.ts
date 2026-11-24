@@ -1,5 +1,6 @@
 import { supabaseAdmin as supabase } from "./supabase";
 import { getEmbeddingRef } from "./ai/embeddings";
+import { similarityCutoffs } from "./ai/embedding-cutoffs";
 import { resolveOwnerProfile } from "./owner-profile";
 import { isMessageChannel, type Message, type MessageChannel, type MessageMetadata, type KnowledgeItem } from "./types";
 
@@ -119,7 +120,7 @@ export async function searchEmbeddings(params: {
 }): Promise<KnowledgeItem[]> {
     const { data, error } = await supabase.rpc("match_embeddings", {
         query_embedding: JSON.stringify(params.queryEmbedding),
-        match_threshold: params.matchThreshold ?? 0.7,
+        match_threshold: params.matchThreshold ?? similarityCutoffs(params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL()).toolNotes,
         match_count: params.matchCount ?? 5,
         filter_user_id: params.userId ?? null,
         filter_model: params.embeddingModel ?? DEFAULT_EMBEDDING_MODEL(),

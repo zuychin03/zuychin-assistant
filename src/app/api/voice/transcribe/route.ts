@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireChatAuth } from "@/lib/auth/guard";
 import { sameOrigin } from "@/lib/auth/config";
-import { STT_MAX_BYTES, sttConfigured, transcribePcm } from "@/lib/voice/stt-client";
+import { getDefaultProfile } from "@/lib/db";
+import { effectiveFreeOnly } from "@/lib/ai/model-policy";
+import { configureModelDataPolicy, withModelObservationCollector, type ModelCallObservation } from "@/lib/ai/model-observations";
+import { persistModelObservations } from "@/lib/ai/model-health";
+import { readVoiceChoices } from "@/lib/ai/voice-choices";
+import { STT_MAX_BYTES, sttConfigured } from "@/lib/voice/stt-client";
+import { apiTranscriptionRoute, transcribeInOrder, transcriptionSteps } from "@/lib/voice/transcribe-order";
 import { BodyTooLargeError, readBodyCapped } from "@/lib/http/body";
 
 export const maxDuration = 30;
@@ -23,14 +29,29 @@ export async function POST(req: NextRequest) {
     const pcm = await readBodyCapped(req, STT_MAX_BYTES).catch((error) => { if (error instanceof BodyTooLargeError) return null; throw error; });
     if (!pcm) return tooLong;
     if (!pcm.byteLength || pcm.byteLength % 2) return NextResponse.json({ error: "The recording was empty or malformed." }, { status: 400 });
-    if (!sttConfigured()) return fallback("unconfigured");
 
+    const { transcription } = await readVoiceChoices();
+    // The profile is read only when an API step may run: Free only decides whether a paid model may hear the audio.
+    let freeOnly = false;
+    if (transcription.order !== "local") {
+        const profile = await getDefaultProfile().catch(() => null);
+        freeOnly = profile ? effectiveFreeOnly(profile, req.nextUrl.searchParams.get("freeOnly") === "1") : true;
+    }
+    const apiRoute = apiTranscriptionRoute(transcription, freeOnly);
+    const steps = transcriptionSteps(transcription.order, sttConfigured(), !!apiRoute);
+    if (!steps.length) return fallback("unconfigured");
+
+    const calls: ModelCallObservation[] = [];
     const started = performance.now();
-    const result = await transcribePcm(pcm, { signal: req.signal });
+    const result = await withModelObservationCollector(calls, () => {
+        configureModelDataPolicy(freeOnly);
+        return transcribeInOrder(pcm, { steps, apiRoute, signal: req.signal });
+    }, [], ["personal"]);
     const ms = Math.round(performance.now() - started);
+    if (calls.length) await persistModelObservations(calls).catch(() => {});
     // Sizes and timings only: the transcript is the owner's speech.
-    console.log(JSON.stringify({ event: "voice_transcribe", ok: result.ok, bytes: pcm.byteLength, ms,
-        ...(result.ok ? { audioSec: result.audioSec, decodeMs: result.decodeMs } : { reason: result.reason }) }));
+    console.log(JSON.stringify({ event: "voice_transcribe", ok: result.ok, bytes: pcm.byteLength, ms, order: transcription.order,
+        ...(result.ok ? { engine: result.engine, model: result.model, audioSec: result.audioSec } : { reason: result.reason }) }));
     if (!result.ok) return fallback(result.reason);
-    return NextResponse.json({ text: result.text, audioSec: result.audioSec, ms }, { headers: NO_STORE });
+    return NextResponse.json({ text: result.text, audioSec: result.audioSec, ms, engine: result.engine }, { headers: NO_STORE });
 }

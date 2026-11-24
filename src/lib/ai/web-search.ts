@@ -58,7 +58,7 @@ export interface WebSearchResults {
 }
 
 // null means this pool is unusable and the caller should try the next one.
-async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDepth): Promise<WebSearchResults | null> {
+async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDepth, includeDomains?: readonly string[]): Promise<WebSearchResults | null> {
     const cfg = DEPTH_CONFIG[depth];
     const observation = beginExternalServiceObservation({ providerId: "tavily", operation: "web_search" });
 
@@ -75,6 +75,7 @@ async function searchWithPool(pool: TavilyPool, query: string, depth: SearchDept
                 include_answer: true,
                 search_depth: cfg.searchDepth,
                 include_raw_content: cfg.rawContent,
+                ...(includeDomains?.length ? { include_domains: includeDomains } : {}),
             }),
         });
 
@@ -123,9 +124,9 @@ export function tavilyConfigured(): boolean {
 }
 
 // null means no Tavily pool could serve this; the caller should fall back.
-export async function webSearchResults(query: string, depth: SearchDepth = "quick"): Promise<WebSearchResults | null> {
+export async function webSearchResults(query: string, depth: SearchDepth = "quick", includeDomains?: readonly string[]): Promise<WebSearchResults | null> {
     for (const pool of poolsFor(depth)) {
-        const result = await searchWithPool(pool, query, depth);
+        const result = await searchWithPool(pool, query, depth, includeDomains);
         if (result !== null) return result;
     }
     return null;

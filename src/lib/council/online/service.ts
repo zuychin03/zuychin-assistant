@@ -1,6 +1,7 @@
 import { OWNER_SCOPES } from "@/lib/agents/scopes";
 import { getDefaultProfile, hybridSearchKnowledge, searchEmbeddings } from "@/lib/db";
 import { embedText, getEmbeddingRef } from "@/lib/ai/embeddings";
+import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
 import { refreshEmbeddingOverride } from "@/lib/ai/embedding-override";
 import { collectModelObservations, configureModelDataPolicy } from "@/lib/ai/model-observations";
 import { persistModelObservations } from "@/lib/ai/model-health";
@@ -235,7 +236,7 @@ function researchDeps(freeOnly: boolean): ResearchDeps {
             // Wide, because chat messages and documents share the index and are filtered out.
             const matchCount = RESEARCH_NOTES * 3;
             const rows = await hybridSearchKnowledge({ queryEmbedding: embedding, queryText: query, matchCount, embeddingModel: embRef.model.id })
-                ?? await searchEmbeddings({ queryEmbedding: embedding, matchThreshold: 0.6, matchCount, embeddingModel: embRef.model.id });
+                ?? await searchEmbeddings({ queryEmbedding: embedding, matchThreshold: similarityCutoffs(embRef.model).toolNotes, matchCount, embeddingModel: embRef.model.id });
             return savedNotesOnly(rows);
         },
         searchVault: async (query) => {
