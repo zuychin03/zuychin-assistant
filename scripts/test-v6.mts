@@ -12,6 +12,7 @@ const tests = [
     "chat-free-selection",
     "chat-preferences",
     "chat-preference-race",
+    "todo-skipped",
     "provider-registry",
     "embedding-migration",
     "embedding-screening",

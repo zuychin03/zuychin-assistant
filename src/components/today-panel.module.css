@@ -418,11 +418,38 @@
     cursor: wait;
 }
 
+/* Sits close to the tick and stays muted, so it reads as the lesser action. */
+.skip {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin: 1px 0 0 -4px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.skip:hover:not(:disabled) {
+    color: var(--ink);
+    background: var(--hover);
+}
+
+.skip:disabled {
+    color: var(--ink);
+    cursor: wait;
+}
+
 @media (pointer: coarse) {
     .iconButton { width: 44px; height: 44px; }
     .row { padding: 9px 0; }
-    .check { position: relative; }
-    .check::after { content: ""; position: absolute; inset: -13px; }
+    .check, .skip { position: relative; }
+    .check::after { content: ""; position: absolute; inset: -13px -4px -13px -13px; }
+    .skip::after { content: ""; position: absolute; inset: -13px -13px -13px -4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

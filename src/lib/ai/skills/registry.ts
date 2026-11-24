@@ -162,7 +162,7 @@ export const SKILLS: Skill[] = [
         whenToUse: "The user wants a weekly review or retrospective, or to plan the coming week - 'how was my week', 'plan next week'.",
         instructions: `Close out the week and set up the next one.
 1. Gather in parallel: manage_todo_list action 'list' with status_filter 'all', list_calendar_events for the next 7 days (168 hours), and get_current_time.
-2. Retrospective from the task list (the calendar tool only looks forward): what got DONE this week, and what STALLED - pending tasks that have sat for over a week or blew past their due date. Report stalled items honestly; don't pad the wins.
+2. Retrospective from the task list (the calendar tool only looks forward): what got DONE this week (skipped tasks were dropped, not done: never count them as wins), and what STALLED - pending tasks that have sat for over a week or blew past their due date. Report stalled items honestly; don't pad the wins.
 3. Propose cleanup for stalled items: reschedule, or delete if clearly dead. Confirm with the user before deleting anything.
 4. Plan next week: fixed calendar events as anchors, then the highest-value pending tasks around them. Be realistic about capacity.
 5. If the user commits to new tasks or reminders during the review, add them via manage_todo_list or manage_scheduled_task.

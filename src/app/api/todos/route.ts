@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listTodos, updateTodoStatus, deleteTodo } from "@/lib/db";
+import { listTodos, updateTodoStatus, deleteTodo, TODO_STATUSES, type TodoStatus } from "@/lib/db";
 import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 
 // Backs the Notes checklist in the web sidebar.
@@ -7,7 +7,7 @@ import { bodyFailure, readJsonCapped } from "@/lib/http/body";
 export async function GET() {
     try {
         const todos = await listTodos("all", 50);
-        return NextResponse.json({ todos: todos.filter((t) => t.status !== "done") });
+        return NextResponse.json({ todos: todos.filter((t) => t.status === "pending" || t.status === "in_progress") });
     } catch (error: unknown) {
         console.error("[Todos API Error]", error);
         const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
@@ -24,11 +24,11 @@ export async function PATCH(req: NextRequest) {
         if (!id) {
             return NextResponse.json({ error: "Todo ID is required." }, { status: 400 });
         }
-        if (!["pending", "in_progress", "done"].includes(status)) {
+        if (!TODO_STATUSES.includes(status as TodoStatus)) {
             return NextResponse.json({ error: "Invalid status." }, { status: 400 });
         }
 
-        const ok = await updateTodoStatus(id, status as "pending" | "in_progress" | "done");
+        const ok = await updateTodoStatus(id, status as TodoStatus);
         if (!ok) {
             return NextResponse.json({ error: "Failed to update the task." }, { status: 500 });
         }

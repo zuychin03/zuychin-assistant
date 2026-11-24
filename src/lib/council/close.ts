@@ -1,5 +1,6 @@
 import { addTodo } from "@/lib/db";
 import { notify } from "@/lib/messaging/router";
+import { shortenOnWord } from "@/lib/short-text";
 import { writeVaultPage } from "@/lib/vault/ingest";
 import { vaultEmbeddingRef } from "@/lib/vault/store";
 import {
@@ -11,6 +12,7 @@ import {
 
 const BODY_DIGEST_CHARS = 1200;
 const VERDICT_SLICE = 1200;
+const FOLLOW_UP_TITLE_CHARS = 80;
 
 export interface CloseOutcome {
     changed: boolean;
@@ -139,8 +141,8 @@ export async function finalizeCouncil(session: CouncilSession): Promise<CloseOut
 
     for (const q of openQuestions) {
         await addTodo({
-            title: `Follow up: ${q.slice(0, 80)}`,
-            description: `Unresolved by council ${closed.code} (${closed.topic}).`,
+            title: `Follow up: ${shortenOnWord(q, FOLLOW_UP_TITLE_CHARS)}`,
+            description: `${q.trim()}\n\nUnresolved by council ${closed.code} (${closed.topic}).`,
             priority: "medium",
         }).catch((e) => console.warn("[Council] Follow-up todo failed:", e));
     }

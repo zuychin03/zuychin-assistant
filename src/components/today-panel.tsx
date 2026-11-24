@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, Check, PanelRight, PanelRightClose, Repeat, X } from "lucide-react";
+import { CalendarClock, Check, PanelRight, PanelRightClose, Redo2, Repeat, X } from "lucide-react";
 import { trapTab } from "./app-sidebar";
 import styles from "./today-panel.module.css";
 import { clock, dueState, fetchToday, isAllDay, parseDue, sameDay, type EventItem, type TodayResponse, type TodoItem } from "@/lib/today";
 
 interface ScheduledTaskItem { id: string; title: string; scheduleType: "once" | "recurring"; enabled: boolean; nextRunAt: string | null }
+type CloseAs = "done" | "skipped";
 
 const HOUR_PX = 44;
 const MINUTE = 60_000;
@@ -83,7 +84,7 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
     const [today, setToday] = useState<TodayResponse | null>(null);
     const [tasks, setTasks] = useState<ScheduledTaskItem[] | null>(null);
     const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-    const [completing, setCompleting] = useState<string[]>([]);
+    const [closing, setClosing] = useState<Record<string, CloseAs>>({});
     const [actionError, setActionError] = useState("");
     const [now, setNow] = useState(() => new Date());
     const panel = useRef<HTMLElement>(null);
@@ -133,20 +134,31 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
         return () => { document.removeEventListener("keydown", onKey); previous?.focus?.({ preventScroll: true }); };
     }, [variant, onClose]);
 
-    async function complete(todo: TodoItem) {
-        if (completing.includes(todo.id)) return;
-        setCompleting((list) => [...list, todo.id]);
+    async function close(todo: TodoItem, status: CloseAs) {
+        if (closing[todo.id]) return;
+        setClosing((current) => ({ ...current, [todo.id]: status }));
         setActionError("");
         try {
-            const response = await fetch("/api/todos", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: todo.id, status: "done" }) });
+            const response = await fetch("/api/todos", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: todo.id, status }) });
             if (!response.ok) throw new Error(`Request failed (${response.status})`);
             setToday((current) => current && { ...current, dueTodos: current.dueTodos.filter((item) => item.id !== todo.id), todos: current.todos.filter((item) => item.id !== todo.id) });
         } catch {
-            setActionError(`“${todo.title}” could not be marked as done. Try again.`);
+            setActionError(status === "done" ? `“${todo.title}” could not be marked as done. Try again.` : `“${todo.title}” could not be skipped. Try again.`);
         } finally {
-            setCompleting((list) => list.filter((id) => id !== todo.id));
+            setClosing((current) => {
+                const next = { ...current };
+                delete next[todo.id];
+                return next;
+            });
         }
     }
+
+    const closeButtons = (todo: TodoItem) => <>
+        <button type="button" className={styles.check} onClick={() => void close(todo, "done")} disabled={closing[todo.id] === "done"} aria-busy={!!closing[todo.id] || undefined}
+            aria-label={`Mark “${todo.title}” as done`} title="Mark as done"><Check size={12} aria-hidden="true" /></button>
+        <button type="button" className={styles.skip} onClick={() => void close(todo, "skipped")} disabled={closing[todo.id] === "skipped"} aria-busy={!!closing[todo.id] || undefined}
+            aria-label={`Skip “${todo.title}”`} title="Skip, not done"><Redo2 size={13} aria-hidden="true" /></button>
+    </>;
 
     const day = useMemo(() => {
         const events = today?.events ?? [];
@@ -253,7 +265,7 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
                                 const due = todo.dueDate ? parseDue(todo.dueDate) : null;
                                 const status = due ? dueState(due, now) : null;
                                 return <li key={todo.id} className={styles.row}>
-                                    <button type="button" className={styles.check} onClick={() => void complete(todo)} disabled={completing.includes(todo.id)} aria-label={`Mark “${todo.title}” as done`} title="Mark as done"><Check size={12} aria-hidden="true" /></button>
+                                    {closeButtons(todo)}
                                     <span className={styles.rowMain}>
                                         <span className={styles.rowTitle}>{todo.title}</span>
                                         {status && <span className={styles.rowMeta} data-tone={status.tone}>{status.label}</span>}
@@ -267,7 +279,7 @@ export function TodayPanel({ variant, onClose, refreshToken = 0, onDueCount, id 
                     {today.todos.length > 0 && <section className={styles.section} aria-labelledby={`${id}-todo`}>
                         <h3 id={`${id}-todo`}>To-do</h3>
                         <ul className={styles.list}>{today.todos.map((todo) => <li key={todo.id} className={styles.row}>
-                            <button type="button" className={styles.check} onClick={() => void complete(todo)} disabled={completing.includes(todo.id)} aria-label={`Mark “${todo.title}” as done`} title="Mark as done"><Check size={12} aria-hidden="true" /></button>
+                            {closeButtons(todo)}
                             <span className={styles.rowMain}><span className={styles.rowTitle}>{todo.title}</span></span>
                             {todo.dueDate && <time className={styles.rowDate}>{dayLabel(parseDue(todo.dueDate))}</time>}
                         </li>)}</ul>

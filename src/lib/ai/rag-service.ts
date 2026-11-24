@@ -34,6 +34,7 @@ import type { AgentEventSink } from "@/lib/ai/agent/events";
 import { currentRoster } from "@/lib/ai/models/roster";
 import { formatModelListing, formatPurposePicks } from "@/lib/ai/models/command";
 import { isPurposeTag, PURPOSE_TAGS } from "@/lib/ai/models/tags";
+import { notesReminderText } from "@/lib/notes-reminder";
 import { resolveChat, resolveModelKey, isRetiredChatModel, resolveMessagingDefault, resolvePaidChat, resolveChatByName, availableChatModels, cappedMaxTokens, getProviderApiKey, type ResolvedChat, type GenParams } from "@/lib/ai/providers";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
@@ -264,12 +265,7 @@ async function dailyNotesReminder(excludeMessageId?: string): Promise<string> {
         if (earlierToday > 0) return "";
 
         const undated = (await listTodos("pending", 50)).filter((t) => !t.dueDate);
-        if (undated.length === 0) return "";
-
-        const shown = undated.slice(0, 5).map((t) => `"${t.title}"`).join(", ");
-        const more = undated.length > 5 ? ` and ${undated.length - 5} more` : "";
-        const plural = undated.length === 1 ? "task" : "tasks";
-        return `\n\n---\n📌 First chat of the day - you still have ${undated.length} pending ${plural} with no date: ${shown}${more}. Tick off anything already done in the Notes panel.`;
+        return notesReminderText(undated);
     } catch (err) {
         console.warn("[RAG] Daily notes reminder failed:", err);
         return "";

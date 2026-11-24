@@ -128,7 +128,8 @@ edited and deleted in place.
   searches your own past messages across channels, with links that jump to the conversation
 - Today panel: a collapsible panel beside the chat (docked on wide screens, a sheet on phones)
   draws the day to time scale with a now line, then what's coming up, what's due, other
-  to-dos and scheduled tasks. Ticking a to-do completes it. Chat starters come from the same
+  to-dos and scheduled tasks. Ticking a to-do completes it, and Skip beside the tick closes it as
+  not done. Chat starters come from the same
   day: the next event, the most urgent to-do and the study cards due today
 - Reply sources: each reply records the facts, memories, vault pages and tools it used, and
   the chat shows them as a small chart with a numbered list and a link into the Cosmos
@@ -166,9 +167,10 @@ edited and deleted in place.
   (`/plan_day`, `/weekly_review`, `/remind`, `/history`, `/new_app`, `/update_app`,
   `/facts`, `/skill`, `/research`, `/code`, `/debug`, `/vault_save`, …) that expand into
   full prompts - skill-backed ones force the agent loop
-- To-dos: the agent keeps a to-do list you can tick off in the Today panel, and it never
-  reminds you about a completed one again. Pending undated tasks are surfaced once a day, at
-  the end of the first reply
+- To-dos: the agent keeps a to-do list you can tick off or skip in the Today panel, and it never
+  reminds you about a closed one again. A skipped task is never reported as done. Pending
+  undated tasks are surfaced once a day, at the end of the first reply: up to three titles
+  as a list, cut on a whole word, and a count of the rest
 - Library: `/knowledge` provides a searchable document library grouped by page type with a
   reviewed/unreviewed filter, chunk inspection, explainable hybrid recall, grounded answers
   with abstention, a lifecycle timeline, safe corrections/promotions/archives/merges, and a
@@ -493,6 +495,12 @@ search. On an existing project, apply
 [`scripts/migrations/v8-free-providers.sql`](scripts/migrations/v8-free-providers.sql); it stops
 with a message if the media kinds are missing, and is safe to run again.
 
+The `-- ===== Skipped tasks =====` block lets a to-do be `skipped` as well as `done`, so a task
+you dropped is not read as finished. On an existing project, apply
+[`scripts/migrations/todo-skipped.sql`](scripts/migrations/todo-skipped.sql); it only widens the
+`todos` status check, is safe to run again and works when a tool runs it one statement at a time.
+Until it is applied, Skip in the Today panel says the task could not be skipped.
+
 ### Web authentication
 
 For a private production deployment, set `ACCESS_PASSWORD`, `AUTH_SESSION_SECRET`,
@@ -567,7 +575,7 @@ npm run dev
   short phrase such as "Just a minute" (picked from a small pool) while it works.
   With the speech-to-text service set up, the voice stage shows Transcribing while your
   words are read, and your message appears as text marked "Spoken".
-- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good.
+- The **Today** button in the top bar opens the Today panel. Ticking a to-do there completes it for good; the ↷ button beside the tick skips it instead.
 - Start a new chat and pick the theme from the sidebar. **History** folds the workspace links
   away so chat history fills the sidebar, and the choice is remembered.
 - In the history sidebar, **New project** creates a collapsible group: use the folder icon
@@ -941,7 +949,7 @@ The model can call these tools during a chat turn (see `lib/ai/mcp-service.ts`):
 | `read_email` | Read a full email body by message ID |
 | `draft_gmail_reply` | Create a draft reply in Gmail |
 | `send_email` | Compose and send a new email |
-| `manage_todo_list` | Add / list / complete / delete to-do items (feeds the web Notes checklist) |
+| `manage_todo_list` | Add / list / complete / skip / delete to-do items (feeds the web Notes checklist) |
 | `manage_scheduled_task` | Create / list / update / delete one-off or recurring scheduled tasks |
 | `manage_memory_facts` | List / forget / correct the extracted long-term Known Facts |
 | `manage_notes` | List / update / delete saved knowledge-base notes (by category) |

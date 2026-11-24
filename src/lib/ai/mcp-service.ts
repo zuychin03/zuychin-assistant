@@ -496,13 +496,13 @@ export const MCP_TOOLS: McpTool[] = [
     },
     {
         name: "manage_todo_list",
-        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'delete' (remove a task). Open tasks appear as a checklist in the web app's Notes panel, where the user can tick them off themselves - a task marked done there is finished; never remind the user about it again.",
+        description: "Manage the user's to-do list. Actions: 'add' (create a task), 'list' (view tasks), 'complete' (mark as done), 'skip' (the user decided not to do it), 'delete' (remove a task). Open tasks appear as a checklist in the web app's Notes panel, where the user ticks a task off as done or skips it. A done task is finished; a skipped task was dropped, not done, so never report it as done or count it as a win. Never remind the user about either again.",
         parameters: {
             action: {
                 type: "string",
-                description: "Action: 'add', 'list', 'complete', or 'delete'.",
+                description: "Action: 'add', 'list', 'complete', 'skip', or 'delete'.",
                 required: true,
-                enum: ["add", "list", "complete", "delete"],
+                enum: ["add", "list", "complete", "skip", "delete"],
             },
             title: {
                 type: "string",
@@ -527,14 +527,14 @@ export const MCP_TOOLS: McpTool[] = [
             },
             todo_id: {
                 type: "string",
-                description: "To-do item ID (required for complete/delete).",
+                description: "To-do item ID (required for complete, skip and delete).",
                 required: false,
             },
             status_filter: {
                 type: "string",
-                description: "Filter for list: 'pending', 'in_progress', 'done', or 'all' (default: pending).",
+                description: "Filter for list: 'pending', 'in_progress', 'done', 'skipped', or 'all' (default: pending).",
                 required: false,
-                enum: ["pending", "in_progress", "done", "all"],
+                enum: ["pending", "in_progress", "done", "skipped", "all"],
             },
         },
     },
@@ -657,7 +657,7 @@ export const MCP_TOOLS: McpTool[] = [
 import {
     searchEmbeddings, hybridSearchKnowledge, storeEmbedding, getRecentMessages,
     listKnowledgeNotes, updateKnowledgeNote, deleteKnowledgeNote,
-    addTodo, listTodos, updateTodoStatus, deleteTodo,
+    addTodo, listTodos, updateTodoStatus, deleteTodo, type TodoStatus,
 } from "@/lib/db";
 import { embedText, getEmbeddingRef, type ResolvedEmbedding } from "@/lib/ai/embeddings";
 import { similarityCutoffs } from "@/lib/ai/embedding-cutoffs";
@@ -1244,13 +1244,13 @@ async function executeManageTodoList(
             case "list": {
                 const filter = (args.status_filter as string) ?? "pending";
                 const todos = await listTodos(
-                    filter as "pending" | "in_progress" | "done" | "all"
+                    filter as TodoStatus | "all"
                 );
                 if (todos.length === 0) return `No ${filter} tasks found.`;
 
                 const formatted = todos.map((t, i) => {
                     const priority = t.priority === "high" ? "🔴" : t.priority === "medium" ? "🟡" : "🟢";
-                    const status = t.status === "done" ? "✅" : t.status === "in_progress" ? "🔄" : "⬜";
+                    const status = t.status === "done" ? "✅" : t.status === "skipped" ? "⏭️ skipped, not done" : t.status === "in_progress" ? "🔄" : "⬜";
                     const due = t.dueDate
                         ? ` (due: ${new Date(t.dueDate).toLocaleDateString("en-AU", { timeZone: "Australia/Sydney" })})`
                         : "";
@@ -1267,6 +1267,13 @@ async function executeManageTodoList(
                 return success ? "✅ Task marked as done!" : "Failed to update task.";
             }
 
+            case "skip": {
+                const todoId = args.todo_id as string;
+                if (!todoId) return "Error: todo_id is required to skip a task.";
+                const success = await updateTodoStatus(todoId, "skipped");
+                return success ? "⏭️ Task skipped. It is closed but was not done." : "Failed to update task.";
+            }
+
             case "delete": {
                 const todoId = args.todo_id as string;
                 if (!todoId) return "Error: todo_id is required to delete a task.";
@@ -1275,7 +1282,7 @@ async function executeManageTodoList(
             }
 
             default:
-                return `Unknown action: ${action}. Use 'add', 'list', 'complete', or 'delete'.`;
+                return `Unknown action: ${action}. Use 'add', 'list', 'complete', 'skip', or 'delete'.`;
         }
     } catch (error) {
         console.error("[MCP] Todo list failed:", error);

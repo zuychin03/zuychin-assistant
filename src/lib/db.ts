@@ -450,11 +450,15 @@ export async function countUserMessagesSince(
     return count ?? 0;
 }
 
+/** `skipped`: the owner dropped the task; it is closed but was not done. Needs todo-skipped.sql. */
+export type TodoStatus = "pending" | "in_progress" | "done" | "skipped";
+export const TODO_STATUSES: readonly TodoStatus[] = ["pending", "in_progress", "done", "skipped"];
+
 export interface Todo {
     id: string;
     title: string;
     description: string;
-    status: "pending" | "in_progress" | "done";
+    status: TodoStatus;
     priority: "low" | "medium" | "high";
     dueDate: string | null;
     createdAt: string;
@@ -488,7 +492,7 @@ export async function addTodo(params: {
 }
 
 export async function listTodos(
-    status?: "pending" | "in_progress" | "done" | "all",
+    status?: TodoStatus | "all",
     limit: number = 20
 ): Promise<Todo[]> {
     let query = supabase
@@ -521,7 +525,7 @@ export async function listTodos(
 
 export async function updateTodoStatus(
     id: string,
-    status: "pending" | "in_progress" | "done"
+    status: TodoStatus
 ): Promise<boolean> {
     const { error } = await supabase
         .from("todos")
